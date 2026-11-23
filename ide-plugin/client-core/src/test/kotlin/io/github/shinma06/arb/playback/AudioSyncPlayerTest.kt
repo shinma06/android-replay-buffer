@@ -333,4 +333,138 @@ class AudioSyncPlayerTest {
         val leaked = Thread.getAllStackTraces().keys.filter { it.isAlive && it.name == "arb-audio-sync-pump" }
         assertTrue(leaked.isEmpty(), "Expected zero leaked audio pump threads, found: $leaked")
     }
+
+    @Test
+    fun pumpBacksOffInsteadOfSpinningWhenSinkKeepsRefusingData() {
+        val pcm = syntheticTaggedPcm(sampleRateHz = 10_000, durationMs = 500)
+        val inner = InMemoryPcmSource(10_000, 2, pcm)
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val source = object : PcmAudioSource by inner {
+            override fun readPcmSlice(startNs: Long, endNs: Long): ByteArray {
+                reads.incrementAndGet()
+                return inner.readPcmSlice(startNs, endNs)
+            }
+        }
+        val sink = object : AudioSink {
+            override val isAvailable: Boolean = true
+            override fun open(format: PcmFormat): Boolean = true
+            override fun start() {}
+            override fun stop() {}
+            override fun flush() {}
+            override fun write(pcm: ByteArray, offset: Int, length: Int): Int = 0 // e.g. line closed / device unplugged
+            override fun close() {}
+        }
+        AudioSyncPlayer(source = source, sink = sink, sliceDurationNs = 20_000_000L, autoRunPump = true).use { player ->
+            player.play()
+            Thread.sleep(400)
+            // 20 ms back-off => roughly 20 reads in 400 ms; a tight loop would issue many thousands.
+            assertTrue(reads.get() < 100, "Pump must back off when write returns 0 (reads=${reads.get()})")
+        }
+    }
+
+    @Test
+    fun pumpSurvivesSourceReadFailureReportsUnavailableAndRecoversOnSeek() {
+        val pcm = syntheticTaggedPcm(sampleRateHz = 10_000, durationMs = 500)
+        val inner = InMemoryPcmSource(10_000, 2, pcm)
+        val failing = java.util.concurrent.atomic.AtomicBoolean(true)
+        val source = object : PcmAudioSource by inner {
+            override fun readPcmSlice(startNs: Long, endNs: Long): ByteArray {
+                if (failing.get()) throw java.io.IOException("simulated read failure")
+                return inner.readPcmSlice(startNs, endNs)
+            }
+        }
+        val written = java.util.concurrent.atomic.AtomicInteger()
+        val sink = object : AudioSink {
+            override val isAvailable: Boolean = true
+            override fun open(format: PcmFormat): Boolean = true
+            override fun start() {}
+            override fun stop() {}
+            override fun flush() {}
+            override fun write(pcm: ByteArray, offset: Int, length: Int): Int {
+                written.addAndGet(length)
+                return length
+            }
+            override fun close() {}
+        }
+        AudioSyncPlayer(source = source, sink = sink, sliceDurationNs = 20_000_000L, autoRunPump = true).use { player ->
+            player.play()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (player.audioState != AudioState.UNAVAILABLE && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals(AudioState.UNAVAILABLE, player.audioState, "Read failure must surface as UNAVAILABLE, not a silent PLAYING")
+            assertTrue(
+                Thread.getAllStackTraces().keys.any { it.isAlive && it.name == "arb-audio-sync-pump" },
+                "Pump thread must stay alive after a read failure",
+            )
+
+            failing.set(false)
+            player.seek(0L)
+            val recoverDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (written.get() == 0 && System.nanoTime() < recoverDeadline) Thread.sleep(10)
+            assertTrue(written.get() > 0, "Pump must resume streaming after a seek once the source recovers")
+            assertEquals(AudioState.PLAYING, player.audioState)
+        }
+    }
+
+    @Test
+    fun staleSliceWrittenAfterConcurrentSeekIsFlushedAgain() {
+        val pcm = syntheticTaggedPcm(sampleRateHz = 10_000, durationMs = 200)
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        lateinit var player: AudioSyncPlayer
+        var seekDuringWrite = true
+        val sink = object : AudioSink {
+            override val isAvailable: Boolean = true
+            override fun open(format: PcmFormat): Boolean = true
+            override fun start() {}
+            override fun stop() {}
+            override fun flush() {
+                events.add("flush")
+            }
+            override fun write(pcm: ByteArray, offset: Int, length: Int): Int {
+                events.add("write")
+                if (seekDuringWrite) {
+                    seekDuringWrite = false
+                    player.seek(100_000_000L) // seek lands while this (now stale) slice is being written
+                }
+                return length
+            }
+            override fun close() {}
+        }
+        player = AudioSyncPlayer(
+            source = InMemoryPcmSource(10_000, 2, pcm),
+            sink = sink,
+            sliceDurationNs = 20_000_000L,
+            autoRunPump = false,
+        )
+        player.use {
+            it.play()
+            events.clear()
+            it.pumpNextSlice()
+            // write -> seek's flush (during write) -> second flush dropping the stale slice
+            assertEquals(listOf("write", "flush", "flush"), events.toList(), "Stale PCM written after a seek's flush must be flushed again")
+            assertEquals(100_000_000L, it.audioPositionNs, "Stale slice must not advance the new position")
+        }
+    }
+
+    @Test
+    fun wavDataChunkBeforeFmtParsesButUnboundedDataBeforeFmtGivesClearError() {
+        val sampleRate = 10_000
+        val raw = syntheticTaggedPcm(sampleRateHz = sampleRate, durationMs = 20)
+        val std = WavFilePcmSource.encodeWav(sampleRateHz = sampleRate, channels = 2, pcmBytes = raw)
+        val fmtChunk = std.copyOfRange(12, 36)
+        val dataChunk = std.copyOfRange(36, std.size)
+        val header = std.copyOfRange(0, 12)
+
+        val reordered = header + dataChunk + fmtChunk
+        WavFilePcmSource.fromBytes(reordered).use { src ->
+            assertEquals(sampleRate, src.sampleRateHz)
+            assertEquals(raw.size / 4, (src.durationNs * sampleRate / 1_000_000_000L).toInt())
+        }
+
+        // Streaming-style data chunk (size 0xFFFFFFFF) before 'fmt ' runs to EOF: fmt can never follow.
+        val unbounded = header + dataChunk.copyOf() .also {
+            ByteBuffer.wrap(it, 4, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(-1)
+        }
+        val ex = assertFailsWith<WavFormatException> { WavFilePcmSource.fromBytes(unbounded) }
+        assertTrue(ex.message!!.contains("precedes 'fmt '"), "Expected a clear data-before-fmt error, got: ${ex.message}")
+    }
 }

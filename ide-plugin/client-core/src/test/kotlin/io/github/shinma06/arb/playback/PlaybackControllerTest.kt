@@ -521,4 +521,92 @@ class PlaybackControllerTest {
             assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
         }
     }
+
+    @Test
+    fun setSpeedWhilePlayingKeepsTimeAlreadyElapsedInsideCurrentFrame() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        PlaybackController(
+            totalFrames = 20L,
+            frameSeeker = seeker,
+            framePtsNs = uniformPtsNs(count = 20, stepMs = 100L),
+            clock = clock,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            ctrl.play()
+            clock.advanceMs(150) // media position 150 ms => mid frame 1
+            ctrl.tick()
+            assertEquals(1L, ctrl.state.currentFrameIndex)
+
+            ctrl.setSpeed(PlaybackSpeed.DOUBLE)
+            clock.advanceMs(25) // +50 ms media => 200 ms => frame 2 (a frame-start re-anchor would give 150 ms => frame 1)
+            ctrl.tick()
+            assertEquals(2L, ctrl.state.currentFrameIndex)
+        }
+    }
+
+    @Test
+    fun loopingSingleFrameSelectionReseeksAudioToSelectionStart() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        val pcm = ByteArray(48_000 * 4 * 3)
+        val audio = AudioSyncPlayer(
+            source = InMemoryPcmSource(48_000, 2, pcm),
+            sink = FakeAudioSink(isAvailable = true),
+            autoRunPump = false,
+        )
+        PlaybackController(
+            totalFrames = 20L,
+            frameSeeker = seeker,
+            framePtsNs = uniformPtsNs(count = 20, stepMs = 100L),
+            audioPlayer = audio,
+            clock = clock,
+            initialInFrameIndex = 5L,
+            initialOutFrameIndex = 5L,
+            initialFrameIndex = 5L,
+            initialLoopInSelection = true,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            ctrl.play()
+            assertEquals(500_000_000L, audio.audioPositionNs)
+            repeat(4) { audio.pumpNextSlice() } // audio drifts forward 80 ms
+            assertEquals(580_000_000L, audio.audioPositionNs)
+
+            clock.advanceMs(100) // selection (one 100 ms frame) ends => loop
+            ctrl.tick()
+            assertEquals(5L, ctrl.state.currentFrameIndex)
+            assertEquals(500_000_000L, audio.audioPositionNs, "Audio must loop back with the single-frame selection")
+        }
+    }
+
+    @Test
+    fun playStartsLoopThreadEvenWhenConcurrentSeekBumpsGenerationDuringInitialSeek() {
+        val clock = ManualClock()
+        var ctrlRef: PlaybackController? = null
+        var injected = false
+        val seeker = RecordingSeeker(onExactSeek = {
+            if (!injected) {
+                injected = true
+                ctrlRef!!.setInFrame(7L) // bumps seekGeneration while mode stays PLAYING
+            }
+        })
+        PlaybackController(
+            totalFrames = 20L,
+            frameSeeker = seeker,
+            framePtsNs = uniformPtsNs(count = 20, stepMs = 100L),
+            clock = clock,
+            initialInFrameIndex = 5L,
+            initialOutFrameIndex = 10L,
+            initialFrameIndex = 0L, // outside selection => play() performs an initial exact seek
+            autoRunLoop = true,
+        ).use { ctrl ->
+            ctrlRef = ctrl
+            ctrl.play()
+            assertEquals(PlaybackMode.PLAYING, ctrl.state.mode)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            fun loopAlive() = Thread.getAllStackTraces().keys.any { it.isAlive && it.name == "arb-playback-loop" }
+            while (!loopAlive() && System.nanoTime() < deadline) Thread.sleep(10)
+            assertTrue(loopAlive(), "Playback loop thread must run while mode is PLAYING")
+        }
+    }
 }

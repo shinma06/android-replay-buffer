@@ -339,6 +339,14 @@ class WavFilePcmSource private constructor(
                         dataOffset = payloadStart
                         // Clamp to actual file length for robustness against streaming WAV headers.
                         dataSizeBytes = minOf(chunkSize, available)
+                        if (format == null && chunkSize >= available) {
+                            // data-before-fmt with a size that runs to EOF (or a streaming 0xFFFFFFFF
+                            // size): no chunk can follow, so 'fmt ' can never be found.
+                            throw WavFormatException(
+                                "WAV 'data' chunk precedes 'fmt ' and extends to EOF (size $chunkSize); " +
+                                    "cannot locate 'fmt ' chunk",
+                            )
+                        }
                     }
                 }
 

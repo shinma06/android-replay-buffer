@@ -181,10 +181,14 @@ class PlaybackController(
             performExactSeek(needInitialSeek, gen)
             // Re-anchor after initial seek completes so startup decode time doesn't drop frame 1.
             stateLock.withLock {
-                if (!closed && currentState.mode == PlaybackMode.PLAYING && seekGeneration.get() == gen) {
-                    anchorWallNs = clock.nowNs()
-                    anchorMediaPtsNs = frameRelativePtsNs(currentState.currentFrameIndex)
-                    audioPlayer?.seek(anchorMediaPtsNs)
+                if (!closed && currentState.mode == PlaybackMode.PLAYING) {
+                    // A concurrent seek/scrub/trim may have bumped the generation; the loop must
+                    // still run while the mode is PLAYING, but only re-anchor if we still own it.
+                    if (seekGeneration.get() == gen) {
+                        anchorWallNs = clock.nowNs()
+                        anchorMediaPtsNs = frameRelativePtsNs(currentState.currentFrameIndex)
+                        audioPlayer?.seek(anchorMediaPtsNs)
+                    }
                     ensureLoopThreadStartedLocked()
                     loopWakeup.signalAll()
                 }
@@ -480,8 +484,11 @@ class PlaybackController(
             if (currentState.speed == speed) return
             val nowNs = clock.nowNs()
             if (currentState.mode == PlaybackMode.PLAYING) {
+                // Anchor on the real media position (not the frame start) so a speed change does
+                // not drop the time already elapsed inside the current frame.
+                val elapsedMediaNs = currentState.speed.wallToMediaNs((nowNs - anchorWallNs).coerceAtLeast(0L))
+                anchorMediaPtsNs = saturatingAdd(anchorMediaPtsNs, elapsedMediaNs)
                 anchorWallNs = nowNs
-                anchorMediaPtsNs = frameRelativePtsNs(currentState.currentFrameIndex)
                 if (speed == PlaybackSpeed.NORMAL) {
                     audioPlayer?.seek(anchorMediaPtsNs)
                 }
@@ -714,7 +721,9 @@ class PlaybackController(
                     anchorWallNs = nowNs
                     anchorMediaPtsNs = inPtsNs
                     if (cur.inFrameIndex == cur.outFrameIndex) {
-                        // Single-frame selection: stay on frame without redundant seeks.
+                        // Single-frame selection: stay on frame without redundant video seeks,
+                        // but keep audio inside the selection.
+                        audioPlayer?.seek(inPtsNs)
                         nextWakeupNs = saturatingAdd(nowNs, cur.speed.mediaToWallNs(outFrameDurNs))
                     } else {
                         frameToSeek = cur.inFrameIndex

@@ -195,6 +195,8 @@ class AudioSyncPlayer(
 
     private var closed: Boolean = false
     private var sinkReady: Boolean = false
+    /** Set when the pump hit an unrecoverable read/write error; cleared by the next [seek]. */
+    private var pumpFailed: Boolean = false
     private var playingRequested: Boolean = false
     private var scrubbing: Boolean = false
     private var speed: PlaybackSpeed = PlaybackSpeed.NORMAL
@@ -316,6 +318,7 @@ class AudioSyncPlayer(
         if (closed) return@updateStateAndNotify
         val targetAudioNs = saturatingSub(videoPtsNs, saturatingMsToNs(avOffsetMsValue))
         seekGeneration++
+        pumpFailed = false
         currentAudioPtsNs = targetAudioNs
         if (sinkReady) {
             sink.flush()
@@ -367,6 +370,11 @@ class AudioSyncPlayer(
         val written = sink.write(pcm, 0, pcm.size)
 
         lock.withLock {
+            if (!closed && seekGeneration != snapshotGen && written > 0 && sinkReady) {
+                // A seek/offset change flushed the sink while this slice was being written, so the
+                // stale PCM landed after that flush. Drop it so it neither plays nor delays later slices.
+                runCatching { sink.flush() }
+            }
             if (!closed && seekGeneration == snapshotGen && written > 0) {
                 val format = src.format
                 val writtenFrames = (written / format.frameSizeBytes).toLong()
@@ -435,7 +443,7 @@ class AudioSyncPlayer(
     }
 
     private fun computeAudioStateLocked(): AudioState {
-        if (!sinkReady || source == null) return AudioState.UNAVAILABLE
+        if (!sinkReady || source == null || pumpFailed) return AudioState.UNAVAILABLE
         if (scrubbing || userMuted || speed != PlaybackSpeed.NORMAL) return AudioState.MUTED
         return if (playingRequested && !closed) AudioState.PLAYING else AudioState.PAUSED
     }
@@ -482,6 +490,7 @@ class AudioSyncPlayer(
     private fun runPumpLoop() {
         val src = source ?: return
         while (true) {
+            val genBefore: Long
             lock.withLock {
                 while (!closed && (computeAudioStateLocked() != AudioState.PLAYING || currentAudioPtsNs >= src.durationNs)) {
                     try {
@@ -491,11 +500,21 @@ class AudioSyncPlayer(
                     }
                 }
                 if (closed) return
+                genBefore = seekGeneration
             }
-            val written = pumpNextSlice(sliceDurationNs)
+            val written = try {
+                pumpNextSlice(sliceDurationNs)
+            } catch (t: Throwable) {
+                if (isClosedOrInterrupted()) return
+                markPumpFailed()
+                continue
+            }
             if (written == 0) {
+                // Nothing was written (sink refused the data, line closed, stale generation, ...).
+                // Back off instead of re-reading the same slice in a tight loop, unless a seek
+                // already moved on, in which case retry immediately.
                 lock.withLock {
-                    if (!closed && (computeAudioStateLocked() != AudioState.PLAYING || currentAudioPtsNs >= src.durationNs)) {
+                    if (!closed && seekGeneration == genBefore) {
                         try {
                             stateChanged.await(20L, TimeUnit.MILLISECONDS)
                         } catch (_: InterruptedException) {
@@ -504,6 +523,27 @@ class AudioSyncPlayer(
                     }
                 }
             }
+        }
+    }
+
+    private fun isClosedOrInterrupted(): Boolean = lock.withLock { closed }
+
+    private fun markPumpFailed() {
+        val changedTo: AudioState? = lock.withLock {
+            if (closed) return
+            pumpFailed = true
+            runCatching { sink.stop() }
+            val next = computeAudioStateLocked()
+            stateChanged.signalAll()
+            if (next != publishedState) {
+                publishedState = next
+                next
+            } else {
+                null
+            }
+        }
+        if (changedTo != null) {
+            notifyListeners(changedTo)
         }
     }
 
