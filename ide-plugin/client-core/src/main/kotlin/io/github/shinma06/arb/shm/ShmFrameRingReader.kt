@@ -11,6 +11,7 @@ import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.locks.LockSupport
 
 enum class ShmPixelFormat(val wire: Int) {
     BGRA8(1),
@@ -188,6 +189,7 @@ class ShmFrameRingReader private constructor(
      */
     @Throws(ShmRingException::class)
     fun readLatest(): ShmFrame? {
+        var scratchPixels: ByteArray? = null
         for (attempt in 0 until MAX_SEQLOCK_RETRIES) {
             val publishedGen = LONG_LE.getAcquire(mapped, OFF_PUBLISHED_GENERATION) as Long
             if (publishedGen == 0L) {
@@ -204,7 +206,7 @@ class ShmFrameRingReader private constructor(
             val slotBase = RING_HEADER_BYTES + publishedSlot * SLOT_HEADER_BYTES
             val seq1 = LONG_LE.getAcquire(mapped, slotBase) as Long
             if ((seq1 and 1L) != 0L) {
-                Thread.onSpinWait()
+                backoffSeqlock(attempt)
                 continue
             }
 
@@ -222,7 +224,7 @@ class ShmFrameRingReader private constructor(
                 VarHandle.acquireFence()
                 val recheckSeq = LONG_LE.getOpaque(mapped, slotBase) as Long
                 if (recheckSeq != seq1) {
-                    Thread.onSpinWait()
+                    backoffSeqlock(attempt)
                     continue
                 }
                 throw ShmRingException(
@@ -231,13 +233,17 @@ class ShmFrameRingReader private constructor(
             }
 
             val payloadOffset = HEADER_REGION_BYTES + publishedSlot * alignedSlotStride
-            val pixels = ByteArray(payloadLen)
+            val pixels = if (scratchPixels != null && scratchPixels.size == payloadLen) {
+                scratchPixels
+            } else {
+                ByteArray(payloadLen).also { scratchPixels = it }
+            }
             mapped.get(payloadOffset, pixels, 0, payloadLen)
 
             VarHandle.acquireFence()
             val seq2 = LONG_LE.getOpaque(mapped, slotBase) as Long
             if (seq1 != seq2) {
-                Thread.onSpinWait()
+                backoffSeqlock(attempt)
                 continue
             }
 
@@ -264,6 +270,19 @@ class ShmFrameRingReader private constructor(
             )
         }
         throw ShmRingException("Shared-memory frame seqlock did not stabilize under contention")
+    }
+
+    /**
+     * Progressive backoff across seqlock retries: spin briefly for sub-microsecond races, then
+     * yield and briefly park so a preempted writer on a busy low-core host can finish publishing
+     * instead of burning all [MAX_SEQLOCK_RETRIES] iterations in a few microseconds.
+     */
+    private fun backoffSeqlock(attempt: Int) {
+        when {
+            attempt < 16 -> Thread.onSpinWait()
+            attempt < 48 -> Thread.yield()
+            else -> LockSupport.parkNanos(200_000L)
+        }
     }
 
     override fun close() {

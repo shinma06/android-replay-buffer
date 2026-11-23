@@ -9,6 +9,8 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -161,60 +163,120 @@ class ShmFrameRingReaderTest {
 
     @Test
     fun seqlockPreventsTornFramesUnderConcurrentWriter(@TempDir tmp: Path) {
-        val ringPath = tmp.resolve("concurrent.shm")
-        val width = 32
-        val height = 32
-        val stride = width * 4
-        val slotCapacity = stride * height
+        // Run multiple back-to-back stress rounds to prove zero flakiness under contention.
+        repeat(5) { round ->
+            val ringPath = tmp.resolve("concurrent-$round.shm")
+            val width = 32
+            val height = 32
+            val stride = width * 4
+            val slotCapacity = stride * height
+            val (writerCh, mapped) = createRawRingFile(ringPath, slotCapacity)
+
+            writerCh.use {
+                val stop = AtomicBoolean(false)
+                val firstPublished = CountDownLatch(1)
+                val writerThread = Thread(
+                    {
+                        var gen = 1L
+                        var slot = 0
+                        val payload = ByteArray(slotCapacity)
+                        while (!stop.get()) {
+                            val fillByte = (gen and 0xFFL).toByte()
+                            payload.fill(fillByte)
+                            publishSlot(
+                                mapped = mapped,
+                                slotCapacity = slotCapacity,
+                                slotIdx = slot,
+                                generation = gen,
+                                frameIndex = gen,
+                                isApproximate = (gen % 2L == 1L),
+                                width = width,
+                                height = height,
+                                stride = stride,
+                                pixelFormat = ShmPixelFormat.RGBA8,
+                                boottimeNs = gen * 1_000L,
+                                pixels = payload,
+                            )
+                            if (gen == 1L) {
+                                firstPublished.countDown()
+                            }
+                            gen++
+                            slot = (slot + 1) % ShmFrameRingReader.SHM_SLOT_COUNT
+                            // Yield periodically so a 2-vCPU CI runner does not starve the reader
+                            // thread while keeping real overlapping concurrent writes active.
+                            if ((gen and 0x7L) == 0L) {
+                                Thread.yield()
+                            }
+                        }
+                    },
+                    "shm-test-writer-$round",
+                ).apply { start() }
+
+                try {
+                    assertTrue(firstPublished.await(5, TimeUnit.SECONDS), "writer did not publish initial frame")
+                    ShmFrameRingReader.open(ringPath).use { reader ->
+                        var observed = 0
+                        var lastGen = -1L
+                        var distinctGenerations = 0
+                        val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                        while (observed < 200 && System.nanoTime() < deadlineNs) {
+                            val frame = reader.readLatest() ?: continue
+                            val expectedByte = (frame.meta.generation and 0xFFL).toByte()
+                            assertEquals(frame.meta.generation, frame.meta.frameIndex)
+                            assertTrue(
+                                frame.pixels.all { it == expectedByte },
+                                "Seqlock must never return a torn frame (round=$round, gen=${frame.meta.generation})",
+                            )
+                            if (frame.meta.generation != lastGen) {
+                                distinctGenerations++
+                                lastGen = frame.meta.generation
+                            }
+                            observed++
+                        }
+                        assertEquals(200, observed, "Expected 200 consistent concurrent reads in round $round")
+                        assertTrue(
+                            distinctGenerations >= 2,
+                            "Expected concurrent writer progress across multiple generations, got $distinctGenerations",
+                        )
+                    }
+                } finally {
+                    stop.set(true)
+                    writerThread.join(5_000L)
+                    assertFalse(writerThread.isAlive, "writerThread must stop cleanly")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun throwsWhenSeqlockRemainsStuckOdd(@TempDir tmp: Path) {
+        val ringPath = tmp.resolve("stuck-odd.shm")
+        val slotCapacity = 64
         val (writerCh, mapped) = createRawRingFile(ringPath, slotCapacity)
 
         writerCh.use {
-            val stop = AtomicBoolean(false)
-            val writerThread = Thread {
-                var gen = 1L
-                var slot = 0
-                val payload = ByteArray(slotCapacity)
-                while (!stop.get()) {
-                    val fillByte = (gen and 0xFFL).toByte()
-                    payload.fill(fillByte)
-                    publishSlot(
-                        mapped = mapped,
-                        slotCapacity = slotCapacity,
-                        slotIdx = slot,
-                        generation = gen,
-                        frameIndex = gen,
-                        isApproximate = (gen % 2L == 1L),
-                        width = width,
-                        height = height,
-                        stride = stride,
-                        pixelFormat = ShmPixelFormat.RGBA8,
-                        boottimeNs = gen * 1_000L,
-                        pixels = payload,
-                    )
-                    gen++
-                    slot = (slot + 1) % ShmFrameRingReader.SHM_SLOT_COUNT
-                }
-            }.apply { start() }
+            publishSlot(
+                mapped = mapped,
+                slotCapacity = slotCapacity,
+                slotIdx = 0,
+                generation = 1L,
+                frameIndex = 1L,
+                isApproximate = false,
+                width = 1,
+                height = 1,
+                stride = 4,
+                pixelFormat = ShmPixelFormat.RGBA8,
+                boottimeNs = 1_000L,
+                pixels = byteArrayOf(1, 2, 3, 4),
+            )
+            // Simulate a crashed writer leaving slot 0's seqlock odd (write in progress).
+            val slot0Base = ShmFrameRingReader.RING_HEADER_BYTES
+            val seq = longLe.getOpaque(mapped, slot0Base) as Long
+            longLe.setRelease(mapped, slot0Base, seq + 1L)
 
-            try {
-                ShmFrameRingReader.open(ringPath).use { reader ->
-                    var observed = 0
-                    val deadline = System.currentTimeMillis() + 3_000L
-                    while (observed < 200 && System.currentTimeMillis() < deadline) {
-                        val frame = reader.readLatest() ?: continue
-                        val expectedByte = (frame.meta.generation and 0xFFL).toByte()
-                        assertEquals(frame.meta.generation, frame.meta.frameIndex)
-                        assertTrue(
-                            frame.pixels.all { it == expectedByte },
-                            "Seqlock must never return a torn frame (gen=${frame.meta.generation})",
-                        )
-                        observed++
-                    }
-                    assertTrue(observed >= 50, "Expected at least 50 consistent concurrent reads, got $observed")
-                }
-            } finally {
-                stop.set(true)
-                writerThread.join(2_000L)
+            ShmFrameRingReader.open(ringPath).use { reader ->
+                val ex = assertFailsWith<ShmRingException> { reader.readLatest() }
+                assertTrue(ex.message!!.contains("seqlock"), "Unexpected error: ${ex.message}")
             }
         }
     }
