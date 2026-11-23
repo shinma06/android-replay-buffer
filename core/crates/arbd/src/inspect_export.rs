@@ -137,6 +137,10 @@ pub fn decode_audio_pcm(
     // Fast path: reuse existing validated cached WAV.
     if cache_wav.is_file() {
         if let Ok(hdr) = inspect_wav_header(&cache_wav) {
+            // Refresh recency so a just-served path is not the next eviction candidate.
+            if let Ok(f) = OpenOptions::new().append(true).open(&cache_wav) {
+                let _ = f.set_modified(SystemTime::now());
+            }
             return Ok(MediaDecodeAudioPcmResponse {
                 available: true,
                 wav_path: Some(cache_wav),
@@ -283,11 +287,20 @@ pub fn export_share_mp4(
     drop(lease_guard);
 
     let mut original_trashed = false;
+    let mut trash_warning: Option<String> = None;
     if params.trash_original
         && let Some(src_id) = source_catalog_id
     {
-        let _ = ctx.catalog.trash_bundle(src_id, &utc_now_iso8601())?;
-        original_trashed = true;
+        // share.mp4 is already committed: a late trash failure (source already trashed, racing
+        // trash) must not hide the export result, so it degrades to a warning.
+        match ctx.catalog.trash_bundle(src_id, &utc_now_iso8601()) {
+            Ok(_) => original_trashed = true,
+            Err(err) => {
+                trash_warning = Some(format!(
+                    "share.mp4 was written but trashing the original failed: {err}"
+                ));
+            }
+        }
     }
 
     Ok(ExportShareMp4Response {
@@ -301,7 +314,10 @@ pub fn export_share_mp4(
         output_bytes: av_mux_report.output_bytes,
         original_trashed,
         av_mux_report,
-        warning: prepared.warning,
+        warning: match (prepared.warning, trash_warning) {
+            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+            (a, b) => a.or(b),
+        },
     })
 }
 
@@ -678,10 +694,14 @@ pub fn query_logs_filtered(
             .iter()
             .find(|f| f.frame_index == ef)
             .and_then(frame_boottime_ns);
-        if let Some(s) = start_bt {
+        if params.start_frame.is_some()
+            && let Some(s) = start_bt
+        {
             range.start_ns = Some(range.start_ns.map_or(s, |prev| prev.max(s)));
         }
-        if let Some(e) = end_bt {
+        if params.end_frame.is_some()
+            && let Some(e) = end_bt
+        {
             range.end_ns = Some(range.end_ns.map_or(e, |prev| prev.min(e)));
         }
     }
@@ -693,10 +713,18 @@ pub fn query_logs_filtered(
 
     if has_text_filter {
         let tag_needle = params.tag.as_deref().map(str::to_ascii_lowercase);
-        let level_needle = params
-            .level
-            .as_deref()
-            .map(|s| normalize_log_level(s).to_owned());
+        let level_needle = match params.level.as_deref() {
+            Some(raw) => {
+                let norm = normalize_log_level(raw);
+                if norm.is_empty() {
+                    return Err(DaemonError::InvalidParams(format!(
+                        "unknown log level `{raw}`; expected one of V, D, I, W, E, F"
+                    )));
+                }
+                Some(norm.to_owned())
+            }
+            None => None,
+        };
         let kw_needle = params.keyword.as_deref().map(str::to_ascii_lowercase);
 
         logs.retain(|log| {
@@ -877,10 +905,16 @@ fn render_inspect_tap_crop(
                 selected_taps.len()
             ))
         })?;
-        let inferred_frame = tap_boottime_ns(tap)
-            .and_then(|bt| nearest_frame_index(&frames, bt))
-            .unwrap_or(0);
-        let frame_idx = params.frame_index.unwrap_or(inferred_frame);
+        let frame_idx = match params.frame_index {
+            Some(f) => f,
+            None => tap_boottime_ns(tap)
+                .and_then(|bt| nearest_frame_index(&frames, bt))
+                .ok_or_else(|| {
+                    DaemonError::InvalidParams(format!(
+                        "tap_index {tap_idx} cannot be aligned to a video frame; pass an explicit frame_index"
+                    ))
+                })?,
+        };
         let raw_x = tap.x.ok_or_else(|| {
             DaemonError::InvalidParams(format!("tap_index {tap_idx} has no x coordinate"))
         })?;
@@ -1026,9 +1060,6 @@ fn build_error_log_highlights(
         return out;
     }
     for log in main_logs {
-        if out.len() >= max_errors {
-            break;
-        }
         let Some(level_raw) = log.level.as_deref() else {
             continue;
         };
@@ -1047,6 +1078,10 @@ fn build_error_log_highlights(
             tag: log.tag.clone(),
             message: truncate_chars(&log.message, MAX_ERROR_LOG_MESSAGE_CHARS),
         });
+        // Keep the LAST `max_errors` rows (nearest the end of the window, where crashes land).
+        if out.len() > max_errors {
+            out.remove(0);
+        }
     }
     out
 }

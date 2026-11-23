@@ -111,6 +111,29 @@ impl McpServer {
             }
         };
 
+        if let Some(batch) = msg.as_array() {
+            // JSON-RPC batch (required by MCP 2025-03-26): answer each element, omit notifications.
+            if batch.is_empty() {
+                return Some(rpc_error(
+                    &Value::Null,
+                    JSONRPC_INVALID_REQUEST,
+                    "JSON-RPC batch must not be empty",
+                ));
+            }
+            let responses: Vec<Value> = batch
+                .iter()
+                .filter_map(|item| self.handle_message(item))
+                .collect();
+            return if responses.is_empty() {
+                None
+            } else {
+                Some(Value::Array(responses))
+            };
+        }
+        self.handle_message(&msg)
+    }
+
+    fn handle_message(&mut self, msg: &Value) -> Option<Value> {
         let Some(obj) = msg.as_object() else {
             return Some(rpc_error(
                 &Value::Null,
@@ -542,7 +565,6 @@ impl McpServer {
         summary: &Value,
     ) -> Result<String, String> {
         let list = self.call_daemon("bundle.list", &json!({ "state": "active" }))?;
-        let summary_id = summary.get("bundle_id").and_then(Value::as_str);
         let summary_path = summary.get("path").and_then(Value::as_str);
         let found = list
             .get("bundles")
@@ -552,9 +574,7 @@ impl McpServer {
             .find(|entry| {
                 let id = entry.get("bundle_id").and_then(Value::as_str);
                 let path = entry.get("path").and_then(Value::as_str);
-                id == Some(target)
-                    || id == summary_id
-                    || path.is_some_and(|p| p == target || Some(p) == summary_path)
+                id == Some(target) || path.is_some_and(|p| p == target || Some(p) == summary_path)
             })
             .and_then(|entry| entry.get("bundle_id").and_then(Value::as_str));
         found.map(str::to_owned).ok_or_else(|| {
@@ -1239,5 +1259,27 @@ mod tests {
             read_bounded_line(&mut r, &mut buf, 16).unwrap(),
             LineRead::Eof
         ));
+    }
+
+    #[test]
+    fn json_rpc_batch_answers_each_request_and_omits_notifications() {
+        let paths = ArbPaths {
+            data_dir: std::env::temp_dir().join("arb-mcp-unit-bd"),
+            cache_dir: std::env::temp_dir().join("arb-mcp-unit-bc"),
+            runtime_dir: std::env::temp_dir().join("arb-mcp-unit-br"),
+        };
+        let mut srv = McpServer::new(paths);
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "ping" },
+            { "jsonrpc": "2.0", "method": "notifications/initialized" },
+            { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
+        ]);
+        let resp = srv.handle_line(&batch.to_string()).expect("batch response");
+        let arr = resp.as_array().expect("array response");
+        assert_eq!(arr.len(), 2, "notification must not produce a response");
+        assert_eq!(arr[0]["id"], 1);
+        assert_eq!(arr[1]["id"], 2);
+        let empty = srv.handle_line("[]").expect("empty batch error");
+        assert_eq!(empty["error"]["code"], -32600);
     }
 }
