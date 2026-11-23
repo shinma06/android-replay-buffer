@@ -391,7 +391,15 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
         if log.tag.as_deref().map(str::trim) != Some("AndroidRuntime") {
             continue;
         }
-        if let Some(fallback) = parse_fatal_exception_at(logs, idx) {
+        if let Some(fallback) = parse_fatal_exception_at(logs, idx)
+            // A real block is logged by the crashing process itself: ignore text naming
+            // another PID than the record's own.
+            .filter(|fb| {
+                fb.pid
+                    .zip(log.pid)
+                    .is_none_or(|(parsed, own)| parsed == own)
+            })
+        {
             let boottime_ns = log_boottime_hint(log);
             let frame_index_hint = boottime_ns.and_then(|bt| nearest_frame_index(frames, bt));
             fatal_fallbacks.push(CrashMarker {
@@ -808,10 +816,17 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
     // Collapse consecutive duplicates of the same Activity into one continuous visit.
     let mut collapsed: Vec<(i64, ParsedActivityComponent)> = Vec::with_capacity(transitions.len());
     for (bt, _seq, comp) in transitions {
-        let same_as_prev = collapsed.last().is_some_and(|(_, prev)| {
-            prev.package_name == comp.package_name && prev.activity_name == comp.activity_name
-        });
-        if !same_as_prev {
+        // `wm_on_resume_called` only carries the class name, so its package is a guess (the
+        // class's Java package); `wm_resumed_activity` / `Displayed` carry the real package,
+        // always a prefix of the class name. Collapse on the class name and keep the shorter
+        // (real) package.
+        if let Some((_, prev)) = collapsed.last_mut()
+            && prev.activity_name == comp.activity_name
+        {
+            if comp.package_name.len() < prev.package_name.len() {
+                prev.package_name = comp.package_name;
+            }
+        } else {
             collapsed.push((bt, comp));
         }
     }
@@ -1642,5 +1657,70 @@ mod tests {
             recoverable: None,
         });
         assert!(parse_am_crash_binary(&raw).is_none());
+    }
+
+    #[test]
+    fn one_activity_visit_is_one_span_with_the_real_package() {
+        let logs = [
+            make_log(
+                1,
+                SEC,
+                "wm_resumed_activity",
+                1000,
+                "[0,7,com.example/.ui.MainActivity]",
+            ),
+            make_log(
+                2,
+                SEC + 1,
+                "wm_on_resume_called",
+                1000,
+                "[7,com.example.ui.MainActivity,RESUME]",
+            ),
+            make_log(
+                3,
+                3 * SEC,
+                "wm_on_resume_called",
+                1000,
+                "[8,com.example.ui.DetailActivity,RESUME]",
+            ),
+            make_log(
+                4,
+                3 * SEC + 1,
+                "wm_resumed_activity",
+                1000,
+                "[0,8,com.example/.ui.DetailActivity]",
+            ),
+        ];
+        let spans = extract_screen_spans(&logs, &[]);
+        assert_eq!(
+            spans.len(),
+            2,
+            "no split between class-name and component forms: {spans:?}"
+        );
+        assert_eq!(spans[0].package_name, "com.example", "real package wins");
+        assert_eq!(
+            spans[1].package_name, "com.example",
+            "real package wins in either order"
+        );
+    }
+
+    #[test]
+    fn fatal_exception_naming_another_pid_is_not_a_marker() {
+        let forged = make_log(
+            1,
+            SEC,
+            "AndroidRuntime",
+            999,
+            "FATAL EXCEPTION: main\nProcess: com.victim, PID: 111\njava.lang.Error: x",
+        );
+        assert_eq!(extract_crash_markers(&[forged], &[]), Vec::new());
+        let own = make_log(
+            2,
+            SEC,
+            "AndroidRuntime",
+            111,
+            "FATAL EXCEPTION: main\nProcess: com.victim, PID: 111\njava.lang.Error: x",
+        );
+        assert_eq!(extract_crash_markers(&[own], &[]).len(), 1);
     }
 }

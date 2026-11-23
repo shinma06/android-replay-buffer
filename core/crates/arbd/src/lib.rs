@@ -545,7 +545,7 @@ impl DaemonState {
         let patch: ArbConfigPatch = parse_params(params)?;
         if self.config_unreadable {
             return Err(DaemonError::Conflict(
-                "config.json could not be read at startup; fix its permissions and restart arbd before changing settings"
+                "config.json was not loaded at startup (see system.status config_warning); restore or remove it and restart arbd before changing settings"
                     .to_owned(),
             ));
         }
@@ -721,7 +721,6 @@ impl DaemonState {
             mode,
             trigger_kind,
         )?;
-        pinned.set(true);
 
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
@@ -733,6 +732,15 @@ impl DaemonState {
         let (job, plan) = self
             .lock_capture()?
             .phase1_commit(&self.catalog, pending, tail)?;
+        // From here the catalog job owns the ring pins; earlier failures roll the pins back.
+        pinned.set(true);
+        if trigger_kind == SaveTriggerKind::CrashAutoSave && self.is_shutting_down() {
+            // Do not start a long bundle write that would outlive this daemon instance; the
+            // journaled job is re-materialised by startup recovery of the next arbd.
+            return Err(DaemonError::Conflict(
+                "daemon is shutting down; crash auto-save left for startup recovery".to_owned(),
+            ));
+        }
 
         // Phase 2 without `C` (R3 M2): live readers, heartbeats and status never stall.
         phase2_materialize(&plan, &self.catalog, &job.job.job_id)
@@ -1493,9 +1501,9 @@ fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Optio
         // A newer arbd's file must survive a downgrade: leave it, run on defaults, block updates.
         Err(
             err @ StorageError::ConfigValidation(
-                arb_core::config::ConfigValidationError::UnsupportedVersion { .. },
+                arb_core::config::ConfigValidationError::UnsupportedVersion { found },
             ),
-        ) => (
+        ) if found > arb_core::config::CONFIG_SCHEMA_VERSION => (
             ArbConfig::default(),
             Some(format!(
                 "config.json was written by a different arbd version ({err}); defaults are in use and the file was left untouched"

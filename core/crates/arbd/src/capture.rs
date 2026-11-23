@@ -2612,7 +2612,7 @@ fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
     // of them must not be stored under that tag, or `timeline.crashes` / `timeline.screens`
     // would show forged entries.
     if matches!(
-        tag.as_str(),
+        tag.trim(),
         "am_crash"
             | "30039"
             | "wm_on_resume_called"
@@ -2829,6 +2829,12 @@ mod tests {
 
         let system = text_payload(1000, "am_crash", body);
         assert_eq!(decode_log_tag_and_message(&system).0, "am_crash");
+        let padded = text_payload(10_123, "am_crash ", body);
+        assert_eq!(
+            decode_log_tag_and_message(&padded).0,
+            "app:am_crash ",
+            "readers trim tags, so a padded tag must not bypass the guard"
+        );
         let other = text_payload(10_123, "AppTag", "hello");
         assert_eq!(decode_log_tag_and_message(&other).0, "AppTag");
     }

@@ -1267,3 +1267,34 @@ fn t1_review_newer_schema_with_unknown_enum_value_is_not_quarantined() {
     drop(client);
     server.shutdown();
 }
+
+#[test]
+fn t1_review_older_or_invalid_config_version_is_quarantined_and_updates_still_work() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    fs::create_dir_all(&paths.data_dir).expect("data dir");
+    fs::write(
+        paths.data_dir.join("config.json"),
+        br#"{"config_version": 0}"#,
+    )
+    .expect("write old config");
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    let updated = client.call("config.update", &json!({ "save_window_secs": 60 }));
+    assert_eq!(
+        updated["config"]["save_window_secs"], 60,
+        "update works after quarantine"
+    );
+    let moved = fs::read_dir(&paths.data_dir)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("config.json.invalid-")
+        })
+        .count();
+    assert_eq!(moved, 1, "older/invalid version is set aside");
+    drop(client);
+    server.shutdown();
+}
