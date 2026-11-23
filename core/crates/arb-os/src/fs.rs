@@ -744,11 +744,27 @@ mod imp {
         code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION
     }
 
+    /// Sentinel lock offset (`0x4000_0000_0000_0000`), far beyond any real file
+    /// size. A Windows exclusive byte-range lock denies `ReadFile` of the locked
+    /// range through *every* other handle — including same-process readers — so
+    /// locking near offset 0 would make the recorded PID unreadable while a
+    /// daemon holds the lock. Locking a range past end-of-file is not an error
+    /// and keeps the same-process contention check working identically.
+    const LOCK_REGION_OFFSET_LOW: u32 = 0;
+    const LOCK_REGION_OFFSET_HIGH: u32 = 0x4000_0000;
+
+    fn lock_overlapped() -> OVERLAPPED {
+        // SAFETY: `OVERLAPPED` is a plain C POD struct where all-zero bits are
+        // valid (no event handle for synchronous requests).
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.Anonymous.Anonymous.Offset = LOCK_REGION_OFFSET_LOW;
+        overlapped.Anonymous.Anonymous.OffsetHigh = LOCK_REGION_OFFSET_HIGH;
+        overlapped
+    }
+
     pub(super) fn try_lock_exclusive(file: &File, path: &Path) -> Result<(), OsError> {
         let handle = file.as_raw_handle();
-        // SAFETY: `OVERLAPPED` is a plain C POD struct where all-zero bits
-        // represent offset 0 and no event handle.
-        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        let mut overlapped = lock_overlapped();
         // SAFETY: `handle` is an open file handle owned by `file` and
         // `overlapped` is valid for the synchronous non-blocking lock request.
         let ok = unsafe {
@@ -780,10 +796,9 @@ mod imp {
 
     pub(super) fn unlock_best_effort(file: &File) {
         let handle = file.as_raw_handle();
-        // SAFETY: `OVERLAPPED` is a plain C POD struct where all-zero bits
-        // represent offset 0.
-        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
-        // SAFETY: `handle` is still open while `SingleInstanceLock::drop` runs.
+        let mut overlapped = lock_overlapped();
+        // SAFETY: `handle` is still open while `SingleInstanceLock::drop` runs,
+        // and `overlapped` matches the sentinel range locked by `try_lock_exclusive`.
         let _ = unsafe { UnlockFileEx(handle, 0, 1, 0, &raw mut overlapped) };
     }
 

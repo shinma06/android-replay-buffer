@@ -11,7 +11,7 @@
 //!   `frames.jsonl`) strictly read-only without ever writing to or locking the folder.
 
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -1173,8 +1173,13 @@ fn stage_media_file(
 }
 
 fn hash_and_sync_file(path: &Path, rel_name: &str) -> Result<FileDigest, StorageError> {
-    let file =
-        File::open(path).map_err(|source| StorageError::io("open_for_fsync", path, source))?;
+    // Windows `FlushFileBuffers` rejects read-only handles (ERROR_ACCESS_DENIED), so the
+    // fsync handle must be write-capable. POSIX fsync accepts any fd for the inode.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|source| StorageError::io("open_for_fsync", path, source))?;
     fsync_file(&file)?;
     drop(file);
 

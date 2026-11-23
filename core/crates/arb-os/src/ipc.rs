@@ -530,13 +530,14 @@ mod imp {
     use std::time::Duration;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY,
-        ERROR_PIPE_CONNECTED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
-        INVALID_HANDLE_VALUE,
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_ALL,
+        GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid, GetLengthSid,
-        GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, PSID,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid,
+        GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorOwner, GetTokenInformation,
+        InitializeAcl, InitializeSecurityDescriptor, OWNER_SECURITY_INFORMATION, PSID,
         SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, TOKEN_QUERY,
         TOKEN_USER, TokenUser,
     };
@@ -545,13 +546,11 @@ mod imp {
         PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     };
     use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
-        PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
-        PIPE_WAIT, WaitNamedPipeW,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        WaitNamedPipeW,
     };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use crate::error::OsError;
 
@@ -716,29 +715,69 @@ mod imp {
     }
 
     fn verify_pipe_server_owned_by_current_user(pipe: HANDLE) -> io::Result<()> {
-        let mut pipe_owner_pid: u32 = 0;
-        // SAFETY: `pipe` is a connected client pipe handle and `pipe_owner_pid` is stack storage.
-        let ok = unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pipe_owner_pid) };
+        // The pipe object's own security descriptor records the pipe creator —
+        // i.e. the server process's user — as owner. `GetKernelObjectSecurity`
+        // is a local kernel-object lookup, so it never issues an FSCTL against
+        // the pipe and cannot wedge behind the peer's in-flight synchronous
+        // pipe I/O the way `GetNamedPipeServerProcessId` (via `NtFsControlFile`)
+        // can on a client handle.
+        let mut needed: u32 = 0;
+        // SAFETY: `pipe` is a valid client pipe handle; the zero-length probe
+        // reports the required descriptor size and is expected to fail with
+        // ERROR_INSUFFICIENT_BUFFER.
+        let probe = unsafe {
+            GetKernelObjectSecurity(
+                pipe,
+                OWNER_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                0,
+                &raw mut needed,
+            )
+        };
+        // SAFETY: `GetLastError` reads the calling thread's last-error slot.
+        if probe == 0 && unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+            return Err(io::Error::last_os_error());
+        }
+        let sd_len = usize::try_from(needed).unwrap_or(0);
+        if sd_len == 0 {
+            return Err(io::Error::other(
+                "GetKernelObjectSecurity reported an empty security descriptor",
+            ));
+        }
+        let mut sd = vec![0_u8; sd_len];
+        // SAFETY: `sd` is writable for `needed` bytes and `pipe` remains valid.
+        let ok = unsafe {
+            GetKernelObjectSecurity(
+                pipe,
+                OWNER_SECURITY_INFORMATION,
+                sd.as_mut_ptr().cast(),
+                needed,
+                &raw mut needed,
+            )
+        };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: Opening server process with limited query rights is safe for any PID.
-        let server_proc =
-            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pipe_owner_pid) };
-        if server_proc.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "cannot verify named pipe server owner process",
-            ));
+
+        let mut owner_sid: PSID = ptr::null_mut();
+        let mut owner_defaulted: i32 = 0;
+        // SAFETY: `sd` holds a valid self-relative `SECURITY_DESCRIPTOR` for the
+        // duration of the call, and the out-parameters are writable stack storage.
+        let owner_ok = unsafe {
+            GetSecurityDescriptorOwner(
+                sd.as_mut_ptr().cast::<c_void>(),
+                &raw mut owner_sid,
+                &raw mut owner_defaulted,
+            )
+        };
+        if owner_ok == 0 || owner_sid.is_null() {
+            return Err(io::Error::last_os_error());
         }
-        let owner_lookup = query_process_user_sid(server_proc);
-        // SAFETY: `server_proc` was opened by `OpenProcess` and is closed exactly once.
-        let _ = unsafe { CloseHandle(server_proc) };
-        let server_sid = owner_lookup?;
+
         let client_sid = query_current_user_sid()?;
-        // SAFETY: Both `client_sid.sid` and `server_sid.sid` are valid SID pointers
-        // backed by their live `OwnedTokenBuf` allocations.
-        let same_owner = unsafe { EqualSid(client_sid.sid, server_sid.sid) };
+        // SAFETY: `owner_sid` points into the live `sd` buffer and
+        // `client_sid.sid` is a valid SID backed by `client_sid._buf`.
+        let same_owner = unsafe { EqualSid(client_sid.sid, owner_sid) };
         if same_owner == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
