@@ -9,6 +9,7 @@ description = "GPL-free media engine for ARB v2 (pure-Rust ISO-BMFF avc1 mux/dem
 arb-core.workspace = true
 openh264 = "0.9"
 png = "0.17"
+rusty_aac = { version = "2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

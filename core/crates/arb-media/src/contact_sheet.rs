@@ -344,6 +344,49 @@ pub fn render_tap_crop_png(
     })
 }
 
+/// Encodes a single full-resolution RGBA (or RGB) frame into PNG bytes, optionally burning a
+/// cyan crosshair + ring tap marker at `tap_point`.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InvalidArgument`] if dimensions, pixel buffer length, or `tap_point`
+/// are invalid, or [`MediaError::Png`] if PNG encoding fails.
+pub fn render_single_frame_png(
+    frame_rgba: &[u8],
+    width: u32,
+    height: u32,
+    tap_point: Option<(u32, u32)>,
+) -> Result<Vec<u8>, MediaError> {
+    let channels = validate_pixels(width, height, frame_rgba.len(), "frame", 0)?;
+    if let Some((tx, ty)) = tap_point
+        && (tx >= width || ty >= height)
+    {
+        return Err(MediaError::InvalidArgument(format!(
+            "tap point ({tx}, {ty}) is outside the {width}x{height} frame"
+        )));
+    }
+    let (fw, fh) = (usize_from(width), usize_from(height));
+    let mut canvas = Canvas::new(fw, fh, CELL_BACKGROUND)?;
+    for (idx, px) in frame_rgba.chunks_exact(channels).enumerate() {
+        let dst = idx * 3;
+        canvas.data[dst..dst + 3].copy_from_slice(&px[..3]);
+    }
+    if let Some((tx, ty)) = tap_point {
+        canvas.draw_tap_marker(
+            signed(usize_from(tx)),
+            signed(usize_from(ty)),
+            &CROP_MARKER,
+            Rect {
+                x: 0,
+                y: 0,
+                w: fw,
+                h: fh,
+            },
+        );
+    }
+    encode_rgb_png(fw, fh, &canvas.data)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Validation and geometry
 // ---------------------------------------------------------------------------------------------

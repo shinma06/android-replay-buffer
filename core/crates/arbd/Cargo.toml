@@ -17,6 +17,7 @@ thiserror = "2"
 
 [dev-dependencies]
 png = "0.17"
+rusty_aac = { version = "2", default-features = false }
 tempfile = "3"
 
 [lints]

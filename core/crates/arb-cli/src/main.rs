@@ -6,6 +6,7 @@
 
 //! Scriptable CLI client (`arb-cli`) communicating with `arbd` strictly over local IPC + SHM.
 
+mod mcp;
 mod process_os;
 mod rpc;
 
@@ -268,6 +269,14 @@ enum CommandSpec {
         out_frame: u64,
         dest: Option<PathBuf>,
     },
+    ShareMp4 {
+        target: String,
+        in_frame: Option<u64>,
+        out_frame: Option<u64>,
+        out: Option<PathBuf>,
+        dest: Option<PathBuf>,
+        trash_original: bool,
+    },
     Png {
         target: String,
         frame: u64,
@@ -277,6 +286,7 @@ enum CommandSpec {
         target: String,
         frame: Option<u64>,
     },
+    Mcp,
 }
 
 fn format_error(output: OutputFormat, err: &CliError) -> String {
@@ -380,8 +390,18 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
             }
         }
         "trim" => parse_trim_cmd(&rest[1..])?,
+        "share-mp4" => parse_share_mp4_cmd(&rest[1..])?,
         "png" => parse_png_cmd(&rest[1..])?,
         "scrub-bench" => parse_scrub_bench_cmd(&rest[1..])?,
+        "mcp" => {
+            if rest.len() > 1 {
+                return Err(CliError::usage(format!(
+                    "unknown mcp argument `{}` (usage: arb-cli mcp)",
+                    rest[1]
+                )));
+            }
+            CommandSpec::Mcp
+        }
         other => {
             return Err(CliError::usage(format!(
                 "unknown subcommand `{other}` (run with --help)"
@@ -895,6 +915,72 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     })
 }
 
+fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let raw = args.first().ok_or_else(|| {
+        CliError::usage(
+            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--trash-original]",
+        )
+    })?;
+    let target = absolutize_bundle_target(raw)?;
+    let mut in_frame = None;
+    let mut out_frame = None;
+    let mut out = None;
+    let mut dest = None;
+    let mut trash_original = false;
+    let mut i = 1_usize;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--in-frame" => {
+                in_frame = Some(parse_u64(
+                    require_val(args, i, "--in-frame")?,
+                    "--in-frame",
+                )?);
+                i += 2;
+            }
+            "--out-frame" => {
+                out_frame = Some(parse_u64(
+                    require_val(args, i, "--out-frame")?,
+                    "--out-frame",
+                )?);
+                i += 2;
+            }
+            "--out" => {
+                out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
+                i += 2;
+            }
+            "--dest" => {
+                dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
+                i += 2;
+            }
+            "--trash-original" => {
+                trash_original = true;
+                i += 1;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown share-mp4 option `{other}`"
+                )));
+            }
+        }
+    }
+
+    if in_frame.is_some() != out_frame.is_some() {
+        return Err(CliError::usage(
+            "share-mp4 requires both --in-frame and --out-frame when trimming",
+        ));
+    }
+
+    Ok(CommandSpec::ShareMp4 {
+        target,
+        in_frame,
+        out_frame,
+        out,
+        dest,
+        trash_original,
+    })
+}
+
 fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage("usage: arb-cli png <bundle-id-or-path> --frame <n> --out <file.png>")
@@ -976,6 +1062,10 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
 
     let paths = opts.resolve_paths()?;
 
+    if matches!(cmd, CommandSpec::Mcp) {
+        return mcp::run_mcp_stdio(&paths);
+    }
+
     if matches!(cmd, CommandSpec::DaemonStart) {
         let endpoint = paths.ipc_endpoint();
         let mut client = if let Ok(c) = RpcClient::connect_endpoint(&endpoint) {
@@ -1005,7 +1095,7 @@ fn dispatch_connected(
     cmd: CommandSpec,
 ) -> Result<(), CliError> {
     match cmd {
-        CommandSpec::Help | CommandSpec::DaemonStart => Ok(()),
+        CommandSpec::Help | CommandSpec::DaemonStart | CommandSpec::Mcp => Ok(()),
         CommandSpec::Status => dispatch_status(client, output),
         CommandSpec::Inspect { target } => execute_inspect(client, output, &target),
         CommandSpec::ScrubBench { target, frame } => {
@@ -1134,6 +1224,7 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             }),
             "trim result",
         ),
+        CommandSpec::ShareMp4 { .. } => share_mp4_to_rpc(cmd),
         CommandSpec::Png { target, frame, out } => (
             "export.png",
             json!({ "bundle_id_or_path": target, "frame_index": frame, "output_path": out }),
@@ -1141,10 +1232,38 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         ),
         CommandSpec::Help
         | CommandSpec::DaemonStart
+        | CommandSpec::Mcp
         | CommandSpec::Status
         | CommandSpec::Inspect { .. }
         | CommandSpec::ScrubBench { .. } => ("system.status", json!({}), "arbd status"),
     }
+}
+
+fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
+    let CommandSpec::ShareMp4 {
+        target,
+        in_frame,
+        out_frame,
+        out,
+        dest,
+        trash_original,
+    } = cmd
+    else {
+        return ("system.status", json!({}), "arbd status");
+    };
+    (
+        "export.share_mp4",
+        json!({
+            "bundle_id": target,
+            "in_frame_index": in_frame,
+            "out_frame_index": out_frame,
+            "output_path": out,
+            "dest_dir": dest,
+            "trash_original": trash_original,
+            "holder_pid": std::process::id(),
+        }),
+        "share.mp4 export",
+    )
 }
 
 fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
@@ -1452,8 +1571,10 @@ COMMANDS:\n  \
   bundles trash <ID> | restore <ID> | gc\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>]\n  \
+  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
-  scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n\n\
+  scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
+  mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n\n\
 EXIT CODES:\n  \
   0  Success\n  \
   1  General / transport / internal error\n  \
@@ -1869,6 +1990,45 @@ mod tests {
                 }),
             },
             "config set patch must match"
+        );
+    }
+
+    #[test]
+    fn t2b_parses_mcp_and_share_mp4_commands() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let (_, mcp_cmd) = parse_args(&vec_str(&["mcp"])).expect("mcp parses");
+        assert_eq!(mcp_cmd, CommandSpec::Mcp, "mcp command must match");
+
+        let (_, share_cmd) = parse_args(&vec_str(&[
+            "share-mp4",
+            "bundle-7",
+            "--in-frame",
+            "5",
+            "--out-frame",
+            "20",
+            "--out",
+            "clips/out.mp4",
+            "--trash-original",
+        ]))
+        .expect("share-mp4 parses");
+        assert_eq!(
+            share_cmd,
+            CommandSpec::ShareMp4 {
+                target: "bundle-7".to_owned(),
+                in_frame: Some(5),
+                out_frame: Some(20),
+                out: Some(cwd.join("clips/out.mp4")),
+                dest: None,
+                trash_original: true,
+            },
+            "share-mp4 command must match"
+        );
+
+        let err = parse_args(&vec_str(&["share-mp4", "bundle-7", "--in-frame", "5"]))
+            .expect_err("half-specified range must fail");
+        assert_eq!(
+            err.exit_code, EXIT_USAGE_ERROR,
+            "half range must be usage error"
         );
     }
 }

@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use arb_adb::adb::AdbDeviceInfo;
 use arb_core::analytics::{CrashMarker, ScreenSpan};
 use arb_core::bundle::{
-    BundleKind, DeviceInfo, EpochSpan, LogRecord, Provenance, StreamsSummary, TapRecord,
-    UnanchoredSummary,
+    BundleKind, DeviceInfo, EpochSpan, LogCompleteness, LogRecord, Provenance, StreamStatus,
+    StreamsSummary, TapRecord, UnanchoredSummary,
 };
 use arb_core::config::ArbConfig;
 use arb_core::selection::SelectionPolicy;
 use arb_core::state::{BundleLifecycleState, SaveJobState, SaveTriggerKind};
 use arb_core::time::DiscontinuityEvent;
+use arb_media::mux_av::AvMuxReport;
 use arb_media::trim::{PngExportReport, TrimReport};
 use arb_storage::bundle_io::BundleFormat;
 use arb_storage::catalog::{CatalogFormatVersion, LeaseHolderKind};
@@ -577,6 +578,7 @@ pub enum QueryBucket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
     /// Catalog `bundle_id` or filesystem path.
+    #[serde(alias = "bundle_id")]
     pub bundle_id_or_path: String,
     /// Bucket filter (`main`, `unanchored`, or `all`; default `all`).
     pub bucket: Option<QueryBucket>,
@@ -584,6 +586,21 @@ pub struct TimelineQueryParams {
     pub start_ns: Option<i64>,
     /// Optional inclusive end timestamp in nanoseconds.
     pub end_ns: Option<i64>,
+    /// Optional inclusive starting video frame index (translated to `DeviceBoottime` bounds).
+    #[serde(default)]
+    pub start_frame: Option<u64>,
+    /// Optional inclusive ending video frame index (translated to `DeviceBoottime` bounds).
+    #[serde(default)]
+    pub end_frame: Option<u64>,
+    /// Optional case-insensitive substring filter on `LogRecord::tag` (`timeline.query_logs`).
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Optional log priority filter (`V`, `D`, `I`, `W`, `E`, `F`, `A`; `timeline.query_logs`).
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Optional case-insensitive substring filter on `LogRecord::message` or `tag`.
+    #[serde(default)]
+    pub keyword: Option<String>,
     /// Optional maximum row count (default [`DEFAULT_QUERY_LIMIT`], capped at
     /// [`MAX_QUERY_LIMIT`]).
     pub limit: Option<usize>,
@@ -903,4 +920,284 @@ pub struct MediaSeekFrameResponse {
 pub struct MediaCloseViewportParams {
     /// Open viewport identifier.
     pub viewport_id: String,
+}
+
+// ---------------- Audio PCM Decode (IDE Playback Sync) ----------------
+
+/// Request parameters for `media.decode_audio_pcm`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaDecodeAudioPcmParams {
+    /// Catalog `bundle_id` or filesystem path.
+    #[serde(alias = "bundle_id_or_path")]
+    pub bundle_id: String,
+}
+
+/// Response payload for `media.decode_audio_pcm`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaDecodeAudioPcmResponse {
+    /// `true` when the bundle has an AAC-LC track decoded to PCM WAV.
+    pub available: bool,
+    /// Path to the cached signed 16-bit LE PCM RIFF/WAV file, when `available == true`.
+    pub wav_path: Option<PathBuf>,
+    /// Decoded PCM sampling rate in Hz (`0` when unavailable).
+    pub sample_rate_hz: u32,
+    /// Decoded PCM channel count (`0` when unavailable).
+    pub channels: u16,
+    /// Decoded audio duration in nanoseconds (`0` when unavailable).
+    pub duration_ns: u64,
+    /// Recorded A/V sync offset in milliseconds from bundle metadata.
+    pub av_offset_ms: i64,
+    /// Exact measured lead-in skew in nanoseconds from bundle metadata.
+    pub audio_lead_in_offset_ns: i64,
+    /// `true` when served directly from `<cache_dir>/audio-pcm/<bundle_id>.wav`.
+    pub cached: bool,
+}
+
+// ---------------- Single-File Share MP4 Export ----------------
+
+/// Request parameters for `export.share_mp4`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportShareMp4Params {
+    /// Source catalog `bundle_id` or filesystem path.
+    #[serde(alias = "bundle_id_or_path")]
+    pub bundle_id: String,
+    /// Optional inclusive integer starting frame index (must be paired with `out_frame_index`).
+    pub in_frame_index: Option<u64>,
+    /// Optional inclusive integer ending frame index (must be paired with `in_frame_index`).
+    pub out_frame_index: Option<u64>,
+    /// Optional explicit absolute output `.mp4` path (defaults to `<output_dir>/share-*.mp4`).
+    pub output_path: Option<PathBuf>,
+    /// When `true`, moves the source bundle to non-destructive Trash strictly AFTER the new
+    /// output bundle & `share.mp4` are fsynced, verified, and committed (refused for `LegacyRo`).
+    #[serde(default)]
+    pub trash_original: bool,
+    /// Optional destination parent directory for a trimmed WORM bundle (when trimming).
+    pub dest_dir: Option<PathBuf>,
+    /// Optional client PID for the temporary `ExportJob` lease.
+    pub holder_pid: Option<u32>,
+}
+
+/// Response payload for `export.share_mp4`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportShareMp4Response {
+    /// Written standalone faststart zero-`elst` `share.mp4` file path.
+    pub share_mp4_path: PathBuf,
+    /// Newly created immutable WORM trimmed bundle ID, when a narrower frame range was trimmed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trimmed_bundle_id: Option<String>,
+    /// Filesystem path of the newly committed WORM trimmed bundle, when trimmed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trimmed_bundle_path: Option<PathBuf>,
+    /// `true` when an AAC-LC audio track was muxed into `share.mp4`.
+    pub audio_included: bool,
+    /// Total H.264 frames muxed into `share.mp4`.
+    pub video_frame_count: u64,
+    /// Count of `edts` boxes written (always `0`).
+    pub edts_box_count: usize,
+    /// Count of `elst` boxes written (always `0`).
+    pub elst_box_count: usize,
+    /// Total byte size of the published `share.mp4`.
+    pub output_bytes: u64,
+    /// `true` if `trash_original` succeeded and the source bundle is now logically trashed.
+    pub original_trashed: bool,
+    /// Detailed mux telemetry from `arb_media::mux_share_mp4`.
+    pub av_mux_report: AvMuxReport,
+    /// Non-fatal warning, if any (e.g. parent-directory `fsync` warning on trimmed bundle commit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+// ---------------- AI Timeline Overview & Frame Inspection ----------------
+
+/// Default maximum `E`/`F` error log highlights returned by `timeline.overview`.
+pub const DEFAULT_OVERVIEW_ERROR_LOGS: usize = 50;
+
+/// Maximum accepted `max_error_logs` cap for `timeline.overview`.
+pub const MAX_OVERVIEW_ERROR_LOGS: usize = 200;
+
+/// Request parameters for `timeline.overview`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineOverviewParams {
+    /// Catalog `bundle_id` or filesystem path.
+    #[serde(alias = "bundle_id_or_path")]
+    pub bundle_id: String,
+    /// Optional cap on `error_log_highlights` (default `50`, capped at `200`).
+    pub max_error_logs: Option<usize>,
+}
+
+/// Compact tap summary entry returned inside [`TimelineOverviewResponse`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverviewTapItem {
+    /// Zero-based tap index matching `media.inspect_frames` `tap_index`.
+    pub tap_index: usize,
+    /// Source `TapRecord::seq` in `timeline.sqlite`.
+    pub seq: u64,
+    /// Nearest video frame index, when video frames are present.
+    pub frame_index: Option<u64>,
+    /// Timestamp in milliseconds relative to the start of the bundle timeline.
+    pub t_ms: Option<i64>,
+    /// Touch X coordinate in display pixels, if available.
+    pub x: Option<f64>,
+    /// Touch Y coordinate in display pixels, if available.
+    pub y: Option<f64>,
+    /// Input action label (e.g., `"DOWN"`, `"UP"`, `"MOVE"`).
+    pub kind: String,
+}
+
+/// Compact `E`/`F` error log highlight returned inside [`TimelineOverviewResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorLogHighlight {
+    /// Source `LogRecord::seq` in `timeline.sqlite`.
+    pub seq: u64,
+    /// Priority level (`"E"` or `"F"`).
+    pub level: String,
+    /// Nearest video frame index, when video frames are present.
+    pub frame_index_hint: Option<u64>,
+    /// Timestamp in milliseconds relative to the start of the bundle timeline.
+    pub t_ms: Option<i64>,
+    /// Android logcat tag, if present.
+    pub tag: Option<String>,
+    /// Bounded error message excerpt.
+    pub message: String,
+}
+
+/// One-shot structured bundle overview returned by `timeline.overview` for AI triage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineOverviewResponse {
+    /// Resolved bundle identifier.
+    pub bundle_id: String,
+    /// High-level bundle payload category (`full` or `logs_only`).
+    pub kind: BundleKind,
+    /// `true` when the bundle is a read-only legacy schema 3/4 recording.
+    pub legacy_read_only: bool,
+    /// Total indexed video frames.
+    pub frame_count: usize,
+    /// Approximate bundle duration in milliseconds.
+    pub duration_ms: u64,
+    /// Video frame width in pixels, if a video track is present.
+    pub width: Option<u32>,
+    /// Video frame height in pixels, if a video track is present.
+    pub height: Option<u32>,
+    /// Estimated average frame rate in frames per second, when measurable.
+    pub fps_estimate: Option<f64>,
+    /// Audio track presence status.
+    pub audio_status: StreamStatus,
+    /// Recorded A/V offset in milliseconds.
+    pub av_offset_ms: i64,
+    /// Honest logcat completeness indicator, if logcat metadata is present.
+    pub logcat_completeness: Option<LogCompleteness>,
+    /// Contiguous Activity / screen transition spans.
+    pub screens: Vec<ScreenSpan>,
+    /// Compact ordered tap records with frame hints.
+    pub taps: Vec<OverviewTapItem>,
+    /// Structured crash markers extracted from logcat.
+    pub crashes: Vec<CrashMarker>,
+    /// Recorded timeline discontinuities (gaps, reboots, sleep).
+    pub discontinuities: Vec<DiscontinuityEvent>,
+    /// Bounded `E`/`F` error/fatal log highlights.
+    pub error_log_highlights: Vec<ErrorLogHighlight>,
+    /// Count of quarantined `unanchored` records included in the bundle.
+    pub unanchored_count: u64,
+    /// Count of `unanchored` records truncated by quarantine caps.
+    pub unanchored_truncated_count: u64,
+}
+
+/// Visual inspection mode for `media.inspect_frames`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectFramesMode {
+    /// Grid contact sheet (up to 16 tiles) with burned-in `#frame_index` and timestamps.
+    ContactSheet,
+    /// Single full-resolution frame PNG.
+    Single,
+    /// Resolution-relative 28%x12% context crop around a tap point with center crosshair.
+    TapCrop,
+}
+
+/// Request parameters for `media.inspect_frames`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaInspectFramesParams {
+    /// Catalog `bundle_id` or filesystem path.
+    #[serde(alias = "bundle_id_or_path")]
+    pub bundle_id: String,
+    /// Rendering mode (`contact_sheet`, `single`, or `tap_crop`).
+    pub mode: InspectFramesMode,
+    /// Optional inclusive start frame index for `contact_sheet`.
+    pub start_frame: Option<u64>,
+    /// Optional inclusive end frame index for `contact_sheet`.
+    pub end_frame: Option<u64>,
+    /// Optional explicit frame indices (1..=16) for `contact_sheet`.
+    pub frame_indices: Option<Vec<u64>>,
+    /// Optional tile cap for `contact_sheet` (default & max `16`).
+    pub max_tiles: Option<usize>,
+    /// Exact frame index for `single` or `tap_crop`.
+    pub frame_index: Option<u64>,
+    /// Zero-based tap index (matching `timeline.overview`) for `tap_crop`.
+    pub tap_index: Option<usize>,
+    /// Explicit tap X coordinate in source-frame pixels for `tap_crop` or marker overlay.
+    pub tap_x: Option<u32>,
+    /// Explicit tap Y coordinate in source-frame pixels for `tap_crop` or marker overlay.
+    pub tap_y: Option<u32>,
+    /// When `true`, overlays cyan tap markers on matching frames in `contact_sheet` / `single`.
+    #[serde(default)]
+    pub include_tap_marker: bool,
+    /// Device display width in pixels; recorded taps are scaled from this space onto the video.
+    #[serde(default)]
+    pub display_width: Option<u32>,
+    /// Device display height in pixels; recorded taps are scaled from this space onto the video.
+    #[serde(default)]
+    pub display_height: Option<u32>,
+    /// Optional contact sheet maximum tile width in pixels.
+    pub max_tile_width: Option<u32>,
+    /// Optional contact sheet maximum tile height in pixels.
+    pub max_tile_height: Option<u32>,
+    /// Optional contact sheet column count (`1..=16`).
+    pub columns: Option<u32>,
+}
+
+/// Tap-crop rectangle geometry returned by `media.inspect_frames` in `tap_crop` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TapCropMeta {
+    /// Left edge of the crop inside the source frame.
+    pub crop_x: u32,
+    /// Top edge of the crop inside the source frame.
+    pub crop_y: u32,
+    /// Crop width in pixels.
+    pub crop_width: u32,
+    /// Crop height in pixels.
+    pub crop_height: u32,
+    /// Tap X coordinate in the source frame.
+    pub tap_x: u32,
+    /// Tap Y coordinate in the source frame.
+    pub tap_y: u32,
+    /// Tap X coordinate relative to the cropped image.
+    pub tap_rel_x: u32,
+    /// Tap Y coordinate relative to the cropped image.
+    pub tap_rel_y: u32,
+}
+
+/// Response payload for `media.inspect_frames`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaInspectFramesResponse {
+    /// Inspection mode that was rendered.
+    pub mode: InspectFramesMode,
+    /// Resolved bundle identifier.
+    pub bundle_id: String,
+    /// Exact zero-based frame indices rendered into the PNG.
+    pub frame_indices_rendered: Vec<u64>,
+    /// Encoded PNG image width in pixels.
+    pub width: u32,
+    /// Encoded PNG image height in pixels.
+    pub height: u32,
+    /// Byte length of the encoded PNG.
+    pub png_bytes_len: usize,
+    /// Cached PNG file path under `<cache_dir>/inspect/`.
+    pub png_path: PathBuf,
+    /// Base64-encoded PNG bytes when small enough for inline IPC transport (`<= 2 MiB` raw).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub png_base64: Option<String>,
+    /// Tap-crop geometry, populated when `mode == InspectFramesMode::TapCrop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tap_crop: Option<TapCropMeta>,
 }

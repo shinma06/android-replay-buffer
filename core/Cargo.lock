@@ -22,10 +22,16 @@ dependencies = [
 name = "arb-cli"
 version = "0.1.0"
 dependencies = [
+ "arb-adb",
  "arb-core",
+ "arb-media",
  "arb-os",
+ "arb-storage",
+ "arbd",
+ "rusty_aac",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -46,6 +52,7 @@ dependencies = [
  "arb-core",
  "openh264",
  "png 0.17.16",
+ "rusty_aac",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -100,6 +107,7 @@ dependencies = [
  "arb-os",
  "arb-storage",
  "png 0.17.16",
+ "rusty_aac",
  "serde",
  "serde_json",
  "tempfile",
@@ -2144,6 +2152,12 @@ dependencies = [
  "tempfile",
  "wait-timeout",
 ]
+
+[[package]]
+name = "rusty_aac"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de96bd5f23adef4ed075d0cd21288cd0cc9a8477c715cf501fcfcf17c9801f16"
 
 [[package]]
 name = "safe_arch"
