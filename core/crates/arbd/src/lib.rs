@@ -81,6 +81,8 @@ use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
 const DRAIN_POLL_INTERVAL_MS: u64 = 20;
 /// Upper bound on how long shutdown waits for in-flight client requests to finish.
 const CLIENT_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound on how long shutdown waits for an in-flight crash auto-save.
+const CRASH_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Read timeout on client IPC streams (where the OS supports it) so idle client threads wake
 /// promptly on shutdown, release their SHM viewports, and join cleanly (R3 S11).
 const CLIENT_READ_POLL_TIMEOUT: Duration = Duration::from_millis(250);
@@ -178,6 +180,9 @@ struct DaemonState {
     config_update_lock: Mutex<()>,
     /// Set when startup had to set an invalid `config.json` aside and fall back to defaults.
     config_load_warning: Option<String>,
+    /// `true` when `config.json` exists but could not be read: `config.update` is refused so the
+    /// user's real file is never replaced by a patch built on defaults.
+    config_unreadable: bool,
     disk_provider: SharedDiskSpaceProvider,
     catalog: Catalog,
     capture: Arc<Mutex<CapturePipeline>>,
@@ -283,22 +288,29 @@ impl DaemonState {
         })
     }
 
-    /// Validates a client-supplied output location (R3 M8 / C3 / S7): it must be absolute
-    /// and must not lie inside arbd's private directories (ring, tmp, journals, cache,
-    /// runtime), inside any cataloged bundle, inside any directory holding a bundle
-    /// `manifest.json`, or inside `also_forbidden` (e.g. the export source bundle).
-    /// `true` when free space on the data volume is already below `min_free_disk_bytes`.
+    /// `true` when free space on the volume receiving the save is already below
+    /// `min_free_disk_bytes`.
     ///
     /// Crash auto-save checks this *before* pinning a window so a crash loop cannot fill the
     /// disk before the ring's latched `STORAGE_PRESSURE_STOP` ever trips. A failed probe is
     /// treated as "not below" (fail-open): the ring's own guard remains the backstop and crash
     /// evidence is worth keeping.
-    fn host_free_below_floor(&self, min_free_disk_bytes: u64) -> bool {
+    fn host_free_below_floor(&self, target_dir: &Path, min_free_disk_bytes: u64) -> bool {
+        // Measure the volume the save will actually write to: the nearest existing ancestor
+        // of `target_dir` (it may not have been created yet).
+        let probe = target_dir
+            .ancestors()
+            .find(|dir| dir.exists())
+            .unwrap_or(&self.paths.data_dir);
         self.disk_provider
-            .disk_space(&self.paths.data_dir)
+            .disk_space(probe)
             .is_ok_and(|info| info.available_bytes < min_free_disk_bytes)
     }
 
+    /// Validates a client-supplied output location (R3 M8 / C3 / S7): it must be absolute
+    /// and must not lie inside arbd's private directories (ring, tmp, journals, cache,
+    /// runtime), inside any cataloged bundle, inside any directory holding a bundle
+    /// `manifest.json`, or inside `also_forbidden` (e.g. the export source bundle).
     /// Rejects a *file* target inside `data_dir` unless it is under `data_dir/screenshots`, so a
     /// caller can never replace `catalog.sqlite`, `config.json`, locks, journals or bundles
     /// with arbitrary bytes (`validate_output_location` only guards whole directories).
@@ -531,6 +543,12 @@ impl DaemonState {
 
     fn handle_config_update(&self, params: Value) -> Result<Value, DaemonError> {
         let patch: ArbConfigPatch = parse_params(params)?;
+        if self.config_unreadable {
+            return Err(DaemonError::Conflict(
+                "config.json could not be read at startup; fix its permissions and restart arbd before changing settings"
+                    .to_owned(),
+            ));
+        }
         let _update_guard = self.lock(&self.config_update_lock, "config update")?;
         let candidate = {
             let current = self.lock(&self.user_config, "user config")?;
@@ -1209,35 +1227,8 @@ impl DaemonServer {
 
         let config_store = ConfigStore::new(&config.paths.data_dir);
         let disk_provider = config.disk_provider.clone();
-        let (user_config, config_load_warning) = match config_store.load_or_default() {
-            Ok(cfg) => (cfg, None),
-            Err(err @ (StorageError::Json { .. } | StorageError::ConfigValidation(_))) => {
-                // A hand-edited / newer-version / corrupt config.json must not keep arbd (and
-                // therefore the IDE) from starting: set the file aside, run on defaults and
-                // surface the problem through `system.status`.
-                let aside = config_store.quarantine_invalid(&utc_now_iso8601());
-                let warning = match aside {
-                    Ok(path) => format!(
-                        "invalid config.json ({err}); moved to `{}` and defaults are in use",
-                        path.display()
-                    ),
-                    Err(move_err) => format!(
-                        "invalid config.json ({err}); could not move it aside ({move_err}); defaults are in use"
-                    ),
-                };
-                (ArbConfig::default(), Some(warning))
-            }
-            Err(err) => {
-                // Transient I/O trouble (permissions, sharing violation): never move a possibly
-                // valid config away. Run on defaults for this session and keep the file as is.
-                (
-                    ArbConfig::default(),
-                    Some(format!(
-                        "config.json could not be read ({err}); defaults are in use and the file was left untouched"
-                    )),
-                )
-            }
-        };
+        let (user_config, config_load_warning, config_unreadable) =
+            load_user_config_or_defaults(&config_store);
         let effective_ring_policy = if config.ring_policy_overridden {
             config.ring_policy
         } else {
@@ -1282,6 +1273,7 @@ impl DaemonServer {
             user_config: Mutex::new(user_config),
             config_update_lock: Mutex::new(()),
             config_load_warning,
+            config_unreadable,
             disk_provider,
             catalog,
             capture: Arc::new(Mutex::new(capture)),
@@ -1433,7 +1425,15 @@ impl DaemonServer {
             cap.mark_stopped();
         }
         if let Some(worker) = self.crash_worker_thread.take() {
-            let _ = worker.join();
+            // The worker may be inside a long auto-save (drain + bundle write): wait only a
+            // bounded time, like client threads, and detach it otherwise.
+            let deadline = Instant::now() + CRASH_WORKER_JOIN_TIMEOUT;
+            while !worker.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
         }
         self.state
             .media
@@ -1453,6 +1453,36 @@ impl Drop for DaemonServer {
     }
 }
 
+/// Loads `config.json`, never letting a bad file keep arbd from starting.
+///
+/// Returns `(config, warning, unreadable)`. A parse / validation error sets the file aside and
+/// runs on defaults; a transient I/O error leaves the file untouched (and `unreadable = true`
+/// so `config.update` is refused rather than replacing the user's real settings).
+fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Option<String>, bool) {
+    match config_store.load_or_default() {
+        Ok(cfg) => (cfg, None, false),
+        Err(err @ (StorageError::Json { .. } | StorageError::ConfigValidation(_))) => {
+            let warning = match config_store.quarantine_invalid(&utc_now_iso8601()) {
+                Ok(path) => format!(
+                    "invalid config.json ({err}); moved to `{}` and defaults are in use",
+                    path.display()
+                ),
+                Err(move_err) => format!(
+                    "invalid config.json ({err}); could not move it aside ({move_err}); defaults are in use"
+                ),
+            };
+            (ArbConfig::default(), Some(warning), false)
+        }
+        Err(err) => (
+            ArbConfig::default(),
+            Some(format!(
+                "config.json could not be read ({err}); defaults are in use and the file was left untouched"
+            )),
+            true,
+        ),
+    }
+}
+
 fn run_crash_autosave_worker(state: &Arc<DaemonState>, rx: &Receiver<CrashAutoSaveNotice>) {
     while let Ok(notice) = rx.recv() {
         if state.is_shutting_down() {
@@ -1468,13 +1498,17 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let save_target = cfg
+        .output_dir_override
+        .clone()
+        .unwrap_or_else(|| state.catalog.managed_bundles_root().to_path_buf());
     let (pipeline_pressure, floor_bytes) = {
         let cap = state.capture.lock().unwrap_or_else(PoisonError::into_inner);
         (cap.is_storage_pressure_stopped(), cap.min_free_disk_bytes())
     };
     let storage_pressure_active = notice.storage_pressure_stopped
         || pipeline_pressure
-        || state.host_free_below_floor(floor_bytes);
+        || state.host_free_below_floor(&save_target, floor_bytes);
 
     let decision = {
         let mut gate = state

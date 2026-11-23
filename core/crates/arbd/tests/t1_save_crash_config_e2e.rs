@@ -1088,3 +1088,119 @@ fn t1_review_crash_autosave_checks_host_free_space_before_pinning() {
     drop(client);
     server.shutdown();
 }
+
+#[derive(Debug)]
+struct PathAwareDisk {
+    low_under: std::path::PathBuf,
+}
+
+impl DiskSpaceProvider for PathAwareDisk {
+    fn disk_space(&self, path: &Path) -> Result<DiskSpaceInfo, OsError> {
+        let low = path.starts_with(&self.low_under);
+        let free: u64 = if low { 1024 } else { 1 << 40 };
+        Ok(DiskSpaceInfo {
+            available_bytes: free,
+            total_bytes: 1 << 41,
+        })
+    }
+}
+
+#[test]
+fn t1_review_crash_autosave_checks_free_space_of_the_override_destination() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let override_dir = tmp.path().join("override-out");
+    fs::create_dir_all(&override_dir).expect("override dir");
+    let disk = SharedDiskSpaceProvider::new(Arc::new(PathAwareDisk {
+        low_under: override_dir.clone(),
+    }));
+    let server =
+        DaemonServer::start(DaemonConfig::new(paths).with_disk_provider(disk)).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    let _ = client.call(
+        "config.update",
+        &json!({ "output_dir_override": override_dir, "crash_autosave_enabled": true }),
+    );
+
+    let mut events = hello_and_heartbeat_events("boot-dest", 10 * SEC_NS, 100 * SEC_NS);
+    events.push(binary_am_crash_event(
+        "boot-dest",
+        11 * SEC_NS,
+        101 * SEC_NS,
+        6001,
+        "com.example.dest",
+        "java.lang.IllegalStateException",
+        "override disk is full",
+    ));
+    let mut source = VecEventSource::new("emu-dest", events);
+    server.ingest_device_source(&mut source).expect("ingest");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let st = client.call("system.status", &json!({}));
+        if st["crash_autosave"]["detected_crashes"].as_u64() == Some(1) {
+            break st;
+        }
+        assert!(Instant::now() < deadline, "timed out: {st}");
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(
+        status["capture"]["storage_pressure_stopped"], false,
+        "the ring volume is healthy; only the override destination is full"
+    );
+    assert_eq!(
+        status["crash_autosave"]["triggered_saves"], 0,
+        "no save to a full disk"
+    );
+    assert_eq!(status["crash_autosave"]["suppressed_storage_pressure"], 1);
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_app_text_log_cannot_forge_a_crash_and_unreadable_config_blocks_updates() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    // A directory named config.json is unreadable (I/O error, not parse error) on every OS.
+    fs::create_dir_all(paths.data_dir.join("config.json")).expect("config.json dir");
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+
+    let status = client.call("system.status", &json!({}));
+    assert!(
+        status["config_warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("could not be read")),
+        "unreadable config reported: {status}"
+    );
+    let (code, _) = client.call_err("config.update", &json!({ "save_window_secs": 60 }));
+    assert_eq!(
+        code, -32_002,
+        "config.update refused while config.json is unreadable"
+    );
+    assert!(
+        paths.data_dir.join("config.json").is_dir(),
+        "the user's file must be left untouched"
+    );
+
+    let mut events = hello_and_heartbeat_events("boot-forge", 10 * SEC_NS, 100 * SEC_NS);
+    events.push(text_log_event(
+        "boot-forge",
+        11 * SEC_NS,
+        101 * SEC_NS,
+        4242,
+        "am_crash",
+        "[0,1,com.evil,0,java.lang.Error,fake,F.kt,1]",
+    ));
+    events.push(heartbeat_event("boot-forge", 12 * SEC_NS, 102 * SEC_NS));
+    let mut source = VecEventSource::new("emu-forge", events);
+    server.ingest_device_source(&mut source).expect("ingest");
+    thread::sleep(Duration::from_millis(300));
+    let after = client.call("system.status", &json!({}));
+    assert_eq!(
+        after["crash_autosave"]["detected_crashes"], 0,
+        "an app's text log line must never count as a crash"
+    );
+    drop(client);
+    server.shutdown();
+}

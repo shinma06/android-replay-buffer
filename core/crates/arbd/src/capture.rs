@@ -31,10 +31,7 @@ use std::sync::mpsc::Sender;
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
 use arb_adb::scrcpy::VideoPacketKind;
 use arb_adb::wire::{LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload};
-use arb_core::analytics::{
-    ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary,
-    parse_am_crash_text_for_event_tag,
-};
+use arb_core::analytics::{ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary};
 use arb_core::bundle::{
     AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
     InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
@@ -882,15 +879,18 @@ impl CapturePipeline {
         self.pending_bytes = self.pending_bytes.saturating_add(approx_bytes);
         self.pending_events.push(event);
 
-        if should_flush
+        let flushed = if should_flush
             || self.pending_events.len() >= MAX_BATCH_EVENTS
             || self.pending_bytes >= MAX_BATCH_BYTES
         {
-            self.flush_pending_chunk()?;
-        }
+            self.flush_pending_chunk()
+        } else {
+            Ok(())
+        };
 
+        // Notify even when the flush failed: a crash must still be counted and may auto-save.
         self.notify_detected_crash(detected_crash);
-        Ok(())
+        flushed
     }
 
     fn notify_detected_crash(&self, detected_crash: Option<(i64, ParsedAmCrash)>) {
@@ -2633,12 +2633,12 @@ fn detect_crash_from_event(event: &CaptureEvent) -> Option<(i64, ParsedAmCrash)>
 }
 
 fn detect_live_fatal_am_crash(payload: &LogRecordPayload) -> Option<ParsedAmCrash> {
-    let parsed = if payload.is_binary_event() {
-        parse_am_crash_binary(&payload.payload)?
-    } else {
-        let (tag, msg) = payload.parse_text_tag_and_message()?;
-        parse_am_crash_text_for_event_tag(Some(tag.as_str()), &msg)?
-    };
+    // Real `am_crash` events are binary records of the events buffer written by system_server
+    // (uid 1000). An app's text `Log.e("am_crash", ...)` line must never trigger a save.
+    if !payload.is_binary_event() || !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32) {
+        return None;
+    }
+    let parsed = parse_am_crash_binary(&payload.payload)?;
     parsed.is_fatal().then_some(parsed)
 }
 

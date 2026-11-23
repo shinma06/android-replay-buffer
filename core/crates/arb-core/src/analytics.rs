@@ -383,6 +383,10 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
             continue;
         }
 
+        // Only the framework's own `AndroidRuntime` tag may describe a fatal exception.
+        if log.tag.as_deref().map(str::trim) != Some("AndroidRuntime") {
+            continue;
+        }
         if let Some(fallback) = parse_fatal_exception_at(logs, idx) {
             let boottime_ns = log_boottime_hint(log);
             let frame_index_hint = boottime_ns.and_then(|bt| nearest_frame_index(frames, bt));
@@ -523,7 +527,9 @@ fn is_same_crash(a: &CrashMarker, b: &CrashMarker) -> bool {
         return false;
     }
     match (a.boottime_ns, b.boottime_ns) {
-        (Some(ta), Some(tb)) => ta.saturating_sub(tb).abs() <= CRASH_DEDUP_WINDOW_NS,
+        (Some(ta), Some(tb)) => {
+            ta.abs_diff(tb) <= u64::try_from(CRASH_DEDUP_WINDOW_NS).unwrap_or(u64::MAX)
+        }
         _ => true,
     }
 }
@@ -769,6 +775,21 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
         };
         latest_log_bt = Some(latest_log_bt.map_or(bt, |prev| prev.max(bt)));
 
+        // Decide on the tag alone: an app message that merely *starts with* a system event
+        // name must not forge `timeline.screens` entries.
+        if !matches!(
+            log.tag.as_deref().map(str::trim),
+            Some(
+                "wm_on_resume_called"
+                    | "30022"
+                    | "wm_resumed_activity"
+                    | "30043"
+                    | "ActivityTaskManager"
+                    | "ActivityManager"
+            )
+        ) {
+            continue;
+        }
         if let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message) {
             transitions.push((bt, log.seq, comp));
         }
@@ -1567,5 +1588,39 @@ mod tests {
         raw[pos + 1] = 0x81;
         let parsed = parse_am_crash_binary(&raw).expect("lossy decode must still parse");
         assert!(parsed.message.contains('\u{FFFD}'), "replacement char used");
+    }
+
+    #[test]
+    fn forged_fatal_exception_and_screen_events_from_other_tags_are_ignored() {
+        let fatal = "FATAL EXCEPTION: main\nProcess: com.evil, PID: 7\njava.lang.Error: x";
+        let forged_fatal = make_log(1, SEC, "SomeApp", 7, fatal);
+        assert_eq!(extract_crash_markers(&[forged_fatal], &[]), Vec::new());
+        let real_fatal = make_log(2, SEC, "AndroidRuntime", 7, fatal);
+        assert_eq!(extract_crash_markers(&[real_fatal], &[]).len(), 1);
+
+        let forged_screen = make_log(
+            3,
+            SEC,
+            "AppTag",
+            9,
+            "wm_resumed_activity: [0,1,com.evil/.Fake]",
+        );
+        assert_eq!(extract_screen_spans(&[forged_screen], &[]), Vec::new());
+    }
+
+    #[test]
+    fn crash_dedup_distance_never_overflows() {
+        let marker = |bt: i64| super::CrashMarker {
+            boottime_ns: Some(bt),
+            frame_index_hint: None,
+            process_name: "p".to_owned(),
+            package_name: "p".to_owned(),
+            pid: Some(1),
+            exception_class: "E".to_owned(),
+            message: String::new(),
+            source_log_seq: 0,
+        };
+        assert!(!super::is_same_crash(&marker(i64::MIN), &marker(i64::MAX)));
+        assert!(super::is_same_crash(&marker(SEC), &marker(2 * SEC)));
     }
 }
