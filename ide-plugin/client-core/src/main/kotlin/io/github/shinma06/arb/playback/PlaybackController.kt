@@ -26,7 +26,7 @@ class PlaybackController(
     private val frameSeeker: FrameSeeker,
     framePtsNs: List<Long> = emptyList(),
     fallbackFps: Double = DEFAULT_FALLBACK_FPS,
-    private val audioPlayer: AudioSyncPlayer? = null,
+    private var audioPlayer: AudioSyncPlayer? = null,
     private val clock: PlaybackClock = SystemPlaybackClock,
     initialFrameIndex: Long = 0L,
     initialInFrameIndex: Long = 0L,
@@ -555,6 +555,52 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             publishStateLocked(updated)
+        }
+        if (snapshot != null) {
+            notifyListeners(snapshot)
+        }
+    }
+
+    /**
+     * Attaches (or replaces) an asynchronously decoded [AudioSyncPlayer] after construction,
+     * syncing its A/V offset, playback speed, mute state, playhead PTS, and active transport mode.
+     * If this controller is already closed, [player] is closed immediately to avoid leaking resources.
+     */
+    fun attachAudioPlayer(player: AudioSyncPlayer, avOffsetMs: Long = player.avOffsetMs) {
+        var oldToClose: AudioSyncPlayer? = null
+        var rejectNew = false
+        val snapshot = stateLock.withLock {
+            if (closed) {
+                rejectNew = true
+                null
+            } else {
+                oldToClose = audioPlayer
+                audioPlayer = player
+                val cur = currentState
+                val curPtsNs = frameRelativePtsNs(cur.currentFrameIndex)
+                player.setAvOffsetMs(avOffsetMs)
+                player.setPlaybackSpeed(cur.speed)
+                player.setMuted(cur.muted)
+                player.setScrubbing(cur.mode == PlaybackMode.SCRUBBING)
+                player.seek(curPtsNs)
+                if (cur.mode == PlaybackMode.PLAYING) {
+                    player.play()
+                } else {
+                    player.pause()
+                }
+                val updated = cur.copy(
+                    avOffsetMs = avOffsetMs,
+                    audioState = currentAudioState(),
+                )
+                publishStateLocked(updated)
+            }
+        }
+        if (rejectNew) {
+            runCatching { player.close() }
+            return
+        }
+        if (oldToClose != null && oldToClose !== player && closeAudioPlayerOnClose) {
+            runCatching { oldToClose?.close() }
         }
         if (snapshot != null) {
             notifyListeners(snapshot)

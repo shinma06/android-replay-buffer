@@ -266,13 +266,16 @@ class ArbdRpcClient(
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
+    fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response =
+        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+
     /**
      * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected
      * to a daemon build that has not implemented `export.share_mp4` yet (`-32601`), so callers
      * can fall back seamlessly to `export.trim`.
      */
     fun exportShareMp4OrNull(params: ExportShareMp4Params): ExportShareMp4Response? = try {
-        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+        exportShareMp4(params)
     } catch (e: ArbdRpcException) {
         if (e.isMethodNotFound) null else throw e
     }
@@ -318,6 +321,15 @@ class ArbdRpcClient(
     fun mediaCloseViewport(viewportId: String): MediaCloseViewportResponse =
         call("media.close_viewport", jsonObj("viewport_id" to viewportId), MediaCloseViewportResponse::class.java)
 
+    fun mediaDecodeAudioPcm(
+        bundleIdOrPath: String,
+        outputPath: String? = null,
+    ): MediaDecodeAudioPcmResponse = call(
+        "media.decode_audio_pcm",
+        gson.toJsonTree(MediaDecodeAudioPcmParams(bundleIdOrPath, outputPath)),
+        MediaDecodeAudioPcmResponse::class.java,
+    )
+
     /**
      * Forward-compatible T-2B RPC (`media.decode_audio_pcm`). Returns `null` cleanly when the
      * daemon does not expose this RPC yet (`-32601`), allowing video-only playback without error.
@@ -326,11 +338,7 @@ class ArbdRpcClient(
         bundleIdOrPath: String,
         outputPath: String? = null,
     ): MediaDecodeAudioPcmResponse? = try {
-        call(
-            "media.decode_audio_pcm",
-            gson.toJsonTree(MediaDecodeAudioPcmParams(bundleIdOrPath, outputPath)),
-            MediaDecodeAudioPcmResponse::class.java,
-        )
+        mediaDecodeAudioPcm(bundleIdOrPath, outputPath)
     } catch (e: ArbdRpcException) {
         if (e.isMethodNotFound) null else throw e
     }

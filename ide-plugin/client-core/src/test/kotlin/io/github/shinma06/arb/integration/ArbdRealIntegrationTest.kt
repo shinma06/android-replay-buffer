@@ -22,6 +22,13 @@ import io.github.shinma06.arb.model.QueryBucket
 import io.github.shinma06.arb.model.RecordBucket
 import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveScreenshotParams
+import io.github.shinma06.arb.playback.AudioSink
+import io.github.shinma06.arb.playback.AudioSyncPlayer
+import io.github.shinma06.arb.playback.FrameSeekResult
+import io.github.shinma06.arb.playback.FrameSeeker
+import io.github.shinma06.arb.playback.PcmFormat
+import io.github.shinma06.arb.playback.PlaybackController
+import io.github.shinma06.arb.playback.WavFilePcmSource
 import io.github.shinma06.arb.shm.ShmFrameRingReader
 import io.github.shinma06.arb.shm.ShmPixelFormat
 import org.junit.jupiter.api.Test
@@ -612,6 +619,264 @@ class ArbdRealIntegrationTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun t2bShareMp4WithTrashOriginalAndDecodeAudioPcmToWavPcmSource(@TempDir tmp: Path) {
+        val root = repoRoot()
+        val legacyFixture = root
+            .resolve("plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface")
+        val audioFixture = root.resolve("plugin/src/test/resources/aac-playback-sync/stereo-44100.m4a")
+        assertTrue(Files.isDirectory(legacyFixture), "Legacy Schema-4 fixture missing at $legacyFixture")
+        assertTrue(Files.isRegularFile(audioFixture), "AAC-LC fixture missing at $audioFixture")
+
+        val v2AvBundlePath = tmp.resolve("data").resolve("bundles").resolve("v2-t2b-av")
+        createValidV2BundleWithAudio(
+            bundleDir = v2AvBundlePath,
+            bundleId = "v2-t2b-av",
+            sourceMp4 = legacyFixture.resolve("video.mp4"),
+            sourceM4a = audioFixture,
+            avOffsetMs = 42L,
+        )
+        val v2VideoOnlyPath = tmp.resolve("data").resolve("bundles").resolve("v2-t2b-no-audio")
+        createValidV2Bundle(v2VideoOnlyPath, "v2-t2b-no-audio", legacyFixture.resolve("video.mp4"))
+
+        val paths = ArbPaths(
+            dataDir = tmp.resolve("data"),
+            cacheDir = tmp.resolve("cache"),
+            runtimeDir = tmp.resolve("run"),
+        )
+        val manager = ArbdProcessManager(paths = paths, searchRoot = root)
+        val connected = manager.connectOrSpawn(Duration.ofSeconds(10))
+        val proc = connected.spawnedProcess
+        try {
+            connected.client.use { rpc ->
+                val opened = rpc.bundleOpen(
+                    bundleIdOrPath = v2AvBundlePath.toString(),
+                    holderKind = LeaseHolderKind.IDE_VIEWER,
+                    holderPid = ProcessHandle.current().pid(),
+                )
+                try {
+                    // 1. media.decode_audio_pcm decodes real AAC-LC -> cached s16le RIFF/WAV
+                    val decoded = rpc.mediaDecodeAudioPcm(opened.bundleId)
+                    assertTrue(decoded.available, "audio track must decode cleanly")
+                    assertFalse(decoded.cached, "first decode should populate cache")
+                    assertEquals(44_100, decoded.sampleRateHz)
+                    assertEquals(2, decoded.channels)
+                    assertEquals(42L, decoded.avOffsetMs)
+                    assertTrue(decoded.durationNs > 0L)
+                    val wavPath = Paths.get(assertNotNull(decoded.wavPath))
+                    assertTrue(Files.isRegularFile(wavPath), "decoded WAV must exist on disk")
+
+                    // Second call hits cache
+                    val cachedResp = rpc.mediaDecodeAudioPcm(opened.bundleId)
+                    assertTrue(cachedResp.available)
+                    assertTrue(cachedResp.cached, "second call must hit WAV cache")
+                    assertEquals(decoded.wavPath, cachedResp.wavPath)
+
+                    // 2. Wire returned WAV into T-3 WavFilePcmSource -> AudioSyncPlayer -> PlaybackController!
+                    val fakeSink = object : AudioSink {
+                        override val isAvailable: Boolean = true
+                        var bytesWritten: Int = 0
+                        override fun open(format: PcmFormat): Boolean = true
+                        override fun start() = Unit
+                        override fun stop() = Unit
+                        override fun flush() = Unit
+                        override fun write(pcm: ByteArray, offset: Int, length: Int): Int {
+                            bytesWritten += length
+                            return length
+                        }
+                        override fun close() = Unit
+                    }
+                    WavFilePcmSource.open(wavPath).use { pcmSource ->
+                        assertEquals(44_100, pcmSource.sampleRateHz)
+                        assertEquals(2, pcmSource.channels)
+                        val slice = pcmSource.readPcmSlice(0L, 100_000_000L)
+                        assertTrue(slice.isNotEmpty(), "decoded WAV must yield real PCM samples")
+
+                        val seeker = object : FrameSeeker {
+                            override fun seekExact(frameIndex: Long) = FrameSeekResult(frameIndex, frameIndex, false)
+                            override fun scrubApprox(frameIndex: Long) = FrameSeekResult(frameIndex, frameIndex, true)
+                        }
+                        val controller = PlaybackController(
+                            totalFrames = 24L,
+                            frameSeeker = seeker,
+                            autoRunLoop = false,
+                        )
+                        val audioPlayer = AudioSyncPlayer(
+                            source = pcmSource,
+                            sink = fakeSink,
+                            avOffsetMs = decoded.avOffsetMs,
+                            autoRunPump = false,
+                            closeSourceOnClose = false,
+                        )
+                        try {
+                            controller.attachAudioPlayer(audioPlayer, decoded.avOffsetMs)
+                            assertEquals(42L, controller.state.avOffsetMs)
+                            controller.play()
+                            val written = audioPlayer.pumpNextSlice(50_000_000L)
+                            assertTrue(written > 0 && fakeSink.bytesWritten > 0, "AudioSyncPlayer must stream decoded WAV PCM")
+                        } finally {
+                            controller.close()
+                        }
+                    }
+
+                    // 3. Video-only bundle degrades cleanly (`available == false`)
+                    val noAudioOpen = rpc.bundleOpen(
+                        bundleIdOrPath = v2VideoOnlyPath.toString(),
+                        holderKind = LeaseHolderKind.IDE_VIEWER,
+                        holderPid = ProcessHandle.current().pid(),
+                    )
+                    try {
+                        val noAudio = rpc.mediaDecodeAudioPcm(noAudioOpen.bundleId)
+                        assertFalse(noAudio.available)
+                        assertEquals(null, noAudio.wavPath)
+                    } finally {
+                        assertTrue(rpc.bundleClose(noAudioOpen.leaseId).released)
+                    }
+
+                    // 4. export.share_mp4 (trimmed [2..18] + audio + trash_original=true on v2 bundle!)
+                    val shareOut = tmp.resolve("exports").resolve("trimmed-share.mp4")
+                    val shareResp = rpc.exportShareMp4(
+                        ExportShareMp4Params(
+                            bundleIdOrPath = opened.bundleId,
+                            inFrameIndex = 2L,
+                            outFrameIndex = 18L,
+                            outputPath = shareOut.toString(),
+                            trashOriginal = true,
+                            holderPid = ProcessHandle.current().pid(),
+                        ),
+                    )
+                    assertTrue(Files.isRegularFile(Paths.get(shareResp.shareMp4Path)))
+                    assertTrue(shareResp.audioIncluded, "share.mp4 must mux AAC-LC audio track")
+                    assertEquals(17L, shareResp.videoFrameCount)
+                    assertEquals(0, shareResp.edtsBoxCount)
+                    assertEquals(0, shareResp.elstBoxCount)
+                    assertTrue(shareResp.outputBytes > 0L)
+                    assertNotNull(shareResp.trimmedBundleId, "narrowed range must produce a trimmed WORM bundle")
+                    assertTrue(shareResp.originalTrashed, "v2 source bundle must be logically trashed after commit")
+
+                    val trashedEntry = rpc.bundleList().bundles.first { it.bundleId == opened.bundleId }
+                    assertEquals(BundleLifecycleState.TRASHED, trashedEntry.state)
+                    assertEquals(BundleLifecycleState.ACTIVE, rpc.bundleRestore(opened.bundleId).state)
+                } finally {
+                    assertTrue(rpc.bundleClose(opened.leaseId).released)
+                }
+
+                // 5. Legacy (RO) bundle must refuse trash_original=true!
+                val legacyOpen = rpc.bundleOpen(
+                    bundleIdOrPath = legacyFixture.toString(),
+                    holderKind = LeaseHolderKind.IDE_VIEWER,
+                    holderPid = ProcessHandle.current().pid(),
+                )
+                try {
+                    val legacyTrashErr = runCatching {
+                        rpc.exportShareMp4(
+                            ExportShareMp4Params(
+                                bundleIdOrPath = legacyOpen.bundleId,
+                                outputPath = tmp.resolve("exports").resolve("legacy-refused.mp4").toString(),
+                                trashOriginal = true,
+                                holderPid = ProcessHandle.current().pid(),
+                            ),
+                        )
+                    }.exceptionOrNull()
+                    assertIs<ArbdRpcException>(legacyTrashErr)
+                    assertFalse(legacyTrashErr.isMethodNotFound)
+                } finally {
+                    assertTrue(rpc.bundleClose(legacyOpen.leaseId).released)
+                }
+
+                assertTrue(rpc.systemShutdown().ok)
+            }
+        } finally {
+            if (proc != null) {
+                if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                    proc.destroyForcibly()
+                }
+            }
+        }
+    }
+
+    private fun createValidV2BundleWithAudio(
+        bundleDir: Path,
+        bundleId: String,
+        sourceMp4: Path,
+        sourceM4a: Path,
+        avOffsetMs: Long,
+    ) {
+        createValidV2Bundle(bundleDir, bundleId, sourceMp4)
+        val audioDst = bundleDir.resolve("audio.m4a")
+        Files.copy(sourceM4a, audioDst)
+
+        val videoDst = bundleDir.resolve("video.mp4")
+        val dbPath = bundleDir.resolve("timeline.sqlite")
+        val videoBytes = Files.size(videoDst)
+        val videoSha = sha256Hex(videoDst)
+        val audioBytes = Files.size(audioDst)
+        val audioSha = sha256Hex(audioDst)
+        val dbBytes = Files.size(dbPath)
+        val dbSha = sha256Hex(dbPath)
+
+        val manifestJson = """
+            {
+              "schema_version": 2,
+              "bundle_id": "$bundleId",
+              "created_at_utc": "2026-11-23T00:00:00Z",
+              "provenance": { "kind": "original" },
+              "device": {
+                "serial": "emulator-5554",
+                "model": "Pixel 9",
+                "api_level": 37,
+                "is_emulator": true
+              },
+              "requested_window": {
+                "kind": "real_elapsed_sec",
+                "duration_sec": 30,
+                "trigger_pc_wall_utc": "2026-11-23T00:00:00Z"
+              },
+              "epochs": [
+                {
+                  "boot_id": "boot-v2",
+                  "start_boottime_ns": 10000000000,
+                  "end_boottime_ns": 12300000000
+                }
+              ],
+              "streams": {
+                "video": {
+                  "status": "present",
+                  "frame_count": 24,
+                  "tail_may_be_incomplete": false,
+                  "semantics": "video_encoder_input_estimate"
+                },
+                "audio": {
+                  "status": "present",
+                  "av_offset_status": "calibrated",
+                  "av_offset_ms": $avOffsetMs,
+                  "tail_may_be_incomplete": false
+                },
+                "logcat": {
+                  "status": "present",
+                  "completeness": "verified_no_overflow",
+                  "overflow_events": 0,
+                  "tail_may_be_incomplete": false
+                },
+                "input": {
+                  "status": "present",
+                  "tail_may_be_incomplete": false
+                }
+              },
+              "unanchored_summary": {
+                "included_count": 1,
+                "truncated_count": 0
+              },
+              "files": [
+                { "path": "video.mp4", "bytes": $videoBytes, "sha256": "$videoSha" },
+                { "path": "audio.m4a", "bytes": $audioBytes, "sha256": "$audioSha" },
+                { "path": "timeline.sqlite", "bytes": $dbBytes, "sha256": "$dbSha" }
+              ]
+            }
+        """.trimIndent()
+        Files.writeString(bundleDir.resolve("manifest.json"), manifestJson)
     }
 
     private fun createAnalyticsV2Bundle(bundleDir: Path, bundleId: String, sourceMp4: Path) {

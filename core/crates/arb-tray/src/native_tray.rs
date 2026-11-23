@@ -87,8 +87,9 @@ fn stable_path_hash(path: &Path) -> u64 {
 /// dropped.
 fn event_menu_id(event: &TrayMenuEvent) -> MenuId {
     let id = match event {
-        TrayMenuEvent::SaveLast30 => "arb-tray:save:30".to_owned(),
-        TrayMenuEvent::SaveLast60 => "arb-tray:save:60".to_owned(),
+        TrayMenuEvent::SaveWindow { duration_secs } => format!("arb-tray:save:{duration_secs}"),
+        TrayMenuEvent::SaveScreenshot => "arb-tray:screenshot".to_owned(),
+        TrayMenuEvent::SaveLogs { window_secs } => format!("arb-tray:save-logs:{window_secs}"),
         TrayMenuEvent::RetryJob { job_id } => format!("arb-tray:retry:{job_id}"),
         TrayMenuEvent::DiscardJob { job_id } => format!("arb-tray:discard:{job_id}"),
         TrayMenuEvent::TrashBundle { bundle_id } => format!("arb-tray:trash:{bundle_id}"),
@@ -498,6 +499,7 @@ mod tests {
             path: PathBuf::from("/bundles").join(bundle_id),
             format: BundleFormatBadge::V2,
             lifecycle: BundleLifecycleState::Active,
+            created_at_utc: "2026-11-23T00:00:00Z".to_owned(),
         }
     }
 
@@ -517,6 +519,8 @@ mod tests {
             capture: CaptureStatus::Idle,
             device_serial: None,
             device_label: None,
+            save_window_secs: 300,
+            buffered_secs: 0,
             discontinuities: 0,
             static_hold_events: 0,
             storage_pressure_stopped: false,
@@ -528,8 +532,18 @@ mod tests {
 
     #[test]
     fn event_menu_ids_encode_action_and_target_deterministically() {
-        assert_eq!(event_id(&TrayMenuEvent::SaveLast30), "arb-tray:save:30");
-        assert_eq!(event_id(&TrayMenuEvent::SaveLast60), "arb-tray:save:60");
+        assert_eq!(
+            event_id(&TrayMenuEvent::SaveWindow { duration_secs: 300 }),
+            "arb-tray:save:300"
+        );
+        assert_eq!(
+            event_id(&TrayMenuEvent::SaveScreenshot),
+            "arb-tray:screenshot"
+        );
+        assert_eq!(
+            event_id(&TrayMenuEvent::SaveLogs { window_secs: 300 }),
+            "arb-tray:save-logs:300"
+        );
         assert_eq!(
             event_id(&TrayMenuEvent::RetryJob {
                 job_id: "job-7".to_owned()
@@ -600,12 +614,14 @@ mod tests {
             }),
             "newly inserted job must get its own stable id"
         );
+        let b1_path = PathBuf::from("/bundles").join("b-1");
+        let b1_reveal = event_menu_id(&TrayMenuEvent::RevealBundle {
+            path: b1_path.clone(),
+        });
         assert_eq!(
-            map_b.get(&MenuId::new("arb-tray:trash:b-1")),
-            Some(&TrayMenuEvent::TrashBundle {
-                bundle_id: "b-1".to_owned()
-            }),
-            "bundle trash id must not shift when siblings are inserted"
+            map_b.get(&b1_reveal),
+            Some(&TrayMenuEvent::RevealBundle { path: b1_path }),
+            "bundle reveal id must not shift when siblings are inserted"
         );
     }
 }

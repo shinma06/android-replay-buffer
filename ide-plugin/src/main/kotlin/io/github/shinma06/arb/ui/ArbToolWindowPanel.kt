@@ -34,6 +34,7 @@ import javax.swing.SwingUtilities
 class ArbToolWindowPanel(
     private val daemonService: ArbdDaemonService,
     private val onOpenBundle: (bundleIdOrPath: String, title: String, isLegacy: Boolean) -> Unit,
+    private val onOpenSettings: (() -> Unit)? = null,
 ) : JPanel(BorderLayout(0, 4)), Disposable {
     private val logger = Logger.getInstance(ArbToolWindowPanel::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
@@ -82,15 +83,22 @@ class ArbToolWindowPanel(
         },
         onOpenConfig = {
             SwingUtilities.invokeLater {
-                ArbQuickConfigDialog.show(this, captureState.config) { patch ->
-                    runAsync {
-                        val updated = daemonService.withClient { it.configUpdate(patch) }.config
-                        captureState = CaptureBarReducer.withConfig(captureState, updated)
-                        SwingUtilities.invokeLater { captureBarPanel.render(captureState) }
-                        notifyBalloon(
-                            "設定を保存しました（保持ウィンドウ: ${ArbFormatters.formatSeconds(updated.saveWindowSecs)}）",
-                        )
-                        refreshAll()
+                val settingsOpener = onOpenSettings
+                if (settingsOpener != null) {
+                    settingsOpener()
+                    runAsync { refreshAll() }
+                } else {
+                    ArbQuickConfigDialog.show(this, captureState.config) { patch ->
+                        runAsync {
+                            val updated = daemonService.withClient { it.configUpdate(patch) }.config
+                            daemonService.updateCachedConfig(updated)
+                            captureState = CaptureBarReducer.withConfig(captureState, updated)
+                            SwingUtilities.invokeLater { captureBarPanel.render(captureState) }
+                            notifyBalloon(
+                                "設定を保存しました（保持ウィンドウ: ${ArbFormatters.formatSeconds(updated.saveWindowSecs)}）",
+                            )
+                            refreshAll()
+                        }
                     }
                 }
             }
@@ -234,8 +242,9 @@ class ArbToolWindowPanel(
     private fun refreshAll(catalogNote: String? = null) {
         try {
             val status = daemonService.withClient { it.systemStatus() }
+            daemonService.updateCachedCaptureActive(status.capture.active)
             val config = runCatching {
-                daemonService.withClient { it.configGet().config }
+                daemonService.withClient { it.configGet().config }.also(daemonService::updateCachedConfig)
             }.getOrDefault(captureState.config)
             val devices = runCatching {
                 daemonService.withClient { it.deviceList().devices }
