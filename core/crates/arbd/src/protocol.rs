@@ -1142,6 +1142,12 @@ pub struct MediaInspectFramesParams {
     /// When `true`, overlays cyan tap markers on matching frames in `contact_sheet` / `single`.
     #[serde(default)]
     pub include_tap_marker: bool,
+    /// Device display width in pixels; recorded taps are scaled from this space onto the video.
+    #[serde(default)]
+    pub display_width: Option<u32>,
+    /// Device display height in pixels; recorded taps are scaled from this space onto the video.
+    #[serde(default)]
+    pub display_height: Option<u32>,
     /// Optional contact sheet maximum tile width in pixels.
     pub max_tile_width: Option<u32>,
     /// Optional contact sheet maximum tile height in pixels.

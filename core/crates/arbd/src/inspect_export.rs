@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket, StreamStatus, TapRecord};
 use arb_core::time::TimeAlignment;
@@ -21,6 +21,7 @@ use arb_media::contact_sheet::{
     select_contact_sheet_indices,
 };
 use arb_media::mp4::{Mp4VideoTrack, inspect_mp4_atoms};
+use arb_media::mux_av::AvMuxReport;
 use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::GopLruCache;
 use arb_storage::bundle_io::{BundleReader, TimeRange, open_bundle};
@@ -38,6 +39,8 @@ use crate::protocol::{
 use crate::time_util::{next_id, utc_now_iso8601};
 
 /// Maximum cached WAV files retained under `<cache_dir>/audio-pcm/`.
+/// Cache entries younger than this are never evicted by [`prune_cache_dir`].
+const CACHE_PRUNE_MIN_AGE: Duration = Duration::from_secs(120);
 const AUDIO_PCM_CACHE_MAX_FILES: usize = 32;
 
 /// Maximum aggregate bytes retained under `<cache_dir>/audio-pcm/` (`512 MiB`).
@@ -247,6 +250,15 @@ pub fn export_share_mp4(
         src_track.frame_count(),
     )?;
 
+    // Refuse an existing output before any trimmed WORM bundle is committed, so a doomed
+    // export never leaves an orphan trimmed bundle in the catalog.
+    if share_mp4_path.symlink_metadata().is_ok() {
+        return Err(DaemonError::Conflict(format!(
+            "share.mp4 output already exists: {}",
+            share_mp4_path.display()
+        )));
+    }
+
     // Ensure destination parent exists only after validation passes.
     if let Some(parent) = share_mp4_path.parent()
         && !parent.as_os_str().is_empty()
@@ -265,15 +277,7 @@ pub fn export_share_mp4(
         params,
     )?;
 
-    let av_mux_report = mux_share_mp4(
-        &prepared.video_path,
-        prepared.audio_path.as_deref(),
-        prepared.lead_in_offset_ns,
-        share_mp4_path,
-    )?;
-
-    // Verify committed share.mp4 structure before any non-destructive trash of the source.
-    verify_committed_share_mp4(share_mp4_path, av_mux_report.video_frame_count)?;
+    let av_mux_report = mux_and_verify_share_mp4(ctx, &prepared, share_mp4_path)?;
 
     // Release temporary export lease before logical trash (source files remain untouched on disk).
     drop(lease_guard);
@@ -403,6 +407,33 @@ fn prepare_share_mp4_sources(
             warning: None,
         })
     }
+}
+
+/// Muxes and verifies `share.mp4`; on failure the trimmed bundle created for this export is
+/// logically trashed so no orphan is left in the catalog.
+fn mux_and_verify_share_mp4(
+    ctx: &ExportContext<'_>,
+    prepared: &PreparedShareSources,
+    share_mp4_path: &Path,
+) -> Result<AvMuxReport, DaemonError> {
+    let committed = mux_share_mp4(
+        &prepared.video_path,
+        prepared.audio_path.as_deref(),
+        prepared.lead_in_offset_ns,
+        share_mp4_path,
+    )
+    .map_err(DaemonError::from)
+    .and_then(|report| {
+        // Verify committed share.mp4 structure before any non-destructive trash of the source.
+        verify_committed_share_mp4(share_mp4_path, report.video_frame_count)?;
+        Ok(report)
+    });
+    if committed.is_err()
+        && let Some(trimmed_id) = prepared.trimmed_bundle_id.as_deref()
+    {
+        let _ = ctx.catalog.trash_bundle(trimmed_id, &utc_now_iso8601());
+    }
+    committed
 }
 
 fn verify_committed_share_mp4(
@@ -752,7 +783,7 @@ fn render_inspect_contact_sheet(
     };
 
     let tap_map = if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h)?
+        build_frame_tap_map(reader, video_w, video_h, params)?
     } else {
         BTreeMap::new()
     };
@@ -816,7 +847,7 @@ fn render_inspect_single(
     let tap_point = if let (Some(tx), Some(ty)) = (params.tap_x, params.tap_y) {
         Some((tx, ty))
     } else if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h)?
+        build_frame_tap_map(reader, video_w, video_h, params)?
             .get(&idx)
             .copied()
     } else {
@@ -856,12 +887,23 @@ fn render_inspect_tap_crop(
         let raw_y = tap.y.ok_or_else(|| {
             DaemonError::InvalidParams(format!("tap_index {tap_idx} has no y coordinate"))
         })?;
-        let x = params
-            .tap_x
-            .unwrap_or_else(|| clamp_coord_to_frame(raw_x, video_w));
-        let y = params
-            .tap_y
-            .unwrap_or_else(|| clamp_coord_to_frame(raw_y, video_h));
+        let unmapped = || {
+            DaemonError::InvalidParams(format!(
+                "tap_index {tap_idx} lies outside the video frame; pass display_width/display_height \
+                 (device display size) or explicit tap_x/tap_y in video pixels"
+            ))
+        };
+        let x = match params.tap_x {
+            Some(x) => x,
+            None => {
+                map_tap_coord_to_frame(raw_x, params.display_width, video_w).ok_or_else(unmapped)?
+            }
+        };
+        let y = match params.tap_y {
+            Some(y) => y,
+            None => map_tap_coord_to_frame(raw_y, params.display_height, video_h)
+                .ok_or_else(unmapped)?,
+        };
         (frame_idx, x, y)
     } else {
         let tx = params.tap_x.ok_or_else(|| {
@@ -912,6 +954,7 @@ fn build_frame_tap_map(
     reader: &dyn BundleReader,
     video_w: u32,
     video_h: u32,
+    params: &MediaInspectFramesParams,
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
     let frames = reader.frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -920,12 +963,11 @@ fn build_frame_tap_map(
         if let (Some(rx), Some(ry), Some(bt)) = (tap.x, tap.y, tap_boottime_ns(tap))
             && let Some(fi) = nearest_frame_index(&frames, bt)
         {
-            map.entry(fi).or_insert_with(|| {
-                (
-                    clamp_coord_to_frame(rx, video_w),
-                    clamp_coord_to_frame(ry, video_h),
-                )
-            });
+            let mapped = map_tap_coord_to_frame(rx, params.display_width, video_w)
+                .zip(map_tap_coord_to_frame(ry, params.display_height, video_h));
+            if let Some(point) = mapped {
+                map.entry(fi).or_insert(point);
+            }
         }
     }
     Ok(map)
@@ -1152,6 +1194,26 @@ fn clamp_coord_to_frame(raw: f64, dim: u32) -> u32 {
     raw.round().clamp(0.0, max_idx) as u32
 }
 
+/// Maps a recorded tap coordinate (display pixels) onto the encoded video.
+///
+/// With a known `display_dim` the coordinate is scaled by `video_dim / display_dim`. Without it
+/// the coordinate is only trusted when it already lies inside the video frame; a coordinate
+/// beyond the frame proves it is in a larger display space, so `None` is returned instead of
+/// pinning it to the frame edge.
+fn map_tap_coord_to_frame(raw: f64, display_dim: Option<u32>, video_dim: u32) -> Option<u32> {
+    if !raw.is_finite() || raw < 0.0 || video_dim == 0 {
+        return None;
+    }
+    match display_dim.filter(|d| *d > 0) {
+        Some(display) => {
+            let scaled = raw * f64::from(video_dim) / f64::from(display);
+            Some(clamp_coord_to_frame(scaled, video_dim))
+        }
+        None if raw < f64::from(video_dim) => Some(clamp_coord_to_frame(raw, video_dim)),
+        None => None,
+    }
+}
+
 fn parse_png_dimensions(png_bytes: &[u8]) -> Result<(u32, u32), DaemonError> {
     if png_bytes.len() < 24
         || &png_bytes[0..8] != b"\x89PNG\r\n\x1a\n"
@@ -1209,6 +1271,7 @@ fn prune_cache_dir(dir: &Path, max_files: usize, max_bytes: u64, keep: Option<&P
     };
     let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
     let mut total_bytes = 0_u64;
+    let mut fresh_count = 0_usize;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() || keep.is_some_and(|k| k == path) {
@@ -1220,14 +1283,23 @@ fn prune_cache_dir(dir: &Path, max_files: usize, max_bytes: u64, keep: Option<&P
         let len = meta.len();
         let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         total_bytes = total_bytes.saturating_add(len);
+        // Recently touched files may be another request's in-progress temp file or a path that
+        // was just returned to a client; never evict them.
+        let fresh = SystemTime::now()
+            .duration_since(mtime)
+            .is_ok_and(|age| age < CACHE_PRUNE_MIN_AGE);
+        if fresh {
+            fresh_count += 1;
+            continue;
+        }
         files.push((path, len, mtime));
     }
-    if files.len() <= max_files && total_bytes <= max_bytes {
+    let mut remaining = files.len() + fresh_count;
+    if remaining <= max_files && total_bytes <= max_bytes {
         return;
     }
     // Oldest modified first.
     files.sort_by_key(|(_, _, mtime)| *mtime);
-    let mut remaining = files.len();
     for (path, len, _) in files {
         if remaining <= max_files && total_bytes <= max_bytes {
             break;
@@ -1266,7 +1338,33 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::base64_encode;
+    use super::{base64_encode, map_tap_coord_to_frame, prune_cache_dir};
+
+    #[test]
+    fn tap_coords_scale_from_display_space_and_refuse_out_of_frame() {
+        // 1080x2400 display encoded as 460x1024: (540,1200) maps to the frame centre.
+        assert_eq!(map_tap_coord_to_frame(540.0, Some(1080), 460), Some(230));
+        assert_eq!(map_tap_coord_to_frame(1200.0, Some(2400), 1024), Some(512));
+        // Unknown display size: in-frame coordinates pass, out-of-frame ones are refused
+        // instead of being pinned to the bottom-right edge.
+        assert_eq!(map_tap_coord_to_frame(100.0, None, 460), Some(100));
+        assert_eq!(map_tap_coord_to_frame(1200.0, None, 1024), None);
+        assert_eq!(map_tap_coord_to_frame(f64::NAN, Some(10), 5), None);
+        assert_eq!(map_tap_coord_to_frame(-1.0, None, 5), None);
+    }
+
+    #[test]
+    fn prune_keeps_fresh_files_even_over_limit() {
+        let dir = std::env::temp_dir().join(format!("arb-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for i in 0..4 {
+            std::fs::write(dir.join(format!("f{i}.wav")), b"x").expect("write");
+        }
+        prune_cache_dir(&dir, 1, 1024, None);
+        let left = std::fs::read_dir(&dir).expect("read").count();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(left, 4, "just-written files must survive pruning");
+    }
 
     #[test]
     fn base64_encode_matches_rfc4648_vectors() {

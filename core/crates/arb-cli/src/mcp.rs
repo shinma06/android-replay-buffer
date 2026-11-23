@@ -62,18 +62,33 @@ impl McpServer {
     }
 
     fn serve_io<R: BufRead, W: Write>(&mut self, mut reader: R, mut writer: W) -> io::Result<()> {
-        let mut line = String::new();
+        let mut buf: Vec<u8> = Vec::new();
         loop {
-            line.clear();
-            let read = reader.read_line(&mut line)?;
-            if read == 0 {
-                break;
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Some(resp) = self.handle_line(trimmed) {
+            buf.clear();
+            let read = read_bounded_line(&mut reader, &mut buf, MAX_FRAME_BYTES)?;
+            let resp = match read {
+                LineRead::Eof => break,
+                LineRead::TooLong => Some(rpc_error(
+                    &Value::Null,
+                    JSONRPC_PARSE_ERROR,
+                    format!("frame exceeds {MAX_FRAME_BYTES} bytes"),
+                )),
+                LineRead::Line => match std::str::from_utf8(&buf) {
+                    Ok(text) => {
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        self.handle_line(trimmed)
+                    }
+                    Err(_) => Some(rpc_error(
+                        &Value::Null,
+                        JSONRPC_PARSE_ERROR,
+                        "frame is not valid UTF-8",
+                    )),
+                },
+            };
+            if let Some(resp) = resp {
                 let encoded = serde_json::to_string(&resp)
                     .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
                 writer.write_all(encoded.as_bytes())?;
@@ -201,7 +216,9 @@ impl McpServer {
     }
 
     fn call_daemon(&mut self, method: &str, params: &Value) -> Result<Value, String> {
-        // Attempt once on cached connection; reconnect once if the daemon restarted or closed idle socket.
+        // A request that may already have reached the daemon is only replayed when the method is
+        // read-only; mutating methods (save/export/trash/capture) are never retried automatically.
+        let retry_safe = is_retry_safe_method(method);
         for attempt in 0..2 {
             if self.client.is_none() {
                 let connected = RpcClient::connect(&self.paths, AutoStartMode::Enabled)
@@ -217,21 +234,13 @@ impl McpServer {
                     err @ (RpcClientError::UnexpectedEof
                     | RpcClientError::Os(_)
                     | RpcClientError::Io(_)),
-                ) if attempt == 0 => {
+                ) => {
                     self.client = None;
-                    let _ = err;
-                }
-                Err(err) => {
-                    if matches!(
-                        err,
-                        RpcClientError::UnexpectedEof
-                            | RpcClientError::Os(_)
-                            | RpcClientError::Io(_)
-                    ) {
-                        self.client = None;
+                    if !(retry_safe && attempt == 0) {
+                        return Err(err.to_string());
                     }
-                    return Err(err.to_string());
                 }
+                Err(err) => return Err(err.to_string()),
             }
         }
         Err("arbd IPC connection failed after retry".to_owned())
@@ -401,6 +410,7 @@ impl McpServer {
         let bundle_id = require_bundle_target(args)?;
         let mut params = args.clone();
         params.insert("bundle_id".to_owned(), Value::String(bundle_id));
+        params.remove("bundle_id_or_path");
         let mut resp = self.call_daemon("media.inspect_frames", &Value::Object(params))?;
 
         let inline_b64 = resp
@@ -469,6 +479,9 @@ impl McpServer {
                         "format=\"bundle\" requires integer `out_frame_index`".to_owned()
                     })?;
 
+                // Resolve the catalog id BEFORE trimming so a doomed trash never leaves an
+                // untracked trimmed bundle behind.
+                let mut trash_catalog_id: Option<String> = None;
                 if trash_original {
                     let summary = self.call_daemon(
                         "timeline.summary",
@@ -479,6 +492,7 @@ impl McpServer {
                             "refusing trash_original on read-only legacy bundle `{bundle_id}`"
                         ));
                     }
+                    trash_catalog_id = Some(self.resolve_active_catalog_id(&bundle_id, &summary)?);
                 }
 
                 let mut params = Map::new();
@@ -495,12 +509,22 @@ impl McpServer {
 
                 let mut resp = self.call_daemon("export.trim", &Value::Object(params))?;
                 let mut original_trashed = false;
-                if trash_original {
-                    let _ = self.call_daemon("bundle.trash", &json!({ "bundle_id": bundle_id }))?;
-                    original_trashed = true;
+                let mut trash_warning: Option<String> = None;
+                if let Some(catalog_id) = trash_catalog_id {
+                    match self.call_daemon("bundle.trash", &json!({ "bundle_id": catalog_id })) {
+                        Ok(_) => original_trashed = true,
+                        Err(err) => {
+                            trash_warning = Some(format!(
+                                "trimmed bundle was created but trashing the original failed: {err}"
+                            ));
+                        }
+                    }
                 }
                 if let Some(obj) = resp.as_object_mut() {
                     obj.insert("original_trashed".to_owned(), Value::Bool(original_trashed));
+                    if let Some(warning) = trash_warning {
+                        obj.insert("trash_warning".to_owned(), Value::String(warning));
+                    }
                 }
                 Ok(vec![text_block(&resp)])
             }
@@ -508,6 +532,36 @@ impl McpServer {
                 "unsupported format `{other}`; expected \"share_mp4\" or \"bundle\""
             )),
         }
+    }
+
+    /// Maps a user-supplied bundle target (catalog id or path) to an active, non-legacy
+    /// catalog id, or fails when the bundle is not cataloged.
+    fn resolve_active_catalog_id(
+        &mut self,
+        target: &str,
+        summary: &Value,
+    ) -> Result<String, String> {
+        let list = self.call_daemon("bundle.list", &json!({ "state": "active" }))?;
+        let summary_id = summary.get("bundle_id").and_then(Value::as_str);
+        let summary_path = summary.get("path").and_then(Value::as_str);
+        let found = list
+            .get("bundles")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|entry| {
+                let id = entry.get("bundle_id").and_then(Value::as_str);
+                let path = entry.get("path").and_then(Value::as_str);
+                id == Some(target)
+                    || id == summary_id
+                    || path.is_some_and(|p| p == target || Some(p) == summary_path)
+            })
+            .and_then(|entry| entry.get("bundle_id").and_then(Value::as_str));
+        found.map(str::to_owned).ok_or_else(|| {
+            format!(
+                "refusing trash_original on uncataloged or non-active bundle `{target}`; open or register it first"
+            )
+        })
     }
 
     fn tool_export_frame_png(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -552,6 +606,80 @@ fn handle_initialize(params: &Value) -> Value {
         },
         "instructions": SERVER_INSTRUCTIONS
     })
+}
+
+/// Methods with no side effects (or idempotent reads) that may be replayed after a dropped socket.
+fn is_retry_safe_method(method: &str) -> bool {
+    matches!(
+        method,
+        "system.hello"
+            | "system.status"
+            | "device.list"
+            | "config.get"
+            | "bundle.list"
+            | "timeline.summary"
+            | "timeline.overview"
+            | "timeline.query_logs"
+            | "media.inspect_frames"
+    )
+}
+
+/// Maximum accepted size of one newline-delimited JSON-RPC frame.
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+enum LineRead {
+    Eof,
+    Line,
+    TooLong,
+}
+
+/// Reads one `\n`-terminated frame into `buf` without ever buffering more than `max` bytes.
+/// An oversized frame is drained to its newline and reported as [`LineRead::TooLong`].
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> io::Result<LineRead> {
+    let mut overflow = false;
+    let mut any = false;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(a) => a,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        if available.is_empty() {
+            return Ok(if !any {
+                LineRead::Eof
+            } else if overflow {
+                LineRead::TooLong
+            } else {
+                LineRead::Line
+            });
+        }
+        any = true;
+        let (chunk, found) = match available.iter().position(|b| *b == b'\n') {
+            Some(pos) => (&available[..pos], Some(pos + 1)),
+            None => (available, None),
+        };
+        if !overflow {
+            if buf.len() + chunk.len() > max {
+                overflow = true;
+                buf.clear();
+            } else {
+                buf.extend_from_slice(chunk);
+            }
+        }
+        let consumed = found.unwrap_or(chunk.len());
+        reader.consume(consumed);
+        if found.is_some() {
+            return Ok(if overflow {
+                LineRead::TooLong
+            } else {
+                LineRead::Line
+            });
+        }
+    }
 }
 
 fn rpc_ok(id: &Value, result: &Value) -> Value {
@@ -902,6 +1030,8 @@ fn tool_definitions() -> Vec<Value> {
                     "tap_x": { "type": "integer", "minimum": 0 },
                     "tap_y": { "type": "integer", "minimum": 0 },
                     "include_tap_marker": { "type": "boolean" },
+                    "display_width": { "type": "integer", "minimum": 1, "description": "Device display width in pixels; scales recorded tap coordinates onto the video. Required for tap_index crops/markers when taps lie outside the video frame." },
+                    "display_height": { "type": "integer", "minimum": 1, "description": "Device display height in pixels (see display_width)." },
                     "max_tile_width": { "type": "integer", "minimum": 16, "maximum": 1024 },
                     "max_tile_height": { "type": "integer", "minimum": 16, "maximum": 1024 },
                     "columns": { "type": "integer", "minimum": 1, "maximum": 16 }
@@ -949,7 +1079,12 @@ fn tool_definitions() -> Vec<Value> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{KNOWN_TOOLS, McpServer, base64_encode, tool_definitions};
+    use std::io::Cursor;
+
+    use super::{
+        KNOWN_TOOLS, LineRead, McpServer, base64_encode, is_retry_safe_method, read_bounded_line,
+        tool_definitions,
+    };
     use arb_os::paths::ArbPaths;
     use serde_json::{Value, json};
 
@@ -1059,5 +1194,50 @@ mod tests {
         assert_eq!(base64_encode(b"abc"), "YWJj", "3 bytes");
         let parsed: Value = json!({ "b64": base64_encode(b"\x89PNG\r\n\x1a\n") });
         assert_eq!(parsed["b64"], "iVBORw0KGgo=", "PNG signature base64");
+    }
+
+    #[test]
+    fn mutating_methods_are_never_retry_safe() {
+        for m in [
+            "save.trigger",
+            "export.trim",
+            "export.share_mp4",
+            "bundle.trash",
+            "capture.start",
+            "save.screenshot",
+        ] {
+            assert!(!is_retry_safe_method(m), "{m} must not be auto-retried");
+        }
+        assert!(is_retry_safe_method("timeline.overview"));
+    }
+
+    #[test]
+    fn bounded_line_reader_survives_invalid_utf8_and_oversize() {
+        let mut data: Vec<u8> = vec![0xFF, 0xFE, b'\n'];
+        data.extend(std::iter::repeat_n(b'a', 64));
+        data.extend_from_slice(b"\nok\n");
+        let mut r = Cursor::new(data);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_bounded_line(&mut r, &mut buf, 16).unwrap(),
+            LineRead::Line
+        ));
+        assert!(std::str::from_utf8(&buf).is_err());
+        buf.clear();
+        assert!(matches!(
+            read_bounded_line(&mut r, &mut buf, 16).unwrap(),
+            LineRead::TooLong
+        ));
+        buf.clear();
+        assert!(matches!(
+            read_bounded_line(&mut r, &mut buf, 16).unwrap(),
+            LineRead::Line
+        ));
+        assert_eq!(buf, b"ok");
+        buf.clear();
+        assert!(matches!(
+            read_bounded_line(&mut r, &mut buf, 16).unwrap(),
+            LineRead::Eof
+        ));
     }
 }
