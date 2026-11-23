@@ -22,7 +22,8 @@ class ArbdProcessManagerTest {
 
         val dummyPaths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.MACOS)
 
-        // 1. ARB_DAEMON_PATH wins over bundled and dev.
+        // 1. ARB_DAEMON_PATH wins over custom override, bundled, and dev.
+        val customBin = Files.writeString(tmp.resolve("custom-arbd"), "stub")
         val mgr1 = ArbdProcessManager(
             paths = dummyPaths,
             pluginDir = pluginDir,
@@ -30,10 +31,23 @@ class ArbdProcessManagerTest {
             os = HostOs.MACOS,
             arch = "arm64",
             env = mapOf(ArbdProcessManager.ENV_ARB_DAEMON_PATH to envBin.toString())::get,
+            customBinaryProvider = { customBin },
         )
         assertEquals(envBin, mgr1.resolveDaemonBinary())
 
-        // 2. Bundled bin/<os>-<arch>/arbd wins over dev path when env unset.
+        // 2. Custom IDE Settings override wins over bundled, dev, and PATH when env unset.
+        val mgrCustom = ArbdProcessManager(
+            paths = dummyPaths,
+            pluginDir = pluginDir,
+            searchRoot = devRoot,
+            os = HostOs.MACOS,
+            arch = "arm64",
+            env = { null },
+            customBinaryProvider = { customBin },
+        )
+        assertEquals(customBin, mgrCustom.resolveDaemonBinary())
+
+        // 3. Bundled bin/<os>-<arch>/arbd wins over dev path when env & custom override unset.
         val mgr2 = ArbdProcessManager(
             paths = dummyPaths,
             pluginDir = pluginDir,

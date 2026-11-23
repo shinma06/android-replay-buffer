@@ -8,6 +8,7 @@ import io.github.shinma06.arb.ipc.ArbPaths
 import io.github.shinma06.arb.ipc.ArbdIoException
 import io.github.shinma06.arb.ipc.ArbdProcessManager
 import io.github.shinma06.arb.ipc.ArbdRpcClient
+import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.SystemHelloResponse
 import java.io.IOException
 
@@ -19,7 +20,10 @@ import java.io.IOException
 class ArbdDaemonService : Disposable {
     private val logger = Logger.getInstance(ArbdDaemonService::class.java)
     private val lock = Any()
-    private val processManager = ArbdProcessManager(paths = ArbPaths.resolve())
+    private val processManager = ArbdProcessManager(
+        paths = ArbPaths.resolve(),
+        customBinaryProvider = { ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPathOrNull() },
+    )
 
     @Volatile
     private var client: ArbdRpcClient? = null
@@ -27,6 +31,22 @@ class ArbdDaemonService : Disposable {
     @Volatile
     var lastHello: SystemHelloResponse? = null
         private set
+
+    @Volatile
+    var cachedConfig: ArbConfig = ArbConfig()
+        private set
+
+    @Volatile
+    var cachedCaptureActive: Boolean = false
+        private set
+
+    fun updateCachedConfig(config: ArbConfig) {
+        cachedConfig = config
+    }
+
+    fun updateCachedCaptureActive(active: Boolean) {
+        cachedCaptureActive = active
+    }
 
     @Throws(IOException::class)
     fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {

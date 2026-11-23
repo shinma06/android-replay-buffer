@@ -1,0 +1,183 @@
+package io.github.shinma06.arb.state
+
+import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.IdeDefaultSaveAction
+import io.github.shinma06.arb.model.OutputDirPatch
+import java.nio.file.Path
+
+/**
+ * Pure state tracker deciding whether closing an ARB Studio editor tab should prompt the user
+ * about an unexported custom trim range (`VirtualFilePreCloseCheck`).
+ *
+ * Rules:
+ * - Untouched full range `[0 .. totalFrames - 1]` -> clean (close silently without nagging).
+ * - Initial range loaded from an existing edit session -> clean until modified in this tab.
+ * - Custom narrower range adjusted by the user -> dirty until exported OR reset to full range.
+ * - After a successful export covering the current range -> clean until edited again.
+ */
+class TrimCloseState {
+    private val lock = Any()
+    private var totalFrames: Long = 0L
+    private var inFrame: Long = 0L
+    private var outFrame: Long = 0L
+    private var baselineRange: Pair<Long, Long>? = null
+    private var lastExportedRange: Pair<Long, Long>? = null
+
+    fun initialize(totalFrames: Long, initialIn: Long, initialOut: Long) = synchronized(lock) {
+        this.totalFrames = totalFrames.coerceAtLeast(0L)
+        this.inFrame = initialIn
+        this.outFrame = initialOut
+        this.baselineRange = initialIn to initialOut
+        this.lastExportedRange = null
+    }
+
+    fun onRangeAdjusted(newIn: Long, newOut: Long) = synchronized(lock) {
+        inFrame = newIn
+        outFrame = newOut
+        if (isFullRangeLocked()) {
+            baselineRange = newIn to newOut
+        }
+    }
+
+    fun markExported(exportedIn: Long, exportedOut: Long) = synchronized(lock) {
+        lastExportedRange = exportedIn to exportedOut
+    }
+
+    fun currentRange(): Pair<Long, Long> = synchronized(lock) { inFrame to outFrame }
+
+    fun hasUnexportedCustomTrim(): Boolean = synchronized(lock) {
+        if (totalFrames <= 1L) return false
+        if (isFullRangeLocked()) return false
+        val current = inFrame to outFrame
+        if (current == baselineRange) return false
+        if (current == lastExportedRange) return false
+        true
+    }
+
+    private fun isFullRangeLocked(): Boolean =
+        totalFrames > 0L && inFrame <= 0L && outFrame >= totalFrames - 1L
+}
+
+enum class StorageSizeUnit(val label: String, val bytesPerUnit: Long) {
+    MIB("MiB", 1024L * 1024L),
+    GIB("GiB", 1024L * 1024L * 1024L),
+}
+
+data class StorageSizeValue(
+    val amount: Double,
+    val unit: StorageSizeUnit,
+) {
+    fun toBytes(): Long = kotlin.math.round(amount * unit.bytesPerUnit.toDouble()).toLong()
+
+    companion object {
+        fun fromBytes(bytes: Long): StorageSizeValue {
+            val gib = StorageSizeUnit.GIB.bytesPerUnit
+            val mib = StorageSizeUnit.MIB.bytesPerUnit
+            return if (bytes >= gib && bytes % (mib * 128L) == 0L) {
+                StorageSizeValue(bytes.toDouble() / gib.toDouble(), StorageSizeUnit.GIB)
+            } else {
+                StorageSizeValue(bytes.toDouble() / mib.toDouble(), StorageSizeUnit.MIB)
+            }
+        }
+    }
+}
+
+/**
+ * Pure draft representation of the Android Studio Settings -> Tools -> Android Replay Buffer page.
+ */
+data class ArbSettingsDraft(
+    val saveWindowSecs: Int = ArbConfig.DEFAULT_SAVE_WINDOW_SECS,
+    val ringBudgetBytes: Long = ArbConfig.DEFAULT_RING_BUDGET_BYTES,
+    val minFreeDiskBytes: Long = ArbConfig.DEFAULT_MIN_FREE_DISK_BYTES,
+    val videoMaxSize: Int = ArbConfig.DEFAULT_VIDEO_MAX_SIZE,
+    val videoMaxFps: Int = ArbConfig.DEFAULT_VIDEO_MAX_FPS,
+    val audioEnabled: Boolean = true,
+    val crashAutosaveEnabled: Boolean = true,
+    val crashAutosaveCooldownSecs: Int = ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
+    val outputDirOverride: String = "",
+    val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
+    val customArbdBinaryPath: String = "",
+) {
+    fun normalizedOutputDir(): String? = outputDirOverride.trim().takeIf { it.isNotEmpty() }
+
+    fun normalizedCustomArbdPath(): String = customArbdBinaryPath.trim()
+
+    fun validateDaemonFields(): String? {
+        if (saveWindowSecs !in ArbConfig.MIN_SAVE_WINDOW_SECS..ArbConfig.MAX_SAVE_WINDOW_SECS) {
+            return "保持ウィンドウは ${ArbConfig.MIN_SAVE_WINDOW_SECS}s 〜 ${ArbConfig.MAX_SAVE_WINDOW_SECS}s の範囲で指定してください。"
+        }
+        if (ringBudgetBytes !in ArbConfig.MIN_RING_BUDGET_BYTES..ArbConfig.MAX_RING_BUDGET_BYTES) {
+            return "リングバッファ上限は 16 MiB 〜 64 GiB の範囲で指定してください。"
+        }
+        if (minFreeDiskBytes !in ArbConfig.MIN_FREE_DISK_FLOOR_BYTES..ArbConfig.MAX_FREE_DISK_FLOOR_BYTES) {
+            return "最低空き容量フロアは 64 MiB 〜 1 TiB の範囲で指定してください。"
+        }
+        if (videoMaxSize !in ArbConfig.MIN_VIDEO_MAX_SIZE..ArbConfig.MAX_VIDEO_MAX_SIZE) {
+            return "映像最大長辺は ${ArbConfig.MIN_VIDEO_MAX_SIZE} 〜 ${ArbConfig.MAX_VIDEO_MAX_SIZE} px の範囲で指定してください。"
+        }
+        if (videoMaxFps !in ArbConfig.MIN_VIDEO_MAX_FPS..ArbConfig.MAX_VIDEO_MAX_FPS) {
+            return "映像最大 fps は ${ArbConfig.MIN_VIDEO_MAX_FPS} 〜 ${ArbConfig.MAX_VIDEO_MAX_FPS} の範囲で指定してください。"
+        }
+        if (crashAutosaveCooldownSecs !in ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS..ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS) {
+            return "クラッシュ自動保存のクールダウンは ${ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS}s 〜 ${ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS}s の範囲で指定してください。"
+        }
+        val dir = normalizedOutputDir()
+        if (dir != null) {
+            val isAbsolute = runCatching { Path.of(dir).isAbsolute }.getOrDefault(false)
+            if (!isAbsolute) {
+                return "保存先フォルダの上書きには絶対パスを指定してください。"
+            }
+        }
+        return null
+    }
+
+    fun isDaemonModifiedAgainst(baseline: ArbConfig): Boolean =
+        saveWindowSecs != baseline.saveWindowSecs ||
+            ringBudgetBytes != baseline.ringBudgetBytes ||
+            minFreeDiskBytes != baseline.minFreeDiskBytes ||
+            videoMaxSize != baseline.videoMaxSize ||
+            videoMaxFps != baseline.videoMaxFps ||
+            audioEnabled != baseline.audioEnabled ||
+            crashAutosaveEnabled != baseline.crashAutosaveEnabled ||
+            crashAutosaveCooldownSecs != baseline.crashAutosaveCooldownSecs ||
+            normalizedOutputDir() != baseline.outputDirOverride ||
+            ideDefaultSaveAction != baseline.ideDefaultSaveAction
+
+    fun toConfigPatch(baseline: ArbConfig): ArbConfigPatch {
+        val nextDir = normalizedOutputDir()
+        val dirPatch = when {
+            nextDir == baseline.outputDirOverride -> OutputDirPatch.Unchanged
+            nextDir == null -> OutputDirPatch.Clear
+            else -> OutputDirPatch.Set(nextDir)
+        }
+        return ArbConfigPatch(
+            saveWindowSecs = saveWindowSecs.takeIf { it != baseline.saveWindowSecs },
+            ringBudgetBytes = ringBudgetBytes.takeIf { it != baseline.ringBudgetBytes },
+            minFreeDiskBytes = minFreeDiskBytes.takeIf { it != baseline.minFreeDiskBytes },
+            videoMaxSize = videoMaxSize.takeIf { it != baseline.videoMaxSize },
+            videoMaxFps = videoMaxFps.takeIf { it != baseline.videoMaxFps },
+            audioEnabled = audioEnabled.takeIf { it != baseline.audioEnabled },
+            crashAutosaveEnabled = crashAutosaveEnabled.takeIf { it != baseline.crashAutosaveEnabled },
+            crashAutosaveCooldownSecs = crashAutosaveCooldownSecs.takeIf { it != baseline.crashAutosaveCooldownSecs },
+            outputDirOverride = dirPatch,
+            ideDefaultSaveAction = ideDefaultSaveAction.takeIf { it != baseline.ideDefaultSaveAction },
+        )
+    }
+
+    companion object {
+        fun fromConfig(config: ArbConfig, customArbdBinaryPath: String = ""): ArbSettingsDraft = ArbSettingsDraft(
+            saveWindowSecs = config.saveWindowSecs,
+            ringBudgetBytes = config.ringBudgetBytes,
+            minFreeDiskBytes = config.minFreeDiskBytes,
+            videoMaxSize = config.videoMaxSize,
+            videoMaxFps = config.videoMaxFps,
+            audioEnabled = config.audioEnabled,
+            crashAutosaveEnabled = config.crashAutosaveEnabled,
+            crashAutosaveCooldownSecs = config.crashAutosaveCooldownSecs,
+            outputDirOverride = config.outputDirOverride.orEmpty(),
+            ideDefaultSaveAction = config.ideDefaultSaveAction,
+            customArbdBinaryPath = customArbdBinaryPath,
+        )
+    }
+}

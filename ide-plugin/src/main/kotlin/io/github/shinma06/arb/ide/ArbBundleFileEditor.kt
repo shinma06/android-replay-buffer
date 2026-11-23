@@ -13,9 +13,11 @@ import com.intellij.openapi.vfs.VirtualFile
 import io.github.shinma06.arb.ipc.BundleLeaseController
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
+import io.github.shinma06.arb.model.ExportShareMp4Params
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.LeaseHolderKind
 import io.github.shinma06.arb.model.QueryBucket
+import io.github.shinma06.arb.model.StreamStatus
 import io.github.shinma06.arb.playback.AudioSyncPlayer
 import io.github.shinma06.arb.playback.FrameSeekResult
 import io.github.shinma06.arb.playback.FrameSeeker
@@ -27,6 +29,8 @@ import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
+import io.github.shinma06.arb.state.TrimCloseState
+import io.github.shinma06.arb.ui.StudioExportFormat
 import io.github.shinma06.arb.ui.TimelineViewerPanel
 import java.beans.PropertyChangeListener
 import java.nio.file.Files
@@ -42,32 +46,54 @@ import kotlin.math.roundToLong
  * Lifecycle & safety guarantees:
  * - Acquires a Viewer Lease via `bundle.open(holder_kind = ide_viewer)` and renews it periodically.
  * - Attaches to `arbd`'s SHM triple-buffered viewport via [ShmFrameRingReader].
- * - Drives continuous playback & deterministic range presets via T-3's [PlaybackController] &
- *   optional [AudioSyncPlayer] (probing T-2B's `media.decode_audio_pcm` gracefully).
- * - Resolves Activity / crash / stack-trace source jumps purely on PC via [IntelliJSourceJumpResolver].
- * - On non-destructive trim export with Trash-Original enabled (strictly blocked for Legacy RO),
- *   trashes the original bundle ONLY after the trimmed bundle commits successfully.
+ * - Drives continuous playback & deterministic range presets via T-3's [PlaybackController], and
+ *   asynchronously decodes `audio.m4a` via T-2B's `media.decode_audio_pcm` -> [WavFilePcmSource] ->
+ *   [AudioSyncPlayer] with real `av_offset_ms` (gracefully degrading when audio/hardware is absent).
+ * - Exports standalone faststart zero-`elst` H.264+AAC `share.mp4` (+ optional trimmed WORM bundle)
+ *   via T-2B's `export.share_mp4`, honoring `trash_original` ONLY on non-Legacy bundles!
+ * - Tracks unexported custom trim bounds in [TrimCloseState] for [ArbBundlePreCloseCheck].
  * - On [dispose] (tab close), closes [PlaybackController] (and [AudioSyncPlayer]), unmaps SHM,
- *   closes viewport, and releases the lease!
+ *   closes viewport, and releases the lease off the EDT.
  */
 class ArbBundleFileEditor(
     private val project: Project,
-    private val virtualFile: ArbBundleVirtualFile,
+    private val backingFile: VirtualFile,
+    private val bundleIdOrPath: String,
+    private val displayTitle: String,
     private val daemonService: ArbdDaemonService,
     private val sourceJumpResolver: SourceJumpResolver = IntelliJSourceJumpResolver(project),
 ) : UserDataHolderBase(), FileEditor {
+    constructor(
+        project: Project,
+        virtualFile: ArbBundleVirtualFile,
+        daemonService: ArbdDaemonService,
+        sourceJumpResolver: SourceJumpResolver = IntelliJSourceJumpResolver(project),
+    ) : this(
+        project = project,
+        backingFile = virtualFile,
+        bundleIdOrPath = virtualFile.bundleIdOrPath,
+        displayTitle = virtualFile.displayTitle,
+        daemonService = daemonService,
+        sourceJumpResolver = sourceJumpResolver,
+    )
+
     private val logger = Logger.getInstance(ArbBundleFileEditor::class.java)
     private val worker = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "arb-studio-${virtualFile.displayTitle}").apply { isDaemon = true }
+        Thread(r, "arb-studio-$displayTitle").apply { isDaemon = true }
     }
+    private val audioDecodeWorker = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "arb-audio-decode-$displayTitle").apply { isDaemon = true }
+    }
+    private val trimCloseState = TrimCloseState()
 
     private val panel: TimelineViewerPanel = TimelineViewerPanel(
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
-        onTrimExport = { inFrame, outFrame -> performTrim(inFrame, outFrame) },
+        onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onRangeChanged = { inFrame, outFrame, playhead ->
             // setIn/OutFrame may perform a blocking exact seek (IPC + SHM read): never on the EDT.
+            trimCloseState.onRangeAdjusted(inFrame, outFrame)
             state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
             worker.submit {
                 runCatching {
@@ -111,10 +137,10 @@ class ArbBundleFileEditor(
             runCatching { RevealFileAction.openFile(Path.of(path)) }
                 .onFailure { logger.warn("Failed to reveal $path", it) }
         },
-        onOpenExportedBundle = { bundleIdOrPath, title ->
+        onOpenExportedBundle = { exportedIdOrPath, title ->
             SwingUtilities.invokeLater {
                 if (!project.isDisposed) {
-                    val vf = ArbBundleVirtualFile(bundleIdOrPath, title, isLegacyHint = false)
+                    val vf = ArbBundleVirtualFile(exportedIdOrPath, title, isLegacyHint = false)
                     FileEditorManager.getInstance(project).openFile(vf, true)
                 }
             }
@@ -126,6 +152,9 @@ class ArbBundleFileEditor(
                     panel.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
                 }
             }
+        },
+        onExportRequested = { inFrame, outFrame, format ->
+            performExport(inFrame, outFrame, format)
         },
     )
 
@@ -154,12 +183,16 @@ class ArbBundleFileEditor(
         loadBundleAsync()
     }
 
+    fun hasUnexportedTrimRange(): Boolean = trimCloseState.hasUnexportedCustomTrim()
+
+    fun currentTrimRange(): Pair<Long, Long> = trimCloseState.currentRange()
+
     private fun loadBundleAsync() {
         worker.submit {
             try {
                 val opened = daemonService.withClient { rpc ->
                     rpc.bundleOpen(
-                        bundleIdOrPath = virtualFile.bundleIdOrPath,
+                        bundleIdOrPath = bundleIdOrPath,
                         holderKind = LeaseHolderKind.IDE_VIEWER,
                         holderPid = ProcessHandle.current().pid(),
                     )
@@ -232,6 +265,7 @@ class ArbBundleFileEditor(
                 val initialIn = existingSession?.inFrameIndex ?: 0L
                 val initialOut = existingSession?.outFrameIndex ?: (frameCount - 1L).coerceAtLeast(0L)
                 val initialPlayhead = existingSession?.playheadFrameIndex ?: 0L
+                trimCloseState.initialize(frameCount, initialIn, initialOut)
 
                 val initialState = TimelineViewerReducer.withBucketedRecords(
                     state = TimelineViewerState(
@@ -258,9 +292,12 @@ class ArbBundleFileEditor(
                 )
                 state = initialState
 
-                // Wire T-3 PlaybackController + optional AudioSyncPlayer (graceful fallback if T-2B audio RPC absent)
+                val fallbackAvOffsetMs = opened.summary.streams.audio?.avOffsetMs ?: 0L
+                val hasAudioTrack = opened.summary.audioPath != null ||
+                    opened.summary.streams.audio?.status in setOf(StreamStatus.PRESENT, StreamStatus.PARTIAL)
+
+                // Wire T-3 PlaybackController immediately so video renders without waiting for AAC decode.
                 if (viewportId != null && frameCount > 0L) {
-                    val audioPlayer = createOptionalAudioPlayer(opened.bundleId, opened.summary.streams.audio?.avOffsetMs ?: 0L)
                     val seeker = object : FrameSeeker {
                         override fun seekExact(frameIndex: Long): FrameSeekResult {
                             val resp = daemonService.withClient { it.mediaSeekFrame(viewportId, frameIndex) }
@@ -278,10 +315,11 @@ class ArbBundleFileEditor(
                         totalFrames = frameCount,
                         frameSeeker = seeker,
                         fallbackFps = initialState.estimatedFps,
-                        audioPlayer = audioPlayer,
+                        audioPlayer = null,
                         initialFrameIndex = initialPlayhead,
                         initialInFrameIndex = initialIn,
                         initialOutFrameIndex = initialOut,
+                        initialAvOffsetMs = fallbackAvOffsetMs,
                         onPlaybackError = { err -> logger.debug("ARB playback error", err) },
                     )
                     ctrl.addStateListener { pb ->
@@ -291,6 +329,11 @@ class ArbBundleFileEditor(
                     if (disposed) {
                         releaseResources()
                         return@submit
+                    }
+
+                    // Asynchronously request T-2B `media.decode_audio_pcm` when bundle has audio present.
+                    if (hasAudioTrack) {
+                        attachDecodedAudioAsync(opened.bundleId, fallbackAvOffsetMs, ctrl)
                     }
                 }
 
@@ -303,7 +346,7 @@ class ArbBundleFileEditor(
                     performSeekExact(initialPlayhead)
                 }
             } catch (t: Throwable) {
-                logger.warn("Failed to open ARB bundle ${virtualFile.bundleIdOrPath}", t)
+                logger.warn("Failed to open ARB bundle $bundleIdOrPath", t)
                 SwingUtilities.invokeLater {
                     panel.showError("バンドルを開けませんでした: ${t.message}")
                 }
@@ -311,21 +354,40 @@ class ArbBundleFileEditor(
         }
     }
 
-    private fun createOptionalAudioPlayer(bundleId: String, avOffsetMs: Long): AudioSyncPlayer? {
-        val decoded = runCatching {
-            daemonService.withClient { it.mediaDecodeAudioPcmOrNull(bundleId) }
-        }.getOrNull() ?: return null
-        if (!decoded.available) return null
-        val wavPath = Path.of(decoded.wavPath ?: return null)
-        if (!Files.isRegularFile(wavPath)) return null
-        return runCatching {
-            AudioSyncPlayer(
-                source = WavFilePcmSource.open(wavPath),
-                avOffsetMs = avOffsetMs,
-            )
-        }.onFailure { err ->
-            logger.debug("ARB audio player unavailable, continuing video-only", err)
-        }.getOrNull()
+    private fun attachDecodedAudioAsync(
+        bundleId: String,
+        fallbackAvOffsetMs: Long,
+        controller: PlaybackController,
+    ) {
+        audioDecodeWorker.submit {
+            if (disposed || controller.isClosed) return@submit
+            val decoded = runCatching {
+                daemonService.withClient { it.mediaDecodeAudioPcmOrNull(bundleId) }
+            }.onFailure { err ->
+                logger.debug("ARB media.decode_audio_pcm failed, continuing video-only", err)
+            }.getOrNull() ?: return@submit
+
+            if (disposed || controller.isClosed || !decoded.available) return@submit
+            val wavPathStr = decoded.wavPath ?: return@submit
+            val wavPath = runCatching { Path.of(wavPathStr) }.getOrNull() ?: return@submit
+            if (!Files.isRegularFile(wavPath)) return@submit
+
+            val effectiveAvOffsetMs = if (decoded.avOffsetMs != 0L) decoded.avOffsetMs else fallbackAvOffsetMs
+            val player = runCatching {
+                AudioSyncPlayer(
+                    source = WavFilePcmSource.open(wavPath),
+                    avOffsetMs = effectiveAvOffsetMs,
+                )
+            }.onFailure { err ->
+                logger.debug("ARB audio player unavailable, continuing video-only", err)
+            }.getOrNull() ?: return@submit
+
+            if (disposed || controller.isClosed) {
+                runCatching { player.close() }
+                return@submit
+            }
+            controller.attachAudioPlayer(player, effectiveAvOffsetMs)
+        }
     }
 
     private fun performScrub(frameIndex: Long) {
@@ -381,6 +443,7 @@ class ArbBundleFileEditor(
             val ctrl = playbackController
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
                 val pb = ctrl.state
+                trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
                 val updated = (state ?: current).copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex)
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
@@ -402,6 +465,7 @@ class ArbBundleFileEditor(
             if (ctrl != null) {
                 ctrl.selectAroundCrash(crashFrame, before, after)
                 val pb = ctrl.state
+                trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
                 val updated = (state ?: current).copy(
                     inFrameIndex = pb.inFrameIndex,
                     outFrameIndex = pb.outFrameIndex,
@@ -427,6 +491,7 @@ class ArbBundleFileEditor(
         worker.submit {
             playbackController?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
+            trimCloseState.onRangeAdjusted(0L, maxF)
             val updated = (state ?: current).copy(inFrameIndex = 0L, outFrameIndex = maxF)
             state = updated
             persistEditSession(0L, maxF, updated.currentFrameIndex)
@@ -444,11 +509,62 @@ class ArbBundleFileEditor(
         SwingUtilities.invokeLater { panel.applyFramePublished(frame.meta, image) }
     }
 
-    private fun performTrim(inFrameIndex: Long, outFrameIndex: Long) {
+    private fun performExport(
+        inFrameIndex: Long,
+        outFrameIndex: Long,
+        format: StudioExportFormat,
+    ) {
         val current = state ?: return
         val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy
+        val isFullRange = current.frameCount > 0L &&
+            inFrameIndex <= 0L &&
+            outFrameIndex >= current.frameCount - 1L
+
         worker.submit {
             try {
+                if (format == StudioExportFormat.SHARE_MP4) {
+                    val shareResp = daemonService.withClient {
+                        it.exportShareMp4OrNull(
+                            ExportShareMp4Params(
+                                bundleIdOrPath = current.bundleId,
+                                inFrameIndex = if (isFullRange) null else inFrameIndex,
+                                outFrameIndex = if (isFullRange) null else outFrameIndex,
+                                trashOriginal = shouldTrashOriginal,
+                                holderPid = ProcessHandle.current().pid(),
+                            ),
+                        )
+                    }
+                    if (shareResp != null) {
+                        trimCloseState.markExported(inFrameIndex, outFrameIndex)
+                        val mp4Name = runCatching { Path.of(shareResp.shareMp4Path).fileName.toString() }
+                            .getOrDefault(shareResp.shareMp4Path)
+                        val trackLabel = if (shareResp.audioIncluded) "映像+音声" else "映像のみ"
+                        val trimmedNote = shareResp.trimmedBundleId?.let { " · バンドル: $it" }.orEmpty()
+                        val trashedNote = if (shareResp.originalTrashed) {
+                            " · 元のバンドルをゴミ箱へ移動しました（復元可）"
+                        } else {
+                            ""
+                        }
+                        val summaryText = "共有用 MP4 を書き出しました: $mp4Name (${shareResp.videoFrameCount}f · $trackLabel)$trimmedNote$trashedNote"
+                        val completion = ExportCompletionInfo(
+                            summaryText = summaryText,
+                            outputPath = shareResp.shareMp4Path,
+                            bundleId = shareResp.trimmedBundleId,
+                            isTrimBundle = !shareResp.trimmedBundleId.isNullOrBlank(),
+                        )
+                        val updated = (state ?: current).copy(
+                            exportCompletion = completion,
+                            lastActionMessage = summaryText,
+                        )
+                        state = updated
+                        SwingUtilities.invokeLater {
+                            panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                        }
+                        return@submit
+                    }
+                }
+
+                // WORM bundle-only export (or fallback when connected to a pre-T-2B daemon without export.share_mp4)
                 val res = daemonService.withClient {
                     it.exportTrim(
                         ExportTrimParams(
@@ -459,6 +575,7 @@ class ArbBundleFileEditor(
                         ),
                     )
                 }
+                trimCloseState.markExported(inFrameIndex, outFrameIndex)
 
                 // Non-destructive Trash of the original bundle happens ONLY after export succeeds,
                 // and is strictly forbidden for Legacy (RO) bundles.
@@ -492,7 +609,7 @@ class ArbBundleFileEditor(
                     panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
                 }
             } catch (t: Throwable) {
-                logger.warn("ARB export.trim failed", t)
+                logger.warn("ARB export failed (format=$format)", t)
                 SwingUtilities.invokeLater { panel.showError("書き出しに失敗しました: ${t.message}") }
             }
         }
@@ -571,11 +688,12 @@ class ArbBundleFileEditor(
 
     override fun getCurrentLocation(): FileEditorLocation? = null
 
-    override fun getFile(): VirtualFile = virtualFile
+    override fun getFile(): VirtualFile = backingFile
 
     override fun dispose() {
         disposed = true
         worker.shutdownNow()
+        audioDecodeWorker.shutdownNow()
         releaseResources()
     }
 

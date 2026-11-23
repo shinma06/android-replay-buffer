@@ -20,13 +20,15 @@ class ArbdProcessManager(
     private val os: HostOs = paths.os,
     private val arch: String = HostOs.detectArch(),
     private val env: (String) -> String? = System::getenv,
+    private val customBinaryProvider: () -> Path? = { null },
 ) {
     /**
      * Resolution order:
      * 1. `ARB_DAEMON_PATH` env var (and `ARB_DAEMON_BIN` fallback)
-     * 2. Bundled plugin binary `<pluginDir>/bin/<os>-<arch>/arbd[.exe]`
-     * 3. Sibling dev Cargo build (`core/target/debug/arbd` or `core/target/release/arbd`)
-     * 4. Executable on `PATH`
+     * 2. User-configured custom `arbd` binary path override (IDE Settings)
+     * 3. Bundled plugin binary `<pluginDir>/bin/<os>-<arch>/arbd[.exe]`
+     * 4. Sibling dev Cargo build (`core/target/debug/arbd` or `core/target/release/arbd`)
+     * 5. Executable on `PATH`
      */
     fun resolveDaemonBinary(): Path? {
         val envOverride = env(ENV_ARB_DAEMON_PATH)?.takeIf { it.isNotBlank() }
@@ -36,6 +38,11 @@ class ArbdProcessManager(
             if (Files.isRegularFile(candidate)) {
                 return candidate
             }
+        }
+
+        val customCandidate = runCatching { customBinaryProvider() }.getOrNull()
+        if (customCandidate != null && Files.isRegularFile(customCandidate)) {
+            return customCandidate
         }
 
         val exeName = os.daemonExecutableName()

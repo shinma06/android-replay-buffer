@@ -1,6 +1,7 @@
 package io.github.shinma06.arb.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.JBSplitter
 import com.intellij.util.ui.JBUI
 import io.github.shinma06.arb.playback.AudioState
@@ -47,6 +48,14 @@ import javax.swing.KeyStroke
  * - Bottom Full-Width `MultiTrackTimelineDock` (filmstrip + dual handles + screen spans + markers +
  *   deterministic presets + non-destructive Trash-Original toggle)
  */
+enum class StudioExportFormat(val label: String) {
+    SHARE_MP4("共有用 MP4"),
+    WORM_BUNDLE_ONLY("WORM のみ"),
+    ;
+
+    override fun toString(): String = label
+}
+
 class TimelineViewerPanel(
     private val onScrub: (frameIndex: Long) -> Unit,
     private val onSeekExact: (frameIndex: Long) -> Unit,
@@ -64,6 +73,7 @@ class TimelineViewerPanel(
     private val onRevealInFinder: (path: String) -> Unit = {},
     private val onOpenExportedBundle: (bundleIdOrPath: String, title: String) -> Unit = { _, _ -> },
     private val onSourceJump: (SourceJumpTarget) -> Unit = {},
+    private val onExportRequested: ((inFrameIndex: Long, outFrameIndex: Long, format: StudioExportFormat) -> Unit)? = null,
 ) : JPanel(BorderLayout()) {
     val videoCanvas = VideoViewportCanvas()
 
@@ -122,6 +132,11 @@ class TimelineViewerPanel(
         JButton("Finder", AllIcons.Nodes.Folder),
         compact = true,
     )
+    private val exportFormatCombo = ComboBox(StudioExportFormat.entries.toTypedArray()).apply {
+        font = ArbTheme.uiFont(11f)
+        selectedItem = StudioExportFormat.SHARE_MP4
+        toolTipText = "書き出し形式（共有用 1 本 MP4 または WORM バンドルのみ）"
+    }
     private val exportButton = ArbTheme.stylePrimaryButton(
         JButton(ArbFormatters.EXPORT_FULL_LABEL, AllIcons.Actions.MenuSaveall),
     )
@@ -212,6 +227,7 @@ class TimelineViewerPanel(
                 isOpaque = false
                 add(pngButton)
                 add(finderButton)
+                add(exportFormatCombo)
                 add(exportButton)
             }
             add(leftTitle, BorderLayout.WEST)
@@ -315,7 +331,13 @@ class TimelineViewerPanel(
 
         exportButton.addActionListener {
             val s = state ?: return@addActionListener
-            onTrimExport(s.inFrameIndex, s.outFrameIndex)
+            val fmt = (exportFormatCombo.selectedItem as? StudioExportFormat) ?: StudioExportFormat.SHARE_MP4
+            val handler = onExportRequested
+            if (handler != null) {
+                handler(s.inFrameIndex, s.outFrameIndex, fmt)
+            } else {
+                onTrimExport(s.inFrameIndex, s.outFrameIndex)
+            }
         }
 
         pngButton.addActionListener {
@@ -422,6 +444,7 @@ class TimelineViewerPanel(
         stepBackButton.isEnabled = hasVideo
         stepForwardButton.isEnabled = hasVideo
         speedButton.isEnabled = hasVideo
+        exportFormatCombo.isEnabled = hasVideo
         exportButton.isEnabled = hasVideo
         pngButton.isEnabled = hasVideo
     }
@@ -486,6 +509,15 @@ class TimelineViewerPanel(
     fun isExportCompletionBarVisible(): Boolean = exportCompletionBar.isVisible
 
     fun playPauseButtonText(): String = playPauseButton.text
+
+    fun selectedExportFormat(): StudioExportFormat =
+        (exportFormatCombo.selectedItem as? StudioExportFormat) ?: StudioExportFormat.SHARE_MP4
+
+    fun selectExportFormat(format: StudioExportFormat) {
+        exportFormatCombo.selectedItem = format
+    }
+
+    fun clickExportButton() = exportButton.doClick()
 
     private fun renderDerivedViews(s: TimelineViewerState) {
         val curMs = s.frameToRelativeMs(s.currentFrameIndex)

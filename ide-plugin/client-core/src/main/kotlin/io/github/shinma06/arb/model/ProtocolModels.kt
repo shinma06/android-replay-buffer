@@ -127,10 +127,20 @@ data class ArbConfig(
         const val MIN_SAVE_WINDOW_SECS: Int = 5
         const val MAX_SAVE_WINDOW_SECS: Int = 600
         const val DEFAULT_RING_BUDGET_BYTES: Long = 1_610_612_736L
+        const val MIN_RING_BUDGET_BYTES: Long = 16L * 1024L * 1024L
+        const val MAX_RING_BUDGET_BYTES: Long = 64L * 1024L * 1024L * 1024L
         const val DEFAULT_MIN_FREE_DISK_BYTES: Long = 3_221_225_472L
+        const val MIN_FREE_DISK_FLOOR_BYTES: Long = 64L * 1024L * 1024L
+        const val MAX_FREE_DISK_FLOOR_BYTES: Long = 1_024L * 1024L * 1024L * 1024L
         const val DEFAULT_VIDEO_MAX_SIZE: Int = 1_920
+        const val MIN_VIDEO_MAX_SIZE: Int = 256
+        const val MAX_VIDEO_MAX_SIZE: Int = 4_096
         const val DEFAULT_VIDEO_MAX_FPS: Int = 30
+        const val MIN_VIDEO_MAX_FPS: Int = 1
+        const val MAX_VIDEO_MAX_FPS: Int = 120
         const val DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 15
+        const val MIN_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 1
+        const val MAX_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 3_600
     }
 }
 
@@ -799,12 +809,14 @@ data class ExportTrimResponse(
     val warning: String? = null,
 )
 
-// Forward-compatible T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
+// T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
 data class ExportShareMp4Params(
     val bundleIdOrPath: String,
-    val inFrameIndex: Long,
-    val outFrameIndex: Long,
+    val inFrameIndex: Long? = null,
+    val outFrameIndex: Long? = null,
     val outputPath: String? = null,
+    val trashOriginal: Boolean = false,
+    val destDir: String? = null,
     val holderPid: Long? = null,
 )
 
@@ -818,6 +830,7 @@ data class ExportShareMp4Response(
     val elstBoxCount: Int = 0,
     val outputBytes: Long = 0L,
     val originalTrashed: Boolean = false,
+    val warning: String? = null,
 )
 
 data class MediaDecodeAudioPcmParams(

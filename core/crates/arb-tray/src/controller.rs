@@ -2,13 +2,14 @@
 //! interval, and derives a crisp, honest [`TrayViewState`] / menu model (`SPEC-01`, `SPEC-03`).
 //!
 //! `arb-tray` performs zero direct ring/catalog/media file writes: every mutation (`save.trigger`,
-//! `save.retry`, `save.discard`, `bundle.trash`, `bundle.restore`, `capture.start`/`capture.stop`,
-//! `system.shutdown`) is a JSON-RPC 2.0 call dispatched to `arbd`.
+//! `save.screenshot`, `save.logs`, `save.retry`, `save.discard`, `bundle.trash`, `bundle.restore`,
+//! `capture.start`/`capture.stop`, `system.shutdown`) is a JSON-RPC 2.0 call dispatched to `arbd`.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use arb_core::config::{DEFAULT_SAVE_WINDOW_SECS, DEFAULT_VIDEO_MAX_FPS};
 use arb_core::state::{BundleLifecycleState, SaveJobState};
 use arb_os::paths::ArbPaths;
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,14 @@ use crate::rpc::{AutoStartMode, RpcClient, RpcClientError};
 /// Default interval between `arbd` status refresh cycles.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Catalog bundle storage format badge shown in the Recent Bundles menu.
+/// Maximum number of recent bundles surfaced in the `最近の保存` submenu.
+pub const RECENT_BUNDLES_LIMIT: usize = 5;
+
+const fn default_save_window_secs() -> u32 {
+    DEFAULT_SAVE_WINDOW_SECS
+}
+
+/// Catalog bundle storage format badge shown in the Recent Saves menu.
 ///
 /// Mirrors the wire string of `arb_storage::catalog::CatalogFormatVersion` without depending on
 /// `arb-storage` directly, keeping `arb-tray`'s crate DAG limited to `arb-core` + `arb-os`
@@ -42,7 +50,8 @@ impl BundleFormatBadge {
         }
     }
 
-    /// Short badge label shown next to each Recent Bundles entry.
+    /// Short badge label shown next to each Recent Saves entry.
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::V2 => "v2",
@@ -116,7 +125,7 @@ pub struct SaveJobSummary {
     pub last_error: Option<String>,
 }
 
-/// One catalog bundle surfaced in the Recent Bundles submenu.
+/// One catalog bundle surfaced in the Recent Saves submenu.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentBundleSummary {
     /// Globally unique bundle identifier.
@@ -127,10 +136,13 @@ pub struct RecentBundleSummary {
     pub format: BundleFormatBadge,
     /// Lifecycle state (`active`, `trashed`, `purging`).
     pub lifecycle: BundleLifecycleState,
+    /// Creation timestamp in UTC (ISO-8601) used to order the latest saves newest-first.
+    #[serde(default)]
+    pub created_at_utc: String,
 }
 
 /// Derived, honest view of the live `arbd` state used to render the tray menu.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrayViewState {
     /// Tray badge state (see [`TrayBadge`] precedence).
     pub badge: TrayBadge,
@@ -142,6 +154,12 @@ pub struct TrayViewState {
     pub device_serial: Option<String>,
     /// Human-readable device label (`model (serial)`), if resolvable via `device.list`.
     pub device_label: Option<String>,
+    /// Configured save lookback window in real elapsed seconds (from `config.get`).
+    #[serde(default = "default_save_window_secs")]
+    pub save_window_secs: u32,
+    /// Estimated buffered capture duration in seconds (clamped to `save_window_secs`).
+    #[serde(default)]
+    pub buffered_secs: u32,
     /// Count of recorded discontinuities in the live session.
     pub discontinuities: usize,
     /// Count of `StaticHold` detections in the live session.
@@ -156,7 +174,7 @@ pub struct TrayViewState {
     ///
     /// A daemon-reported `Rpc` error on one polled method (e.g. `device.list` failing when
     /// `adb` is absent) is surfaced here instead of collapsing the whole tray to
-    /// "arbd: offline" — the daemon is still online and the other sections still refreshed.
+    /// "arbd オフライン" — the daemon is still online and the other sections still refreshed.
     /// Transport-level failures never reach this list: they mark the daemon offline.
     #[serde(default)]
     pub section_errors: Vec<String>,
@@ -164,13 +182,16 @@ pub struct TrayViewState {
 
 impl TrayViewState {
     /// The crisp "`arbd` is unreachable" view, used whenever a connection attempt fails.
-    pub fn offline() -> Self {
+    #[must_use]
+    pub const fn offline() -> Self {
         Self {
             badge: TrayBadge::DaemonOffline,
             daemon_online: false,
             capture: CaptureStatus::Idle,
             device_serial: None,
             device_label: None,
+            save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
+            buffered_secs: 0,
             discontinuities: 0,
             static_hold_events: 0,
             storage_pressure_stopped: false,
@@ -187,33 +208,61 @@ impl TrayViewState {
             .filter(|job| job.state == SaveJobState::FailedRetryable)
     }
 
-    /// One-line human-readable status string: device + capture state + discontinuity alerts.
+    /// One-line human-readable status string in strict seconds notation (zero emoji).
+    ///
+    /// Examples:
+    /// - `REC Pixel 9 (emulator-5554) · 272s / 300s`
+    /// - `再接続中 Pixel 9 · 120s / 300s`
+    /// - `待機中`
+    /// - `arbd オフライン`
+    #[must_use]
     pub fn status_line(&self) -> String {
         if !self.daemon_online {
-            return "arbd: offline".to_owned();
+            return "arbd オフライン".to_owned();
         }
         let device = self
             .device_label
-            .clone()
-            .or_else(|| self.device_serial.clone())
-            .unwrap_or_else(|| "no device".to_owned());
-        let capture = match self.capture {
-            CaptureStatus::Idle => "idle",
-            CaptureStatus::Capturing => "capturing",
-            CaptureStatus::Disconnected => "capturing (disconnected)",
+            .as_deref()
+            .or(self.device_serial.as_deref());
+        let mut line = if self.storage_pressure_stopped {
+            match device {
+                Some(dev) => format!(
+                    "容量逼迫停止 {dev} · {}s / {}s",
+                    self.buffered_secs, self.save_window_secs
+                ),
+                None => format!(
+                    "容量逼迫停止 · {}s / {}s",
+                    self.buffered_secs, self.save_window_secs
+                ),
+            }
+        } else {
+            match self.capture {
+                CaptureStatus::Capturing => format!(
+                    "REC {} · {}s / {}s",
+                    device.unwrap_or("端末未選択"),
+                    self.buffered_secs,
+                    self.save_window_secs
+                ),
+                CaptureStatus::Disconnected => format!(
+                    "再接続中 {} · {}s / {}s",
+                    device.unwrap_or("端末未選択"),
+                    self.buffered_secs,
+                    self.save_window_secs
+                ),
+                CaptureStatus::Idle => match device {
+                    Some(dev) => format!("待機中 · {dev}"),
+                    None => "待機中".to_owned(),
+                },
+            }
         };
-        let mut line = format!("{device} — {capture}");
-        if self.storage_pressure_stopped {
-            line.push_str(" — storage pressure stop");
-        }
         if self.discontinuities > 0 {
-            let _ = write!(line, " — {} discontinuities", self.discontinuities);
+            let _ = write!(line, " · ギャップ {} 件", self.discontinuities);
         }
         if self.static_hold_events > 0 {
-            let _ = write!(line, " — {} static holds", self.static_hold_events);
+            let _ = write!(line, " · 静止 {} 回", self.static_hold_events);
         }
         for error in &self.section_errors {
-            let _ = write!(line, " — {error}");
+            let _ = write!(line, " · {error}");
         }
         line
     }
@@ -277,21 +326,22 @@ pub enum TrayAlert {
 }
 
 impl TrayAlert {
-    /// Human-readable alert text suitable for a tray notification banner.
+    /// Human-readable alert text suitable for a tray notification banner (zero emoji).
+    #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::DaemonOffline => "arbd stopped responding".to_owned(),
-            Self::DaemonOnline => "arbd is back online".to_owned(),
-            Self::ConnectionLost => "Device disconnected during capture".to_owned(),
-            Self::ConnectionRestored => "Device reconnected".to_owned(),
-            Self::StoragePressureStop => "Capture stopped: host storage is running low".to_owned(),
-            Self::StoragePressureCleared => "Storage pressure cleared".to_owned(),
-            Self::CaptureStarted => "Capture started".to_owned(),
-            Self::CaptureStopped => "Capture stopped".to_owned(),
-            Self::SaveCompleted { job_id } => format!("Save completed ({job_id})"),
+            Self::DaemonOffline => "arbd が応答を停止しました".to_owned(),
+            Self::DaemonOnline => "arbd に再接続しました".to_owned(),
+            Self::ConnectionLost => "録画中に端末との接続が切断されました".to_owned(),
+            Self::ConnectionRestored => "端末との接続が復旧しました".to_owned(),
+            Self::StoragePressureStop => "空き容量不足のため録画を停止しました".to_owned(),
+            Self::StoragePressureCleared => "空き容量不足が解消されました".to_owned(),
+            Self::CaptureStarted => "録画を開始しました".to_owned(),
+            Self::CaptureStopped => "録画を停止しました".to_owned(),
+            Self::SaveCompleted { job_id } => format!("保存が完了しました ({job_id})"),
             Self::SaveFailedRetryable { job_id, error } => match error {
-                Some(err) => format!("Save failed, retry available ({job_id}): {err}"),
-                None => format!("Save failed, retry available ({job_id})"),
+                Some(err) => format!("保存に失敗しました（再試行可・{job_id}）: {err}"),
+                None => format!("保存に失敗しました（再試行可・{job_id}）"),
             },
         }
     }
@@ -301,6 +351,7 @@ impl TrayAlert {
 ///
 /// Pure and side-effect free so it can be exhaustively unit tested; emits nothing on the very
 /// first observation except `DaemonOffline` (never spams on startup).
+#[must_use]
 pub fn diff_alerts(prev: Option<&TrayViewState>, next: &TrayViewState) -> Vec<TrayAlert> {
     let mut alerts = Vec::new();
     let Some(prev) = prev else {
@@ -430,17 +481,25 @@ impl TrayMenuItem {
     }
 }
 
-/// A user-triggered tray menu event. `Some` variants map 1:1 onto an `arbd` JSON-RPC call via
+/// A user-triggered tray menu event. RPC-backed variants map 1:1 onto an `arbd` JSON-RPC call via
 /// [`TrayMenuEvent::to_rpc`]; `QuitTray` and `RevealBundle` are handled locally by the tray
 /// process and never reach `arbd`.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrayMenuEvent {
-    /// `save.trigger` with a 30 second lookback window.
-    SaveLast30,
-    /// `save.trigger` with a 60 second lookback window.
-    SaveLast60,
+    /// `save.trigger` with the configured lookback duration in seconds.
+    SaveWindow {
+        /// Requested lookback duration in real elapsed seconds.
+        duration_secs: u32,
+    },
+    /// `save.screenshot` capturing the current Android screen as PNG.
+    SaveScreenshot,
+    /// `save.logs` saving only the recent logcat window without interrupting video capture.
+    SaveLogs {
+        /// Requested lookback duration in real elapsed seconds.
+        window_secs: u32,
+    },
     /// `save.retry` for a `FailedRetryable` job.
     RetryJob {
         /// Target save job identifier.
@@ -477,10 +536,16 @@ pub enum TrayMenuEvent {
 impl TrayMenuEvent {
     /// Maps an RPC-backed event to its `(method, params)` JSON-RPC 2.0 call, or `None` for
     /// locally handled events (`QuitTray`, `RevealBundle`).
+    #[must_use]
     pub fn to_rpc(&self, capture: CaptureStatus) -> Option<(&'static str, Value)> {
         match self {
-            Self::SaveLast30 => Some(("save.trigger", json!({ "duration_sec": 30 }))),
-            Self::SaveLast60 => Some(("save.trigger", json!({ "duration_sec": 60 }))),
+            Self::SaveWindow { duration_secs } => {
+                Some(("save.trigger", json!({ "duration_sec": duration_secs })))
+            }
+            Self::SaveScreenshot => Some(("save.screenshot", json!({}))),
+            Self::SaveLogs { window_secs } => {
+                Some(("save.logs", json!({ "window_secs": window_secs })))
+            }
             Self::RetryJob { job_id } => Some(("save.retry", json!({ "job_id": job_id }))),
             Self::DiscardJob { job_id } => Some(("save.discard", json!({ "job_id": job_id }))),
             Self::TrashBundle { bundle_id } => {
@@ -499,7 +564,7 @@ impl TrayMenuEvent {
     }
 }
 
-/// One failed-save-jobs submenu entry (`Retry` / `Discard`).
+/// One failed-save-jobs submenu entry (`再試行` / `破棄`).
 fn build_failed_job_item(job: &SaveJobSummary) -> TrayMenuItem {
     let label = job.destination_path.file_name().map_or_else(
         || job.job_id.clone(),
@@ -509,13 +574,13 @@ fn build_failed_job_item(job: &SaveJobSummary) -> TrayMenuItem {
         label,
         vec![
             TrayMenuItem::action(
-                "Retry",
+                "再試行",
                 TrayMenuEvent::RetryJob {
                     job_id: job.job_id.clone(),
                 },
             ),
             TrayMenuItem::action(
-                "Discard",
+                "破棄",
                 TrayMenuEvent::DiscardJob {
                     job_id: job.job_id.clone(),
                 },
@@ -524,7 +589,7 @@ fn build_failed_job_item(job: &SaveJobSummary) -> TrayMenuItem {
     )
 }
 
-/// The "Failed Save Jobs (N)" submenu, or `None` if nothing needs attention.
+/// Conditional "保存失敗ジョブ (N)" submenu, or `None` when healthy.
 fn build_failed_jobs_section(state: &TrayViewState) -> Option<TrayMenuItem> {
     let children: Vec<TrayMenuItem> = state.failed_jobs().map(build_failed_job_item).collect();
     if children.is_empty() {
@@ -532,53 +597,48 @@ fn build_failed_jobs_section(state: &TrayViewState) -> Option<TrayMenuItem> {
     }
     let count = children.len();
     Some(TrayMenuItem::submenu(
-        format!("Failed Save Jobs ({count})"),
+        format!("保存失敗ジョブ ({count})"),
         children,
     ))
 }
 
-/// One Recent Bundles submenu entry (`Trash`/`Restore` + `Reveal Folder`).
-fn build_bundle_item(bundle: &RecentBundleSummary) -> TrayMenuItem {
+/// One recent-saves submenu leaf item opening the bundle folder in the OS file manager.
+fn build_recent_bundle_item(bundle: &RecentBundleSummary) -> TrayMenuItem {
     let label = format!("{} [{}]", bundle.bundle_id, bundle.format.label());
-    let mut children = Vec::new();
-    match bundle.lifecycle {
-        BundleLifecycleState::Active => children.push(TrayMenuItem::action(
-            "Trash",
-            TrayMenuEvent::TrashBundle {
-                bundle_id: bundle.bundle_id.clone(),
-            },
-        )),
-        BundleLifecycleState::Trashed => children.push(TrayMenuItem::action(
-            "Restore",
-            TrayMenuEvent::RestoreBundle {
-                bundle_id: bundle.bundle_id.clone(),
-            },
-        )),
-        // `Purging`, and any future `#[non_exhaustive]` state: no mutating action, which is
-        // the safe default.
-        BundleLifecycleState::Purging | _ => {}
-    }
-    children.push(TrayMenuItem::action(
-        "Reveal Folder",
+    TrayMenuItem::action(
+        label,
         TrayMenuEvent::RevealBundle {
             path: bundle.path.clone(),
         },
-    ));
-    TrayMenuItem::submenu(label, children)
+    )
 }
 
-/// The always-present "Recent Bundles" submenu (empty when there are no bundles yet).
-fn build_bundles_section(state: &TrayViewState) -> TrayMenuItem {
-    let children = state
+/// The `最近の保存` submenu (latest 5 active bundles, newest first -> 1-click file manager open).
+fn build_recent_bundles_section(state: &TrayViewState) -> TrayMenuItem {
+    let mut active: Vec<&RecentBundleSummary> = state
         .bundles
         .iter()
-        .filter(|bundle| bundle.lifecycle != BundleLifecycleState::Purging)
-        .map(build_bundle_item)
-        .collect::<Vec<_>>();
-    TrayMenuItem::submenu("Recent Bundles", children)
+        .filter(|bundle| bundle.lifecycle == BundleLifecycleState::Active)
+        .collect();
+    // `bundle.list` returns oldest-first (`created_at_utc ASC`); reverse to newest-first while
+    // keeping explicit UTC ordering deterministic when timestamps are present.
+    active.reverse();
+    active.sort_by(|a, b| {
+        b.created_at_utc
+            .cmp(&a.created_at_utc)
+            .then_with(|| b.bundle_id.cmp(&a.bundle_id))
+    });
+    let children: Vec<TrayMenuItem> = active
+        .into_iter()
+        .take(RECENT_BUNDLES_LIMIT)
+        .map(build_recent_bundle_item)
+        .collect();
+    TrayMenuItem::submenu("最近の保存", children)
 }
 
-/// Builds the full tray menu item tree from a [`TrayViewState`] (pure, unit-testable).
+/// Builds the full tray menu item tree from a [`TrayViewState`] (pure, unit-testable, zero emoji,
+/// strict seconds notation).
+#[must_use]
 pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
     let mut items = vec![
         TrayMenuItem::info(state.status_line()),
@@ -587,11 +647,25 @@ pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
 
     items.push(TrayMenuItem {
         enabled: state.daemon_online,
-        ..TrayMenuItem::action("Save Last 30s", TrayMenuEvent::SaveLast30)
+        ..TrayMenuItem::action(
+            format!("直前 {}s を保存", state.save_window_secs),
+            TrayMenuEvent::SaveWindow {
+                duration_secs: state.save_window_secs,
+            },
+        )
     });
     items.push(TrayMenuItem {
         enabled: state.daemon_online,
-        ..TrayMenuItem::action("Save Last 60s", TrayMenuEvent::SaveLast60)
+        ..TrayMenuItem::action("スクリーンショットを保存", TrayMenuEvent::SaveScreenshot)
+    });
+    items.push(TrayMenuItem {
+        enabled: state.daemon_online,
+        ..TrayMenuItem::action(
+            "直前のログのみ保存",
+            TrayMenuEvent::SaveLogs {
+                window_secs: state.save_window_secs,
+            },
+        )
     });
 
     if let Some(failed_section) = build_failed_jobs_section(state) {
@@ -600,13 +674,12 @@ pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
     }
 
     items.push(TrayMenuItem::separator());
-    items.push(build_bundles_section(state));
+    items.push(build_recent_bundles_section(state));
 
-    items.push(TrayMenuItem::separator());
     let toggle_label = if state.capture == CaptureStatus::Idle {
-        "Start Capture"
+        "録画を開始"
     } else {
-        "Stop Capture"
+        "録画を停止"
     };
     items.push(TrayMenuItem {
         enabled: state.daemon_online,
@@ -614,10 +687,13 @@ pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
     });
 
     items.push(TrayMenuItem::separator());
-    items.push(TrayMenuItem::action("Quit Tray", TrayMenuEvent::QuitTray));
+    items.push(TrayMenuItem::action(
+        "トレイのみ終了（録画継続）",
+        TrayMenuEvent::QuitTray,
+    ));
     items.push(TrayMenuItem {
         enabled: state.daemon_online,
-        ..TrayMenuItem::action("Stop Daemon && Quit", TrayMenuEvent::StopDaemonAndQuit)
+        ..TrayMenuItem::action("録画デーモンごと終了", TrayMenuEvent::StopDaemonAndQuit)
     });
 
     items
@@ -650,11 +726,17 @@ fn parse_bundle(raw: &Value) -> Option<RecentBundleSummary> {
         .map_or_else(PathBuf::new, PathBuf::from);
     let format = BundleFormatBadge::parse(raw.get("format_version").and_then(Value::as_str));
     let lifecycle: BundleLifecycleState = serde_json::from_value(raw.get("state")?.clone()).ok()?;
+    let created_at_utc = raw
+        .get("created_at_utc")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     Some(RecentBundleSummary {
         bundle_id,
         path,
         format,
         lifecycle,
+        created_at_utc,
     })
 }
 
@@ -673,9 +755,27 @@ fn resolve_device_label(devices_response: &Value, serial: &str) -> Option<String
     None
 }
 
-/// Builds a [`TrayViewState`] from the raw JSON results of the four polled RPC methods.
+fn parse_config_timing(config_response: &Value) -> (u32, u32) {
+    let cfg = config_response.get("config").unwrap_or(&Value::Null);
+    let save_window_secs = cfg
+        .get("save_window_secs")
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_SAVE_WINDOW_SECS);
+    let video_max_fps = cfg
+        .get("video_max_fps")
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_VIDEO_MAX_FPS);
+    (save_window_secs, video_max_fps)
+}
+
+/// Builds a [`TrayViewState`] from the raw JSON results of the five polled RPC methods.
 fn build_view_state(
     status: &Value,
+    config: &Value,
     devices: &Value,
     jobs_response: &Value,
     bundles_response: &Value,
@@ -701,6 +801,14 @@ fn build_view_state(
     let device_label = device_serial
         .as_deref()
         .and_then(|serial| resolve_device_label(devices, serial));
+    let (save_window_secs, video_max_fps) = parse_config_timing(config);
+    let video_frames = capture
+        .get("video_frames")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let buffered_secs_u64 =
+        (video_frames / u64::from(video_max_fps.max(1))).min(u64::from(save_window_secs));
+    let buffered_secs = u32::try_from(buffered_secs_u64).unwrap_or(save_window_secs);
     let discontinuities = capture
         .get("discontinuities")
         .and_then(Value::as_u64)
@@ -743,6 +851,8 @@ fn build_view_state(
         capture: capture_status,
         device_serial,
         device_label,
+        save_window_secs,
+        buffered_secs,
         discontinuities,
         static_hold_events,
         storage_pressure_stopped,
@@ -765,7 +875,8 @@ pub struct TrayController {
 
 impl TrayController {
     /// Creates a controller that will connect to `paths.ipc_endpoint()`.
-    pub fn new(paths: ArbPaths, auto_start: AutoStartMode, poll_interval: Duration) -> Self {
+    #[must_use]
+    pub const fn new(paths: ArbPaths, auto_start: AutoStartMode, poll_interval: Duration) -> Self {
         Self {
             paths,
             auto_start,
@@ -776,13 +887,15 @@ impl TrayController {
     }
 
     /// Configured polling interval between refresh cycles.
+    #[must_use]
     pub const fn poll_interval(&self) -> Duration {
         self.poll_interval
     }
 
-    /// Performs one `system.status` + `device.list` + `save.list_jobs` + `bundle.list` refresh
-    /// cycle, reconnecting first if the connection was previously lost, and returns the fresh
-    /// [`TrayViewState`] alongside any transition [`TrayAlert`]s versus the prior observation.
+    /// Performs one `system.status` + `config.get` + `device.list` + `save.list_jobs` +
+    /// `bundle.list` refresh cycle, reconnecting first if the connection was previously lost, and
+    /// returns the fresh [`TrayViewState`] alongside any transition [`TrayAlert`]s versus the prior
+    /// observation.
     pub fn poll_once(&mut self) -> (TrayViewState, Vec<TrayAlert>) {
         let next = self.fetch_state();
         let alerts = diff_alerts(self.last_state.as_ref(), &next);
@@ -816,11 +929,13 @@ impl TrayController {
             .expect("fetch_state_inner is only called once self.client is Some");
         let mut section_errors = Vec::new();
         let status = call_section(client, "system.status", &mut section_errors)?;
+        let config = call_section(client, "config.get", &mut section_errors)?;
         let devices = call_section(client, "device.list", &mut section_errors)?;
         let jobs = call_section(client, "save.list_jobs", &mut section_errors)?;
         let bundles = call_section(client, "bundle.list", &mut section_errors)?;
         let mut state = build_view_state(
             &status.unwrap_or_default(),
+            &config.unwrap_or_default(),
             &devices.unwrap_or_default(),
             &jobs.unwrap_or_default(),
             &bundles.unwrap_or_default(),
@@ -886,6 +1001,25 @@ fn call_section(
     }
 }
 
+/// Returns `true` if `text` contains any Unicode emoji / pictograph / variation-selector-16
+/// codepoint (shared guard ensuring zero emoji chrome across tray menus and status text).
+#[must_use]
+pub fn contains_emoji(text: &str) -> bool {
+    text.chars().any(|ch| {
+        let cp = u32::from(ch);
+        matches!(
+            cp,
+            0x1F300..=0x1FAFF
+                | 0x2600..=0x27BF
+                | 0x23E9..=0x23FA
+                | 0xFE0F
+                | 0x200D
+                | 0x25B6
+                | 0x25C0
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,6 +1031,8 @@ mod tests {
             capture: CaptureStatus::Idle,
             device_serial: None,
             device_label: None,
+            save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
+            buffered_secs: 0,
             discontinuities: 0,
             static_hold_events: 0,
             storage_pressure_stopped: false,
@@ -912,6 +1048,15 @@ mod tests {
             state: SaveJobState::FailedRetryable,
             destination_path: PathBuf::from("/tmp/bundle-1"),
             last_error: Some("disk full".to_owned()),
+        }
+    }
+
+    fn collect_menu_labels(items: &[TrayMenuItem], out: &mut Vec<String>) {
+        for item in items {
+            if !item.label.is_empty() {
+                out.push(item.label.clone());
+            }
+            collect_menu_labels(&item.children, out);
         }
     }
 
@@ -974,21 +1119,25 @@ mod tests {
     }
 
     #[test]
-    fn status_line_reports_offline_without_touching_other_fields() {
-        let mut state = TrayViewState::offline();
-        state.discontinuities = 7; // should never happen, but status_line must stay honest
-        assert_eq!(state.status_line(), "arbd: offline");
-    }
+    fn status_line_uses_strict_seconds_notation_and_zero_emoji() {
+        let mut offline = TrayViewState::offline();
+        offline.discontinuities = 7;
+        assert_eq!(offline.status_line(), "arbd オフライン");
 
-    #[test]
-    fn status_line_includes_device_capture_and_alerts() {
-        let mut state = base_state();
-        state.device_label = Some("Pixel 7 (emulator-5554)".to_owned());
-        state.capture = CaptureStatus::Capturing;
-        state.discontinuities = 2;
+        let idle = base_state();
+        assert_eq!(idle.status_line(), "待機中");
+
+        let mut capturing = base_state();
+        capturing.device_label = Some("Pixel 9".to_owned());
+        capturing.capture = CaptureStatus::Capturing;
+        capturing.buffered_secs = 272;
+        capturing.save_window_secs = 300;
+        assert_eq!(capturing.status_line(), "REC Pixel 9 · 272s / 300s");
+
+        capturing.discontinuities = 2;
         assert_eq!(
-            state.status_line(),
-            "Pixel 7 (emulator-5554) — capturing — 2 discontinuities"
+            capturing.status_line(),
+            "REC Pixel 9 · 272s / 300s · ギャップ 2 件"
         );
     }
 
@@ -1110,41 +1259,85 @@ mod tests {
     }
 
     #[test]
-    fn build_menu_offline_disables_mutating_actions() {
+    fn build_menu_offline_disables_mutating_actions_and_keeps_quit_tray_enabled() {
         let state = TrayViewState::offline();
         let menu = build_menu(&state);
-        let save_30 = menu
-            .iter()
-            .find(|item| item.label == "Save Last 30s")
-            .expect("Save Last 30s item must exist");
-        assert!(
-            !save_30.enabled,
-            "mutating actions must be disabled offline"
-        );
         assert_eq!(
             menu.first().map(|i| i.label.as_str()),
-            Some("arbd: offline")
+            Some("arbd オフライン")
         );
+        let save_item = menu
+            .iter()
+            .find(|item| matches!(item.event, Some(TrayMenuEvent::SaveWindow { .. })))
+            .expect("save window item must exist");
+        assert_eq!(save_item.label, "直前 300s を保存");
+        assert!(
+            !save_item.enabled,
+            "mutating actions must be disabled offline"
+        );
+        let quit_tray = menu
+            .iter()
+            .find(|item| matches!(item.event, Some(TrayMenuEvent::QuitTray)))
+            .expect("QuitTray item must exist");
+        assert_eq!(quit_tray.label, "トレイのみ終了（録画継続）");
+        assert!(quit_tray.enabled, "QuitTray must stay enabled offline");
+        let stop_daemon = menu
+            .iter()
+            .find(|item| matches!(item.event, Some(TrayMenuEvent::StopDaemonAndQuit)))
+            .expect("StopDaemonAndQuit item must exist");
+        assert_eq!(stop_daemon.label, "録画デーモンごと終了");
+        assert!(!stop_daemon.enabled);
     }
 
     #[test]
-    fn build_menu_toggle_capture_label_reflects_state() {
-        let mut capturing = base_state();
-        capturing.capture = CaptureStatus::Capturing;
-        let menu = build_menu(&capturing);
-        let toggle = menu
-            .iter()
-            .find(|item| matches!(item.event, Some(TrayMenuEvent::ToggleCapture)))
-            .expect("toggle capture item must exist");
-        assert_eq!(toggle.label, "Stop Capture");
+    fn build_menu_uses_config_save_window_secs_strict_seconds_and_spec_actions() {
+        let mut state = base_state();
+        state.save_window_secs = 45;
+        state.capture = CaptureStatus::Capturing;
+        state.device_label = Some("Pixel 9".to_owned());
+        state.buffered_secs = 32;
 
-        let idle = base_state();
-        let menu = build_menu(&idle);
+        let menu = build_menu(&state);
+        assert_eq!(
+            menu[0].label, "REC Pixel 9 · 32s / 45s",
+            "status row must use strict seconds notation"
+        );
+        let save = menu
+            .iter()
+            .find(|i| {
+                matches!(
+                    i.event,
+                    Some(TrayMenuEvent::SaveWindow { duration_secs: 45 })
+                )
+            })
+            .expect("SaveWindow 45s item");
+        assert_eq!(save.label, "直前 45s を保存");
+        assert!(!save.label.contains('分'), "must never round to minutes");
+
+        let shot = menu
+            .iter()
+            .find(|i| matches!(i.event, Some(TrayMenuEvent::SaveScreenshot)))
+            .expect("SaveScreenshot item");
+        assert_eq!(shot.label, "スクリーンショットを保存");
+
+        let logs = menu
+            .iter()
+            .find(|i| matches!(i.event, Some(TrayMenuEvent::SaveLogs { window_secs: 45 })))
+            .expect("SaveLogs item");
+        assert_eq!(logs.label, "直前のログのみ保存");
+
         let toggle = menu
             .iter()
-            .find(|item| matches!(item.event, Some(TrayMenuEvent::ToggleCapture)))
-            .expect("toggle capture item must exist");
-        assert_eq!(toggle.label, "Start Capture");
+            .find(|i| matches!(i.event, Some(TrayMenuEvent::ToggleCapture)))
+            .expect("ToggleCapture item");
+        assert_eq!(toggle.label, "録画を停止");
+
+        let idle_menu = build_menu(&base_state());
+        let idle_toggle = idle_menu
+            .iter()
+            .find(|i| matches!(i.event, Some(TrayMenuEvent::ToggleCapture)))
+            .expect("idle ToggleCapture item");
+        assert_eq!(idle_toggle.label, "録画を開始");
     }
 
     #[test]
@@ -1154,7 +1347,7 @@ mod tests {
         let menu = build_menu(&state);
         let submenu = menu
             .iter()
-            .find(|item| item.label == "Failed Save Jobs (1)")
+            .find(|item| item.label == "保存失敗ジョブ (1)")
             .expect("failed jobs submenu must appear when a job is FailedRetryable");
         assert_eq!(submenu.children.len(), 1, "one job => one job submenu");
         let job_submenu = &submenu.children[0];
@@ -1163,7 +1356,7 @@ mod tests {
             .iter()
             .map(|item| item.label.as_str())
             .collect();
-        assert_eq!(labels, vec!["Retry", "Discard"]);
+        assert_eq!(labels, vec!["再試行", "破棄"]);
     }
 
     #[test]
@@ -1173,62 +1366,71 @@ mod tests {
         assert!(
             !menu
                 .iter()
-                .any(|item| item.label.starts_with("Failed Save Jobs")),
+                .any(|item| item.label.starts_with("保存失敗ジョブ")),
             "no FailedRetryable jobs => no submenu"
         );
     }
 
     #[test]
-    fn build_menu_recent_bundles_v2_active_shows_trash_and_reveal() {
+    fn build_menu_recent_saves_limits_to_latest_five_active_bundles_with_reveal() {
         let mut state = base_state();
+        for idx in 1..=7_u32 {
+            state.bundles.push(RecentBundleSummary {
+                bundle_id: format!("bundle-{idx:02}"),
+                path: PathBuf::from(format!("/data/arb/bundles/bundle-{idx:02}")),
+                format: if idx == 7 {
+                    BundleFormatBadge::LegacyRo
+                } else {
+                    BundleFormatBadge::V2
+                },
+                lifecycle: BundleLifecycleState::Active,
+                created_at_utc: format!("2026-11-23T00:0{idx}:00Z"),
+            });
+        }
         state.bundles.push(RecentBundleSummary {
-            bundle_id: "bundle-1".to_owned(),
-            path: PathBuf::from("/data/arb/bundles/bundle-1"),
+            bundle_id: "trashed-99".to_owned(),
+            path: PathBuf::from("/data/arb/bundles/trashed-99"),
             format: BundleFormatBadge::V2,
-            lifecycle: BundleLifecycleState::Active,
-        });
-        let menu = build_menu(&state);
-        let bundles_submenu = menu
-            .iter()
-            .find(|item| item.label == "Recent Bundles")
-            .expect("Recent Bundles submenu must always exist");
-        assert_eq!(bundles_submenu.children.len(), 1);
-        let bundle_item = &bundles_submenu.children[0];
-        assert_eq!(bundle_item.label, "bundle-1 [v2]");
-        let labels: Vec<&str> = bundle_item
-            .children
-            .iter()
-            .map(|item| item.label.as_str())
-            .collect();
-        assert_eq!(labels, vec!["Trash", "Reveal Folder"]);
-    }
-
-    #[test]
-    fn build_menu_recent_bundles_legacy_trashed_shows_restore() {
-        let mut state = base_state();
-        state.bundles.push(RecentBundleSummary {
-            bundle_id: "legacy-1".to_owned(),
-            path: PathBuf::from("/data/arb/legacy-1"),
-            format: BundleFormatBadge::LegacyRo,
             lifecycle: BundleLifecycleState::Trashed,
+            created_at_utc: "2026-11-23T09:00:00Z".to_owned(),
         });
+
         let menu = build_menu(&state);
-        let bundles_submenu = menu
+        let recent = menu
             .iter()
-            .find(|item| item.label == "Recent Bundles")
-            .expect("Recent Bundles submenu must always exist");
-        let bundle_item = &bundles_submenu.children[0];
-        assert_eq!(bundle_item.label, "legacy-1 [Legacy (RO)]");
-        let labels: Vec<&str> = bundle_item
-            .children
-            .iter()
-            .map(|item| item.label.as_str())
-            .collect();
-        assert_eq!(labels, vec!["Restore", "Reveal Folder"]);
+            .find(|item| item.label == "最近の保存")
+            .expect("最近の保存 submenu must exist");
+        assert_eq!(
+            recent.children.len(),
+            RECENT_BUNDLES_LIMIT,
+            "recent saves must cap at latest 5 active bundles"
+        );
+        assert_eq!(recent.children[0].label, "bundle-07 [Legacy (RO)]");
+        assert_eq!(recent.children[1].label, "bundle-06 [v2]");
+        assert_eq!(recent.children[4].label, "bundle-03 [v2]");
+        assert!(
+            matches!(
+                recent.children[0].event,
+                Some(TrayMenuEvent::RevealBundle { .. })
+            ),
+            "clicking a recent save item must reveal its folder directly"
+        );
     }
 
     #[test]
-    fn to_rpc_toggle_capture_depends_on_current_state() {
+    fn to_rpc_maps_save_window_screenshot_logs_and_toggle_accurately() {
+        assert_eq!(
+            TrayMenuEvent::SaveWindow { duration_secs: 300 }.to_rpc(CaptureStatus::Idle),
+            Some(("save.trigger", json!({ "duration_sec": 300 })))
+        );
+        assert_eq!(
+            TrayMenuEvent::SaveScreenshot.to_rpc(CaptureStatus::Capturing),
+            Some(("save.screenshot", json!({})))
+        );
+        assert_eq!(
+            TrayMenuEvent::SaveLogs { window_secs: 180 }.to_rpc(CaptureStatus::Capturing),
+            Some(("save.logs", json!({ "window_secs": 180 })))
+        );
         assert_eq!(
             TrayMenuEvent::ToggleCapture.to_rpc(CaptureStatus::Idle),
             Some(("capture.start", json!({})))
@@ -1239,13 +1441,8 @@ mod tests {
         );
         assert_eq!(
             TrayMenuEvent::ToggleCapture.to_rpc(CaptureStatus::Disconnected),
-            Some(("capture.stop", json!({}))),
-            "a disconnected-but-active capture must still resolve to capture.stop"
+            Some(("capture.stop", json!({})))
         );
-    }
-
-    #[test]
-    fn to_rpc_quit_and_reveal_are_local_only() {
         assert_eq!(TrayMenuEvent::QuitTray.to_rpc(CaptureStatus::Idle), None);
         assert_eq!(
             TrayMenuEvent::RevealBundle {
@@ -1257,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn build_view_state_parses_real_shaped_rpc_responses() {
+    fn build_view_state_parses_real_shaped_rpc_responses_including_config_window() {
         let status = json!({
             "pid": 123,
             "uptime_ms": 1000,
@@ -1267,7 +1464,7 @@ mod tests {
                 "serial": "emulator-5554",
                 "boot_id": "boot-a",
                 "storage_pressure_stopped": false,
-                "video_frames": 10,
+                "video_frames": 900,
                 "audio_frames": 10,
                 "log_records": 5,
                 "tap_records": 0,
@@ -1285,6 +1482,14 @@ mod tests {
                 "recovered_jobs": 0,
                 "completed_purging_bundles": 0,
             },
+        });
+        let config = json!({
+            "config": {
+                "config_version": 1,
+                "save_window_secs": 180,
+                "video_max_fps": 30,
+            },
+            "config_path": "/data/arb/config.json",
         });
         let devices = json!({
             "devices": [
@@ -1319,9 +1524,11 @@ mod tests {
             ]
         });
 
-        let view = build_view_state(&status, &devices, &jobs, &bundles);
+        let view = build_view_state(&status, &config, &devices, &jobs, &bundles);
         assert!(view.daemon_online);
         assert_eq!(view.capture, CaptureStatus::Capturing);
+        assert_eq!(view.save_window_secs, 180);
+        assert_eq!(view.buffered_secs, 30, "900 frames / 30 fps = 30s");
         assert_eq!(
             view.device_label.as_deref(),
             Some("sdk_gphone64_arm64 (emulator-5554)")
@@ -1333,5 +1540,74 @@ mod tests {
         assert_eq!(view.bundles.len(), 1);
         assert_eq!(view.bundles[0].format, BundleFormatBadge::V2);
         assert_eq!(view.bundles[0].lifecycle, BundleLifecycleState::Active);
+    }
+
+    #[test]
+    fn zero_emoji_guard_audits_all_tray_menus_alerts_and_sources() {
+        let mut rich_state = base_state();
+        rich_state.capture = CaptureStatus::Capturing;
+        rich_state.device_label = Some("Pixel 9".to_owned());
+        rich_state.buffered_secs = 272;
+        rich_state.save_window_secs = 300;
+        rich_state.discontinuities = 1;
+        rich_state.jobs.push(failed_job("job-1"));
+        rich_state.bundles.push(RecentBundleSummary {
+            bundle_id: "bundle-1".to_owned(),
+            path: PathBuf::from("/data/arb/bundles/bundle-1"),
+            format: BundleFormatBadge::V2,
+            lifecycle: BundleLifecycleState::Active,
+            created_at_utc: "2026-11-23T00:00:00Z".to_owned(),
+        });
+
+        let mut labels = Vec::new();
+        for state in [TrayViewState::offline(), base_state(), rich_state] {
+            labels.push(state.status_line());
+            collect_menu_labels(&build_menu(&state), &mut labels);
+        }
+        let alerts = [
+            TrayAlert::DaemonOffline,
+            TrayAlert::DaemonOnline,
+            TrayAlert::ConnectionLost,
+            TrayAlert::ConnectionRestored,
+            TrayAlert::StoragePressureStop,
+            TrayAlert::StoragePressureCleared,
+            TrayAlert::CaptureStarted,
+            TrayAlert::CaptureStopped,
+            TrayAlert::SaveCompleted {
+                job_id: "job-1".to_owned(),
+            },
+            TrayAlert::SaveFailedRetryable {
+                job_id: "job-1".to_owned(),
+                error: Some("disk full".to_owned()),
+            },
+        ];
+        for alert in &alerts {
+            labels.push(alert.message());
+        }
+
+        for label in &labels {
+            assert!(
+                !contains_emoji(label),
+                "tray UI string must not contain emoji: {label:?}"
+            );
+            assert!(
+                !label.contains("エビデンス"),
+                "tray UI string must remain generic: {label:?}"
+            );
+        }
+
+        // Scan all arb-tray src/*.rs files to prevent emoji chrome from slipping into source.
+        let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&src_dir).expect("read arb-tray/src") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let text = std::fs::read_to_string(&path).expect("read source file");
+                assert!(
+                    !contains_emoji(&text),
+                    "arb-tray source file {} must not contain emoji codepoints",
+                    path.display()
+                );
+            }
+        }
     }
 }
