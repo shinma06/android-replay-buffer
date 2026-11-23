@@ -36,8 +36,14 @@ class BundleLeaseControllerTest {
             heartbeatInterval = Duration.ofMillis(20),
         )
 
-        assertTrue(renewLatch.await(2, TimeUnit.SECONDS), "expected at least 2 lease_renew heartbeats")
-        assertTrue(controller.successfulRenewals >= 2)
+        assertTrue(renewLatch.await(5, TimeUnit.SECONDS), "expected at least 2 lease_renew heartbeats")
+        // The latch fires inside renewAction, before the controller increments its success counter,
+        // so wait for the counter itself instead of racing the heartbeat thread.
+        val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (controller.successfulRenewals < 2 && System.nanoTime() < deadlineNs) {
+            Thread.sleep(5)
+        }
+        assertTrue(controller.successfulRenewals >= 2, "expected at least 2 successful renewals")
 
         // Closing twice must be idempotent and release viewport before lease.
         controller.close()
