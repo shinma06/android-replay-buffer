@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use arb_core::state::{BundleLifecycleState, SaveJob, SaveJobEvent, SaveJobState};
+use arb_core::state::{BundleLifecycleState, SaveJob, SaveJobEvent, SaveJobState, SaveTriggerKind};
 use arb_os::fs::is_pid_alive;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS save_jobs (
   pinned_chunks_json TEXT NOT NULL,
   error_message TEXT,
   created_at_utc TEXT NOT NULL,
-  updated_at_utc TEXT NOT NULL
+  updated_at_utc TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL DEFAULT 'manual'
 );
 
 CREATE TABLE IF NOT EXISTS edit_sessions (
@@ -195,6 +196,8 @@ pub struct LeaseRecord {
 pub struct CatalogSaveJob {
     /// Core state-machine representation including `pinned_chunk_ids`.
     pub job: SaveJob,
+    /// Origin that initiated this save job (`Manual` or `CrashAutoSave`).
+    pub trigger_kind: SaveTriggerKind,
     /// ISO-8601 UTC creation timestamp.
     pub created_at_utc: String,
     /// ISO-8601 UTC last-update timestamp.
@@ -322,6 +325,7 @@ impl Catalog {
             .map_err(|source| StorageError::sqlite("configure_catalog_pragmas", source))?;
         conn.execute_batch(CATALOG_DDL)
             .map_err(|source| StorageError::sqlite("create_catalog_schema", source))?;
+        ensure_save_jobs_trigger_column(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -914,6 +918,29 @@ impl Catalog {
         pinned_chunk_ids: &[String],
         now_utc: &str,
     ) -> Result<CatalogSaveJob, StorageError> {
+        self.create_pinned_job_with_trigger(
+            job_id,
+            destination_path,
+            pinned_chunk_ids,
+            now_utc,
+            SaveTriggerKind::Manual,
+        )
+    }
+
+    /// Creates a new save job in `Pinned` state with an explicit [`SaveTriggerKind`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidArgument`] if `job_id` or `destination_path`
+    /// is empty, or [`StorageError::Sqlite`] / [`StorageError::Json`] on failure.
+    pub fn create_pinned_job_with_trigger(
+        &self,
+        job_id: &str,
+        destination_path: impl AsRef<Path>,
+        pinned_chunk_ids: &[String],
+        now_utc: &str,
+        trigger_kind: SaveTriggerKind,
+    ) -> Result<CatalogSaveJob, StorageError> {
         if job_id.trim().is_empty() {
             return Err(StorageError::InvalidArgument {
                 name: "job_id",
@@ -935,8 +962,8 @@ impl Catalog {
         conn.execute(
             "INSERT INTO save_jobs (
                 job_id, state, destination_path, pinned_chunks_json,
-                error_message, created_at_utc, updated_at_utc
-            ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
+                error_message, created_at_utc, updated_at_utc, trigger_kind
+            ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
             params![
                 job.job_id,
                 save_job_state_to_str(job.state),
@@ -944,12 +971,14 @@ impl Catalog {
                 chunks_json,
                 now_utc,
                 now_utc,
+                save_trigger_kind_to_str(trigger_kind),
             ],
         )
         .map_err(|source| StorageError::sqlite("create_pinned_job", source))?;
 
         Ok(CatalogSaveJob {
             job,
+            trigger_kind,
             created_at_utc: now_utc.to_owned(),
             updated_at_utc: now_utc.to_owned(),
         })
@@ -1076,7 +1105,7 @@ impl Catalog {
         let mut stmt = conn
             .prepare(
                 "SELECT job_id, state, destination_path, pinned_chunks_json,
-                        error_message, created_at_utc, updated_at_utc
+                        error_message, created_at_utc, updated_at_utc, trigger_kind
                  FROM save_jobs
                  ORDER BY created_at_utc ASC, job_id ASC",
             )
@@ -1556,6 +1585,7 @@ struct RawSaveJobRow {
     error_message: Option<String>,
     created_at_utc: String,
     updated_at_utc: String,
+    trigger_kind: String,
 }
 
 fn read_save_job_sql_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSaveJobRow> {
@@ -1567,11 +1597,13 @@ fn read_save_job_sql_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSaveJob
         error_message: row.get(4)?,
         created_at_utc: row.get(5)?,
         updated_at_utc: row.get(6)?,
+        trigger_kind: row.get(7)?,
     })
 }
 
 fn decode_save_job_row(raw: RawSaveJobRow) -> Result<CatalogSaveJob, StorageError> {
     let state = parse_save_job_state(&raw.state)?;
+    let trigger_kind = parse_save_trigger_kind(&raw.trigger_kind)?;
     let pinned_chunk_ids: Vec<String> = serde_json::from_str(&raw.pinned_chunks_json)
         .map_err(|source| StorageError::json("deserialize_pinned_chunks", source))?;
     Ok(CatalogSaveJob {
@@ -1582,6 +1614,7 @@ fn decode_save_job_row(raw: RawSaveJobRow) -> Result<CatalogSaveJob, StorageErro
             pinned_chunk_ids,
             last_error: raw.error_message,
         },
+        trigger_kind,
         created_at_utc: raw.created_at_utc,
         updated_at_utc: raw.updated_at_utc,
     })
@@ -1591,7 +1624,7 @@ fn fetch_save_job(conn: &Connection, job_id: &str) -> Result<Option<CatalogSaveJ
     let raw = conn
         .query_row(
             "SELECT job_id, state, destination_path, pinned_chunks_json,
-                    error_message, created_at_utc, updated_at_utc
+                    error_message, created_at_utc, updated_at_utc, trigger_kind
              FROM save_jobs
              WHERE job_id = ?1",
             params![job_id],
@@ -1606,7 +1639,7 @@ fn fetch_interrupted_save_jobs(conn: &Connection) -> Result<Vec<CatalogSaveJob>,
     let mut stmt = conn
         .prepare(
             "SELECT job_id, state, destination_path, pinned_chunks_json,
-                    error_message, created_at_utc, updated_at_utc
+                    error_message, created_at_utc, updated_at_utc, trigger_kind
              FROM save_jobs
              WHERE state IN ('pinned', 'draining', 'materializing')
              ORDER BY created_at_utc ASC, job_id ASC",
@@ -1747,6 +1780,48 @@ fn parse_bundle_state(value: &str) -> Result<BundleLifecycleState, StorageError>
         "purging" => Ok(BundleLifecycleState::Purging),
         other => Err(StorageError::CorruptData {
             reason: format!("unknown bundles.state `{other}`"),
+        }),
+    }
+}
+
+fn ensure_save_jobs_trigger_column(conn: &Connection) -> Result<(), StorageError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(save_jobs)")
+        .map_err(|source| StorageError::sqlite("pragma_save_jobs_info", source))?;
+    let cols = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|source| StorageError::sqlite("query_save_jobs_info", source))?;
+    let mut has_trigger_kind = false;
+    for col in cols {
+        let name = col.map_err(|source| StorageError::sqlite("read_save_jobs_col", source))?;
+        if name == "trigger_kind" {
+            has_trigger_kind = true;
+            break;
+        }
+    }
+    if !has_trigger_kind {
+        conn.execute(
+            "ALTER TABLE save_jobs ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'",
+            [],
+        )
+        .map_err(|source| StorageError::sqlite("migrate_save_jobs_trigger_kind", source))?;
+    }
+    Ok(())
+}
+
+const fn save_trigger_kind_to_str(kind: SaveTriggerKind) -> &'static str {
+    match kind {
+        SaveTriggerKind::CrashAutoSave => "crash_auto_save",
+        _ => "manual",
+    }
+}
+
+fn parse_save_trigger_kind(value: &str) -> Result<SaveTriggerKind, StorageError> {
+    match value {
+        "manual" => Ok(SaveTriggerKind::Manual),
+        "crash_auto_save" => Ok(SaveTriggerKind::CrashAutoSave),
+        other => Err(StorageError::CorruptData {
+            reason: format!("unknown save_jobs.trigger_kind `{other}`"),
         }),
     }
 }

@@ -395,6 +395,11 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         self.planner.policy()
     }
 
+    /// Updates the live [`RingBudgetPolicy`] used for subsequent ring writes and evictions.
+    pub const fn set_policy(&mut self, policy: RingBudgetPolicy) {
+        self.planner = RingEvictionPlanner::new(policy);
+    }
+
     /// Returns a reference to the injected [`DiskSpaceProvider`].
     #[must_use]
     pub const fn disk_provider(&self) -> &D {

@@ -141,6 +141,7 @@ fn sample_logs() -> Vec<LogRecord> {
 
 fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
     V2BundleDraft {
+        bundle_kind: arb_core::bundle::BundleKind::Full,
         bundle_id: bundle_id.to_owned(),
         created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
         provenance: Provenance::Original,

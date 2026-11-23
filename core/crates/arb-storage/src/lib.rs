@@ -14,9 +14,11 @@
 
 pub mod bundle_io;
 pub mod catalog;
+pub mod config;
 pub mod error;
 pub mod ring;
 
+pub use crate::config::sha256_hex;
 pub use crate::error::StorageError;
 
 /// Returns the crate identifier alongside the underlying domain schema version.
@@ -35,6 +37,7 @@ const _: () = {
     assert_send_sync::<bundle_io::V2BundleReader>();
     assert_send_sync::<bundle_io::LegacyBundleReader>();
     assert_send_sync::<catalog::Catalog>();
+    assert_send_sync::<config::ConfigStore>();
 };
 
 #[cfg(test)]

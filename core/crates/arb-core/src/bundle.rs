@@ -8,11 +8,27 @@ use thiserror::Error;
 use crate::BUNDLE_SCHEMA_VERSION;
 use crate::time::{TimeAlignment, TimestampSemantics};
 
+/// High-level bundle payload category recorded in `manifest.json`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleKind {
+    /// Standard full replay bundle (video, optional audio, logcat, input).
+    #[default]
+    Full,
+    /// Log-only WORM bundle containing logcat, unanchored sidecar, and discontinuities
+    /// without video or audio tracks.
+    LogsOnly,
+}
+
 /// Top-level `manifest.json` schema for ARB v2 immutable saved bundles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestV2 {
     /// Bundle manifest schema version; must equal [`BUNDLE_SCHEMA_VERSION`] (`2`).
     pub schema_version: u32,
+    /// High-level bundle payload category (`full` or `logs_only`; defaults to `full`).
+    #[serde(default)]
+    pub bundle_kind: BundleKind,
     /// Globally unique bundle identifier (e.g., ULID or UUID).
     pub bundle_id: String,
     /// Creation timestamp in ISO-8601 UTC format.
@@ -496,6 +512,23 @@ impl ManifestV2 {
             }
         }
 
+        if self.bundle_kind == BundleKind::LogsOnly {
+            if let Some(video) = &self.streams.video
+                && !matches!(video.status, StreamStatus::Absent | StreamStatus::Excluded)
+            {
+                return Err(ValidationError::InconsistentStreamMeta {
+                    reason: "logs_only bundle must have absent or excluded video stream",
+                });
+            }
+            if let Some(audio) = &self.streams.audio
+                && !matches!(audio.status, StreamStatus::Absent | StreamStatus::Excluded)
+            {
+                return Err(ValidationError::InconsistentStreamMeta {
+                    reason: "logs_only bundle must have absent or excluded audio stream",
+                });
+            }
+        }
+
         if let Some(video) = &self.streams.video
             && matches!(video.status, StreamStatus::Absent | StreamStatus::Excluded)
             && video.frame_count > 0
@@ -567,15 +600,17 @@ impl ManifestV2 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioStreamMeta, AvOffsetStatus, DeviceInfo, EpochSpan, FileDigest, InputStreamMeta,
-        LogCompleteness, LogcatStreamMeta, ManifestV2, Provenance, RequestedWindow, StreamStatus,
-        StreamsSummary, UnanchoredSummary, ValidationError, VideoStreamMeta,
+        AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FileDigest,
+        InputStreamMeta, LogCompleteness, LogcatStreamMeta, ManifestV2, Provenance,
+        RequestedWindow, StreamStatus, StreamsSummary, UnanchoredSummary, ValidationError,
+        VideoStreamMeta,
     };
     use crate::time::TimestampSemantics;
 
     fn valid_manifest() -> ManifestV2 {
         ManifestV2 {
             schema_version: 2,
+            bundle_kind: BundleKind::Full,
             bundle_id: "01JARB00000000000000000001".into(),
             created_at_utc: "2026-11-22T12:00:00Z".into(),
             provenance: Provenance::Original,

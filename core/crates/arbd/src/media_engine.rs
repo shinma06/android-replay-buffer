@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use arb_core::bundle::{
-    DeviceInfo, EpochSpan, FrameRecord, Provenance, RecordBucket, RequestedWindow, StreamStatus,
-    StreamsSummary, UnanchoredSummary, VideoStreamMeta,
+    BundleKind, DeviceInfo, EpochSpan, FrameRecord, Provenance, RecordBucket, RequestedWindow,
+    StreamStatus, StreamsSummary, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_for_trim_with_truncated};
 use arb_core::time::{DiscontinuityEvent, TimeAlignment, TimestampSemantics, UncertaintyReason};
@@ -743,6 +743,7 @@ fn build_trimmed_bundle_draft(
         is_emulator: false,
     });
     V2BundleDraft {
+        bundle_kind: BundleKind::Full,
         bundle_id: new_bundle_id.to_owned(),
         created_at_utc: now_utc.to_owned(),
         provenance: Provenance::Trimmed {
@@ -1026,6 +1027,7 @@ pub fn build_timeline_summary(
         bundle_id: summary.bundle_id.clone(),
         path: bundle_dir.to_path_buf(),
         format: summary.format,
+        bundle_kind: summary.bundle_kind,
         is_legacy: reader.is_legacy(),
         created_at_utc: summary.created_at_utc.clone(),
         provenance: summary.provenance.clone(),
