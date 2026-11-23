@@ -1,6 +1,8 @@
 //! GPL-free media container, codec, trim, and playback engine for ARB v2.
 //!
 //! Provides:
+//! - [`audio`]: Pure-Rust ISO-BMFF AAC-LC (`audio.m4a`) faststart muxer, `AudioSpecificConfig`
+//!   parser/builder, `Mp4AudioTrack` indexer, and zero-`elst` time-range trimmer.
 //! - [`mp4`]: Pure-Rust ISO-BMFF parser, frame/GOP indexer, raw H.264 muxer, and faststart
 //!   single-`stsd` `avc1` + in-band SPS/PPS splice muxer with strictly zero `edts`/`elst` boxes.
 //! - [`codec`]: Trait-abstracted [`codec::VideoCodecBackend`] with universal [`codec::OpenH264Backend`]
@@ -9,6 +11,7 @@
 //! - [`playback`]: External [`playback::FilmstripCache`], bounded [`playback::GopLruCache`],
 //!   latest-wins [`playback::ScrubController`], and [`playback::PresentationClock`].
 
+pub mod audio;
 pub mod codec;
 pub mod error;
 pub mod mp4;
@@ -16,6 +19,12 @@ mod output;
 pub mod playback;
 pub mod trim;
 
+pub use crate::audio::{
+    AAC_LC_OBJECT_TYPE, AAC_LC_SAMPLES_PER_FRAME, AAC_LC_SHORT_SAMPLES_PER_FRAME, AacMuxInput,
+    AacPacket, AudioMuxReport, AudioSpecificConfig, AudioTrimReport, IndexedAudioPacket,
+    Mp4AudioTrack, build_aac_lc_audio_specific_config, build_mp4a_sample_entry, mux_aac_to_m4a,
+    parse_audio_specific_config, strip_adts_header, trim_audio_m4a,
+};
 pub use crate::error::MediaError;
 
 #[cfg(test)]
