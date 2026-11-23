@@ -63,10 +63,14 @@ class ArbdProcessManager(
     fun resolveBundledBinary(exeName: String): Path? {
         val dir = pluginDir ?: return null
         val slug = HostOs.platformBinSlug(os, arch)
-        val candidates = listOf(
-            dir.resolve("native").resolve(slug).resolve(exeName),
-            dir.resolve("bin").resolve(slug).resolve(exeName),
-        )
+        // The Gradle bundler names Intel directories `<os>-x86_64`; accept it as the `x64` alias.
+        val slugs = if (arch == "x64") listOf(slug, "${os.bundleSlug}-x86_64") else listOf(slug)
+        val candidates = slugs.flatMap {
+            listOf(
+                dir.resolve("native").resolve(it).resolve(exeName),
+                dir.resolve("bin").resolve(it).resolve(exeName),
+            )
+        }
         for (candidate in candidates) {
             if (Files.isRegularFile(candidate)) {
                 return ensureUnixExecutable(candidate)
@@ -373,7 +377,11 @@ class ArbdProcessManager(
                     return ProbeResult.Stale("method not found: config.get")
                 }
             } catch (_: IOException) {
-                // hello already succeeded: a busy daemon (read timeout) is healthy, not absent.
+                // hello already succeeded: a busy daemon (read timeout) is not absent, but the
+                // timed-out transport is closed, so hand back a fresh connection instead of it.
+                runCatching { client.close() }
+                val fresh = tryConnectAndHello(endpoint)
+                return if (fresh != null) ProbeResult.Healthy(fresh) else ProbeResult.NotRunning
             }
             // If we have a bundled plugin binary that is strictly newer than the running daemon binary,
             // auto-upgrade transparently so installing a newer plugin ZIP takes effect immediately.

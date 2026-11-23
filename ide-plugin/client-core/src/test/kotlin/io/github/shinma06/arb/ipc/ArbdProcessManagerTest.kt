@@ -12,6 +12,17 @@ import kotlin.test.assertTrue
 
 class ArbdProcessManagerTest {
     @Test
+    fun resolvesBundledBinaryUnderGradleX8664Directory(@TempDir tmp: Path) {
+        val pluginDir = tmp.resolve("plugin-root")
+        val bundled = pluginDir.resolve("native").resolve("linux-x86_64").resolve("arbd")
+        Files.createDirectories(bundled.parent)
+        Files.writeString(bundled, "stub")
+        val paths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.LINUX)
+        val mgr = ArbdProcessManager(paths = paths, pluginDir = pluginDir, os = HostOs.LINUX, arch = "x64")
+        assertEquals(bundled, mgr.resolveBundledBinary("arbd"))
+    }
+
+    @Test
     fun resolvesDaemonBinaryInPriorityOrder(@TempDir tmp: Path) {
         val envBin = Files.writeString(tmp.resolve("env-arbd"), "stub")
         val pluginDir = tmp.resolve("plugin-root")

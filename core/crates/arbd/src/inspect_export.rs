@@ -934,7 +934,8 @@ fn render_inspect_tap_crop(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let (display_w, display_h) = orient_display_dims(display_dims, video_w, video_h);
+    let oriented = orient_display_dims(display_dims, video_w, video_h);
+    let (display_w, display_h) = oriented.unwrap_or((None, None));
     let (idx, tx, ty) = if let Some(tap_idx) = params.tap_index {
         let frames = reader.frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -969,6 +970,7 @@ fn render_inspect_tap_crop(
         };
         let x = match params.tap_x {
             Some(x) => x,
+            None if oriented.is_none() => return Err(unmapped()),
             None => map_tap_coord_to_frame(raw_x, display_w, video_w).ok_or_else(unmapped)?,
         };
         let y = match params.tap_y {
@@ -1027,7 +1029,9 @@ fn build_frame_tap_map(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
-    let (display_w, display_h) = orient_display_dims(display_dims, video_w, video_h);
+    let Some((display_w, display_h)) = orient_display_dims(display_dims, video_w, video_h) else {
+        return Ok(BTreeMap::new());
+    };
     let frames = reader.frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
@@ -1302,20 +1306,22 @@ fn clamp_coord_to_frame(raw: f64, dim: u32) -> u32 {
 /// the coordinate is only trusted when it already lies inside the video frame; a coordinate
 /// beyond the frame proves it is in a larger display space, so `None` is returned instead of
 /// pinning it to the frame edge.
-/// Orients the (natural portrait) display size to the video: when the video is landscape but
-/// the display is portrait (or vice versa) the axes are swapped.
+/// Checks that the (natural-orientation) display size matches the video orientation.
+///
+/// Raw tap axes are never rotated, so a landscape video of a portrait panel (or vice versa)
+/// cannot be mapped faithfully: `None` means "orientation mismatch, leave taps unmapped".
 fn orient_display_dims(
     display: (Option<u32>, Option<u32>),
     video_w: u32,
     video_h: u32,
-) -> (Option<u32>, Option<u32>) {
+) -> Option<(Option<u32>, Option<u32>)> {
     match display {
         (Some(dw), Some(dh))
             if video_w != video_h && dw != dh && (dw < dh) != (video_w < video_h) =>
         {
-            (Some(dh), Some(dw))
+            None
         }
-        other => other,
+        other => Some(other),
     }
 }
 
@@ -1476,14 +1482,18 @@ mod tests {
         assert_eq!(map_tap_coord_to_frame(f64::NAN, Some(10), 5), None);
         // Raw evdev values beyond the display are unmapped, never edge-clamped.
         assert_eq!(map_tap_coord_to_frame(16000.0, Some(1080), 460), None);
-        // Landscape video swaps the natural-portrait display axes.
+        // Orientation mismatch (landscape video of a portrait panel) is unmapped, not guessed.
         assert_eq!(
             orient_display_dims((Some(1080), Some(2400)), 2400, 1080),
-            (Some(2400), Some(1080))
+            None
         );
         assert_eq!(
             orient_display_dims((Some(1080), Some(2400)), 460, 1024),
-            (Some(1080), Some(2400))
+            Some((Some(1080), Some(2400)))
+        );
+        assert_eq!(
+            orient_display_dims((Some(1080), Some(2400)), 128, 128),
+            Some((Some(1080), Some(2400)))
         );
         assert_eq!(map_tap_coord_to_frame(-1.0, None, 5), None);
     }
