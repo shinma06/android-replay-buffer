@@ -30,30 +30,35 @@ import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
 import io.github.shinma06.arb.state.TrimCloseState
+import io.github.shinma06.arb.ui.ArbStudioContent
+import io.github.shinma06.arb.ui.ArbStudioController
 import io.github.shinma06.arb.ui.StudioExportFormat
-import io.github.shinma06.arb.ui.TimelineViewerPanel
+import org.jetbrains.jewel.bridge.JewelComposePanel
+import java.awt.BorderLayout
 import java.beans.PropertyChangeListener
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
 import javax.swing.JComponent
+import javax.swing.JFileChooser
+import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.math.roundToLong
 
 /**
- * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (v2 and Legacy RO bundles).
+ * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (v2 and Legacy RO bundles),
+ * rendered natively with JetBrains Jewel Compose (`JewelComposePanel`).
  *
  * Lifecycle & safety guarantees:
  * - Acquires a Viewer Lease via `bundle.open(holder_kind = ide_viewer)` and renews it periodically.
  * - Attaches to `arbd`'s SHM triple-buffered viewport via [ShmFrameRingReader].
  * - Drives continuous playback & deterministic range presets via T-3's [PlaybackController], and
- *   asynchronously decodes `audio.m4a` via T-2B's `media.decode_audio_pcm` -> [WavFilePcmSource] ->
+ *   asynchronously decodes `audio.m4a` via `media.decode_audio_pcm` -> [WavFilePcmSource] ->
  *   [AudioSyncPlayer] with real `av_offset_ms` (gracefully degrading when audio/hardware is absent).
  * - Exports standalone faststart zero-`elst` H.264+AAC `share.mp4` (+ optional trimmed WORM bundle)
- *   via T-2B's `export.share_mp4`, honoring `trash_original` ONLY on non-Legacy bundles!
+ *   via `export.share_mp4`, honoring `trash_original` ONLY on non-Legacy bundles.
  * - Tracks unexported custom trim bounds in [TrimCloseState] for [ArbBundlePreCloseCheck].
- * - On [dispose] (tab close), closes [PlaybackController] (and [AudioSyncPlayer]), unmaps SHM,
- *   closes viewport, and releases the lease off the EDT.
+ * - On [dispose], closes [PlaybackController], unmaps SHM, closes viewport, and releases the lease off EDT.
  */
 class ArbBundleFileEditor(
     private val project: Project,
@@ -86,13 +91,12 @@ class ArbBundleFileEditor(
     }
     private val trimCloseState = TrimCloseState()
 
-    private val panel: TimelineViewerPanel = TimelineViewerPanel(
+    internal val studioController: ArbStudioController = ArbStudioController(
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
         onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onRangeChanged = { inFrame, outFrame, playhead ->
-            // setIn/OutFrame may perform a blocking exact seek (IPC + SHM read): never on the EDT.
             trimCloseState.onRangeAdjusted(inFrame, outFrame)
             state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
             worker.submit {
@@ -129,7 +133,6 @@ class ArbBundleFileEditor(
         onSelectAroundCrash = { applySelectAroundCrash() },
         onResetFullRange = { applyResetFullRange() },
         onTrashOriginalToggled = { enabled ->
-            // Dedicated volatile flag: `state` is also rewritten by the playback thread on every frame.
             trashOriginalRequested = enabled
             state = state?.let { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
         },
@@ -149,14 +152,29 @@ class ArbBundleFileEditor(
             val jumped = sourceJumpResolver.resolveAndNavigate(target)
             if (!jumped) {
                 SwingUtilities.invokeLater {
-                    panel.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
+                    studioController.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
                 }
             }
         },
         onExportRequested = { inFrame, outFrame, format ->
             performExport(inFrame, outFrame, format)
         },
+        onChoosePngOutputPath = { bundleId, frameIndex, onChosen ->
+            SwingUtilities.invokeLater {
+                val chooser = JFileChooser().apply {
+                    dialogTitle = "フレーム #$frameIndex の PNG 保存先を選択"
+                    selectedFile = java.io.File("$bundleId-frame-$frameIndex.png")
+                }
+                if (chooser.showSaveDialog(rootComponent) == JFileChooser.APPROVE_OPTION) {
+                    onChosen(chooser.selectedFile.toPath())
+                }
+            }
+        },
     )
+
+    private val rootComponent: JPanel = JPanel(BorderLayout()).apply {
+        add(JewelComposePanel { ArbStudioContent(studioController) }, BorderLayout.CENTER)
+    }
 
     @Volatile
     private var leaseController: BundleLeaseController? = null
@@ -198,7 +216,6 @@ class ArbBundleFileEditor(
                     )
                 }
 
-                // Take ownership of the lease immediately so a tab closed mid-load cannot leak it.
                 val openedViewportId = java.util.concurrent.atomic.AtomicReference<String?>(null)
                 leaseController = BundleLeaseController(
                     leaseId = opened.leaseId,
@@ -296,7 +313,6 @@ class ArbBundleFileEditor(
                 val hasAudioTrack = opened.summary.audioPath != null ||
                     opened.summary.streams.audio?.status in setOf(StreamStatus.PRESENT, StreamStatus.PARTIAL)
 
-                // Wire T-3 PlaybackController immediately so video renders without waiting for AAC decode.
                 if (viewportId != null && frameCount > 0L) {
                     val seeker = object : FrameSeeker {
                         override fun seekExact(frameIndex: Long): FrameSeekResult {
@@ -323,7 +339,7 @@ class ArbBundleFileEditor(
                         onPlaybackError = { err -> logger.debug("ARB playback error", err) },
                     )
                     ctrl.addStateListener { pb ->
-                        SwingUtilities.invokeLater { panel.renderPlaybackState(pb) }
+                        SwingUtilities.invokeLater { studioController.renderPlaybackState(pb) }
                     }
                     playbackController = ctrl
                     if (disposed) {
@@ -331,15 +347,14 @@ class ArbBundleFileEditor(
                         return@submit
                     }
 
-                    // Asynchronously request T-2B `media.decode_audio_pcm` when bundle has audio present.
                     if (hasAudioTrack) {
-                        attachDecodedAudioAsync(opened.bundleId, fallbackAvOffsetMs, ctrl)
+                        attachDecodedAudioAsync(opened.bundleId, ctrl)
                     }
                 }
 
                 SwingUtilities.invokeLater {
-                    panel.renderState(initialState, image = null)
-                    playbackController?.state?.let(panel::renderPlaybackState)
+                    studioController.renderState(initialState, image = null)
+                    playbackController?.state?.let(studioController::renderPlaybackState)
                 }
 
                 if (viewportId != null && frameCount > 0L) {
@@ -348,7 +363,7 @@ class ArbBundleFileEditor(
             } catch (t: Throwable) {
                 logger.warn("Failed to open ARB bundle $bundleIdOrPath", t)
                 SwingUtilities.invokeLater {
-                    panel.showError("バンドルを開けませんでした: ${t.message}")
+                    studioController.showError("バンドルを開けませんでした: ${t.message}")
                 }
             }
         }
@@ -356,7 +371,6 @@ class ArbBundleFileEditor(
 
     private fun attachDecodedAudioAsync(
         bundleId: String,
-        fallbackAvOffsetMs: Long,
         controller: PlaybackController,
     ) {
         val task = Runnable {
@@ -372,7 +386,6 @@ class ArbBundleFileEditor(
             val wavPath = runCatching { Path.of(wavPathStr) }.getOrNull() ?: return@Runnable
             if (!Files.isRegularFile(wavPath)) return@Runnable
 
-            // decoded.available is guaranteed here, so a daemon-reported 0 ms is authoritative.
             val effectiveAvOffsetMs = decoded.avOffsetMs
             val player = runCatching {
                 AudioSyncPlayer(
@@ -392,7 +405,6 @@ class ArbBundleFileEditor(
         try {
             audioDecodeWorker.submit(task)
         } catch (_: java.util.concurrent.RejectedExecutionException) {
-            // Editor was disposed (worker shut down) between the disposed check and submit.
             logger.debug("ARB audio decode worker already shut down; skipping audio attach")
         }
     }
@@ -422,7 +434,9 @@ class ArbBundleFileEditor(
                 runCatching { ctrl.seekToFrame(frameIndex) }
                     .onFailure { t ->
                         logger.warn("ARB seek_frame failed", t)
-                        SwingUtilities.invokeLater { panel.showError("フレームシークに失敗しました: ${t.message}") }
+                        SwingUtilities.invokeLater {
+                            studioController.showError("フレームシークに失敗しました: ${t.message}")
+                        }
                     }
             }
             return
@@ -434,7 +448,9 @@ class ArbBundleFileEditor(
                 readShmAndRender()
             } catch (t: Throwable) {
                 logger.warn("ARB seek_frame failed", t)
-                SwingUtilities.invokeLater { panel.showError("フレームシークに失敗しました: ${t.message}") }
+                SwingUtilities.invokeLater {
+                    studioController.showError("フレームシークに失敗しました: ${t.message}")
+                }
             }
         }
     }
@@ -444,8 +460,8 @@ class ArbBundleFileEditor(
         val tapFrames = current.mainTapFrameIndices()
         if (tapFrames.isEmpty()) return
         val fps = current.estimatedFps
-        val padBefore = (fps * 1.0).roundToLong().coerceAtLeast(1L) // -1s
-        val padAfter = (fps * 2.0).roundToLong().coerceAtLeast(1L)  // +2s
+        val padBefore = (fps * 1.0).roundToLong().coerceAtLeast(1L)
+        val padAfter = (fps * 2.0).roundToLong().coerceAtLeast(1L)
         worker.submit {
             val ctrl = playbackController
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
@@ -455,7 +471,7 @@ class ArbBundleFileEditor(
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
                 SwingUtilities.invokeLater {
-                    panel.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
+                    studioController.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
                 }
             }
         }
@@ -465,8 +481,8 @@ class ArbBundleFileEditor(
         val current = state ?: return
         val crashFrame = current.primaryCrashFrameIndex() ?: return
         val fps = current.estimatedFps
-        val before = (fps * 5.0).roundToLong().coerceAtLeast(1L) // -5s
-        val after = (fps * 2.0).roundToLong().coerceAtLeast(1L)  // +2s
+        val before = (fps * 5.0).roundToLong().coerceAtLeast(1L)
+        val after = (fps * 2.0).roundToLong().coerceAtLeast(1L)
         worker.submit {
             val ctrl = playbackController
             if (ctrl != null) {
@@ -481,7 +497,7 @@ class ArbBundleFileEditor(
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
                 SwingUtilities.invokeLater {
-                    panel.updateState {
+                    studioController.updateState {
                         it.copy(
                             inFrameIndex = pb.inFrameIndex,
                             outFrameIndex = pb.outFrameIndex,
@@ -502,7 +518,7 @@ class ArbBundleFileEditor(
             val updated = (state ?: current).copy(inFrameIndex = 0L, outFrameIndex = maxF)
             state = updated
             persistEditSession(0L, maxF, updated.currentFrameIndex)
-            SwingUtilities.invokeLater { panel.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } }
+            SwingUtilities.invokeLater { studioController.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } }
         }
     }
 
@@ -512,8 +528,7 @@ class ArbBundleFileEditor(
         val image = frame.toBufferedImage()
         val prev = state ?: return
         state = TimelineViewerReducer.onFramePublished(prev, frame.meta)
-        // The panel owns UI-edited state (export bar, tap overlay, in/out): merge the frame there.
-        SwingUtilities.invokeLater { panel.applyFramePublished(frame.meta, image) }
+        SwingUtilities.invokeLater { studioController.applyFramePublished(frame.meta, image) }
     }
 
     private fun performExport(
@@ -525,8 +540,6 @@ class ArbBundleFileEditor(
         val isFullRange = current.frameCount > 0L &&
             inFrameIndex <= 0L &&
             outFrameIndex >= current.frameCount - 1L
-        // A full-range share.mp4 produces no WORM trimmed bundle, so trashing the original would
-        // leave only a lossy MP4 behind: never trash in that case.
         val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy &&
             !(format == StudioExportFormat.SHARE_MP4 && isFullRange)
 
@@ -569,13 +582,14 @@ class ArbBundleFileEditor(
                         )
                         state = updated
                         SwingUtilities.invokeLater {
-                            panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                            studioController.updateState {
+                                it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                            }
                         }
                         return@submit
                     }
                 }
 
-                // WORM bundle-only export (or fallback when connected to a pre-T-2B daemon without export.share_mp4)
                 val res = daemonService.withClient {
                     it.exportTrim(
                         ExportTrimParams(
@@ -588,8 +602,6 @@ class ArbBundleFileEditor(
                 }
                 trimCloseState.markExported(inFrameIndex, outFrameIndex)
 
-                // Non-destructive Trash of the original bundle happens ONLY after export succeeds,
-                // and is strictly forbidden for Legacy (RO) bundles.
                 val trashedNote = if (shouldTrashOriginal && !current.isLegacy) {
                     val failure = runCatching {
                         daemonService.withClient { it.bundleTrash(current.bundleId) }
@@ -617,11 +629,13 @@ class ArbBundleFileEditor(
                 )
                 state = updated
                 SwingUtilities.invokeLater {
-                    panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                    studioController.updateState {
+                        it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                    }
                 }
             } catch (t: Throwable) {
                 logger.warn("ARB export failed (format=$format)", t)
-                SwingUtilities.invokeLater { panel.showError("書き出しに失敗しました: ${t.message}") }
+                SwingUtilities.invokeLater { studioController.showError("書き出しに失敗しました: ${t.message}") }
             }
         }
     }
@@ -652,11 +666,13 @@ class ArbBundleFileEditor(
                 )
                 state = updated
                 SwingUtilities.invokeLater {
-                    panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                    studioController.updateState {
+                        it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                    }
                 }
             } catch (t: Throwable) {
                 logger.warn("ARB export.png failed", t)
-                SwingUtilities.invokeLater { panel.showError("PNG 書き出しに失敗しました: ${t.message}") }
+                SwingUtilities.invokeLater { studioController.showError("PNG 書き出しに失敗しました: ${t.message}") }
             }
         }
     }
@@ -681,9 +697,10 @@ class ArbBundleFileEditor(
         }
     }
 
-    override fun getComponent(): JComponent = panel
+    override fun getComponent(): JComponent = rootComponent
 
-    override fun getPreferredFocusedComponent(): JComponent = panel
+    override fun getPreferredFocusedComponent(): JComponent =
+        rootComponent.getComponent(0) as? JComponent ?: rootComponent
 
     override fun getName(): String = "ARB Studio"
 
@@ -708,7 +725,6 @@ class ArbBundleFileEditor(
         releaseResources()
     }
 
-    /** Idempotent and thread-safe: called from [dispose] and from the load task if it finishes after dispose. */
     @Synchronized
     private fun releaseResources() {
         val ctrl = playbackController
@@ -717,7 +733,6 @@ class ArbBundleFileEditor(
         shmReader = null
         val lease = leaseController
         leaseController = null
-        // Closing the controller joins the playback loop (possibly blocked in an IPC call): never on the EDT.
         ApplicationManager.getApplication().executeOnPooledThread {
             runCatching { ctrl?.close() }
             runCatching { reader?.close() }

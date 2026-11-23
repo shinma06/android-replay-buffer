@@ -1,25 +1,37 @@
 package io.github.shinma06.arb.ide
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import com.intellij.ide.plugins.cl.PluginAwareClassLoader
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
-import com.intellij.ui.components.JBScrollPane
-import com.intellij.util.ui.JBUI
 import io.github.shinma06.arb.model.IPC_PROTOCOL_VERSION
 import io.github.shinma06.arb.model.SystemHelloResponse
-import io.github.shinma06.arb.ui.ArbTheme
-import java.awt.BorderLayout
+import io.github.shinma06.arb.ui.ArbJewelPalette
+import io.github.shinma06.arb.ui.ArbScrollableColumn
+import org.jetbrains.jewel.bridge.JewelComposePanel
+import org.jetbrains.jewel.ui.Orientation
+import org.jetbrains.jewel.ui.component.Divider
+import org.jetbrains.jewel.ui.component.Text
 import java.awt.Dimension
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
 import javax.swing.Action
 import javax.swing.JComponent
-import javax.swing.JLabel
-import javax.swing.JPanel
-import javax.swing.JTextArea
 
 data class ArbAboutInfo(
     val pluginVersion: String,
@@ -51,7 +63,7 @@ data class ArbAboutInfo(
             "serde / serde_json / thiserror" to "MIT OR Apache-2.0",
             "tray-icon / muda / tao (cross-OS tray & menu)" to "MIT OR Apache-2.0",
             "Google Gson (client-core JSON-RPC serialization)" to "Apache-2.0",
-            "Kotlin Standard Library & IntelliJ Platform SDK" to "Apache-2.0",
+            "Kotlin Standard Library & IntelliJ Platform SDK / Jewel" to "Apache-2.0",
         )
 
         fun formatLicenseReport(): String = buildString {
@@ -73,93 +85,68 @@ data class ArbAboutInfo(
     }
 }
 
-/**
- * Pure Swing/IntUI content panel for the About & OSS Licenses dialog (zero emoji, headless-testable).
- */
-class ArbAboutPanel(val info: ArbAboutInfo) : JPanel(BorderLayout(0, 10)) {
-    val licenseTextArea: JTextArea = JTextArea(ArbAboutInfo.formatLicenseReport()).apply {
-        isEditable = false
-        lineWrap = true
-        wrapStyleWord = true
-        font = ArbTheme.monoFont(11f)
-        background = ArbTheme.elevatedBg
-        foreground = ArbTheme.primaryText
-        border = JBUI.Borders.empty(8, 10)
-        caretPosition = 0
+@Composable
+internal fun ArbAboutContent(info: ArbAboutInfo) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ArbJewelPalette.panelBackground())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "Android Replay Buffer (v2)",
+            style = ArbJewelPalette.bodyStyle(sizeSp = 14f, bold = true),
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            AboutMetaRow("プラグインバージョン:", info.pluginVersion)
+            AboutMetaRow("arbd デーモン:", info.daemonStatusSummary)
+            AboutMetaRow("プロトコル:", info.protocolSummary)
+            AboutMetaRow("GPL / AGPL 依存:", "0 件 (MIT / Apache-2.0 / BSD-2-Clause)")
+        }
+
+        Divider(orientation = Orientation.Horizontal, modifier = Modifier.fillMaxWidth())
+
+        Text(
+            text = "OSS ライセンス表記",
+            style = ArbJewelPalette.bodyStyle(sizeSp = 12f, bold = true),
+        )
+
+        SelectionContainer {
+            ArbScrollableColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(190.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(ArbJewelPalette.subtleTrackFill()),
+            ) {
+                Text(
+                    text = ArbAboutInfo.formatLicenseReport(),
+                    style = ArbJewelPalette.tabularMonoStyle(sizeSp = 11f),
+                    modifier = Modifier.padding(10.dp),
+                )
+            }
+        }
     }
+}
 
-    init {
-        background = ArbTheme.surfaceBg
-        isOpaque = true
-        border = JBUI.Borders.empty(12, 14)
-
-        val metaPanel = JPanel(GridBagLayout()).apply {
-            isOpaque = false
-        }
-        val gbc = GridBagConstraints().apply {
-            anchor = GridBagConstraints.WEST
-            fill = GridBagConstraints.HORIZONTAL
-            insets = JBUI.insets(3, 4)
-        }
-
-        val titleLabel = JLabel("Android Replay Buffer (v2)").apply {
-            font = ArbTheme.uiFont(14f, bold = true)
-            foreground = ArbTheme.primaryText
-        }
-        gbc.gridx = 0
-        gbc.gridy = 0
-        gbc.gridwidth = 2
-        gbc.weightx = 1.0
-        metaPanel.add(titleLabel, gbc)
-        gbc.gridwidth = 1
-
-        fun addMetaRow(row: Int, label: String, value: String) {
-            gbc.gridx = 0
-            gbc.gridy = row
-            gbc.weightx = 0.0
-            metaPanel.add(
-                JLabel(label).apply {
-                    font = ArbTheme.uiFont(11.5f, bold = true)
-                    foreground = ArbTheme.secondaryText
-                },
-                gbc,
-            )
-            gbc.gridx = 1
-            gbc.weightx = 1.0
-            metaPanel.add(
-                JLabel(value).apply {
-                    font = ArbTheme.monoFont(11.5f)
-                    foreground = ArbTheme.primaryText
-                },
-                gbc,
-            )
-        }
-
-        addMetaRow(1, "プラグインバージョン:", info.pluginVersion)
-        addMetaRow(2, "arbd デーモン:", info.daemonStatusSummary)
-        addMetaRow(3, "プロトコル:", info.protocolSummary)
-        addMetaRow(4, "GPL / AGPL 依存:", "0 件 (MIT / Apache-2.0 / BSD-2-Clause)")
-
-        val licenseSection = JPanel(BorderLayout(0, 6)).apply {
-            isOpaque = false
-            add(
-                JLabel("OSS ライセンス表記").apply {
-                    font = ArbTheme.uiFont(12f, bold = true)
-                    foreground = ArbTheme.primaryText
-                },
-                BorderLayout.NORTH,
-            )
-            add(
-                JBScrollPane(licenseTextArea).apply {
-                    preferredSize = Dimension(JBUI.scale(520), JBUI.scale(190))
-                    border = ArbTheme.cardBorder(0, 0)
-                },
-                BorderLayout.CENTER,
-            )
-        }
-
-        add(metaPanel, BorderLayout.NORTH)
-        add(licenseSection, BorderLayout.CENTER)
+@Composable
+private fun AboutMetaRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = label,
+            style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, bold = true, color = ArbJewelPalette.mutedText()),
+            modifier = Modifier.width(142.dp),
+        )
+        Text(
+            text = value,
+            style = ArbJewelPalette.tabularMonoStyle(sizeSp = 11.5f),
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -173,7 +160,11 @@ class ArbAboutDialog(
         init()
     }
 
-    override fun createCenterPanel(): JComponent = ArbAboutPanel(info)
+    override fun createCenterPanel(): JComponent = JewelComposePanel {
+        ArbAboutContent(info)
+    }.apply {
+        preferredSize = Dimension(540, 380)
+    }
 
     override fun createActions(): Array<Action> = arrayOf(okAction)
 }
