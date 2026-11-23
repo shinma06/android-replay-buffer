@@ -7,6 +7,36 @@ description = "Menu bar and system tray client for Android Replay Buffer (ARB) v
 
 [dependencies]
 arb-core.workspace = true
+arb-os.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Native OS tray/menu-bar frontend. Strictly MIT/Apache-2.0 licensed:
+# - `tray-icon` + `muda` (Tauri project, MIT OR Apache-2.0) use AppKit on macOS and Win32 on
+#   Windows directly (no GTK). On Linux we select the `ksni` backend (pure-Rust
+#   StatusNotifierItem over D-Bus via `zbus`, Unlicense) instead of the default
+#   `libappindicator` backend, so no GTK3 system library is required to build or run headlessly.
+# - `tao` (Tauri project, Apache-2.0) only pumps the OS event loop that `tray-icon` requires on
+#   macOS/Windows; it is not pulled in on Linux (`ksni` manages its own worker thread), so no GTK
+#   dependency is introduced there either.
+# All transitive crates are verified GPL/AGPL-free by `core/scripts/check-licenses.py`.
+tray-icon = { version = "0.26", default-features = false, features = [
+    "ksni",
+], optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = { version = "0.37", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["native-tray"]
+# Enables the real OS menu bar / system tray frontend (`src/native_tray.rs`). The tray
+# controller, RPC client, and view-state/notification logic are always compiled and tested
+# headlessly regardless of this feature so CI can fully exercise them without a display.
+native-tray = ["dep:tray-icon", "dep:tao"]
 
 [lints]
 workspace = true
