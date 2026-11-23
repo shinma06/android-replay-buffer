@@ -47,10 +47,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.intellij.ui.JBColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import org.jetbrains.jewel.bridge.toComposeColor
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.Text
@@ -66,18 +64,32 @@ import org.jetbrains.jewel.ui.theme.scrollbarStyle
  * so Light & Dark themes and Android Studio's exact panel surface match seamlessly.
  */
 object ArbJewelPalette {
-    private val recRedJb = JBColor(java.awt.Color(0xD93848), java.awt.Color(0xE85A67))
-    private val warningAmberJb = JBColor(java.awt.Color(0xB26B00), java.awt.Color(0xE5A645))
-    private val infoCyanJb = JBColor(java.awt.Color(0x0E81A2), java.awt.Color(0x4CC2E0))
-    private val successGreenJb = JBColor(java.awt.Color(0x1F8038), java.awt.Color(0x5DB365))
-    private val trimGoldJb = JBColor(java.awt.Color(0xD49B1A), java.awt.Color(0xE8B931))
+    /**
+     * Light/dark semantic accent pair. Resolved against `JewelTheme.isDark` (a composition read),
+     * so a Light <-> Dark switch recomposes every reader immediately. `JBColor.toComposeColor()`
+     * reads no Compose state and could keep stale colors until an unrelated recomposition.
+     */
+    internal class Tone(val lightRgb: Int, val darkRgb: Int) {
+        fun rgb(isDark: Boolean): Int = if (isDark) darkRgb else lightRgb
+    }
 
-    private val screenSpanLightDark: List<JBColor> = listOf(
-        JBColor(java.awt.Color(0x3574F0), java.awt.Color(0x548AF7)),
-        JBColor(java.awt.Color(0x1F8A5B), java.awt.Color(0x47B383)),
-        JBColor(java.awt.Color(0x7A56E1), java.awt.Color(0x9C7CF2)),
-        JBColor(java.awt.Color(0xC97A16), java.awt.Color(0xE0A03D)),
+    internal val REC_RED = Tone(0xD93848, 0xE85A67)
+    internal val WARNING_AMBER = Tone(0xB26B00, 0xE5A645)
+    internal val INFO_CYAN = Tone(0x0E81A2, 0x4CC2E0)
+    internal val SUCCESS_GREEN = Tone(0x1F8038, 0x5DB365)
+    internal val TRIM_GOLD = Tone(0xD49B1A, 0xE8B931)
+
+    private val screenSpanTones: List<Tone> = listOf(
+        Tone(0x3574F0, 0x548AF7),
+        Tone(0x1F8A5B, 0x47B383),
+        Tone(0x7A56E1, 0x9C7CF2),
+        Tone(0xC97A16, 0xE0A03D),
     )
+
+    internal fun opaque(rgb: Int): Color = Color(0xFF000000.toInt() or (rgb and 0x00FFFFFF))
+
+    @Composable
+    private fun Tone.resolve(): Color = opaque(rgb(JewelTheme.isDark))
 
     @Composable
     fun panelBackground(): Color = JewelTheme.globalColors.panelBackground
@@ -107,35 +119,39 @@ object ArbJewelPalette {
     fun accentSoft(): Color = accent().copy(alpha = if (JewelTheme.isDark) 0.22f else 0.14f)
 
     @Composable
-    fun recRed(): Color = recRedJb.toComposeColor()
+    fun recRed(): Color = REC_RED.resolve()
 
     @Composable
     fun recRedSoft(): Color = recRed().copy(alpha = if (JewelTheme.isDark) 0.18f else 0.10f)
 
     @Composable
-    fun warningAmber(): Color = warningAmberJb.toComposeColor()
+    fun warningAmber(): Color = WARNING_AMBER.resolve()
 
     @Composable
     fun warningAmberSoft(): Color = warningAmber().copy(alpha = if (JewelTheme.isDark) 0.18f else 0.12f)
 
     @Composable
-    fun infoCyan(): Color = infoCyanJb.toComposeColor()
+    fun infoCyan(): Color = INFO_CYAN.resolve()
 
     @Composable
     fun infoCyanSoft(): Color = infoCyan().copy(alpha = if (JewelTheme.isDark) 0.18f else 0.11f)
 
     @Composable
-    fun successGreen(): Color = successGreenJb.toComposeColor()
+    fun successGreen(): Color = SUCCESS_GREEN.resolve()
 
     @Composable
     fun successGreenSoft(): Color = successGreen().copy(alpha = if (JewelTheme.isDark) 0.18f else 0.10f)
 
     @Composable
-    fun trimAccent(): Color = trimGoldJb.toComposeColor()
+    fun trimAccent(): Color = TRIM_GOLD.resolve()
+
+    /** Grip lines drawn on top of the gold trim handles (theme panel surface, no hardcoded hex). */
+    @Composable
+    fun trimHandleGrip(): Color = panelBackground()
 
     @Composable
     fun screenSpanColor(index: Int): Color =
-        screenSpanLightDark[index % screenSpanLightDark.size].toComposeColor()
+        screenSpanTones[index % screenSpanTones.size].resolve()
             .copy(alpha = if (JewelTheme.isDark) 0.26f else 0.16f)
 
     @Composable
@@ -165,7 +181,8 @@ fun ArbTooltip(
     content: @Composable () -> Unit,
 ) {
     if (tooltip.isBlank()) {
-        content()
+        // Keep the caller's layout modifier (e.g. `weight(1f)`) even without a tooltip.
+        Box(modifier = modifier) { content() }
     } else {
         Tooltip(tooltip = { Text(tooltip) }, modifier = modifier, content = content)
     }
@@ -253,24 +270,30 @@ fun ArbFilterTab(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val shape = RoundedCornerShape(6.dp)
     val bg = when {
         selected -> ArbJewelPalette.accentSoft()
-        hovered -> ArbJewelPalette.subtleHoverFill()
+        hovered && enabled -> ArbJewelPalette.subtleHoverFill()
         else -> Color.Transparent
     }
-    val fg = if (selected) ArbJewelPalette.accent() else ArbJewelPalette.mutedText()
+    val fg = when {
+        !enabled -> ArbJewelPalette.dimmedText()
+        selected -> ArbJewelPalette.accent()
+        else -> ArbJewelPalette.mutedText()
+    }
     Box(
         modifier = modifier
             .clip(shape)
             .background(bg, shape)
-            .hoverable(interactionSource)
+            .hoverable(interactionSource, enabled = enabled)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                enabled = enabled,
                 role = Role.Tab,
                 onClick = onClick,
             )

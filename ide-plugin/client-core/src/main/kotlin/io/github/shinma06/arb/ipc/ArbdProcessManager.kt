@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Resolves the `arbd` (and sibling `arb-tray` / `device-agent` DEX JARs / `adb`) binary locations,
@@ -26,6 +27,21 @@ class ArbdProcessManager(
     private val customBinaryProvider: () -> Path? = { null },
     private val ideAndroidSdkProvider: () -> Path? = { null },
 ) {
+    /**
+     * Loop guard: identity-based (same-path mtime / `build_id`) auto-upgrade restarts `arbd` at most
+     * once per IDE session. A failing replacement (e.g. an unkillable stale daemon or a clock skew
+     * that keeps the on-disk mtime "newer") then degrades to using the running daemon instead of
+     * restarting it on every reconnect. Protocol/RPC incompatibility upgrades are not limited.
+     */
+    private val identityUpgradeClaimed = AtomicBoolean(false)
+
+    /** `true` once this session has already spent its single identity-based auto-upgrade. */
+    val identityUpgradeAttempted: Boolean
+        get() = identityUpgradeClaimed.get()
+
+    /** Claims the single per-session identity-based auto-upgrade; `false` if already spent. */
+    fun tryClaimIdentityUpgrade(): Boolean = identityUpgradeClaimed.compareAndSet(false, true)
+
     /**
      * Resolution order:
      * 1. `ARB_DAEMON_PATH` env var (and `ARB_DAEMON_BIN` fallback)
@@ -389,9 +405,11 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            if (shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs)) {
+            if (shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs, hello.buildId) &&
+                tryClaimIdentityUpgrade()
+            ) {
                 runCatching { client.close() }
-                return ProbeResult.Stale("bundled arbd is newer than running $runningExe")
+                return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})")
             }
             ProbeResult.Healthy(ConnectedDaemon(client = client, hello = hello, spawnedProcess = null))
         } catch (_: Exception) {
@@ -463,25 +481,59 @@ class ArbdProcessManager(
         private const val POLL_INTERVAL_MS: Long = 50L
 
         /**
-         * Returns `true` when a bundled plugin `arbd` is strictly newer on disk than the running
-         * daemon binary — either at a different path (normal plugin upgrade) OR at the same path
-         * when [runningBinaryMtimeSecs] from `system.hello` is older than the current on-disk file
-         * mtime (in-place plugin upgrade).
+         * Returns `true` when the bundled plugin `arbd` should replace the running daemon:
+         * - different path (normal plugin upgrade): the bundled file is strictly newer on disk;
+         * - same path (in-place plugin ZIP overwrite): the on-disk mtime is strictly newer than
+         *   [runningBinaryMtimeSecs] from `system.hello`, OR the on-disk size differs from the size
+         *   recorded in [runningBuildId] (`<version>-<size>-<mtime>`), which catches reinstalls whose
+         *   ZIP entries carry fixed/reproducible timestamps.
+         *
+         * Callers must pair this with [tryClaimIdentityUpgrade] so a restart happens at most once.
          */
         fun shouldAutoUpgradeBinary(
             runningExe: Path?,
             bundledBinary: Path?,
             runningBinaryMtimeSecs: Long? = null,
+            runningBuildId: String? = null,
         ): Boolean {
             if (runningExe == null || bundledBinary == null) return false
             if (!Files.isRegularFile(runningExe) || !Files.isRegularFile(bundledBinary)) return false
             val bundledMtime = runCatching { Files.getLastModifiedTime(bundledBinary) }.getOrNull() ?: return false
             val sameFile = runCatching { Files.isSameFile(runningExe, bundledBinary) }.getOrDefault(false)
             if (sameFile) {
-                return runningBinaryMtimeSecs != null && bundledMtime.toInstant().epochSecond > runningBinaryMtimeSecs
+                if (runningBinaryMtimeSecs != null && bundledMtime.toInstant().epochSecond > runningBinaryMtimeSecs) {
+                    return true
+                }
+                val identity = parseBuildIdentity(runningBuildId) ?: return false
+                val bundledSize = runCatching { Files.size(bundledBinary) }.getOrNull() ?: return false
+                return identity.sizeBytes != bundledSize
             }
             val runningMtime = runCatching { Files.getLastModifiedTime(runningExe) }.getOrNull() ?: return false
             return bundledMtime > runningMtime
         }
+
+        /**
+         * Parses `arbd`'s `system.hello` `build_id` (`<CARGO_PKG_VERSION>-<size_bytes>-<mtime_secs>`).
+         * The version may itself contain `-`, so the two numeric fields are taken from the end.
+         */
+        fun parseBuildIdentity(buildId: String?): DaemonBuildIdentity? {
+            val raw = buildId?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val mtimeSep = raw.lastIndexOf('-')
+            if (mtimeSep <= 0) return null
+            val sizeSep = raw.lastIndexOf('-', mtimeSep - 1)
+            if (sizeSep <= 0) return null
+            val version = raw.substring(0, sizeSep)
+            val size = raw.substring(sizeSep + 1, mtimeSep).toLongOrNull() ?: return null
+            val mtime = raw.substring(mtimeSep + 1).toLongOrNull() ?: return null
+            if (version.isBlank() || size < 0L || mtime < 0L) return null
+            return DaemonBuildIdentity(version = version, sizeBytes = size, mtimeSecs = mtime)
+        }
     }
 }
+
+/** Parsed `system.hello` `build_id` fingerprint of the running `arbd` executable. */
+data class DaemonBuildIdentity(
+    val version: String,
+    val sizeBytes: Long,
+    val mtimeSecs: Long,
+)

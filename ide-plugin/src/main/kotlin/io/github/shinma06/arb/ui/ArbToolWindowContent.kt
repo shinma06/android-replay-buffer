@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.shinma06.arb.model.BundleKind
+import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.SaveJobView
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.BundleCatalogItem
@@ -139,6 +140,20 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 }
             }
 
+            // Inline device-selection prompt (zero height unless the user must pick / reconnect)
+            controller.deviceSelectionNotice?.let { notice ->
+                Text(
+                    text = notice,
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11f, color = ArbJewelPalette.warningAmber()),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { contentDescription = notice },
+                )
+            }
+
+            // Row 1b: quiet capture-mode toggle (映像＋ログ / ログのみ) + `ログのみ常時` status chip
+            CaptureModeRow(controller)
+
             // Row 2: Slim rounded ring fill indicator + muted tabular seconds & audio status
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 RingFillBar(
@@ -157,7 +172,11 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = if (capture.config.audioEnabled) "音声 ON" else "音声 OFF",
+                        text = when {
+                            controller.isLogsOnlyMode -> "映像・音声なし"
+                            capture.config.audioEnabled -> "音声 ON"
+                            else -> "音声 OFF"
+                        },
                         style = ArbJewelPalette.bodyStyle(
                             sizeSp = 10.5f,
                             color = if (capture.config.audioEnabled) ArbJewelPalette.mutedText() else ArbJewelPalette.dimmedText(),
@@ -364,6 +383,46 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureModeRow(controller: ArbToolWindowController) {
+    val mode = controller.captureMode
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "モード",
+            style = ArbJewelPalette.bodyStyle(sizeSp = 11f, color = ArbJewelPalette.mutedText()),
+            modifier = Modifier.padding(end = 4.dp),
+        )
+        for (option in CaptureMode.entries) {
+            ArbTooltip(
+                when (option) {
+                    CaptureMode.VIDEO_AND_LOGS -> "画面録画・音声・ログ・タップを常時記録"
+                    CaptureMode.LOGS_ONLY -> "映像を止めてログ・クラッシュ・画面遷移のみを低負荷で常時記録"
+                },
+            ) {
+                ArbFilterTab(
+                    label = ArbToolWindowController.captureModeLabel(option),
+                    selected = mode == option,
+                    enabled = controller.captureModeToggleEnabled,
+                    onClick = { controller.setCaptureMode(option) },
+                )
+            }
+        }
+        Box(modifier = Modifier.weight(1f))
+        controller.captureModeChipText?.let { chip ->
+            ArbSemanticPill(
+                label = chip,
+                background = ArbJewelPalette.infoCyanSoft(),
+                foreground = ArbJewelPalette.infoCyan(),
+                tooltip = "ログのみモードで常時記録中（端末側の映像エンコード負荷なし）",
             )
         }
     }
@@ -623,11 +682,11 @@ private fun LibraryBundleRow(
             ) {
                 IconActionButton(
                     key = AllIconsKeys.Nodes.Folder,
-                    contentDescription = "Finder で表示",
+                    contentDescription = "フォルダを表示",
                     onClick = onReveal,
                     modifier = Modifier.size(22.dp),
                 ) {
-                    Text("Finder で表示")
+                    Text("フォルダを表示")
                 }
                 if (item.canTrash) {
                     IconActionButton(
