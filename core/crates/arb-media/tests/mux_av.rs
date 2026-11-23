@@ -362,6 +362,9 @@ fn positive_lead_in_is_reported_without_elst() {
 
     assert!(report.audio_included);
     assert_eq!(report.audio_packets_skipped_leading, 0);
+    // Shifted start < 2.0 s => pts < 1.5 s => packets 0..=70 (71 packets; 29 dropped).
+    assert_eq!(report.audio_packet_count, 71);
+    assert_eq!(report.audio_packets_dropped_trailing, 29);
     assert_eq!(
         report.audio_start_ns, 0,
         "audio cannot be delayed without elst"
@@ -376,6 +379,35 @@ fn positive_lead_in_is_reported_without_elst() {
     assert_eq!((atoms.edts_count, atoms.elst_count), (0, 0));
     let audio = Mp4AudioTrack::open(&out).expect("open audio");
     assert_eq!(audio.packets()[0].pts_ns, 0);
+    assert_eq!(audio.packet_count(), 71);
+}
+
+#[test]
+fn positive_lead_in_boundary_at_video_end_is_continuous() {
+    let fx = fixture();
+
+    // 1 ns before the 2.0 s video end: only packet #0 has shifted start < video_duration_ns.
+    let just_before = fx.dir.join("pos_before_end.mp4");
+    let before_report = mux_share_mp4(&fx.video, Some(&fx.audio), 1_999_999_999, &just_before)
+        .expect("mux just before end");
+    assert!(before_report.audio_included);
+    assert_eq!(before_report.audio_packet_count, 1);
+    assert_eq!(before_report.audio_packets_skipped_leading, 0);
+    assert_eq!(before_report.audio_packets_dropped_trailing, 99);
+    assert_eq!(before_report.audio_residual_offset_ns, 1_999_999_999);
+
+    // Exactly at the 2.0 s video end: 0 packets lie in range -> clean video-only fallback.
+    let at_end = fx.dir.join("pos_at_end.mp4");
+    let at_report =
+        mux_share_mp4(&fx.video, Some(&fx.audio), 2_000_000_000, &at_end).expect("mux at end");
+    assert!(!at_report.audio_included);
+    assert_eq!(at_report.audio_packet_count, 0);
+    assert_eq!(at_report.audio_packets_dropped_trailing, 100);
+    assert_eq!(at_report.audio_residual_offset_ns, 0);
+    assert_eq!(
+        count_boxes(&inspect_mp4_atoms(&at_end).expect("inspect"), *b"trak"),
+        1
+    );
 }
 
 #[test]

@@ -8,8 +8,10 @@
 //! - video `trak` (`track_ID = 1`, `avc1`) and, when audio survives range selection, audio
 //!   `trak` (`track_ID = 2`, `mp4a`/`esds`);
 //! - **strictly zero `edts` / `elst` boxes**: both tracks start at media time `0`;
-//! - samples are stream-copied (video keyframes keep their in-band SPS/PPS bit-for-bit) with
-//!   one reused buffer, and interleaved in ~1 s chunks so progressive players need no far seeks;
+//! - samples are stream-copied (video keyframes keep their in-band SPS/PPS bit-for-bit) using
+//!   reused scratch buffers without per-sample allocations (keyframes and non-4-byte-NAL samples
+//!   are scanned without materialising output bytes during `stsz` sizing), and interleaved in ~1 s
+//!   chunks so progressive players need no far seeks;
 //! - published crash-safely **without replacing** an existing file and refusing to target an
 //!   input file (symlink-safe), exactly like the other `arb-media` writers.
 //!
@@ -27,8 +29,10 @@
 //!   `elst` delay, no synthesized silence); the whole requested offset is reported in
 //!   [`AvMuxReport::audio_residual_offset_ns`] so callers can surface the residual skew.
 //!
-//! Audio access units whose (shifted) start is at or after the video's end are dropped so the
-//! audio never outlasts the picture by more than one packet.
+//! Audio access units whose shifted start (`pts + offset`) is at or after the video's end
+//! (`video_duration_ns`) are dropped uniformly for both negative and positive offsets, so the
+//! selected packets are exactly those overlapping `[0, video_duration_ns)` on the shifted
+//! timeline.
 
 use std::io::Write;
 use std::path::Path;
@@ -40,8 +44,9 @@ use crate::error::MediaError;
 use crate::mp4::{
     AvccConfig, ChunkOffsetMode, IndexedFrame, MAX_TRACK_SAMPLES, Mp4VideoTrack,
     avcc_with_4byte_lengths, box_wrap, build_avc1_entry, build_mdhd, build_mvhd_with_next_track_id,
-    full_box_wrap, normalize_avcc_nal_lengths, prepend_param_sets_4byte,
-    require_supported_nal_length_size, sample_size_u32, split_avcc_nals, ticks_to_ns_unsigned,
+    for_each_avcc_nal, full_box_wrap, normalize_avcc_nal_lengths_into, normalized_avcc_sample_len,
+    prepend_param_sets_4byte_into, prepended_param_sets_4byte_len,
+    require_supported_nal_length_size, sample_size_u32, ticks_to_ns_unsigned,
 };
 use crate::output::{Publish, ensure_output_is_not_input, write_atomically};
 
@@ -254,7 +259,6 @@ pub fn mux_share_mp4(
 // Planning
 // ---------------------------------------------------------------------------------------------
 
-/// Whether the rendered sample needs reading and rewriting (parameter sets / NAL length size).
 /// How [`render_video_sample`] rewrites a sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenderMode {
@@ -282,37 +286,61 @@ fn video_sample_needs_render(cfg: &AvccConfig, mode: RenderMode) -> bool {
 fn has_inband_param_sets(sample: &[u8]) -> bool {
     let mut sps = false;
     let mut pps = false;
-    for nal in split_avcc_nals(sample, 4) {
+    let _ = for_each_avcc_nal(sample, 4, |nal| {
         match nal[0] & 0x1F {
             7 => sps = true,
             8 => pps = true,
             _ => {}
         }
-    }
+        Ok(())
+    });
     sps && pps
 }
 
-/// Renders video sample `raw` for the output: 4-byte NAL lengths and, for the first sample and
-/// every keyframe, in-band SPS/PPS. Samples that already satisfy this are copied bit-for-bit.
+/// Computes the exact byte length [`render_video_sample`] will produce without materialising
+/// rewritten bytes.
+fn rendered_video_sample_len(
+    cfg: &AvccConfig,
+    raw: &[u8],
+    mode: RenderMode,
+) -> Result<usize, MediaError> {
+    if mode == RenderMode::WithParamSets {
+        if cfg.nal_length_size == 4 && has_inband_param_sets(raw) {
+            Ok(raw.len())
+        } else {
+            prepended_param_sets_4byte_len(cfg, raw)
+        }
+    } else if cfg.nal_length_size == 4 {
+        Ok(raw.len())
+    } else {
+        normalized_avcc_sample_len(raw, cfg.nal_length_size)
+    }
+}
+
+/// Renders video sample `raw` into `out` (reusing its allocation): 4-byte NAL lengths and, for the
+/// first sample and every keyframe, in-band SPS/PPS. Samples that already satisfy this are copied
+/// bit-for-bit.
 fn render_video_sample(
     cfg: &AvccConfig,
     raw: &[u8],
     mode: RenderMode,
     out: &mut Vec<u8>,
 ) -> Result<(), MediaError> {
-    out.clear();
     if mode == RenderMode::WithParamSets {
         if cfg.nal_length_size == 4 && has_inband_param_sets(raw) {
+            out.clear();
             out.extend_from_slice(raw);
+            Ok(())
         } else {
-            out.extend_from_slice(&prepend_param_sets_4byte(cfg, raw)?);
+            prepend_param_sets_4byte_into(cfg, raw, out)
         }
     } else if cfg.nal_length_size == 4 {
+        out.clear();
         out.extend_from_slice(raw);
+        Ok(())
     } else {
-        out.extend_from_slice(&normalize_avcc_nal_lengths(raw, cfg.nal_length_size)?);
+        normalize_avcc_nal_lengths_into(raw, cfg.nal_length_size, out)
     }
-    Ok(())
 }
 
 fn plan_video(video: &Mp4VideoTrack) -> Result<VideoPlan, MediaError> {
@@ -331,13 +359,11 @@ fn plan_video(video: &Mp4VideoTrack) -> Result<VideoPlan, MediaError> {
 
     let mut table = SampleTable::default();
     let mut raw = Vec::new();
-    let mut rendered = Vec::new();
     for (pos, info) in video.frames().iter().enumerate() {
         let mode = RenderMode::for_sample(pos, info);
         let size = if video_sample_needs_render(cfg, mode) {
             video.read_sample_into(info.frame_index, &mut raw)?;
-            render_video_sample(cfg, &raw, mode, &mut rendered)?;
-            sample_size_u32(rendered.len())?
+            sample_size_u32(rendered_video_sample_len(cfg, &raw, mode)?)?
         } else {
             info.size
         };
@@ -374,16 +400,14 @@ struct AudioSelection {
 
 fn select_audio(track: &Mp4AudioTrack, offset_ns: i64, video_duration_ns: u64) -> AudioSelection {
     let packets = track.packets();
-    let offset = i128::from(offset_ns);
-    if offset >= i128::from(video_duration_ns) && offset > 0 {
-        // The audio would only begin after the picture has ended: nothing lies in range.
+    if video_duration_ns == 0 {
         return AudioSelection {
-            first: 0,
-            count: 0,
             dropped_trailing: u64::try_from(packets.len()).unwrap_or(u64::MAX),
             ..AudioSelection::default()
         };
     }
+    let offset = i128::from(offset_ns);
+    let video_end = i128::from(video_duration_ns);
     let mut first = 0usize;
     if offset < 0 {
         while let Some(p) = packets.get(first) {
@@ -405,27 +429,25 @@ fn select_audio(track: &Mp4AudioTrack, offset_ns: i64, video_duration_ns: u64) -
 
     let mut count = 0usize;
     for p in &packets[first..] {
-        let placed = ticks_to_ns_unsigned(
-            p.pts_ticks.saturating_sub(first_packet.pts_ticks),
-            track.timescale(),
-        );
-        if placed >= video_duration_ns {
+        let shifted_start = i128::from(p.pts_ns) + offset;
+        if shifted_start >= video_end {
             break;
         }
         count += 1;
     }
     let dropped = packets.len() - first - count;
-    let ideal_first = i128::from(first_packet.pts_ns) + offset;
+    let ideal_first_start_ns = if count > 0 {
+        let ideal_first = i128::from(first_packet.pts_ns) + offset;
+        i64::try_from(ideal_first).unwrap_or(if ideal_first < 0 { i64::MIN } else { i64::MAX })
+    } else {
+        0
+    };
     AudioSelection {
         first,
         count,
         skipped_leading: u64::try_from(first).unwrap_or(u64::MAX),
         dropped_trailing: u64::try_from(dropped).unwrap_or(u64::MAX),
-        ideal_first_start_ns: i64::try_from(ideal_first).unwrap_or(if ideal_first < 0 {
-            i64::MIN
-        } else {
-            i64::MAX
-        }),
+        ideal_first_start_ns,
     }
 }
 
@@ -853,6 +875,69 @@ fn build_share_moov(
 // Writing
 // ---------------------------------------------------------------------------------------------
 
+/// Chooses `stco` vs `co64` and builds the final faststart `moov` box with absolute chunk offsets.
+///
+/// Decides `Co64` up front whenever `total_payload` or any chunk's relative offset already exceeds
+/// `u32::MAX` so multi-chunk >4 GiB layouts never fail inside a 32-bit `stco` probe.
+fn layout_share_moov(
+    ftyp_len: u64,
+    mdat_header_len: u64,
+    total_payload: u64,
+    vplan: &VideoPlan,
+    aplan: Option<&AudioPlan>,
+) -> Result<(Vec<u8>, ChunkOffsetMode, u64), MediaError> {
+    let max_rel_offset = vplan
+        .table
+        .chunk_offsets
+        .iter()
+        .chain(aplan.iter().flat_map(|a| a.table.chunk_offsets.iter()))
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let min_end_without_moov = ftyp_len
+        .checked_add(mdat_header_len)
+        .and_then(|n| n.checked_add(total_payload));
+    let needs_co64_upfront = max_rel_offset > u64::from(u32::MAX)
+        || min_end_without_moov.is_none_or(|end| end > u64::from(u32::MAX));
+
+    // `moov` length depends only on the offset width, not on the offset values.
+    let (mode, sized) = if needs_co64_upfront {
+        (
+            ChunkOffsetMode::Co64,
+            build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Co64)?,
+        )
+    } else {
+        let probe = build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Stco32)?;
+        let probe_len = u64::try_from(probe.len())
+            .map_err(|_| MediaError::InvalidContainer("moov length exceeds u64::MAX".to_owned()))?;
+        let probe_end = min_end_without_moov.and_then(|end| end.checked_add(probe_len));
+        if probe_end.is_none_or(|end| end > u64::from(u32::MAX)) {
+            (
+                ChunkOffsetMode::Co64,
+                build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Co64)?,
+            )
+        } else {
+            (ChunkOffsetMode::Stco32, probe)
+        }
+    };
+
+    let moov_len = u64::try_from(sized.len())
+        .map_err(|_| MediaError::InvalidContainer("moov length exceeds u64::MAX".to_owned()))?;
+    let payload_offset = ftyp_len
+        .checked_add(moov_len)
+        .and_then(|n| n.checked_add(mdat_header_len))
+        .ok_or_else(|| MediaError::InvalidContainer("mdat payload offset overflow".to_owned()))?;
+    let moov = build_share_moov(vplan, aplan, payload_offset, mode)?;
+    if moov.len() != sized.len() {
+        return Err(MediaError::InvalidContainer(format!(
+            "moov size changed from {} to {} after offset patching",
+            sized.len(),
+            moov.len()
+        )));
+    }
+    Ok((moov, mode, payload_offset))
+}
+
 fn write_share_file(
     path: &Path,
     video: &Mp4VideoTrack,
@@ -872,41 +957,33 @@ fn write_share_file(
         .payload_bytes()?
         .checked_add(aplan.map_or(Ok(0), |a| a.table.payload_bytes())?)
         .ok_or_else(|| MediaError::InvalidContainer("mdat payload size overflow".to_owned()))?;
-    let use_large_mdat = total_payload.saturating_add(8) > u64::from(u32::MAX);
+    let use_large_mdat = total_payload
+        .checked_add(8)
+        .is_none_or(|n| n > u64::from(u32::MAX));
     let mdat_header_len = if use_large_mdat { 16u64 } else { 8u64 };
 
-    // `moov` length depends only on the offset width, not on the offset values.
-    let ftyp_len = u64::try_from(ftyp.len()).unwrap_or(0);
-    let probe = build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Stco32)?;
-    let probe_end = ftyp_len
-        .saturating_add(u64::try_from(probe.len()).unwrap_or(0))
-        .saturating_add(mdat_header_len)
-        .saturating_add(total_payload);
-    let (mode, sized) = if probe_end > u64::from(u32::MAX) {
-        (
-            ChunkOffsetMode::Co64,
-            build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Co64)?,
-        )
-    } else {
-        (ChunkOffsetMode::Stco32, probe)
-    };
-    let payload_offset = ftyp_len
-        .saturating_add(u64::try_from(sized.len()).unwrap_or(0))
-        .saturating_add(mdat_header_len);
-    let moov = build_share_moov(vplan, aplan, payload_offset, mode)?;
+    let ftyp_len = u64::try_from(ftyp.len())
+        .map_err(|_| MediaError::InvalidContainer("ftyp length exceeds u64::MAX".to_owned()))?;
+    let (moov, _, _) = layout_share_moov(ftyp_len, mdat_header_len, total_payload, vplan, aplan)?;
 
     let cfg = video.avcc();
     write_atomically(path, Publish::NoReplace, |writer| {
         writer.write_all(&ftyp)?;
         writer.write_all(&moov)?;
         if use_large_mdat {
+            let mdat_total = total_payload.checked_add(16).ok_or_else(|| {
+                MediaError::InvalidContainer("mdat 64-bit size overflow".to_owned())
+            })?;
             writer.write_all(&1u32.to_be_bytes())?;
             writer.write_all(b"mdat")?;
-            writer.write_all(&total_payload.saturating_add(16).to_be_bytes())?;
+            writer.write_all(&mdat_total.to_be_bytes())?;
         } else {
-            let mdat_total = u32::try_from(total_payload.saturating_add(8)).map_err(|_| {
-                MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
-            })?;
+            let mdat_total = total_payload
+                .checked_add(8)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
+                })?;
             writer.write_all(&mdat_total.to_be_bytes())?;
             writer.write_all(b"mdat")?;
         }
@@ -961,4 +1038,181 @@ fn write_checked(
     }
     writer.write_all(data)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::build_aac_lc_audio_specific_config;
+    use crate::mp4::{build_avcc_payload, find_box, iter_boxes, parse_chunk_offsets};
+
+    fn sample_video_plan(chunk_offsets: Vec<u64>) -> VideoPlan {
+        let count = chunk_offsets.len();
+        let avcc = build_avcc_payload(&[0x67, 0x42, 0x00, 0x1E], &[0x68, 0xCE]).expect("avcc");
+        VideoPlan {
+            width: 128,
+            height: 96,
+            timescale: 90_000,
+            avcc,
+            table: SampleTable {
+                sizes: vec![100; count],
+                durations: vec![3_000; count],
+                sync: vec![1],
+                chunk_counts: vec![1; count],
+                chunk_offsets,
+            },
+        }
+    }
+
+    fn sample_audio_plan(chunk_offsets: Vec<u64>) -> AudioPlan {
+        let count = chunk_offsets.len();
+        let asc = build_aac_lc_audio_specific_config(48_000, 2)
+            .expect("asc")
+            .to_vec();
+        AudioPlan {
+            timescale: 48_000,
+            sample_rate_hz: 48_000,
+            channels: 2,
+            asc,
+            max_bitrate: 128_000,
+            avg_bitrate: 128_000,
+            first_packet: 0,
+            table: SampleTable {
+                sizes: vec![64; count],
+                durations: vec![1024; count],
+                sync: Vec::new(),
+                chunk_counts: vec![1; count],
+                chunk_offsets,
+            },
+        }
+    }
+
+    /// Extracts `(has_stco, has_co64, parsed_offsets)` for each `trak` inside a built `moov` box.
+    fn inspect_moov_chunk_tables(moov_box: &[u8]) -> Vec<(bool, bool, Vec<u64>)> {
+        let moov_body = &moov_box[8..];
+        let mut out = Vec::new();
+        for (cc, trak) in iter_boxes(moov_body).expect("moov children") {
+            if &cc != b"trak" {
+                continue;
+            }
+            let mdia = find_box(trak, *b"mdia").expect("mdia").expect("mdia");
+            let minf = find_box(mdia, *b"minf").expect("minf").expect("minf");
+            let stbl = find_box(minf, *b"stbl").expect("stbl").expect("stbl");
+            let has_stco = find_box(stbl, *b"stco").expect("stco").is_some();
+            let has_co64 = find_box(stbl, *b"co64").expect("co64").is_some();
+            let offsets = parse_chunk_offsets(stbl).expect("parse chunk offsets");
+            out.push((has_stco, has_co64, offsets));
+        }
+        out
+    }
+
+    #[test]
+    fn layout_share_moov_switches_to_co64_when_chunk_offsets_exceed_4gib() {
+        let over_4gib = u64::from(u32::MAX) + 4096;
+        let v_rel = vec![0, over_4gib];
+        let a_rel = vec![1024, over_4gib + 2048];
+        let vplan = sample_video_plan(v_rel.clone());
+        let aplan = sample_audio_plan(a_rel.clone());
+        let total_payload = 5u64 * 1024 * 1024 * 1024;
+
+        let (moov, mode, payload_offset) =
+            layout_share_moov(32, 16, total_payload, &vplan, Some(&aplan))
+                .expect(">4 GiB multi-chunk layout must succeed with co64");
+        assert_eq!(mode, ChunkOffsetMode::Co64);
+        assert_eq!(
+            payload_offset,
+            32 + u64::try_from(moov.len()).expect("len") + 16
+        );
+
+        let tables = inspect_moov_chunk_tables(&moov);
+        assert_eq!(tables.len(), 2, "video + audio tracks");
+        assert_eq!(
+            tables[0],
+            (
+                false,
+                true,
+                v_rel.iter().map(|r| payload_offset + r).collect()
+            )
+        );
+        assert_eq!(
+            tables[1],
+            (
+                false,
+                true,
+                a_rel.iter().map(|r| payload_offset + r).collect()
+            )
+        );
+    }
+
+    #[test]
+    fn layout_share_moov_switches_to_co64_when_headers_push_payload_past_4gib() {
+        // Relative offsets fit in u32, but adding ftyp + moov + mdat header exceeds u32::MAX.
+        let near_4gib = u64::from(u32::MAX) - 128;
+        let vplan = sample_video_plan(vec![0, near_4gib]);
+        let (moov, mode, payload_offset) =
+            layout_share_moov(32, 8, near_4gib + 16, &vplan, None).expect("boundary co64 layout");
+        assert_eq!(mode, ChunkOffsetMode::Co64);
+        let tables = inspect_moov_chunk_tables(&moov);
+        assert_eq!(tables.len(), 1);
+        assert!(!tables[0].0 && tables[0].1, "co64 must be written");
+        assert_eq!(
+            tables[0].2,
+            vec![payload_offset, payload_offset + near_4gib]
+        );
+    }
+
+    #[test]
+    fn layout_share_moov_uses_stco32_for_small_payload() {
+        let vplan = sample_video_plan(vec![0, 500]);
+        let (moov, mode, payload_offset) =
+            layout_share_moov(32, 8, 1000, &vplan, None).expect("small stco32 layout");
+        assert_eq!(mode, ChunkOffsetMode::Stco32);
+        let tables = inspect_moov_chunk_tables(&moov);
+        assert_eq!(tables.len(), 1);
+        assert!(tables[0].0 && !tables[0].1, "stco must be written");
+        assert_eq!(tables[0].2, vec![payload_offset, payload_offset + 500]);
+    }
+
+    #[test]
+    fn rendered_video_sample_len_matches_rendered_bytes() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E, 0x99];
+        let pps = vec![0x68, 0xCE, 0x38];
+        let idr = vec![0x65, 0x88, 0x84, 0x21, 0xAA];
+        let non_idr = vec![0x41, 0x9A, 0x01, 0x02];
+
+        let pack = |nals: &[&[u8]], len_size: usize| -> Vec<u8> {
+            let mut buf = Vec::new();
+            for nal in nals {
+                let len = u32::try_from(nal.len()).expect("len").to_be_bytes();
+                buf.extend_from_slice(&len[4 - len_size..]);
+                buf.extend_from_slice(nal);
+            }
+            buf
+        };
+
+        for len_size in [1usize, 2, 4] {
+            let cfg = AvccConfig {
+                raw_avcc: Vec::new(),
+                nal_length_size: len_size,
+                sps: vec![sps.clone()],
+                pps: vec![pps.clone()],
+            };
+            let with_ps = pack(&[&sps, &pps, &idr], len_size);
+            let without_ps = pack(&[&idr, &non_idr], len_size);
+            let mut out = Vec::new();
+            for (raw, mode) in [
+                (&with_ps, RenderMode::WithParamSets),
+                (&without_ps, RenderMode::WithParamSets),
+                (&without_ps, RenderMode::Plain),
+            ] {
+                let expected = rendered_video_sample_len(&cfg, raw, mode).expect("len");
+                render_video_sample(&cfg, raw, mode, &mut out).expect("render");
+                assert_eq!(
+                    expected,
+                    out.len(),
+                    "len mismatch for nal_length_size={len_size}, mode={mode:?}"
+                );
+            }
+        }
+    }
 }
