@@ -337,11 +337,13 @@ impl McpServer {
 
     fn tool_config_update(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
         let mut patch = args.clone();
-        if let Some(val) = patch.get("output_dir_override").and_then(Value::as_str)
-            && !val.is_empty()
-        {
-            let abs = absolutize_path(Path::new(val)).map_err(|e| e.message)?;
-            patch.insert("output_dir_override".to_owned(), json!(abs));
+        for key in ["output_dir_override", "screenshot_dir_override"] {
+            if let Some(val) = patch.get(key).and_then(Value::as_str)
+                && !val.is_empty()
+            {
+                let abs = absolutize_path(Path::new(val)).map_err(|e| e.message)?;
+                patch.insert(key.to_owned(), json!(abs));
+            }
         }
         let resp = self.call_daemon("config.update", &Value::Object(patch))?;
         Ok(vec![text_block(&resp)])
@@ -378,6 +380,9 @@ impl McpServer {
         }
         if let Some(out) = optional_abs_path(args, "output_path")? {
             params.insert("output_path".to_owned(), json!(out));
+        }
+        if let Some(out_dir) = optional_abs_path(args, "output_dir")? {
+            params.insert("output_dir".to_owned(), json!(out_dir));
         }
         if let Some(overwrite) = args.get("overwrite") {
             params.insert("overwrite".to_owned(), overwrite.clone());
@@ -862,11 +867,12 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "arb_capture_start",
-            "Start live rolling screen/audio/logcat/input replay capture on an Android device.",
+            "Start live rolling screen/audio/logcat/input replay capture (or lightweight `logs_only` capture without scrcpy-server) on an Android device.",
             &json!({
                 "type": "object",
                 "properties": {
-                    "serial": { "type": "string", "description": "Optional ADB device serial (auto-selects sole online device if omitted)." },
+                    "serial": { "type": "string", "description": "Optional ADB device serial (auto-selects sole online device if omitted; never auto-selects when 2+ devices are online)." },
+                    "capture_mode": { "type": "string", "enum": ["video_and_logs", "logs_only"], "description": "Capture mode (`video_and_logs` or `logs_only`, defaults to config)." },
                     "max_size": { "type": "integer", "minimum": 256, "maximum": 4096, "description": "Maximum encoded video long edge in pixels." },
                     "max_fps": { "type": "integer", "minimum": 1, "maximum": 120, "description": "Target maximum frame rate." },
                     "video_bit_rate": { "type": "integer", "minimum": 100_000, "description": "Target H.264 video bitrate in bps." },
@@ -910,9 +916,12 @@ fn tool_definitions() -> Vec<Value> {
                     "video_max_size": { "type": "integer", "minimum": 256, "maximum": 4096 },
                     "video_max_fps": { "type": "integer", "minimum": 1, "maximum": 120 },
                     "audio_enabled": { "type": "boolean" },
+                    "capture_mode": { "type": "string", "enum": ["video_and_logs", "logs_only"] },
+                    "device_serial": { "type": ["string", "null"] },
                     "crash_autosave_enabled": { "type": "boolean" },
                     "crash_autosave_cooldown_secs": { "type": "integer", "minimum": 1, "maximum": 3600 },
                     "output_dir_override": { "type": ["string", "null"] },
+                    "screenshot_dir_override": { "type": ["string", "null"] },
                     "ide_default_save_action": { "type": "string", "enum": ["save_and_open", "save_only"] }
                 },
                 "additionalProperties": false
@@ -939,7 +948,8 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "serial": { "type": "string", "description": "Optional ADB device serial." },
-                    "output_path": { "type": "string", "description": "Optional output PNG file path." },
+                    "output_path": { "type": "string", "description": "Optional explicit output PNG file path." },
+                    "output_dir": { "type": "string", "description": "Optional output directory where an auto-named screenshot PNG will be written." },
                     "overwrite": { "type": "boolean", "description": "Allow atomic overwrite if output_path exists (default false)." },
                     "include_image": { "type": "boolean", "description": "Include inline MCP image/png content block (default true)." }
                 },
@@ -996,7 +1006,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "arb_timeline_overview",
-            "Return a compact one-shot structured overview of a bundle: frame count, duration, dimensions, audio status, Activity screen spans, taps with frame indices, crashes, discontinuities, and top E/F error log highlights.",
+            "Return a compact one-shot structured overview of a bundle: frame count, duration, dimensions, audio status, Activity screen spans, taps with frame indices, crashes, discontinuities, per-app extracted `app_logs` summaries, and top E/F error log highlights.",
             &json!({
                 "type": "object",
                 "properties": {
@@ -1009,7 +1019,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "arb_query_logs",
-            "Query bounded logcat rows from a bundle (`main` or `unanchored` bucket) with optional frame range, tag, level, and keyword filters.",
+            "Query bounded logcat rows from a bundle (`main` or `unanchored` bucket) with optional frame range, package, tag, level, and keyword filters.",
             &json!({
                 "type": "object",
                 "properties": {
@@ -1019,6 +1029,7 @@ fn tool_definitions() -> Vec<Value> {
                     "end_frame": { "type": "integer", "minimum": 0 },
                     "start_ns": { "type": "integer" },
                     "end_ns": { "type": "integer" },
+                    "package": { "type": "string", "description": "Exact Android package name filter (matches foreground/crashed package attribution)." },
                     "tag": { "type": "string", "description": "Case-insensitive tag substring filter." },
                     "level": { "type": "string", "enum": ["V", "D", "I", "W", "E", "F", "A"] },
                     "keyword": { "type": "string", "description": "Case-insensitive message/tag substring filter." },

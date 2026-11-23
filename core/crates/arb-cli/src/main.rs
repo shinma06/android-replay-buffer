@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use arb_core::config::CaptureMode;
+use arb_core::device::validate_adb_serial;
 use arb_os::paths::ArbPaths;
 use arb_os::shm::ShmFrameRingReader;
 use serde_json::{Value, json};
@@ -202,6 +204,7 @@ enum CommandSpec {
     Devices,
     CaptureStart {
         serial: Option<String>,
+        capture_mode: Option<CaptureMode>,
         companion_jar: Option<PathBuf>,
         scrcpy_jar: Option<PathBuf>,
         max_size: Option<u32>,
@@ -226,6 +229,7 @@ enum CommandSpec {
     Screenshot {
         serial: Option<String>,
         out: Option<PathBuf>,
+        out_dir: Option<PathBuf>,
         overwrite: bool,
     },
     ConfigGet,
@@ -375,6 +379,7 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
         "devices" => CommandSpec::Devices,
         "daemon" => parse_daemon_cmd(&rest[1..])?,
         "capture" => parse_capture_cmd(&rest[1..])?,
+        "capture-start" => parse_capture_start_flags(&rest[1..])?,
         "save" => parse_save_cmd(&rest[1..])?,
         "save-logs" => parse_save_logs_cmd(&rest[1..])?,
         "screenshot" => parse_screenshot_cmd(&rest[1..])?,
@@ -422,107 +427,129 @@ fn parse_daemon_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 }
 
+fn parse_capture_mode(raw: &str, flag: &str) -> Result<CaptureMode, CliError> {
+    match raw {
+        "video_and_logs" => Ok(CaptureMode::VideoAndLogs),
+        "logs_only" => Ok(CaptureMode::LogsOnly),
+        _ => Err(CliError::usage(format!(
+            "{flag} expects `video_and_logs` or `logs_only`, got `{raw}`"
+        ))),
+    }
+}
+
 fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("stop") => Ok(CommandSpec::CaptureStop),
-        Some("start") => {
-            let mut serial = None;
-            let mut companion_jar = None;
-            let mut scrcpy_jar = None;
-            let mut max_size = None;
-            let mut max_fps = None;
-            let mut video_bit_rate = None;
-            // `None` = defer to the persisted `config.audio_enabled` (GUI/CLI/MCP parity).
-            let mut audio_enabled: Option<bool> = None;
-            let mut logcat_enabled = true;
-            let mut input_enabled = true;
-            let mut heartbeat_ms = None;
-
-            let mut i = 1_usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--serial" => {
-                        serial = Some(require_val(args, i, "--serial")?.to_owned());
-                        i += 2;
-                    }
-                    "--companion-jar" => {
-                        companion_jar = Some(absolutize_path(Path::new(require_val(
-                            args,
-                            i,
-                            "--companion-jar",
-                        )?))?);
-                        i += 2;
-                    }
-                    "--scrcpy-jar" => {
-                        scrcpy_jar = Some(absolutize_path(Path::new(require_val(
-                            args,
-                            i,
-                            "--scrcpy-jar",
-                        )?))?);
-                        i += 2;
-                    }
-                    "--max-size" => {
-                        max_size = Some(parse_u32(
-                            require_val(args, i, "--max-size")?,
-                            "--max-size",
-                        )?);
-                        i += 2;
-                    }
-                    "--max-fps" => {
-                        max_fps = Some(parse_u32(require_val(args, i, "--max-fps")?, "--max-fps")?);
-                        i += 2;
-                    }
-                    "--video-bit-rate" => {
-                        video_bit_rate = Some(parse_u32(
-                            require_val(args, i, "--video-bit-rate")?,
-                            "--video-bit-rate",
-                        )?);
-                        i += 2;
-                    }
-                    "--heartbeat-ms" => {
-                        heartbeat_ms = Some(parse_u32(
-                            require_val(args, i, "--heartbeat-ms")?,
-                            "--heartbeat-ms",
-                        )?);
-                        i += 2;
-                    }
-                    "--no-audio" => {
-                        audio_enabled = Some(false);
-                        i += 1;
-                    }
-                    "--no-logcat" => {
-                        logcat_enabled = false;
-                        i += 1;
-                    }
-                    "--no-input" => {
-                        input_enabled = false;
-                        i += 1;
-                    }
-                    other => {
-                        return Err(CliError::usage(format!(
-                            "unknown capture start option `{other}`"
-                        )));
-                    }
-                }
-            }
-
-            Ok(CommandSpec::CaptureStart {
-                serial,
-                companion_jar,
-                scrcpy_jar,
-                max_size,
-                max_fps,
-                video_bit_rate,
-                audio_enabled,
-                logcat_enabled,
-                input_enabled,
-                heartbeat_ms,
-            })
-        }
+        Some("start") => parse_capture_start_flags(&args[1..]),
         other => Err(CliError::usage(format!(
             "usage: arb-cli capture <start|stop> (got {other:?})"
         ))),
     }
+}
+
+fn parse_capture_start_flags(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut serial = None;
+    let mut capture_mode = None;
+    let mut companion_jar = None;
+    let mut scrcpy_jar = None;
+    let mut max_size = None;
+    let mut max_fps = None;
+    let mut video_bit_rate = None;
+    // `None` = defer to the persisted `config.audio_enabled` (GUI/CLI/MCP parity).
+    let mut audio_enabled: Option<bool> = None;
+    let mut logcat_enabled = true;
+    let mut input_enabled = true;
+    let mut heartbeat_ms = None;
+
+    let mut i = 0_usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--serial" => {
+                let raw = require_val(args, i, "--serial")?;
+                validate_adb_serial(raw).map_err(|err| CliError::usage(err.to_string()))?;
+                serial = Some(raw.to_owned());
+                i += 2;
+            }
+            "--mode" | "--capture-mode" => {
+                let flag = args[i].as_str();
+                let raw = require_val(args, i, flag)?;
+                capture_mode = Some(parse_capture_mode(raw, flag)?);
+                i += 2;
+            }
+            "--companion-jar" => {
+                companion_jar = Some(absolutize_path(Path::new(require_val(
+                    args,
+                    i,
+                    "--companion-jar",
+                )?))?);
+                i += 2;
+            }
+            "--scrcpy-jar" => {
+                scrcpy_jar = Some(absolutize_path(Path::new(require_val(
+                    args,
+                    i,
+                    "--scrcpy-jar",
+                )?))?);
+                i += 2;
+            }
+            "--max-size" => {
+                max_size = Some(parse_u32(
+                    require_val(args, i, "--max-size")?,
+                    "--max-size",
+                )?);
+                i += 2;
+            }
+            "--max-fps" => {
+                max_fps = Some(parse_u32(require_val(args, i, "--max-fps")?, "--max-fps")?);
+                i += 2;
+            }
+            "--video-bit-rate" => {
+                video_bit_rate = Some(parse_u32(
+                    require_val(args, i, "--video-bit-rate")?,
+                    "--video-bit-rate",
+                )?);
+                i += 2;
+            }
+            "--heartbeat-ms" => {
+                heartbeat_ms = Some(parse_u32(
+                    require_val(args, i, "--heartbeat-ms")?,
+                    "--heartbeat-ms",
+                )?);
+                i += 2;
+            }
+            "--no-audio" => {
+                audio_enabled = Some(false);
+                i += 1;
+            }
+            "--no-logcat" => {
+                logcat_enabled = false;
+                i += 1;
+            }
+            "--no-input" => {
+                input_enabled = false;
+                i += 1;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown capture start option `{other}`"
+                )));
+            }
+        }
+    }
+
+    Ok(CommandSpec::CaptureStart {
+        serial,
+        capture_mode,
+        companion_jar,
+        scrcpy_jar,
+        max_size,
+        max_fps,
+        video_bit_rate,
+        audio_enabled,
+        logcat_enabled,
+        input_enabled,
+        heartbeat_ms,
+    })
 }
 
 fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
@@ -602,17 +629,28 @@ fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut serial = None;
     let mut out = None;
+    let mut out_dir = None;
     let mut overwrite = false;
     let mut i = 0_usize;
 
     while i < args.len() {
         match args[i].as_str() {
             "--serial" => {
-                serial = Some(require_val(args, i, "--serial")?.to_owned());
+                let raw = require_val(args, i, "--serial")?;
+                validate_adb_serial(raw).map_err(|err| CliError::usage(err.to_string()))?;
+                serial = Some(raw.to_owned());
                 i += 2;
             }
             "--out" => {
                 out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
+                i += 2;
+            }
+            "--out-dir" => {
+                out_dir = Some(absolutize_path(Path::new(require_val(
+                    args,
+                    i,
+                    "--out-dir",
+                )?))?);
                 i += 2;
             }
             "--overwrite" => {
@@ -627,9 +665,16 @@ fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         }
     }
 
+    if out.is_some() && out_dir.is_some() {
+        return Err(CliError::usage(
+            "screenshot accepts either --out <FILE.png> or --out-dir <DIR>, not both",
+        ));
+    }
+
     Ok(CommandSpec::Screenshot {
         serial,
         out,
+        out_dir,
         overwrite,
     })
 }
@@ -644,83 +689,82 @@ fn parse_config_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 }
 
+fn parse_optional_dir_value(raw: &str) -> Result<Value, CliError> {
+    if raw.is_empty() || raw.eq_ignore_ascii_case("none") || raw == "null" {
+        Ok(Value::Null)
+    } else {
+        Ok(json!(absolutize_path(Path::new(raw))?))
+    }
+}
+
 fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut patch = serde_json::Map::new();
     let mut i = 0_usize;
     while i < args.len() {
-        match args[i].as_str() {
+        let flag = args[i].as_str();
+        let val = require_val(args, i, flag)?;
+        match flag {
             "--save-window-secs" => {
-                let v = parse_u32(
-                    require_val(args, i, "--save-window-secs")?,
-                    "--save-window-secs",
-                )?;
-                patch.insert("save_window_secs".to_owned(), json!(v));
-                i += 2;
+                patch.insert("save_window_secs".to_owned(), json!(parse_u32(val, flag)?));
             }
             "--ring-budget-bytes" => {
-                let v = parse_u64(
-                    require_val(args, i, "--ring-budget-bytes")?,
-                    "--ring-budget-bytes",
-                )?;
-                patch.insert("ring_budget_bytes".to_owned(), json!(v));
-                i += 2;
+                patch.insert("ring_budget_bytes".to_owned(), json!(parse_u64(val, flag)?));
             }
             "--min-free-disk-bytes" => {
-                let v = parse_u64(
-                    require_val(args, i, "--min-free-disk-bytes")?,
-                    "--min-free-disk-bytes",
-                )?;
-                patch.insert("min_free_disk_bytes".to_owned(), json!(v));
-                i += 2;
+                patch.insert(
+                    "min_free_disk_bytes".to_owned(),
+                    json!(parse_u64(val, flag)?),
+                );
             }
             "--video-max-size" => {
-                let v = parse_u32(
-                    require_val(args, i, "--video-max-size")?,
-                    "--video-max-size",
-                )?;
-                patch.insert("video_max_size".to_owned(), json!(v));
-                i += 2;
+                patch.insert("video_max_size".to_owned(), json!(parse_u32(val, flag)?));
             }
             "--video-max-fps" => {
-                let v = parse_u32(require_val(args, i, "--video-max-fps")?, "--video-max-fps")?;
-                patch.insert("video_max_fps".to_owned(), json!(v));
-                i += 2;
+                patch.insert("video_max_fps".to_owned(), json!(parse_u32(val, flag)?));
             }
             "--audio-enabled" => {
-                let v = parse_bool(require_val(args, i, "--audio-enabled")?, "--audio-enabled")?;
-                patch.insert("audio_enabled".to_owned(), json!(v));
-                i += 2;
+                patch.insert("audio_enabled".to_owned(), json!(parse_bool(val, flag)?));
             }
             "--crash-autosave-enabled" => {
-                let v = parse_bool(
-                    require_val(args, i, "--crash-autosave-enabled")?,
-                    "--crash-autosave-enabled",
-                )?;
-                patch.insert("crash_autosave_enabled".to_owned(), json!(v));
-                i += 2;
+                patch.insert(
+                    "crash_autosave_enabled".to_owned(),
+                    json!(parse_bool(val, flag)?),
+                );
             }
             "--crash-autosave-cooldown-secs" => {
-                let v = parse_u32(
-                    require_val(args, i, "--crash-autosave-cooldown-secs")?,
-                    "--crash-autosave-cooldown-secs",
-                )?;
-                patch.insert("crash_autosave_cooldown_secs".to_owned(), json!(v));
-                i += 2;
+                patch.insert(
+                    "crash_autosave_cooldown_secs".to_owned(),
+                    json!(parse_u32(val, flag)?),
+                );
             }
             "--output-dir-override" => {
-                let raw = require_val(args, i, "--output-dir-override")?;
-                if raw.is_empty() || raw.eq_ignore_ascii_case("none") || raw == "null" {
-                    patch.insert("output_dir_override".to_owned(), Value::Null);
+                patch.insert(
+                    "output_dir_override".to_owned(),
+                    parse_optional_dir_value(val)?,
+                );
+            }
+            "--screenshot-dir-override" => {
+                patch.insert(
+                    "screenshot_dir_override".to_owned(),
+                    parse_optional_dir_value(val)?,
+                );
+            }
+            "--capture-mode" => {
+                patch.insert(
+                    "capture_mode".to_owned(),
+                    json!(parse_capture_mode(val, flag)?),
+                );
+            }
+            "--device-serial" => {
+                if val.is_empty() || val.eq_ignore_ascii_case("none") || val == "null" {
+                    patch.insert("device_serial".to_owned(), Value::Null);
                 } else {
-                    let abs = absolutize_path(Path::new(raw))?;
-                    patch.insert("output_dir_override".to_owned(), json!(abs));
+                    validate_adb_serial(val).map_err(|err| CliError::usage(err.to_string()))?;
+                    patch.insert("device_serial".to_owned(), json!(val));
                 }
-                i += 2;
             }
             "--ide-default-save-action" => {
-                let raw = require_val(args, i, "--ide-default-save-action")?;
-                patch.insert("ide_default_save_action".to_owned(), json!(raw));
-                i += 2;
+                patch.insert("ide_default_save_action".to_owned(), json!(val));
             }
             other => {
                 return Err(CliError::usage(format!(
@@ -728,6 +772,7 @@ fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
                 )));
             }
         }
+        i += 2;
     }
     if patch.is_empty() {
         return Err(CliError::usage(
@@ -1165,10 +1210,11 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         CommandSpec::Screenshot {
             serial,
             out,
+            out_dir,
             overwrite,
         } => (
             "save.screenshot",
-            json!({ "serial": serial, "output_path": out, "overwrite": overwrite }),
+            json!({ "serial": serial, "output_path": out, "output_dir": out_dir, "overwrite": overwrite }),
             "screenshot saved",
         ),
         CommandSpec::ConfigGet => ("config.get", json!({}), "config"),
@@ -1269,6 +1315,7 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
 fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
     let CommandSpec::CaptureStart {
         serial,
+        capture_mode,
         companion_jar,
         scrcpy_jar,
         max_size,
@@ -1285,10 +1332,11 @@ fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str)
     (
         "capture.start",
         json!({
-            "serial": serial, "companion_jar": companion_jar, "scrcpy_jar": scrcpy_jar,
-            "max_size": max_size, "max_fps": max_fps, "video_bit_rate": video_bit_rate,
-            "audio_enabled": audio_enabled, "logcat_enabled": logcat_enabled,
-            "input_enabled": input_enabled, "heartbeat_ms": heartbeat_ms,
+            "serial": serial, "capture_mode": capture_mode, "companion_jar": companion_jar,
+            "scrcpy_jar": scrcpy_jar, "max_size": max_size, "max_fps": max_fps,
+            "video_bit_rate": video_bit_rate, "audio_enabled": audio_enabled,
+            "logcat_enabled": logcat_enabled, "input_enabled": input_enabled,
+            "heartbeat_ms": heartbeat_ms,
         }),
         "capture started",
     )
@@ -1558,12 +1606,13 @@ COMMANDS:\n  \
   status\n  \
   daemon start | stop\n  \
   devices\n  \
-  capture start [--serial <S>] [--companion-jar <JAR>] [--scrcpy-jar <JAR>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
+  capture start [--serial <S>] [--mode <video_and_logs|logs_only>] [--companion-jar <JAR>] [--scrcpy-jar <JAR>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
+  capture-start [--serial <S>] [--mode <video_and_logs|logs_only>] ...  (alias for `capture start`)\n  \
   capture stop\n  \
   save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   save-logs [--window-secs <N>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
-  screenshot [--serial <S>] [--out <FILE.png>] [--overwrite]\n  \
-  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
+  screenshot [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
+  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
@@ -1937,6 +1986,7 @@ mod tests {
             CommandSpec::Screenshot {
                 serial: Some("emu-5554".to_owned()),
                 out: Some(cwd.join("shots/s1.png")),
+                out_dir: None,
                 overwrite: true,
             },
             "screenshot command must match"
@@ -2030,5 +2080,84 @@ mod tests {
             err.exit_code, EXIT_USAGE_ERROR,
             "half range must be usage error"
         );
+    }
+
+    #[test]
+    fn t6c_parses_logs_only_capture_start_wifi_serial_and_screenshot_dir_flags() {
+        let cwd = std::env::current_dir().expect("cwd");
+
+        let (_, cap) = parse_args(&vec_str(&[
+            "capture-start",
+            "--mode",
+            "logs_only",
+            "--serial",
+            "192.168.1.50:5555",
+        ]))
+        .expect("capture-start alias must parse");
+        match cap {
+            CommandSpec::CaptureStart {
+                serial,
+                capture_mode,
+                ..
+            } => {
+                assert_eq!(serial.as_deref(), Some("192.168.1.50:5555"));
+                assert_eq!(capture_mode, Some(super::CaptureMode::LogsOnly));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let (_, cfg) = parse_args(&vec_str(&[
+            "config",
+            "set",
+            "--capture-mode",
+            "logs_only",
+            "--device-serial",
+            "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+            "--screenshot-dir-override",
+            "shots-dir",
+        ]))
+        .expect("config set T-6C flags must parse");
+        assert_eq!(
+            cfg,
+            CommandSpec::ConfigSet {
+                patch: json!({
+                    "capture_mode": "logs_only",
+                    "device_serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+                    "screenshot_dir_override": cwd.join("shots-dir"),
+                }),
+            }
+        );
+
+        let (_, shot_dir) = parse_args(&vec_str(&[
+            "screenshot",
+            "--serial",
+            "[fe80::1]:5555",
+            "--out-dir",
+            "shots-dir",
+        ]))
+        .expect("screenshot --out-dir must parse");
+        assert_eq!(
+            shot_dir,
+            CommandSpec::Screenshot {
+                serial: Some("[fe80::1]:5555".to_owned()),
+                out: None,
+                out_dir: Some(cwd.join("shots-dir")),
+                overwrite: false,
+            }
+        );
+
+        let bad_serial = parse_args(&vec_str(&["capture-start", "--serial", "bad;rm -rf /"]))
+            .expect_err("malformed serial must be rejected");
+        assert_eq!(bad_serial.exit_code, EXIT_USAGE_ERROR);
+
+        let both_out = parse_args(&vec_str(&[
+            "screenshot",
+            "--out",
+            "a.png",
+            "--out-dir",
+            "shots",
+        ]))
+        .expect_err("passing both --out and --out-dir must fail");
+        assert_eq!(both_out.exit_code, EXIT_USAGE_ERROR);
     }
 }

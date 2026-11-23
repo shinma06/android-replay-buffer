@@ -117,6 +117,8 @@ fn sample_logs() -> Vec<LogRecord> {
             tag: Some("Activity".to_owned()),
             pid: Some(1001),
             tid: Some(1002),
+            uid: None,
+            package_name: None,
             message: "main timeline log".to_owned(),
         },
         LogRecord {
@@ -134,6 +136,8 @@ fn sample_logs() -> Vec<LogRecord> {
             tag: Some("Sidecar".to_owned()),
             pid: Some(2001),
             tid: Some(2002),
+            uid: None,
+            package_name: None,
             message: "quarantined unanchored log".to_owned(),
         },
     ]

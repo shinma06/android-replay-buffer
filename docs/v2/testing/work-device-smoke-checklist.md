@@ -8,5 +8,7 @@
 4. **音声再生キャプチャ** — 音の出る動画を再生して 10 秒録画 → 保存。再生して映像と音のズレが目標 0.1 秒以内に感じるか（主観で OK / 気になる）。
 5. **GOP 途中トリム** — 保存したバンドルで途中のフレームから `arb-cli trim <bundle> --in-frame <n> --out-frame <m>`。結果が再生でき、開始前の映像が混ざらない。
 6. **ノート PC の蓋閉じスリープ** — 録画中に蓋を閉じて約 30 秒待ち開く。スリープ分の時間差が不連続区間として記録され、時刻がずれていない。
+7. **Running Devices ミラーリング＋ARB 同時録画（約 30 秒）** — Android Studio の Running Devices で実機をミラーリングした状態のまま ARB で録画を開始・10 秒後に保存する。端末の H.264 HW エンコーダ競合が起きた場合は、ARB が `MediaCodec` 競合ヒント（`video_max_size=1024` または `logs_only` モードへの切替案内）を明示すること、かつ `arb-cli capture-start --mode logs_only` でゼロ動画負荷のログ常時録画＋保存（`app-logs/<package>.jsonl` 自動抽出含む）が正常動作することを確認。メモ: 同時録画 OK / 1024px で OK / `logs_only` のみ OK: ______
+8. **Wi-Fi ADB 接続＋複数端末の自動切替禁止（約 30 秒）** — ワイヤレスデバッグ（`192.168.x.x:5555` または `adb-..._adb-tls-connect._tcp`）で `arb-cli devices` に出ることを確認し、対象シリアル指定で `arb-cli capture-start --serial <WIFI_SERIAL>` → 保存できること。また USB＋Wi-Fi 等で 2 台オンラインのとき未指定では自動開始されず選択待ちになり、選択済み端末を切断しても別端末へ勝手に切り替わらないことを確認。
 
 実機の録画・logcat は公開しないこと。

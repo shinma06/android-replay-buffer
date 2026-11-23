@@ -22,6 +22,7 @@ object ProtocolJson {
         .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
         .disableHtmlEscaping()
         .registerWireEnum(IdeDefaultSaveAction::class.java, IdeDefaultSaveAction::wire, IdeDefaultSaveAction::fromWire)
+        .registerWireEnum(CaptureMode::class.java, CaptureMode::wire, CaptureMode::fromWire)
         .registerWireEnum(SaveMode::class.java, SaveMode::wire, SaveMode::fromWire)
         .registerWireEnum(SaveTriggerKind::class.java, SaveTriggerKind::wire, SaveTriggerKind::fromWire)
         .registerWireEnum(BundleKind::class.java, BundleKind::wire, BundleKind::fromWire)
@@ -194,12 +195,23 @@ object ProtocolJson {
         src.videoMaxSize?.let { addProperty("video_max_size", it) }
         src.videoMaxFps?.let { addProperty("video_max_fps", it) }
         src.audioEnabled?.let { addProperty("audio_enabled", it) }
+        src.captureMode?.let { addProperty("capture_mode", it.wire) }
+        when (val serial = src.deviceSerial) {
+            StringPatch.Unchanged -> Unit
+            StringPatch.Clear -> add("device_serial", JsonNull.INSTANCE)
+            is StringPatch.Set -> addProperty("device_serial", serial.value)
+        }
         src.crashAutosaveEnabled?.let { addProperty("crash_autosave_enabled", it) }
         src.crashAutosaveCooldownSecs?.let { addProperty("crash_autosave_cooldown_secs", it) }
         when (val dir = src.outputDirOverride) {
             OutputDirPatch.Unchanged -> Unit
             OutputDirPatch.Clear -> add("output_dir_override", JsonNull.INSTANCE)
             is OutputDirPatch.Set -> addProperty("output_dir_override", dir.path)
+        }
+        when (val dir = src.screenshotDirOverride) {
+            OutputDirPatch.Unchanged -> Unit
+            OutputDirPatch.Clear -> add("screenshot_dir_override", JsonNull.INSTANCE)
+            is OutputDirPatch.Set -> addProperty("screenshot_dir_override", dir.path)
         }
         src.ideDefaultSaveAction?.let { addProperty("ide_default_save_action", it.wire) }
     }

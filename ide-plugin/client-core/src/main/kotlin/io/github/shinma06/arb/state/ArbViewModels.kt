@@ -1,6 +1,7 @@
 package io.github.shinma06.arb.state
 
 import io.github.shinma06.arb.model.AdbDeviceInfo
+import io.github.shinma06.arb.model.AppLogSummary
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.AudioStreamMeta
 import io.github.shinma06.arb.model.AvOffsetStatus
@@ -8,6 +9,7 @@ import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleFormat
 import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.BundleLifecycleState
+import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.CatalogFormatVersion
 import io.github.shinma06.arb.model.CrashMarker
@@ -62,6 +64,7 @@ data class CaptureBarState(
     val daemonPid: Long? = null,
     val devices: List<AdbDeviceInfo> = emptyList(),
     val selectedSerial: String? = null,
+    val deviceSelection: DeviceSelectionOutcome = DeviceSelectionOutcome.NoOnlineDevices,
     val capture: CaptureStatusView? = null,
     val config: ArbConfig = ArbConfig(),
     val ringChunkCount: Long = 0,
@@ -72,6 +75,15 @@ data class CaptureBarState(
     val banners: List<CaptureBanner> = emptyList(),
     val lastStatusMessage: String? = null,
 ) {
+    val activeCaptureMode: CaptureMode
+        get() = if (capture?.active == true) capture.captureMode else config.captureMode
+
+    val isLogsOnlyMode: Boolean
+        get() = activeCaptureMode == CaptureMode.LOGS_ONLY
+
+    val multipleDevicesNeedSelection: Boolean
+        get() = deviceSelection is DeviceSelectionOutcome.MultipleDevicesNeedSelection
+
     val saveWindowSecs: Int
         get() = config.saveWindowSecs
 
@@ -110,7 +122,7 @@ data class CaptureBarState(
         get() = devices.any { it.state == io.github.shinma06.arb.model.AdbDeviceState.Device }
 
     val selectedDevice: AdbDeviceInfo?
-        get() = devices.firstOrNull { it.serial == selectedSerial } ?: devices.firstOrNull()
+        get() = selectedSerial?.let { target -> devices.firstOrNull { it.serial == target } }
 
     val isSelectedDeviceOnline: Boolean
         get() = selectedDevice?.state == io.github.shinma06.arb.model.AdbDeviceState.Device
@@ -120,12 +132,14 @@ data class CaptureBarState(
             !daemonConnected -> "未接続"
             capture == null -> deviceIdleStatusText()
             capture.storagePressureStopped -> "容量停止"
-            capture.active && capture.connected -> "REC"
+            capture.active && capture.connected -> if (capture.captureMode == CaptureMode.LOGS_ONLY) "REC (ログのみ)" else "REC"
             capture.active && !capture.connected -> "再接続中"
             else -> deviceIdleStatusText()
         }
 
     private fun deviceIdleStatusText(): String {
+        if (deviceSelection is DeviceSelectionOutcome.MultipleDevicesNeedSelection) return "端末を選択"
+        if (deviceSelection is DeviceSelectionOutcome.WaitingForPreferredDevice) return "再接続待機中"
         if (hasOnlineDevice || devices.isEmpty()) return "待機中"
         if (devices.any { it.state == io.github.shinma06.arb.model.AdbDeviceState.Unauthorized }) return "未承認"
         if (devices.any { it.state == io.github.shinma06.arb.model.AdbDeviceState.Offline }) return "オフライン"
@@ -194,18 +208,39 @@ object CaptureBarReducer {
                     ),
                 )
             }
+            if (!status.capture.lastVideoError.isNullOrBlank()) {
+                add(
+                    CaptureBanner(
+                        kind = CaptureBannerKind.STREAM_GAP,
+                        title = "映像エンコーダの警告",
+                        detail = status.capture.lastVideoError,
+                    ),
+                )
+            }
         }
 
-        val onlineSerials = devices
-            .filter { it.state == io.github.shinma06.arb.model.AdbDeviceState.Device }
-            .map { it.serial }
-        val allSerials = devices.map { it.serial }
-        val resolvedSerial = when {
-            previous.selectedSerial != null && previous.selectedSerial in onlineSerials -> previous.selectedSerial
-            status.capture.serial != null && status.capture.serial in allSerials -> status.capture.serial
-            onlineSerials.isNotEmpty() -> onlineSerials.first()
-            previous.selectedSerial != null && previous.selectedSerial in allSerials -> previous.selectedSerial
-            else -> allSerials.firstOrNull()
+        // Strict no-auto-switch policy:
+        // - If a target serial is already bound (explicitly selected, persisted in config, or
+        //   currently capturing), stay bound to it even if it goes offline while other devices are online.
+        // - If no target serial is bound and 2+ devices are online, DO NOT auto-select.
+        val boundSerial = previous.selectedSerial?.takeIf { it.isNotBlank() }
+            ?: config.deviceSerial?.takeIf { it.isNotBlank() }
+            ?: status.capture.serial?.takeIf { status.capture.active && it.isNotBlank() }
+        val selection = DeviceSelectionPolicy.evaluate(boundSerial, devices)
+        val resolvedSerial = when (selection) {
+            is DeviceSelectionOutcome.Selected -> selection.serial
+            is DeviceSelectionOutcome.WaitingForPreferredDevice -> selection.preferredSerial
+            is DeviceSelectionOutcome.MultipleDevicesNeedSelection -> null
+            DeviceSelectionOutcome.NoOnlineDevices -> boundSerial
+        }
+        val finalBanners = if (selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection) {
+            banners + CaptureBanner(
+                kind = CaptureBannerKind.CONFIG_WARNING,
+                title = "複数端末が接続されています（${selection.onlineSerials.size} 台）",
+                detail = "自動切替は行いません。対象端末を選択してから録画を開始してください。",
+            )
+        } else {
+            banners
         }
 
         return previous.copy(
@@ -213,6 +248,7 @@ object CaptureBarReducer {
             daemonPid = status.pid,
             devices = devices,
             selectedSerial = resolvedSerial,
+            deviceSelection = selection,
             capture = status.capture,
             config = config,
             saveDurationSec = config.saveWindowSecs.toLong(),
@@ -220,7 +256,7 @@ object CaptureBarReducer {
             ringTotalBytes = status.ringTotalBytes,
             ringPinnedChunkCount = status.ringPinnedChunkCount,
             ringBufferedSecs = status.bufferedSecs,
-            banners = banners,
+            banners = finalBanners,
         )
     }
 
@@ -487,6 +523,14 @@ data class TimelineViewerState(
 
     val canSelectAroundCrash: Boolean
         get() = crashes.isNotEmpty() && frameCount > 0L
+
+    /** Per-app extracted foreground log summaries (`app-logs/<package>.jsonl`). */
+    val appLogs: List<AppLogSummary>
+        get() = summary.appLogs
+
+    /** `true` when this bundle was captured/saved in `logs_only` mode without a video track. */
+    val isLogsOnlyBundle: Boolean
+        get() = summary.bundleKind == BundleKind.LOGS_ONLY
 
     val unanchoredTruncatedCount: Long
         get() = summary.unanchoredSummary.truncatedCount

@@ -563,6 +563,7 @@ pub fn build_timeline_overview(
         error_log_highlights,
         unanchored_count: summary.unanchored_summary.included_count,
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
+        app_logs: summary.app_logs.clone(),
     })
 }
 
@@ -677,12 +678,16 @@ pub fn inspect_frames(
 }
 
 /// Resolves optional `start_frame` / `end_frame` bounds on [`TimelineQueryParams`] into a
-/// [`TimeRange`] and filters `logs` by optional `tag`, `level`, and `keyword` criteria.
+/// [`TimeRange`] and filters `logs` by optional `package`, `tag`, `level`, and `keyword` criteria.
 ///
 /// # Errors
 ///
 /// Returns [`DaemonError::InvalidParams`] if `start_frame > end_frame` or a requested frame
 /// index exceeds the bundle's frame count.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential frame-range, package, level, tag, and keyword log filter pipeline"
+)]
 pub fn query_logs_filtered(
     reader: &dyn BundleReader,
     bucket: Option<RecordBucket>,
@@ -730,10 +735,28 @@ pub fn query_logs_filtered(
         }
     }
 
-    let has_text_filter =
-        params.tag.is_some() || params.level.is_some() || params.keyword.is_some();
+    let package_filter = params
+        .package
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let has_text_filter = params.tag.is_some()
+        || params.level.is_some()
+        || params.keyword.is_some()
+        || package_filter.is_some();
     let fetch_limit = if has_text_filter { None } else { Some(limit) };
     let mut logs = reader.query_logs(bucket, range, fetch_limit)?;
+
+    if let Some(target_pkg) = package_filter {
+        // Build the PID/package resolver across all bundle logs so PID attributions learned
+        // outside the requested frame/time slice still attribute logs inside the slice accurately.
+        let all_logs = if range == TimeRange::all() && bucket.is_none() {
+            logs.clone()
+        } else {
+            reader.query_logs(None, TimeRange::all(), None)?
+        };
+        logs = arb_core::analytics::filter_logs_by_package(&all_logs, &logs, target_pkg);
+    }
 
     if has_text_filter {
         let tag_needle = params.tag.as_deref().map(str::to_ascii_lowercase);

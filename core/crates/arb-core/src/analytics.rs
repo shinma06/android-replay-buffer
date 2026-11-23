@@ -5,6 +5,8 @@
 //! All functions in this module are deterministic, side-effect-free, and require
 //! zero device or OS interaction.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -866,6 +868,329 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
     spans
 }
 
+/// Android system UI / launcher packages excluded from automatic foreground per-app log
+/// extraction (unless the package itself crashed).
+const EXCLUDED_SYSTEM_UI_PACKAGES: &[&str] = &[
+    "android",
+    "com.android.systemui",
+    "com.google.android.apps.nexuslauncher",
+    "com.android.launcher",
+    "com.android.launcher2",
+    "com.android.launcher3",
+    "com.sec.android.app.launcher",
+    "com.miui.home",
+    "com.oppo.launcher",
+    "com.huawei.android.launcher",
+];
+
+/// Returns `true` if `package_name` is an Android system UI or launcher package that should
+/// not generate a dedicated `app-logs/<package>.jsonl` file merely for being briefly visible.
+#[must_use]
+pub fn is_excluded_system_ui_package(package_name: &str) -> bool {
+    let trimmed = package_name.trim();
+    trimmed.is_empty()
+        || EXCLUDED_SYSTEM_UI_PACKAGES
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(trimmed))
+}
+
+/// Sanitizes an Android package name into a safe single-segment filename stem for
+/// `app-logs/<sanitized>.jsonl` (guaranteed free of path separators or `..` traversal).
+#[must_use]
+pub fn sanitize_package_filename(package_name: &str) -> String {
+    let mut out = String::with_capacity(package_name.len().min(128));
+    let mut prev_dot = false;
+    for ch in package_name.trim().chars().take(128) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+            out.push(ch);
+            prev_dot = false;
+        } else if ch == '.' {
+            if !prev_dot && !out.is_empty() {
+                out.push('.');
+                prev_dot = true;
+            }
+        } else {
+            out.push('_');
+            prev_dot = false;
+        }
+    }
+    let trimmed = out.trim_matches(['.', '_']);
+    if trimmed.is_empty() {
+        "unknown".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Extracted per-app logcat slice ready to be written to `app-logs/<sanitized>.jsonl`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedAppLogs {
+    /// Android application package name (e.g., `com.example.app`).
+    pub package_name: String,
+    /// Normalized bundle-relative path (e.g., `app-logs/com.example.app.jsonl`).
+    pub relative_path: String,
+    /// Number of crash markers attributed to this package in the bundle.
+    pub crash_count: u64,
+    /// Chronologically ordered logcat records attributed to this package.
+    pub logs: Vec<LogRecord>,
+}
+
+/// Pure PC-side resolver attributing [`LogRecord`] entries to Android package names using
+/// explicit `LogRecord::package_name`, PID-to-package observations (`wm_on_resume_called`,
+/// `am_crash`, `FATAL EXCEPTION`, `ActivityManager: Start proc`), screen transitions, and
+/// fully-qualified package tags.
+#[derive(Debug, Clone, Default)]
+pub struct LogPackageResolver {
+    by_boot_pid: BTreeMap<(String, i32), String>,
+    by_pid_fallback: BTreeMap<i32, String>,
+}
+
+impl LogPackageResolver {
+    /// Builds a resolver from `logs` and optional canonical `known_packages` (such as
+    /// foreground screen packages and crash packages) to collapse Activity sub-package guesses.
+    #[must_use]
+    pub fn from_logs(logs: &[LogRecord], known_packages: &BTreeSet<String>) -> Self {
+        let mut resolver = Self::default();
+
+        // Pass 1: high-confidence mappings (`log.package_name`, `am_crash`, `Start proc`, `FATAL EXCEPTION`).
+        for (idx, log) in logs.iter().enumerate() {
+            let boot = log_boot_id_hint(log).map(str::to_owned);
+            if let (Some(pid), Some(pkg)) = (log.pid, log.package_name.as_deref()) {
+                let norm = normalize_known_package(pkg, known_packages);
+                resolver.record_pid(boot.as_deref(), pid, norm);
+            }
+            if let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+                && !crash.package_name.is_empty()
+            {
+                let norm = normalize_known_package(&crash.package_name, known_packages);
+                resolver.record_pid(boot.as_deref(), crash.pid, norm);
+            }
+            if log.tag.as_deref().map(str::trim) == Some("AndroidRuntime")
+                && let Some(fb) = parse_fatal_exception_at(logs, idx)
+                && let Some(pid) = fb.pid.or(log.pid)
+                && !fb.package_name.is_empty()
+                && fb.package_name != "unknown"
+            {
+                let norm = normalize_known_package(&fb.package_name, known_packages);
+                resolver.record_pid(boot.as_deref(), pid, norm);
+            }
+            if matches!(
+                log.tag.as_deref().map(str::trim),
+                Some("ActivityManager" | "ActivityTaskManager")
+            ) && let Some((pid, pkg)) = parse_start_proc_line(&log.message)
+            {
+                let norm = normalize_known_package(&pkg, known_packages);
+                resolver.record_pid(boot.as_deref(), pid, norm);
+            }
+        }
+
+        // Pass 2: `wm_on_resume_called` is emitted by ActivityThread inside the app's own PID.
+        for log in logs {
+            if matches!(
+                log.tag.as_deref().map(str::trim),
+                Some("wm_on_resume_called" | "30022")
+            ) && let Some(pid) = log.pid
+                && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+            {
+                let boot = log_boot_id_hint(log);
+                let norm = normalize_known_package(&comp.package_name, known_packages);
+                if resolver.package_for_pid(boot, pid).is_none() {
+                    resolver.record_pid(boot, pid, norm);
+                }
+            }
+        }
+
+        resolver
+    }
+
+    fn record_pid(&mut self, boot_id: Option<&str>, pid: i32, package_name: String) {
+        if package_name.trim().is_empty() {
+            return;
+        }
+        if let Some(boot) = boot_id {
+            self.by_boot_pid
+                .insert((boot.to_owned(), pid), package_name.clone());
+        }
+        self.by_pid_fallback.entry(pid).or_insert(package_name);
+    }
+
+    /// Returns the resolved package name for `(boot_id, pid)`, if observed.
+    #[must_use]
+    pub fn package_for_pid(&self, boot_id: Option<&str>, pid: i32) -> Option<&str> {
+        if let Some(boot) = boot_id
+            && let Some(pkg) = self.by_boot_pid.get(&(boot.to_owned(), pid))
+        {
+            return Some(pkg.as_str());
+        }
+        self.by_pid_fallback.get(&pid).map(String::as_str)
+    }
+
+    /// Returns `true` if `log` belongs to `target_package`.
+    #[must_use]
+    pub fn matches_package(&self, log: &LogRecord, target_package: &str) -> bool {
+        let target = target_package.trim();
+        if target.is_empty() {
+            return false;
+        }
+        if let Some(explicit) = log.package_name.as_deref() {
+            if explicit == target {
+                return true;
+            }
+            // If the log explicitly came from a *different* non-system app process,
+            // never misattribute it to `target`.
+            if !matches!(explicit, "android" | "system_server") {
+                return false;
+            }
+        }
+        if let Some(pid) = log.pid
+            && let Some(resolved) = self.package_for_pid(log_boot_id_hint(log), pid)
+            && resolved == target
+        {
+            return true;
+        }
+        if let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+            && crash.package_name == target
+        {
+            return true;
+        }
+        if matches!(
+            log.tag.as_deref().map(str::trim),
+            Some(
+                "wm_on_resume_called"
+                    | "30022"
+                    | "wm_resumed_activity"
+                    | "30043"
+                    | "ActivityTaskManager"
+                    | "ActivityManager"
+            )
+        ) && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+            && (comp.package_name == target
+                || comp.activity_name.starts_with(&format!("{target}.")))
+        {
+            return true;
+        }
+        if let Some(tag) = log.tag.as_deref().map(str::trim)
+            && (tag == target || tag.starts_with(&format!("{target}.")))
+        {
+            return true;
+        }
+        false
+    }
+}
+
+fn normalize_known_package(candidate: &str, known_packages: &BTreeSet<String>) -> String {
+    let trimmed = candidate.trim();
+    if known_packages.contains(trimmed) {
+        return trimmed.to_owned();
+    }
+    // If `candidate` is an Activity Java sub-package (e.g. `com.example.app.ui`) while
+    // `com.example.app` is a known foreground/crashed app package, collapse to the shortest
+    // matching known package prefix.
+    if let Some(matched) = known_packages
+        .iter()
+        .filter(|pkg| trimmed.starts_with(&format!("{pkg}.")))
+        .min_by_key(|pkg| pkg.len())
+    {
+        return matched.clone();
+    }
+    trimmed.to_owned()
+}
+
+/// Parses `ActivityManager: Start proc 12345:com.example.app:worker/u0a234 ...` into `(pid, package)`.
+fn parse_start_proc_line(message: &str) -> Option<(i32, String)> {
+    let rest = message.trim().strip_prefix("Start proc ")?;
+    let token = rest.split_whitespace().next()?;
+    let (pid_str, proc_and_uid) = token.split_once(':')?;
+    let pid = pid_str.parse::<i32>().ok()?;
+    let process_name = proc_and_uid.split('/').next()?;
+    let pkg = package_from_process(process_name);
+    (!pkg.is_empty()).then_some((pid, pkg))
+}
+
+/// Extracts per-app logcat files strictly for foreground non-system apps observed in
+/// `timeline.screens` plus any app that crashed in `timeline.crashes`.
+///
+/// Background processes such as `com.google.android.gms` and system UI / launcher packages
+/// are intentionally excluded so saved bundles stay clean and bounded.
+#[must_use]
+pub fn extract_foreground_app_logs(
+    logs: &[LogRecord],
+    frames: &[FrameRecord],
+) -> Vec<ExtractedAppLogs> {
+    let screens = extract_screen_spans(logs, frames);
+    let crashes = extract_crash_markers(logs, frames);
+
+    let mut target_packages: BTreeSet<String> = BTreeSet::new();
+    for span in &screens {
+        if !is_excluded_system_ui_package(&span.package_name) {
+            target_packages.insert(span.package_name.clone());
+        }
+    }
+
+    let mut crash_counts: BTreeMap<String, u64> = BTreeMap::new();
+    for crash in &crashes {
+        if !crash.package_name.trim().is_empty() && crash.package_name != "unknown" {
+            target_packages.insert(crash.package_name.clone());
+            *crash_counts.entry(crash.package_name.clone()).or_insert(0) += 1;
+        }
+    }
+
+    if target_packages.is_empty() {
+        return Vec::new();
+    }
+
+    let resolver = LogPackageResolver::from_logs(logs, &target_packages);
+    let mut used_paths: BTreeSet<String> = BTreeSet::new();
+    let mut extracted = Vec::new();
+
+    for pkg in &target_packages {
+        let matched: Vec<LogRecord> = logs
+            .iter()
+            .filter(|log| resolver.matches_package(log, pkg))
+            .cloned()
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        let stem = sanitize_package_filename(pkg);
+        let mut rel_path = format!("app-logs/{stem}.jsonl");
+        let mut suffix = 2_u32;
+        while !used_paths.insert(rel_path.clone()) {
+            rel_path = format!("app-logs/{stem}-{suffix}.jsonl");
+            suffix = suffix.saturating_add(1);
+        }
+        extracted.push(ExtractedAppLogs {
+            package_name: pkg.clone(),
+            relative_path: rel_path,
+            crash_count: crash_counts.get(pkg).copied().unwrap_or(0),
+            logs: matched,
+        });
+    }
+
+    extracted
+}
+
+/// Filters `logs` to those attributed to `package_name` using [`LogPackageResolver`].
+#[must_use]
+pub fn filter_logs_by_package(
+    all_bundle_logs: &[LogRecord],
+    candidate_logs: &[LogRecord],
+    package_name: &str,
+) -> Vec<LogRecord> {
+    let target = package_name.trim();
+    if target.is_empty() {
+        return candidate_logs.to_vec();
+    }
+    let mut known = BTreeSet::new();
+    known.insert(target.to_owned());
+    let resolver = LogPackageResolver::from_logs(all_bundle_logs, &known);
+    candidate_logs
+        .iter()
+        .filter(|log| resolver.matches_package(log, target))
+        .cloned()
+        .collect()
+}
+
 /// Validation failure returned by [`validate_png_bytes`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -1053,6 +1378,8 @@ mod tests {
             tag: Some(tag.to_owned()),
             pid: Some(pid),
             tid: Some(pid),
+            uid: None,
+            package_name: None,
             message: message.to_owned(),
         }
     }
@@ -1810,5 +2137,128 @@ mod tests {
             Some(11),
             "epoch-1 crash must map to epoch-1 frame without bleeding to epoch-0"
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercises multi-app foreground, system UI, GMS background, and crash extraction together"
+    )]
+    fn t6c_extract_foreground_app_logs_filters_background_gms_and_systemui() {
+        use super::{
+            extract_foreground_app_logs, filter_logs_by_package, is_excluded_system_ui_package,
+            sanitize_package_filename,
+        };
+
+        assert!(is_excluded_system_ui_package("com.android.systemui"));
+        assert!(is_excluded_system_ui_package(
+            "com.google.android.apps.nexuslauncher"
+        ));
+        assert!(is_excluded_system_ui_package("com.android.launcher3"));
+        assert!(is_excluded_system_ui_package("android"));
+        assert!(!is_excluded_system_ui_package("com.example.shop"));
+        assert_eq!(
+            sanitize_package_filename("com.example.shop"),
+            "com.example.shop"
+        );
+        assert_eq!(sanitize_package_filename("../evil/pkg"), "evil_pkg");
+
+        let sec = 1_000_000_000_i64;
+        let frames = vec![make_frame(0, 10 * sec), make_frame(1, 11 * sec)];
+
+        let mut gms_log = make_log(1, 10 * sec, "GmsCore", 500, "background sync");
+        gms_log.uid = Some(10012);
+        gms_log.package_name = Some("com.google.android.gms".to_owned());
+
+        let sysui_resume = make_log(
+            2,
+            10 * sec,
+            "wm_resumed_activity",
+            1000,
+            "[0,111,com.android.systemui/.StatusBar]",
+        );
+        let launcher_resume = make_log(
+            3,
+            10 * sec + 100,
+            "wm_resumed_activity",
+            1000,
+            "[0,112,com.google.android.apps.nexuslauncher/.NexusLauncherActivity]",
+        );
+
+        let app_resumed = make_log(
+            4,
+            10 * sec + 200,
+            "wm_resumed_activity",
+            1000,
+            "[0,113,com.example.shop/.ui.CartActivity]",
+        );
+        let app_on_resume = make_log(
+            5,
+            10 * sec + 250,
+            "wm_on_resume_called",
+            4200,
+            "[113,com.example.shop.ui.CartActivity,RESUME_ACTIVITY]",
+        );
+        let app_log_by_pid = make_log(6, 10 * sec + 300, "CartViewModel", 4200, "checkout tap");
+
+        // A second app that crashed in the background should also be extracted.
+        let crash_event = make_log(
+            7,
+            10 * sec + 400,
+            "am_crash",
+            1000,
+            "[0,4300,com.example.payments,0,java.lang.IllegalStateException,card token expired,Pay.kt,42,0]",
+        );
+        let crash_app_log = make_log(8, 10 * sec + 390, "PayClient", 4300, "retrying payment");
+
+        let all_logs = vec![
+            gms_log,
+            sysui_resume,
+            launcher_resume,
+            app_resumed,
+            app_on_resume,
+            app_log_by_pid,
+            crash_event,
+            crash_app_log,
+        ];
+
+        let extracted = extract_foreground_app_logs(&all_logs, &frames);
+        let pkgs: Vec<&str> = extracted.iter().map(|e| e.package_name.as_str()).collect();
+        assert_eq!(
+            pkgs,
+            vec!["com.example.payments", "com.example.shop"],
+            "must include foreground app + crashed app, and exclude gms/systemui/launcher"
+        );
+
+        let shop = extracted
+            .iter()
+            .find(|e| e.package_name == "com.example.shop")
+            .expect("shop app logs");
+        assert_eq!(shop.relative_path, "app-logs/com.example.shop.jsonl");
+        assert_eq!(shop.crash_count, 0);
+        assert!(
+            shop.logs.iter().any(|l| l.message == "checkout tap"),
+            "app PID log must be attributed via wm_on_resume_called"
+        );
+        assert!(
+            !shop.logs.iter().any(|l| l.message == "background sync"),
+            "background gms log must never leak into foreground app"
+        );
+
+        let payments = extracted
+            .iter()
+            .find(|e| e.package_name == "com.example.payments")
+            .expect("crashed app logs");
+        assert_eq!(payments.crash_count, 1);
+        assert!(
+            payments
+                .logs
+                .iter()
+                .any(|l| l.message == "retrying payment"),
+            "crashed app PID log must be attributed via am_crash"
+        );
+
+        let filtered = filter_logs_by_package(&all_logs, &all_logs, "com.example.shop");
+        assert_eq!(filtered.len(), shop.logs.len());
     }
 }

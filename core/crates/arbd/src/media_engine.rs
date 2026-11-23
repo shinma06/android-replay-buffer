@@ -1141,6 +1141,7 @@ pub fn build_timeline_summary(
         discontinuity_count: discs.len(),
         video_path: reader.video_path(),
         audio_path: reader.audio_path(),
+        app_logs: summary.app_logs.clone(),
     })
 }
 

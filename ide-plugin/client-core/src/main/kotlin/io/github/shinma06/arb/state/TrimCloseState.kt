@@ -2,8 +2,10 @@ package io.github.shinma06.arb.state
 
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.OutputDirPatch
+import io.github.shinma06.arb.model.StringPatch
 import java.nio.file.Path
 
 /**
@@ -98,8 +100,15 @@ data class ArbSettingsDraft(
     val outputDirOverride: String = "",
     val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
     val customArbdBinaryPath: String = "",
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val deviceSerial: String = "",
+    val screenshotDirOverride: String = "",
 ) {
     fun normalizedOutputDir(): String? = outputDirOverride.trim().takeIf { it.isNotEmpty() }
+
+    fun normalizedScreenshotDir(): String? = screenshotDirOverride.trim().takeIf { it.isNotEmpty() }
+
+    fun normalizedDeviceSerial(): String? = deviceSerial.trim().takeIf { it.isNotEmpty() }
 
     fun normalizedCustomArbdPath(): String = customArbdBinaryPath.trim()
 
@@ -122,11 +131,22 @@ data class ArbSettingsDraft(
         if (crashAutosaveCooldownSecs !in ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS..ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS) {
             return "クラッシュ自動保存のクールダウンは ${ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS}s 〜 ${ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS}s の範囲で指定してください。"
         }
+        val serial = normalizedDeviceSerial()
+        if (serial != null && !DeviceSelectionPolicy.isValidAdbSerial(serial)) {
+            return "端末シリアルの形式が不正です（USB / Wi-Fi IP:ポート / mDNS シリアルのみ指定可能）。"
+        }
         val dir = normalizedOutputDir()
         if (dir != null) {
             val isAbsolute = runCatching { Path.of(dir).isAbsolute }.getOrDefault(false)
             if (!isAbsolute) {
                 return "保存先フォルダの上書きには絶対パスを指定してください。"
+            }
+        }
+        val shotDir = normalizedScreenshotDir()
+        if (shotDir != null) {
+            val isAbsolute = runCatching { Path.of(shotDir).isAbsolute }.getOrDefault(false)
+            if (!isAbsolute) {
+                return "スクリーンショット保存先フォルダには絶対パスを指定してください。"
             }
         }
         return null
@@ -139,9 +159,12 @@ data class ArbSettingsDraft(
             videoMaxSize != baseline.videoMaxSize ||
             videoMaxFps != baseline.videoMaxFps ||
             audioEnabled != baseline.audioEnabled ||
+            captureMode != baseline.captureMode ||
+            normalizedDeviceSerial() != baseline.deviceSerial ||
             crashAutosaveEnabled != baseline.crashAutosaveEnabled ||
             crashAutosaveCooldownSecs != baseline.crashAutosaveCooldownSecs ||
             normalizedOutputDir() != baseline.outputDirOverride ||
+            normalizedScreenshotDir() != baseline.screenshotDirOverride ||
             ideDefaultSaveAction != baseline.ideDefaultSaveAction
 
     fun toConfigPatch(baseline: ArbConfig): ArbConfigPatch {
@@ -151,6 +174,18 @@ data class ArbSettingsDraft(
             nextDir == null -> OutputDirPatch.Clear
             else -> OutputDirPatch.Set(nextDir)
         }
+        val nextShotDir = normalizedScreenshotDir()
+        val shotDirPatch = when {
+            nextShotDir == baseline.screenshotDirOverride -> OutputDirPatch.Unchanged
+            nextShotDir == null -> OutputDirPatch.Clear
+            else -> OutputDirPatch.Set(nextShotDir)
+        }
+        val nextSerial = normalizedDeviceSerial()
+        val serialPatch = when {
+            nextSerial == baseline.deviceSerial -> StringPatch.Unchanged
+            nextSerial == null -> StringPatch.Clear
+            else -> StringPatch.Set(nextSerial)
+        }
         return ArbConfigPatch(
             saveWindowSecs = saveWindowSecs.takeIf { it != baseline.saveWindowSecs },
             ringBudgetBytes = ringBudgetBytes.takeIf { it != baseline.ringBudgetBytes },
@@ -158,9 +193,12 @@ data class ArbSettingsDraft(
             videoMaxSize = videoMaxSize.takeIf { it != baseline.videoMaxSize },
             videoMaxFps = videoMaxFps.takeIf { it != baseline.videoMaxFps },
             audioEnabled = audioEnabled.takeIf { it != baseline.audioEnabled },
+            captureMode = captureMode.takeIf { it != baseline.captureMode },
+            deviceSerial = serialPatch,
             crashAutosaveEnabled = crashAutosaveEnabled.takeIf { it != baseline.crashAutosaveEnabled },
             crashAutosaveCooldownSecs = crashAutosaveCooldownSecs.takeIf { it != baseline.crashAutosaveCooldownSecs },
             outputDirOverride = dirPatch,
+            screenshotDirOverride = shotDirPatch,
             ideDefaultSaveAction = ideDefaultSaveAction.takeIf { it != baseline.ideDefaultSaveAction },
         )
     }
@@ -178,6 +216,9 @@ data class ArbSettingsDraft(
             outputDirOverride = config.outputDirOverride.orEmpty(),
             ideDefaultSaveAction = config.ideDefaultSaveAction,
             customArbdBinaryPath = customArbdBinaryPath,
+            captureMode = config.captureMode,
+            deviceSerial = config.deviceSerial.orEmpty(),
+            screenshotDirOverride = config.screenshotDirOverride.orEmpty(),
         )
     }
 }

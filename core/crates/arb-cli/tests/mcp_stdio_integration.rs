@@ -168,6 +168,8 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
             tag: Some("ActivityTaskManager".to_owned()),
             pid: Some(500),
             tid: Some(500),
+            uid: None,
+            package_name: None,
             message: "Displayed com.example.demo/.LoginActivity: +120ms".to_owned(),
         },
         LogRecord {
@@ -187,6 +189,8 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
             tag: Some("AuthClient".to_owned()),
             pid: Some(1234),
             tid: Some(1235),
+            uid: Some(10200),
+            package_name: Some("com.example.demo".to_owned()),
             message: "Token refresh failed: 401".to_owned(),
         },
     ];
@@ -514,6 +518,46 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "overview screen"
     );
     assert_eq!(ov_json["taps"][0]["frame_index"], 6, "overview tap frame");
+    assert_eq!(
+        ov_json["app_logs"][0]["package_name"], "com.example.demo",
+        "overview must expose extracted foreground app_logs"
+    );
+
+    // 7b. `tools/call` -> `arb_query_logs` with `package` filter (T-6C)
+    let pkg_logs_resp = send_mcp_request(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 601,
+            "method": "tools/call",
+            "params": {
+                "name": "arb_query_logs",
+                "arguments": {
+                    "bundle_id": bundle_id,
+                    "package": "com.example.demo"
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        pkg_logs_resp["result"]["isError"], false,
+        "arb_query_logs(package) ok: {pkg_logs_resp}"
+    );
+    let pkg_logs_json: Value = serde_json::from_str(
+        pkg_logs_resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text"),
+    )
+    .expect("parse pkg logs");
+    assert!(
+        pkg_logs_json["logs"]
+            .as_array()
+            .expect("logs")
+            .iter()
+            .any(|row| row["tag"] == "AuthClient"),
+        "package filter must return com.example.demo AuthClient log"
+    );
     assert_eq!(
         ov_json["error_log_highlights"][0]["tag"], "AuthClient",
         "overview error highlight"

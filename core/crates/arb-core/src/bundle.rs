@@ -21,6 +21,21 @@ pub enum BundleKind {
     LogsOnly,
 }
 
+/// Extracted per-app logcat sidecar summary recorded in `manifest.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AppLogSummary {
+    /// Android application package name (e.g., `com.example.app`).
+    pub package_name: String,
+    /// Bundle-relative JSONL file path (e.g., `app-logs/com.example.app.jsonl`).
+    pub relative_path: String,
+    /// Number of log records written into `relative_path`.
+    pub line_count: u64,
+    /// Number of crash markers attributed to this package in the bundle.
+    pub crash_count: u64,
+    /// Lowercase 64-character hexadecimal SHA-256 digest of `relative_path`.
+    pub sha256: String,
+}
+
 /// Top-level `manifest.json` schema for ARB v2 immutable saved bundles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestV2 {
@@ -45,6 +60,9 @@ pub struct ManifestV2 {
     pub streams: StreamsSummary,
     /// Summary of quarantined `unanchored` records and truncation counts.
     pub unanchored_summary: UnanchoredSummary,
+    /// Per-app extracted logcat summaries for foreground / crashed non-system apps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_logs: Vec<AppLogSummary>,
     /// SHA-256 digests of all immutable payload files inside the bundle directory.
     pub files: Vec<FileDigest>,
 }
@@ -311,6 +329,12 @@ pub struct LogRecord {
     pub pid: Option<i32>,
     /// Thread ID.
     pub tid: Option<i32>,
+    /// Process UID (`logger_entry_v4.uid`), when reported by the device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    /// Resolved Android application package name (e.g., `com.example.app`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_name: Option<String>,
     /// Log message payload.
     pub message: String,
 }
@@ -609,6 +633,47 @@ impl ManifestV2 {
                 });
             }
         }
+        for app_log in &self.app_logs {
+            if app_log.package_name.trim().is_empty() {
+                return Err(ValidationError::EmptyField {
+                    field: "app_logs[].package_name",
+                });
+            }
+            if !app_log.relative_path.starts_with("app-logs/")
+                || app_log.relative_path.contains('\\')
+                || app_log
+                    .relative_path
+                    .split('/')
+                    .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            {
+                return Err(ValidationError::InvalidFilePath {
+                    path: app_log.relative_path.clone(),
+                    reason: "app_logs relative_path must live under app-logs/ without traversal",
+                });
+            }
+            if !is_valid_lowercase_sha256(&app_log.sha256) {
+                return Err(ValidationError::InvalidSha256 {
+                    path: app_log.relative_path.clone(),
+                    digest: app_log.sha256.clone(),
+                });
+            }
+            let matching_file = self.files.iter().find(|f| f.path == app_log.relative_path);
+            match matching_file {
+                Some(entry) if entry.sha256 == app_log.sha256 => {}
+                Some(_) => {
+                    return Err(ValidationError::InvalidSha256 {
+                        path: app_log.relative_path.clone(),
+                        digest: app_log.sha256.clone(),
+                    });
+                }
+                None => {
+                    return Err(ValidationError::InvalidFilePath {
+                        path: app_log.relative_path.clone(),
+                        reason: "app_logs entry must also be listed in manifest.files",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -676,6 +741,7 @@ mod tests {
                 included_count: 12,
                 truncated_count: 0,
             },
+            app_logs: Vec::new(),
             files: vec![
                 FileDigest {
                     path: "video.mp4".into(),
@@ -775,5 +841,58 @@ mod tests {
         );
         let parsed: ManifestV2 = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, m);
+    }
+
+    #[test]
+    fn app_logs_manifest_validation_enforces_path_and_digest_consistency() {
+        use super::AppLogSummary;
+
+        let mut m = valid_manifest();
+        let sha = "b".repeat(64);
+        m.files.push(FileDigest {
+            path: "app-logs/com.example.app.jsonl".into(),
+            bytes: 128,
+            sha256: sha.clone(),
+        });
+        m.app_logs.push(AppLogSummary {
+            package_name: "com.example.app".into(),
+            relative_path: "app-logs/com.example.app.jsonl".into(),
+            line_count: 4,
+            crash_count: 1,
+            sha256: sha,
+        });
+        assert_eq!(m.validate(), Ok(()), "consistent app_logs must validate");
+
+        let mut bad_missing = valid_manifest();
+        bad_missing.app_logs.push(AppLogSummary {
+            package_name: "com.example.app".into(),
+            relative_path: "app-logs/com.example.app.jsonl".into(),
+            line_count: 1,
+            crash_count: 0,
+            sha256: "c".repeat(64),
+        });
+        assert!(
+            matches!(
+                bad_missing.validate(),
+                Err(ValidationError::InvalidFilePath { .. })
+            ),
+            "app_logs missing from manifest.files must fail validation"
+        );
+
+        let mut bad_path = valid_manifest();
+        bad_path.app_logs.push(AppLogSummary {
+            package_name: "com.example.app".into(),
+            relative_path: "../escape.jsonl".into(),
+            line_count: 1,
+            crash_count: 0,
+            sha256: "d".repeat(64),
+        });
+        assert!(
+            matches!(
+                bad_path.validate(),
+                Err(ValidationError::InvalidFilePath { .. })
+            ),
+            "app_logs outside app-logs/ must fail validation"
+        );
     }
 }

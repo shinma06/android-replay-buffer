@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use arb_adb::adb::{AdbClient, AdbDeviceState};
 use arb_core::analytics::validate_png_bytes;
+use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, validate_adb_serial};
 use arb_os::fs::{fsync_dir, fsync_file};
 
 use crate::error::DaemonError;
@@ -83,8 +84,9 @@ fn resolve_screenshot_serial(
     adb: &AdbClient,
     requested: Option<&str>,
 ) -> Result<String, DaemonError> {
-    if let Some(s) = requested.filter(|s| !s.trim().is_empty()) {
-        return Ok(s.to_owned());
+    let preferred = requested.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(serial) = preferred {
+        validate_adb_serial(serial).map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
     }
     let online: Vec<String> = adb
         .devices()?
@@ -92,15 +94,31 @@ fn resolve_screenshot_serial(
         .filter(|d| d.state == AdbDeviceState::Device)
         .map(|d| d.serial)
         .collect();
-    match online.as_slice() {
-        [only] => Ok(only.clone()),
-        [] => Err(DaemonError::NotFound(
+    match DeviceSelectionPolicy::evaluate(preferred, &online) {
+        DeviceSelectionOutcome::Selected { serial } => Ok(serial),
+        DeviceSelectionOutcome::WaitingForPreferredDevice {
+            preferred_serial,
+            other_online_serials,
+        } => Err(DaemonError::NotFound(if other_online_serials.is_empty() {
+            format!("preferred ADB device `{preferred_serial}` is offline or disconnected")
+        } else {
+            format!(
+                "preferred ADB device `{preferred_serial}` is offline or disconnected (other online devices: {}; refusing to auto-switch)",
+                other_online_serials.join(", ")
+            )
+        })),
+        DeviceSelectionOutcome::NoOnlineDevices => Err(DaemonError::NotFound(
             "no online ADB devices found for screenshot".to_owned(),
         )),
-        many => Err(DaemonError::InvalidParams(format!(
-            "multiple online ADB devices found ({}); pass serial explicitly",
-            many.join(", ")
-        ))),
+        DeviceSelectionOutcome::MultipleDevicesNeedSelection { online_serials } => {
+            Err(DaemonError::Conflict(format!(
+                "MultipleDevicesNeedSelection: multiple online ADB devices found ({}); select a device explicitly",
+                online_serials.join(", ")
+            )))
+        }
+        _ => Err(DaemonError::Internal(
+            "unexpected device selection outcome".to_owned(),
+        )),
     }
 }
 

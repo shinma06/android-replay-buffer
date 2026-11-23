@@ -21,10 +21,11 @@
 //!   new `boot_id` is suppressed (the supervisor already reported a real reboot, and an
 //!   unverified continuity must never be asserted as one).
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
@@ -44,6 +45,8 @@ use arb_adb::wire::{
     DEFAULT_MAX_PAYLOAD_LEN, FrameFlags, HeartbeatPayload, HelloPayload, PingPayload, ShutdownCode,
     ShutdownPayload, StreamId, WireFrame, WireMessage,
 };
+use arb_core::config::CaptureMode;
+use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, validate_adb_serial};
 use arb_core::time::{
     ClockTimeline, ClockTimelineConfig, DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind,
     PcSyncProbe, StreamKind,
@@ -67,6 +70,55 @@ const BEACON_TIMEOUT_HEARTBEATS: i64 = 6;
 const COMPANION_READY_TIMEOUT: Duration = Duration::from_secs(8);
 /// Poll slice used while waiting so `capture.stop` is honoured promptly (R3 S12).
 const STOP_POLL_SLICE: Duration = Duration::from_millis(100);
+/// Maximum bytes retained from `scrcpy-server` stderr for HW-encoder contention diagnostics.
+const MAX_SCRCPY_STDERR_BYTES: usize = 8 * 1024;
+
+/// Returns `true` when `text` matches known Android `MediaCodec` / H.264 hardware encoder
+/// initialization failure signatures (such as simultaneous Android Studio Running Devices
+/// mirroring exhausting device hardware encoder instances).
+#[must_use]
+pub fn is_hw_encoder_contention_error(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "mediacodec",
+        "configure failed",
+        "resource_exhausted",
+        "error_insufficient_resources",
+        "insufficient resources",
+        "codec_error",
+        "start failed",
+        "could not open video stream",
+        "unable to create encoder",
+        "createinputsurface",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// Formats a `scrcpy-server` video failure with an honest Running Devices mirroring
+/// hardware-encoder contention diagnostic hint when `MediaCodec` / encoder exhaustion is
+/// detected in `raw_error` or `scrcpy_stderr`.
+#[must_use]
+pub fn classify_scrcpy_video_error(raw_error: &str, scrcpy_stderr: Option<&str>) -> String {
+    let stderr_trimmed = scrcpy_stderr.map(str::trim).filter(|s| !s.is_empty());
+    let combined = match stderr_trimmed {
+        Some(stderr) => format!("{raw_error}\n{stderr}"),
+        None => raw_error.to_owned(),
+    };
+    if is_hw_encoder_contention_error(&combined) {
+        let detail = stderr_trimmed.map_or_else(
+            || raw_error.to_owned(),
+            |stderr| format!("{raw_error} (scrcpy stderr: {stderr})"),
+        );
+        format!(
+            "scrcpy video encoder initialization failed ({detail}). Possible H.264 hardware encoder contention (for example with Android Studio Running Devices mirroring). Try lowering video_max_size to 1024 or switching capture_mode to logs_only."
+        )
+    } else if let Some(stderr) = stderr_trimmed {
+        format!("scrcpy video unavailable: {raw_error} (scrcpy stderr: {stderr})")
+    } else {
+        format!("scrcpy video unavailable: {raw_error}")
+    }
+}
 
 /// Handle to an active background live ADB capture supervisor thread.
 #[derive(Debug)]
@@ -135,6 +187,22 @@ impl LiveSink {
         }
     }
 
+    fn set_package_uids(&self, uid_packages: BTreeMap<u32, String>) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.set_package_uids_for_session(self.generation, uid_packages);
+        } else {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn set_last_video_error(&self, error: Option<String>) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.set_last_video_error_for_session(self.generation, error);
+        } else {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
     /// `true` while this sink's session is still the current, active capture session.
     fn session_is_current(&self) -> bool {
         if self.failed.load(Ordering::Acquire) {
@@ -166,35 +234,43 @@ pub fn start_live_adb_capture(
 ) -> Result<(String, LiveCaptureHandle), DaemonError> {
     let adb = AdbClient::discover()?;
     let serial = resolve_target_serial(&adb, params.serial.as_deref())?;
+    let capture_mode = params.capture_mode.unwrap_or(CaptureMode::VideoAndLogs);
     let companion_jar = resolve_agent_jar(
         params.companion_jar.as_deref(),
         "ARB_COMPANION_JAR",
         "arb-companion.dex.jar",
     )?;
-    let scrcpy_jar = resolve_agent_jar(
-        params.scrcpy_jar.as_deref(),
-        "ARB_SCRCPY_JAR",
-        "replay-scrcpy-audio.dex.jar",
-    )
-    .ok();
+    // In `logs_only` mode, never deploy or start scrcpy-server (zero video/audio MediaCodec load).
+    let scrcpy_jar = if capture_mode == CaptureMode::LogsOnly {
+        None
+    } else {
+        resolve_agent_jar(
+            params.scrcpy_jar.as_deref(),
+            "ARB_SCRCPY_JAR",
+            "replay-scrcpy-audio.dex.jar",
+        )
+        .ok()
+    };
 
+    let is_video_mode = capture_mode == CaptureMode::VideoAndLogs;
     let cfg = LiveCaptureConfig {
         serial: serial.clone(),
+        capture_mode,
         companion_jar,
         scrcpy_jar,
         max_size: params.max_size.unwrap_or(1024),
         max_fps: params.max_fps.unwrap_or(30),
         video_bit_rate: params.video_bit_rate.unwrap_or(4_000_000),
-        audio_enabled: params.audio_enabled.unwrap_or(true),
+        audio_enabled: is_video_mode && params.audio_enabled.unwrap_or(true),
         logcat_enabled: params.logcat_enabled.unwrap_or(true),
-        input_enabled: params.input_enabled.unwrap_or(true),
+        input_enabled: is_video_mode && params.input_enabled.unwrap_or(true),
         heartbeat_ms: params.heartbeat_ms.unwrap_or(250),
     };
 
     let generation = pipeline
         .lock()
         .map_err(|_| DaemonError::Internal("capture pipeline lock poisoned".to_owned()))?
-        .begin_live_session(serial.clone());
+        .begin_live_session_with_mode(serial.clone(), capture_mode);
     let sink = LiveSink {
         pipeline: Arc::clone(pipeline),
         generation,
@@ -225,6 +301,7 @@ pub fn start_live_adb_capture(
 #[derive(Debug, Clone)]
 struct LiveCaptureConfig {
     serial: String,
+    capture_mode: CaptureMode,
     companion_jar: PathBuf,
     scrcpy_jar: Option<PathBuf>,
     max_size: u32,
@@ -237,7 +314,10 @@ struct LiveCaptureConfig {
 }
 
 fn resolve_target_serial(adb: &AdbClient, requested: Option<&str>) -> Result<String, DaemonError> {
-    if let Some(serial) = requested.filter(|s| !s.trim().is_empty()) {
+    if let Some(serial) = requested.map(str::trim).filter(|s| !s.is_empty()) {
+        validate_adb_serial(serial).map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
+        // Strict no-auto-switch rule: once a target serial is bound, stay bound to it even if
+        // another device is online so capture waits for reconnection instead of switching.
         return Ok(serial.to_owned());
     }
     let devices = adb.devices()?;
@@ -246,15 +326,23 @@ fn resolve_target_serial(adb: &AdbClient, requested: Option<&str>) -> Result<Str
         .filter(|d| d.state == AdbDeviceState::Device)
         .map(|d| d.serial)
         .collect();
-    match online.as_slice() {
-        [only] => Ok(only.clone()),
-        [] => Err(DaemonError::NotFound(
+    match DeviceSelectionPolicy::evaluate(None, &online) {
+        DeviceSelectionOutcome::Selected { serial, .. } => Ok(serial),
+        DeviceSelectionOutcome::NoOnlineDevices => Err(DaemonError::NotFound(
             "no online ADB devices found".to_owned(),
         )),
-        many => Err(DaemonError::InvalidParams(format!(
-            "multiple online ADB devices found ({}); pass --serial explicitly",
-            many.join(", ")
-        ))),
+        DeviceSelectionOutcome::MultipleDevicesNeedSelection { online_serials } => {
+            Err(DaemonError::Conflict(format!(
+                "MultipleDevicesNeedSelection: multiple online ADB devices found ({}); select a target device explicitly",
+                online_serials.join(", ")
+            )))
+        }
+        DeviceSelectionOutcome::WaitingForPreferredDevice {
+            preferred_serial, ..
+        } => Ok(preferred_serial),
+        _ => Err(DaemonError::Internal(
+            "unexpected device selection outcome".to_owned(),
+        )),
     }
 }
 
@@ -680,11 +768,16 @@ fn run_single_adb_session(
 ) -> Result<(), DaemonError> {
     let token_raw = current_unix_millis() % 1_000_000;
     let session_token = format!("s{}-{token_raw:06}", std::process::id());
+    let scrcpy_jar_for_deploy = if cfg.capture_mode == CaptureMode::LogsOnly {
+        None
+    } else {
+        cfg.scrcpy_jar.as_deref()
+    };
     let deployed = adb.deploy_session_agents(
         &cfg.serial,
         &session_token,
         &cfg.companion_jar,
-        cfg.scrcpy_jar.as_deref(),
+        scrcpy_jar_for_deploy,
     )?;
 
     let mut guard = SessionCleanupGuard {
@@ -704,36 +797,58 @@ fn run_single_adb_session(
     if let Some((display_w, display_h)) = adb.query_display_size(&cfg.serial) {
         sink.set_display_size(display_w, display_h);
     }
+    let uid_packages = adb.query_package_uids(&cfg.serial);
+    if !uid_packages.is_empty() {
+        sink.set_package_uids(uid_packages);
+    }
 
-    // 2. Launch scrcpy-server-v5.0.1 for H.264 video (and optional AAC audio on API >= 33).
+    // 2. Launch scrcpy-server-v5.0.1 for H.264 video (and optional AAC audio on API >= 33),
+    //    UNLESS `capture_mode == CaptureMode::LogsOnly` (zero MediaCodec load on device).
     let session_stop = Arc::new(AtomicBool::new(false));
     let (media_tx, media_rx) = channel();
-    let media = launch_scrcpy_streams(
-        adb,
-        cfg,
-        &mut guard,
-        api_level,
-        &tracker.boot_id,
-        &MediaThreadCtx {
-            session_stop: Arc::clone(&session_stop),
-            global_stop: Arc::clone(stop_flag),
-            sink: sink.clone(),
-            signals: media_tx,
-        },
-    );
-    let (media_threads, media_sockets) = match media {
-        Ok(started) => started,
-        Err(err) => {
-            // R3 M5: no silent video loss; capture continues without video.
-            if let Some(gap) = tracker.on_media_lost(
-                supervisor,
-                StreamId::Video,
-                sample_cont_ns(),
-                &format!("scrcpy video unavailable: {err}"),
-            ) {
-                sink.push(gap);
+    let scrcpy_stderr = Arc::new(Mutex::new(String::new()));
+    let (media_threads, media_sockets) = if cfg.capture_mode == CaptureMode::LogsOnly {
+        sink.set_last_video_error(None);
+        (Vec::new(), Vec::new())
+    } else {
+        let media = launch_scrcpy_streams(
+            adb,
+            cfg,
+            &mut guard,
+            api_level,
+            &tracker.boot_id,
+            &MediaThreadCtx {
+                session_stop: Arc::clone(&session_stop),
+                global_stop: Arc::clone(stop_flag),
+                sink: sink.clone(),
+                signals: media_tx,
+            },
+            &scrcpy_stderr,
+        );
+        match media {
+            Ok(started) => {
+                sink.set_last_video_error(None);
+                started
             }
-            (Vec::new(), Vec::new())
+            Err(err) => {
+                // Give the stderr reader a brief slice to collect any MediaCodec error line.
+                thread::sleep(Duration::from_millis(75));
+                let stderr_snapshot = scrcpy_stderr
+                    .lock()
+                    .ok()
+                    .map(|buf| buf.clone())
+                    .filter(|s| !s.trim().is_empty());
+                let detail =
+                    classify_scrcpy_video_error(&err.to_string(), stderr_snapshot.as_deref());
+                sink.set_last_video_error(Some(detail.clone()));
+                // R3 M5: no silent video loss; capture continues without video.
+                if let Some(gap) =
+                    tracker.on_media_lost(supervisor, StreamId::Video, sample_cont_ns(), &detail)
+                {
+                    sink.push(gap);
+                }
+                (Vec::new(), Vec::new())
+            }
         }
     };
 
@@ -746,6 +861,7 @@ fn run_single_adb_session(
         supervisor,
         tracker,
         &media_rx,
+        &scrcpy_stderr,
     );
 
     session_stop.store(true, Ordering::Release);
@@ -859,6 +975,28 @@ impl MediaThreadCtx {
     }
 }
 
+fn spawn_scrcpy_stderr_collector(stderr: ChildStderr, buf: Arc<Mutex<String>>) {
+    let _ = thread::Builder::new()
+        .name("arbd-scrcpy-stderr".to_owned())
+        .spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut guard) = buf.lock()
+                    && guard.len() < MAX_SCRCPY_STDERR_BYTES
+                {
+                    let remaining = MAX_SCRCPY_STDERR_BYTES - guard.len();
+                    let take = line.floor_char_boundary(remaining.min(line.len()));
+                    guard.push_str(&line[..take]);
+                }
+                line.clear();
+            }
+        });
+}
+
 /// Launches scrcpy and its reader threads.
 ///
 /// # Errors
@@ -872,6 +1010,7 @@ fn launch_scrcpy_streams(
     api_level: u32,
     boot_id: &str,
     ctx: &MediaThreadCtx,
+    scrcpy_stderr: &Arc<Mutex<String>>,
 ) -> Result<(Vec<JoinHandle<()>>, Vec<TcpStream>), DaemonError> {
     let mut media_threads: Vec<JoinHandle<()>> = Vec::new();
     let mut media_sockets: Vec<TcpStream> = Vec::new();
@@ -915,11 +1054,14 @@ fn launch_scrcpy_streams(
         &scrcpy_opts,
         api_level,
     );
-    let scrcpy_child = Command::new(adb.adb_path())
+    let mut scrcpy_child = Command::new(adb.adb_path())
         .args(["-s", &cfg.serial, "shell", &scrcpy_cmd])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
+    if let Some(stderr) = scrcpy_child.stderr.take() {
+        spawn_scrcpy_stderr_collector(stderr, Arc::clone(scrcpy_stderr));
+    }
     guard.scrcpy_child = Some(scrcpy_child);
 
     let audio_socket_mode = if expect_audio_socket {
@@ -962,6 +1104,10 @@ fn launch_scrcpy_streams(
     Ok((media_threads, media_sockets))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session event loop takes the companion sockets, supervisor state, and media signal channel"
+)]
 fn run_companion_event_loop(
     companion_reader: &mut TcpStream,
     companion_writer: &mut TcpStream,
@@ -970,6 +1116,7 @@ fn run_companion_event_loop(
     supervisor: &mut SessionSupervisor,
     tracker: &mut LiveTracker,
     media_rx: &Receiver<MediaSignal>,
+    scrcpy_stderr: &Arc<Mutex<String>>,
 ) -> Result<(), DaemonError> {
     let mut ping = PingState::new(Instant::now());
     let mut next_liveness_tick = Instant::now() + LIVENESS_TICK_INTERVAL;
@@ -1026,7 +1173,7 @@ fn run_companion_event_loop(
             Err(err) => return Err(DaemonError::CaptureSource(err.into())),
         }
 
-        drain_media_signals(media_rx, sink, supervisor, tracker);
+        drain_media_signals(media_rx, sink, supervisor, tracker, scrcpy_stderr);
 
         let now_pc = sample_cont_ns();
         if Instant::now() >= next_liveness_tick {
@@ -1049,6 +1196,7 @@ fn drain_media_signals(
     sink: &LiveSink,
     supervisor: &mut SessionSupervisor,
     tracker: &mut LiveTracker,
+    scrcpy_stderr: &Arc<Mutex<String>>,
 ) {
     loop {
         match media_rx.try_recv() {
@@ -1058,7 +1206,21 @@ fn drain_media_signals(
                 pc_cont_ns,
                 reason,
             }) => {
-                if let Some(event) = tracker.on_media_lost(supervisor, stream, pc_cont_ns, &reason)
+                let effective_reason = if stream == StreamId::Video {
+                    let stderr_snapshot = scrcpy_stderr
+                        .lock()
+                        .ok()
+                        .map(|buf| buf.clone())
+                        .filter(|s| !s.trim().is_empty());
+                    let classified =
+                        classify_scrcpy_video_error(&reason, stderr_snapshot.as_deref());
+                    sink.set_last_video_error(Some(classified.clone()));
+                    classified
+                } else {
+                    reason
+                };
+                if let Some(event) =
+                    tracker.on_media_lost(supervisor, stream, pc_cont_ns, &effective_reason)
                 {
                     sink.push(event);
                 }
@@ -1879,5 +2041,30 @@ mod tests {
             AudioTunnelReader::handshake(audio_sock).expect("audio handshake must read AAC");
         assert_eq!(audio_reader.codec_id(), CODEC_ID_AAC);
         server.join().expect("mock scrcpy server must exit cleanly");
+    }
+
+    #[test]
+    fn t6c_hw_encoder_contention_classifier_detects_mediacodec_and_suggests_workarounds() {
+        assert!(super::is_hw_encoder_contention_error(
+            "android.media.MediaCodec$CodecException: Configure failed with 0xfffffff4"
+        ));
+        assert!(super::is_hw_encoder_contention_error(
+            "ERROR_INSUFFICIENT_RESOURCES while creating video/avc encoder"
+        ));
+        assert!(!super::is_hw_encoder_contention_error(
+            "socket timed out waiting for dummy byte"
+        ));
+
+        let hint = super::classify_scrcpy_video_error(
+            "scrcpy_video_eof",
+            Some("MediaCodec.configure failed: RESOURCE_EXHAUSTED"),
+        );
+        assert!(hint.contains("Running Devices mirroring"), "hint={hint}");
+        assert!(hint.contains("1024"), "hint={hint}");
+        assert!(hint.contains("logs_only"), "hint={hint}");
+
+        let plain = super::classify_scrcpy_video_error("connection reset by peer", None);
+        assert!(plain.contains("connection reset by peer"));
+        assert!(!plain.contains("Running Devices mirroring"));
     }
 }

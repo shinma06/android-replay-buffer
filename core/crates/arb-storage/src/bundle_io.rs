@@ -16,11 +16,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use arb_core::BUNDLE_SCHEMA_VERSION;
-use arb_core::analytics::{CrashMarker, ScreenSpan, extract_crash_markers, extract_screen_spans};
+use arb_core::analytics::{
+    CrashMarker, ScreenSpan, extract_crash_markers, extract_foreground_app_logs,
+    extract_screen_spans,
+};
 use arb_core::bundle::{
-    BundleKind, DeviceInfo, EpochSpan, FileDigest, FrameRecord, InputStreamMeta, LogCompleteness,
-    LogRecord, LogcatStreamMeta, ManifestV2, Provenance, RecordBucket, RequestedWindow,
-    StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
+    AppLogSummary, BundleKind, DeviceInfo, EpochSpan, FileDigest, FrameRecord, InputStreamMeta,
+    LogCompleteness, LogRecord, LogcatStreamMeta, ManifestV2, Provenance, RecordBucket,
+    RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::legacy::{
     LegacyBundleMetadata, LegacySaveKind, LegacySchemaVersion, parse_schema3_frames_jsonl,
@@ -103,6 +106,8 @@ CREATE TABLE logs (
   tag TEXT,
   pid INTEGER,
   tid INTEGER,
+  uid INTEGER,
+  package_name TEXT,
   message TEXT NOT NULL,
   half_width_ns INTEGER,
   semantics TEXT,
@@ -240,6 +245,8 @@ pub struct BundleManifestSummary {
     pub unanchored_summary: UnanchoredSummary,
     /// Covered device boot epochs.
     pub epochs: Vec<EpochSpan>,
+    /// Per-app extracted foreground logcat summaries (`app-logs/<package>.jsonl`).
+    pub app_logs: Vec<AppLogSummary>,
     /// Full v2 manifest when `format == BundleFormat::V2`.
     pub manifest_v2: Option<ManifestV2>,
     /// Full legacy metadata when `format` is schema 3 or 4.
@@ -446,6 +453,26 @@ impl V2BundleWriter {
             files.push(unanchored_digest);
         }
 
+        // Write per-app foreground / crashed extracted logcat sidecars (`app-logs/<pkg>.jsonl`).
+        let extracted_apps = extract_foreground_app_logs(&draft.logs, &draft.frames);
+        let mut app_logs = Vec::with_capacity(extracted_apps.len());
+        for extracted in &extracted_apps {
+            let digest =
+                stage_log_slice_jsonl(&staging, &extracted.relative_path, &extracted.logs)?;
+            let line_count = u64::try_from(extracted.logs.len()).unwrap_or(u64::MAX);
+            app_logs.push(AppLogSummary {
+                package_name: extracted.package_name.clone(),
+                relative_path: extracted.relative_path.clone(),
+                line_count,
+                crash_count: extracted.crash_count,
+                sha256: digest.sha256.clone(),
+            });
+            files.push(digest);
+        }
+        if !app_logs.is_empty() {
+            arb_os::fs::fsync_dir(&staging.staging_path().join("app-logs"))?;
+        }
+
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
         write_timeline_sqlite(&timeline_path, draft)?;
         let timeline_digest = hash_and_sync_file(&timeline_path, TIMELINE_DB_FILE)?;
@@ -464,6 +491,7 @@ impl V2BundleWriter {
             epochs: draft.epochs.clone(),
             streams: draft.streams.clone(),
             unanchored_summary: draft.unanchored_summary,
+            app_logs,
             files,
         };
         manifest.validate()?;
@@ -561,6 +589,7 @@ impl V2BundleReader {
             streams: manifest.streams.clone(),
             unanchored_summary: manifest.unanchored_summary,
             epochs: manifest.epochs.clone(),
+            app_logs: manifest.app_logs.clone(),
             manifest_v2: Some(manifest.clone()),
             legacy_metadata: None,
         };
@@ -807,19 +836,36 @@ impl BundleReader for V2BundleReader {
             None => -1,
         };
 
+        let has_pkg_cols = sqlite_column_exists(&conn, "logs", "uid")?
+            && sqlite_column_exists(&conn, "logs", "package_name")?;
+        let sql = if has_pkg_cols {
+            "SELECT seq, boot_id, header_epoch_ns, device_read_boottime_ns,
+                    pc_ingest_cont_ns, aligned_boottime_ns, min_boottime_ns,
+                    max_boottime_ns, certainty, bucket, level, tag, pid, tid,
+                    message, half_width_ns, semantics, uncertainty_reason,
+                    uid, package_name
+             FROM logs
+             WHERE (?1 IS NULL OR bucket = ?1)
+               AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
+               AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+             ORDER BY seq ASC
+             LIMIT ?4"
+        } else {
+            "SELECT seq, boot_id, header_epoch_ns, device_read_boottime_ns,
+                    pc_ingest_cont_ns, aligned_boottime_ns, min_boottime_ns,
+                    max_boottime_ns, certainty, bucket, level, tag, pid, tid,
+                    message, half_width_ns, semantics, uncertainty_reason,
+                    NULL, NULL
+             FROM logs
+             WHERE (?1 IS NULL OR bucket = ?1)
+               AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
+               AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+             ORDER BY seq ASC
+             LIMIT ?4"
+        };
+
         let mut stmt = conn
-            .prepare(
-                "SELECT seq, boot_id, header_epoch_ns, device_read_boottime_ns,
-                        pc_ingest_cont_ns, aligned_boottime_ns, min_boottime_ns,
-                        max_boottime_ns, certainty, bucket, level, tag, pid, tid,
-                        message, half_width_ns, semantics, uncertainty_reason
-                 FROM logs
-                 WHERE (?1 IS NULL OR bucket = ?1)
-                   AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
-                   AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
-                 ORDER BY seq ASC
-                 LIMIT ?4",
-            )
+            .prepare(sql)
             .map_err(|source| StorageError::sqlite("prepare_query_logs", source))?;
 
         let rows = stmt
@@ -845,6 +891,8 @@ impl BundleReader for V2BundleReader {
                         half_width_ns: row.get(15)?,
                         semantics: row.get(16)?,
                         uncertainty_reason: row.get(17)?,
+                        uid: row.get(18)?,
+                        package_name: row.get(19)?,
                     })
                 },
             )
@@ -1211,8 +1259,21 @@ fn stage_logs_jsonl(
     logs: &[LogRecord],
     bucket: RecordBucket,
 ) -> Result<FileDigest, StorageError> {
+    let filtered: Vec<LogRecord> = logs
+        .iter()
+        .filter(|l| l.bucket == bucket)
+        .cloned()
+        .collect();
+    stage_log_slice_jsonl(staging, rel_name, &filtered)
+}
+
+fn stage_log_slice_jsonl(
+    staging: &AtomicStagingDir,
+    rel_name: &str,
+    logs: &[LogRecord],
+) -> Result<FileDigest, StorageError> {
     let mut bytes = Vec::new();
-    for log in logs.iter().filter(|l| l.bucket == bucket) {
+    for log in logs {
         let line = serde_json::to_string(log)
             .map_err(|source| StorageError::json("serialize_log_jsonl", source))?;
         bytes.extend_from_slice(line.as_bytes());
@@ -1588,14 +1649,16 @@ fn insert_logs(tx: &rusqlite::Transaction<'_>, logs: &[LogRecord]) -> Result<(),
                 seq, boot_id, header_epoch_ns, device_read_boottime_ns,
                 pc_ingest_cont_ns, aligned_boottime_ns, min_boottime_ns,
                 max_boottime_ns, certainty, bucket, level, tag, pid, tid,
+                uid, package_name,
                 message, half_width_ns, semantics, uncertainty_reason
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         )
         .map_err(|source| StorageError::sqlite("prepare_insert_logs", source))?;
 
     for log in logs {
         let cols = encode_alignment(&log.alignment)?;
         let seq = u64_to_i64(log.seq, "log.seq")?;
+        let uid = log.uid.map(i64::from);
         stmt.execute(params![
             seq,
             log.boot_id,
@@ -1611,6 +1674,8 @@ fn insert_logs(tx: &rusqlite::Transaction<'_>, logs: &[LogRecord]) -> Result<(),
             log.tag,
             log.pid,
             log.tid,
+            uid,
+            log.package_name,
             log.message,
             cols.half_width_ns,
             cols.semantics,
@@ -1729,6 +1794,26 @@ fn sqlite_table_exists(conn: &Connection, table_name: &str) -> Result<bool, Stor
         )
         .map_err(|source| StorageError::sqlite("check_table_exists", source))?;
     Ok(count > 0)
+}
+
+fn sqlite_column_exists(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, StorageError> {
+    let sql = format!("PRAGMA table_info({table_name})");
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|source| StorageError::sqlite("check_column_exists", source))?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|source| StorageError::sqlite("query_column_exists", source))?;
+    for name in names {
+        if name.map_err(|source| StorageError::sqlite("read_column_name", source))? == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn read_persisted_crashes(conn: &Connection) -> Result<Vec<CrashMarker>, StorageError> {
@@ -1896,6 +1981,8 @@ struct RawLogSqlRow {
     half_width_ns: Option<i64>,
     semantics: Option<String>,
     uncertainty_reason: Option<String>,
+    uid: Option<i64>,
+    package_name: Option<String>,
 }
 
 fn decode_log_row(raw: RawLogSqlRow) -> Result<LogRecord, StorageError> {
@@ -1923,6 +2010,8 @@ fn decode_log_row(raw: RawLogSqlRow) -> Result<LogRecord, StorageError> {
         tag: raw.tag,
         pid: raw.pid,
         tid: raw.tid,
+        uid: raw.uid.and_then(|v| u32::try_from(v).ok()),
+        package_name: raw.package_name,
         message: raw.message,
     })
 }
@@ -2133,6 +2222,8 @@ fn load_legacy_logs(
             tag: row.tag,
             pid: row.pid,
             tid: row.tid,
+            uid: None,
+            package_name: None,
             message: row.message,
         });
     }
@@ -2305,6 +2396,7 @@ fn build_legacy_summary(
             truncated_count: 0,
         },
         epochs,
+        app_logs: Vec::new(),
         manifest_v2: None,
         legacy_metadata: Some(meta.clone()),
     }
@@ -2415,6 +2507,8 @@ mod tests {
                 tag: Some("Main".to_owned()),
                 pid: Some(100),
                 tid: Some(101),
+                uid: None,
+                package_name: None,
                 message: "anchored log".to_owned(),
             },
             LogRecord {
@@ -2432,6 +2526,8 @@ mod tests {
                 tag: Some("Net".to_owned()),
                 pid: Some(200),
                 tid: Some(201),
+                uid: None,
+                package_name: None,
                 message: "unanchored log".to_owned(),
             },
         ]
@@ -2655,6 +2751,8 @@ mod tests {
             tag: Some("am_crash".to_owned()),
             pid: Some(1000),
             tid: Some(1000),
+            uid: None,
+            package_name: None,
             message:
                 "[0,4321,com.example.demo,8929190,java.lang.NullPointerException,boom,Main.kt,14,0]"
                     .to_owned(),

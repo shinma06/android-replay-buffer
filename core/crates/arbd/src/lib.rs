@@ -16,6 +16,7 @@ pub mod protocol;
 pub mod screenshot;
 pub mod time_util;
 
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -23,14 +24,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arb_adb::adb::AdbClient;
 use arb_adb::mock::DeviceEventSource;
 use arb_core::BUNDLE_SCHEMA_VERSION;
 use arb_core::analytics::{CrashAutoSaveDecision, CrashAutoSaveEval, CrashAutoSaveGate};
 use arb_core::bundle::RecordBucket;
-use arb_core::config::{ArbConfig, ArbConfigPatch, MAX_SAVE_WINDOW_SECS, MIN_SAVE_WINDOW_SECS};
+use arb_core::config::{
+    ArbConfig, ArbConfigPatch, CaptureMode, MAX_SAVE_WINDOW_SECS, MIN_SAVE_WINDOW_SECS,
+};
+use arb_core::device::validate_adb_serial;
 use arb_core::selection::{DrainOutcome, SelectionPolicy, evaluate_stream_drain};
 use arb_core::state::{RingBudgetPolicy, SaveTriggerKind};
 use arb_media::codec::default_codec_backend;
@@ -195,6 +199,31 @@ struct DaemonState {
     faults: Arc<FaultInjection>,
     shutdown_flag: Arc<AtomicBool>,
     endpoint: PathBuf,
+    build_id: Option<String>,
+    binary_mtime_secs: Option<u64>,
+}
+
+/// Computes an optional `(build_id, binary_mtime_secs)` fingerprint of the currently running
+/// `arbd` executable so clients can detect same-path in-place daemon upgrades.
+fn compute_daemon_binary_identity() -> (Option<String>, Option<u64>) {
+    let Ok(exe) = std::env::current_exe() else {
+        return (Some(env!("CARGO_PKG_VERSION").to_owned()), None);
+    };
+    let Ok(meta) = std::fs::metadata(&exe) else {
+        return (Some(env!("CARGO_PKG_VERSION").to_owned()), None);
+    };
+    let mtime_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    let build_id = Some(format!(
+        "{}-{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        meta.len(),
+        mtime_secs.unwrap_or(0)
+    ));
+    (build_id, mtime_secs)
 }
 
 /// Locks `mutex`, mapping poisoning (a panic while it was held) to an error instead of a
@@ -453,6 +482,8 @@ impl DaemonState {
                 cache_dir: self.paths.cache_dir.clone(),
                 runtime_dir: self.paths.runtime_dir.clone(),
                 daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+                build_id: self.build_id.clone(),
+                binary_mtime_secs: self.binary_mtime_secs,
             })?),
             "system.status" => self.handle_system_status(),
             "system.shutdown" => Ok(json!({ "ok": true })),
@@ -574,6 +605,10 @@ impl DaemonState {
         if let Some(dir) = &candidate.output_dir_override {
             self.validate_output_location(dir, "output_dir_override", None)?;
         }
+        if let Some(dir) = &candidate.screenshot_dir_override {
+            self.validate_output_location(dir, "screenshot_dir_override", None)?;
+            self.reject_data_dir_state_file(&dir.join("probe.png"), "screenshot_dir_override")?;
+        }
         self.config_store.save_atomic(&candidate)?;
         {
             let mut guard = self.lock(&self.user_config, "user config")?;
@@ -596,13 +631,28 @@ impl DaemonState {
     fn handle_capture_start(&self, params: Value) -> Result<Value, DaemonError> {
         let mut parsed: CaptureStartParams = parse_optional_params(params)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+        let effective_mode = parsed.capture_mode.unwrap_or(user_cfg.capture_mode);
+        parsed.capture_mode = Some(effective_mode);
+        if parsed.serial.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            parsed.serial.clone_from(&user_cfg.device_serial);
+        }
+        if let Some(serial) = parsed.serial.as_deref().map(str::trim)
+            && !serial.is_empty()
+        {
+            validate_adb_serial(serial)
+                .map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
+            parsed.serial = Some(serial.to_owned());
+        }
         if parsed.max_size.is_none() {
             parsed.max_size = Some(user_cfg.video_max_size);
         }
         if parsed.max_fps.is_none() {
             parsed.max_fps = Some(user_cfg.video_max_fps);
         }
-        if parsed.audio_enabled.is_none() {
+        if effective_mode == CaptureMode::LogsOnly {
+            parsed.audio_enabled = Some(false);
+            parsed.input_enabled = Some(false);
+        } else if parsed.audio_enabled.is_none() {
             parsed.audio_enabled = Some(user_cfg.audio_enabled);
         }
         for (name, jar) in [
@@ -637,6 +687,7 @@ impl DaemonState {
         Ok(serde_json::to_value(CaptureStartResponse {
             serial,
             started: true,
+            capture_mode: effective_mode,
         })?)
     }
 
@@ -729,13 +780,25 @@ impl DaemonState {
         }
 
         // Phase 1 (R3 S1): fix T_trigger and pin the window chunks immediately, under `C`.
-        let pending = self.lock_capture()?.phase1_pin_with_options(
-            duration_sec,
-            &dest_dir,
-            policy,
-            mode,
-            trigger_kind,
-        )?;
+        // When the active/last capture session is `CaptureMode::LogsOnly`, coerce `SaveMode::Full`
+        // to `SaveMode::LogsOnly` so `save.trigger` and crash auto-save write a valid WORM
+        // `logs_only` bundle cleanly without failing on missing video frames.
+        let pending = {
+            let mut cap = self.lock_capture()?;
+            let effective_mode =
+                if mode == SaveMode::Full && cap.capture_mode() == CaptureMode::LogsOnly {
+                    SaveMode::LogsOnly
+                } else {
+                    mode
+                };
+            cap.phase1_pin_with_options(
+                duration_sec,
+                &dest_dir,
+                policy,
+                effective_mode,
+                trigger_kind,
+            )?
+        };
 
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
@@ -763,19 +826,43 @@ impl DaemonState {
 
     fn handle_save_screenshot(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveScreenshotParams = parse_optional_params(params)?;
+        if parsed.output_path.is_some() && parsed.output_dir.is_some() {
+            return Err(DaemonError::InvalidParams(
+                "pass either output_path or output_dir, not both".to_owned(),
+            ));
+        }
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let active_serial = self.lock_capture()?.active_serial();
         let requested_serial = parsed
             .serial
-            .filter(|s| !s.trim().is_empty())
-            .or(active_serial);
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or(active_serial)
+            .or(user_cfg.device_serial);
+        if let Some(serial) = requested_serial.as_deref() {
+            validate_adb_serial(serial)
+                .map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
+        }
 
         let dest_path = if let Some(explicit) = parsed.output_path {
             self.validate_output_location(&explicit, "output_path", None)?;
             self.reject_data_dir_state_file(&explicit, "output_path")?;
             explicit
         } else {
-            let base_dir = if let Some(override_dir) = user_cfg.output_dir_override {
+            let base_dir = if let Some(explicit_dir) = parsed.output_dir {
+                self.validate_output_location(&explicit_dir, "output_dir", None)?;
+                self.reject_data_dir_state_file(&explicit_dir.join("probe.png"), "output_dir")?;
+                explicit_dir
+            } else if let Some(screenshot_dir) = user_cfg.screenshot_dir_override {
+                self.validate_output_location(&screenshot_dir, "screenshot_dir_override", None)?;
+                self.reject_data_dir_state_file(
+                    &screenshot_dir.join("probe.png"),
+                    "screenshot_dir_override",
+                )?;
+                screenshot_dir
+            } else if let Some(override_dir) = user_cfg.output_dir_override {
                 self.validate_output_location(&override_dir, "output_dir_override", None)?;
                 override_dir
             } else {
@@ -1400,6 +1487,8 @@ impl DaemonServer {
             ..CrashAutoSaveStatusView::default()
         };
 
+        let (build_id, binary_mtime_secs) = compute_daemon_binary_identity();
+
         let state = Arc::new(DaemonState {
             paths: config.paths,
             started_at: Instant::now(),
@@ -1421,6 +1510,8 @@ impl DaemonServer {
             faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
             endpoint,
+            build_id,
+            binary_mtime_secs,
         });
 
         let accept_state = Arc::clone(&state);
@@ -1490,8 +1581,23 @@ impl DaemonServer {
         &self,
         source: &mut dyn DeviceEventSource,
     ) -> Result<usize, DaemonError> {
+        self.ingest_device_source_with_mode(source, CaptureMode::VideoAndLogs)
+    }
+
+    /// Drains all events from any [`DeviceEventSource`] into the capture pipeline using the
+    /// requested [`CaptureMode`] (useful for deterministic `logs_only` E2E tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonError`] if reading from `source` or persisting ring chunks fails, or
+    /// if the capture pipeline lock is poisoned.
+    pub fn ingest_device_source_with_mode(
+        &self,
+        source: &mut dyn DeviceEventSource,
+        mode: CaptureMode,
+    ) -> Result<usize, DaemonError> {
         let mut cap = self.state.lock_capture()?;
-        let _generation = cap.begin_session(source.serial().to_owned());
+        let _generation = cap.begin_session_with_mode(source.serial().to_owned(), mode);
         let mut count = 0_usize;
         while let Some(event) = source.next_event()? {
             cap.ingest_event(event)?;
@@ -1499,6 +1605,20 @@ impl DaemonServer {
         }
         cap.flush_pending_chunk()?;
         Ok(count)
+    }
+
+    /// Installs a UID -> Android package name map on the current capture pipeline session
+    /// (for deterministic foreground app-log extraction tests without a physical ADB device).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonError`] if the capture pipeline lock is poisoned.
+    pub fn set_capture_package_uids(
+        &self,
+        uid_packages: BTreeMap<u32, String>,
+    ) -> Result<(), DaemonError> {
+        self.state.lock_capture()?.set_package_uids(uid_packages);
+        Ok(())
     }
 
     /// Flushes any pending live events into Zone-1 ring chunks.

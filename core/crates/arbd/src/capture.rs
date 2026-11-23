@@ -30,13 +30,16 @@ use std::sync::mpsc::Sender;
 
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
 use arb_adb::scrcpy::VideoPacketKind;
-use arb_adb::wire::{LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload};
+use arb_adb::wire::{
+    LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload, UNKNOWN_U32,
+};
 use arb_core::analytics::{ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary};
 use arb_core::bundle::{
     AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
     InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
+use arb_core::config::CaptureMode;
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
 use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
 use arb_core::time::{
@@ -305,6 +308,9 @@ struct SaveJobMaterializeParams {
     /// writes) and overlap the save window. They are merged into the saved bundle.
     #[serde(default)]
     extra_discontinuities: Vec<DiscontinuityEvent>,
+    /// Best-effort UID -> Android package name map captured from `cmd package list packages -U`.
+    #[serde(default)]
+    uid_packages: BTreeMap<u32, String>,
 }
 
 /// What a closed ring chunk contains, used to pick the nearest preceding anchor chunks.
@@ -531,6 +537,8 @@ pub struct CapturePipeline {
     active: bool,
     connected: bool,
     storage_pressure_stopped: bool,
+    capture_mode: CaptureMode,
+    last_video_error: Option<String>,
     clock_domain: ClockDomain,
     session_generation: u64,
     serial: Option<String>,
@@ -539,6 +547,7 @@ pub struct CapturePipeline {
     video_height: u16,
     display_width: Option<u32>,
     display_height: Option<u32>,
+    uid_packages: BTreeMap<u32, String>,
     latest_video_config: Option<Vec<u8>>,
     timeline: ClockTimeline,
     pending_events: Vec<CaptureEvent>,
@@ -582,6 +591,8 @@ impl CapturePipeline {
             active: false,
             connected: false,
             storage_pressure_stopped: false,
+            capture_mode: CaptureMode::VideoAndLogs,
+            last_video_error: None,
             clock_domain: ClockDomain::Replayed,
             session_generation: 0,
             serial: None,
@@ -595,6 +606,7 @@ impl CapturePipeline {
             video_height: 1080,
             display_width: None,
             display_height: None,
+            uid_packages: BTreeMap::new(),
             latest_video_config: None,
             timeline: ClockTimeline::new(ClockTimelineConfig::new()),
             pending_events: Vec::new(),
@@ -654,7 +666,21 @@ impl CapturePipeline {
     /// Marks the start of a new (replayed / mock) capture session for `serial` whose event
     /// timestamps are in their own `pc_cont_ns` domain, and returns its session generation.
     pub fn begin_session(&mut self, serial: impl Into<String>) -> u64 {
-        self.begin_session_inner(serial.into(), ClockDomain::Replayed)
+        self.begin_session_inner(
+            serial.into(),
+            ClockDomain::Replayed,
+            CaptureMode::VideoAndLogs,
+        )
+    }
+
+    /// Marks the start of a new (replayed / mock) capture session with an explicit
+    /// [`CaptureMode`], and returns its session generation.
+    pub fn begin_session_with_mode(
+        &mut self,
+        serial: impl Into<String>,
+        capture_mode: CaptureMode,
+    ) -> u64 {
+        self.begin_session_inner(serial.into(), ClockDomain::Replayed, capture_mode)
     }
 
     /// Marks the start of a live capture session for `serial` whose `pc_cont_ns` stamps come
@@ -663,7 +689,26 @@ impl CapturePipeline {
     /// For live sessions `T_trigger` is taken from the host clock at the save request, so a
     /// save made long after a disconnect ends at the request time, not at the last heartbeat.
     pub fn begin_live_session(&mut self, serial: impl Into<String>) -> u64 {
-        self.begin_session_inner(serial.into(), ClockDomain::HostLive)
+        self.begin_session_inner(
+            serial.into(),
+            ClockDomain::HostLive,
+            CaptureMode::VideoAndLogs,
+        )
+    }
+
+    /// Marks the start of a live capture session with an explicit [`CaptureMode`].
+    pub fn begin_live_session_with_mode(
+        &mut self,
+        serial: impl Into<String>,
+        capture_mode: CaptureMode,
+    ) -> u64 {
+        self.begin_session_inner(serial.into(), ClockDomain::HostLive, capture_mode)
+    }
+
+    /// Returns the [`CaptureMode`] of the current (or most recent) capture session.
+    #[must_use]
+    pub const fn capture_mode(&self) -> CaptureMode {
+        self.capture_mode
     }
 
     /// Records the physical device display resolution (e.g., from `adb shell wm size`) for the
@@ -682,16 +727,47 @@ impl CapturePipeline {
         }
     }
 
-    fn begin_session_inner(&mut self, serial: String, clock_domain: ClockDomain) -> u64 {
+    /// Stores the UID -> Android package name map for foreground per-app log extraction.
+    pub fn set_package_uids(&mut self, uid_packages: BTreeMap<u32, String>) {
+        self.uid_packages = uid_packages;
+    }
+
+    /// Generation-scoped variant of [`Self::set_package_uids`] for live ADB supervisor threads.
+    pub fn set_package_uids_for_session(
+        &mut self,
+        generation: u64,
+        uid_packages: BTreeMap<u32, String>,
+    ) {
+        if generation == self.session_generation {
+            self.uid_packages = uid_packages;
+        }
+    }
+
+    /// Records or clears the latest video pipeline diagnostic message for `system.status`.
+    pub fn set_last_video_error_for_session(&mut self, generation: u64, error: Option<String>) {
+        if generation == self.session_generation {
+            self.last_video_error = error;
+        }
+    }
+
+    fn begin_session_inner(
+        &mut self,
+        serial: String,
+        clock_domain: ClockDomain,
+        capture_mode: CaptureMode,
+    ) -> u64 {
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active = true;
         self.connected = false;
         self.storage_pressure_stopped = false;
+        self.capture_mode = capture_mode;
+        self.last_video_error = None;
         self.clock_domain = clock_domain;
         self.serial = Some(serial.clone());
         self.device.serial = serial;
         self.display_width = None;
         self.display_height = None;
+        self.uid_packages.clear();
         self.session_first_event_cont_ns = None;
         self.session_generation
     }
@@ -756,6 +832,8 @@ impl CapturePipeline {
             serial: self.serial.clone(),
             boot_id: self.timeline.current_boot_id().map(str::to_owned),
             storage_pressure_stopped: self.storage_pressure_stopped,
+            capture_mode: self.capture_mode,
+            last_video_error: self.last_video_error.clone(),
             video_frames: self.video_frames_seen,
             audio_frames: self.audio_frames_seen,
             log_records: self.log_records_seen,
@@ -1287,6 +1365,7 @@ impl CapturePipeline {
             fallback_video_config: self.latest_video_config.clone(),
             extra_discontinuities: self
                 .carried_discontinuities_for(&pending.window, &pending.policy),
+            uid_packages: self.uid_packages.clone(),
         };
         write_job_params(&self.data_dir, &job_id, &params)?;
 
@@ -1722,6 +1801,7 @@ struct ReplayCollector {
     log_overflow_events: u64,
     touch_normalizer: TouchNormalizer,
     epochs_map: BTreeMap<String, (i64, i64)>,
+    uid_packages: BTreeMap<u32, String>,
 }
 
 struct RawCapturedVideo {
@@ -1748,6 +1828,8 @@ struct RawCapturedLog {
     tag: Option<String>,
     pid: Option<i32>,
     tid: Option<i32>,
+    uid: Option<u32>,
+    package_name: Option<String>,
     message: String,
 }
 
@@ -1793,6 +1875,7 @@ impl ReplayCollector {
             log_overflow_events: 0,
             touch_normalizer: TouchNormalizer::default(),
             epochs_map: BTreeMap::new(),
+            uid_packages: params.uid_packages.clone(),
         }
     }
 
@@ -1886,6 +1969,13 @@ impl ReplayCollector {
             } => {
                 let (tag, message) = decode_log_tag_and_message(&payload);
                 let level = Some(log_priority_label(payload.priority).to_owned());
+                let uid = (payload.uid != UNKNOWN_U32).then_some(payload.uid);
+                let package_name = uid.and_then(|u| {
+                    self.uid_packages
+                        .get(&u)
+                        .or_else(|| self.uid_packages.get(&(u % 100_000)))
+                        .cloned()
+                });
                 self.raw_logs.push(RawCapturedLog {
                     boot_id,
                     header_epoch_ns: payload.header_epoch_ns(),
@@ -1895,6 +1985,8 @@ impl ReplayCollector {
                     tag: (!tag.is_empty()).then_some(tag),
                     pid: Some(payload.pid),
                     tid: Some(payload.tid),
+                    uid,
+                    package_name,
                     message,
                 });
             }
@@ -2075,6 +2167,8 @@ impl ReplayCollector {
                     tag: raw.tag,
                     pid: raw.pid,
                     tid: raw.tid,
+                    uid: raw.uid,
+                    package_name: raw.package_name,
                     message: raw.message,
                 }
             })

@@ -9,7 +9,8 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use arb_core::config::{DEFAULT_SAVE_WINDOW_SECS, DEFAULT_VIDEO_MAX_FPS};
+use arb_core::config::{CaptureMode, DEFAULT_SAVE_WINDOW_SECS, DEFAULT_VIDEO_MAX_FPS};
+use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy};
 use arb_core::state::{BundleLifecycleState, SaveJobState};
 use arb_os::paths::ArbPaths;
 use serde::{Deserialize, Serialize};
@@ -150,6 +151,15 @@ pub struct TrayViewState {
     pub daemon_online: bool,
     /// Capture activity + device transport connectivity.
     pub capture: CaptureStatus,
+    /// Active (or configured default) continuous capture mode (`video_and_logs` or `logs_only`).
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
+    /// `true` when 2+ ADB devices are online and no target serial has been selected yet.
+    #[serde(default)]
+    pub multiple_devices_need_selection: bool,
+    /// Bound target serial waiting for reconnection when offline (never auto-switched).
+    #[serde(default)]
+    pub waiting_for_preferred_serial: Option<String>,
     /// Active device serial, if capturing.
     pub device_serial: Option<String>,
     /// Human-readable device label (`model (serial)`), if resolvable via `device.list`.
@@ -188,6 +198,9 @@ impl TrayViewState {
             badge: TrayBadge::DaemonOffline,
             daemon_online: false,
             capture: CaptureStatus::Idle,
+            capture_mode: CaptureMode::VideoAndLogs,
+            multiple_devices_need_selection: false,
+            waiting_for_preferred_serial: None,
             device_serial: None,
             device_label: None,
             save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
@@ -224,35 +237,48 @@ impl TrayViewState {
             .device_label
             .as_deref()
             .or(self.device_serial.as_deref());
+        let mode_suffix = if self.capture_mode == CaptureMode::LogsOnly {
+            " (ログのみ)"
+        } else {
+            ""
+        };
         let mut line = if self.storage_pressure_stopped {
             match device {
                 Some(dev) => format!(
-                    "容量逼迫停止 {dev} · {}s / {}s",
+                    "容量逼迫停止{mode_suffix} {dev} · {}s / {}s",
                     self.buffered_secs, self.save_window_secs
                 ),
                 None => format!(
-                    "容量逼迫停止 · {}s / {}s",
+                    "容量逼迫停止{mode_suffix} · {}s / {}s",
                     self.buffered_secs, self.save_window_secs
                 ),
             }
         } else {
             match self.capture {
                 CaptureStatus::Capturing => format!(
-                    "REC {} · {}s / {}s",
+                    "REC{mode_suffix} {} · {}s / {}s",
                     device.unwrap_or("端末未選択"),
                     self.buffered_secs,
                     self.save_window_secs
                 ),
                 CaptureStatus::Disconnected => format!(
-                    "再接続中 {} · {}s / {}s",
+                    "再接続中{mode_suffix} {} · {}s / {}s",
                     device.unwrap_or("端末未選択"),
                     self.buffered_secs,
                     self.save_window_secs
                 ),
-                CaptureStatus::Idle => match device {
-                    Some(dev) => format!("待機中 · {dev}"),
-                    None => "待機中".to_owned(),
-                },
+                CaptureStatus::Idle => {
+                    if self.multiple_devices_need_selection {
+                        format!("複数端末接続中（端末を選択してください）{mode_suffix}")
+                    } else if let Some(pref) = &self.waiting_for_preferred_serial {
+                        format!("再接続待機中 {pref}{mode_suffix}")
+                    } else {
+                        match device {
+                            Some(dev) => format!("待機中{mode_suffix} · {dev}"),
+                            None => format!("待機中{mode_suffix}"),
+                        }
+                    }
+                }
             }
         };
         if self.discontinuities > 0 {
@@ -673,13 +699,17 @@ pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
     items.push(TrayMenuItem::separator());
     items.push(build_recent_bundles_section(state));
 
-    let toggle_label = if state.capture == CaptureStatus::Idle {
-        "録画を開始"
+    let (toggle_label, toggle_enabled) = if state.capture == CaptureStatus::Idle {
+        if state.multiple_devices_need_selection {
+            ("録画を開始（端末を選択してください）", false)
+        } else {
+            ("録画を開始", state.daemon_online)
+        }
     } else {
-        "録画を停止"
+        ("録画を停止", state.daemon_online)
     };
     items.push(TrayMenuItem {
-        enabled: state.daemon_online,
+        enabled: toggle_enabled,
         ..TrayMenuItem::action(toggle_label, TrayMenuEvent::ToggleCapture)
     });
 
@@ -769,6 +799,43 @@ fn parse_config_timing(config_response: &Value) -> (u32, u32) {
     (save_window_secs, video_max_fps)
 }
 
+fn parse_capture_mode_field(value: Option<&Value>) -> Option<CaptureMode> {
+    match value.and_then(Value::as_str) {
+        Some("logs_only") => Some(CaptureMode::LogsOnly),
+        Some("video_and_logs") => Some(CaptureMode::VideoAndLogs),
+        _ => None,
+    }
+}
+
+fn online_device_serials(devices_response: &Value) -> Vec<String> {
+    devices_response
+        .get("devices")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |arr| {
+            arr.iter()
+                .filter(|d| d.get("state").and_then(Value::as_str) == Some("device"))
+                .filter_map(|d| d.get("serial").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
+fn evaluate_tray_device_selection(cfg_obj: &Value, devices: &Value) -> (bool, Option<String>) {
+    let preferred_serial = cfg_obj
+        .get("device_serial")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let online_serials = online_device_serials(devices);
+    match DeviceSelectionPolicy::evaluate(preferred_serial, &online_serials) {
+        DeviceSelectionOutcome::MultipleDevicesNeedSelection { .. } => (true, None),
+        DeviceSelectionOutcome::WaitingForPreferredDevice {
+            preferred_serial, ..
+        } => (false, Some(preferred_serial)),
+        _ => (false, None),
+    }
+}
+
 /// Builds a [`TrayViewState`] from the raw JSON results of the five polled RPC methods.
 fn build_view_state(
     status: &Value,
@@ -791,6 +858,18 @@ fn build_view_state(
         (true, false) => CaptureStatus::Disconnected,
         (false, _) => CaptureStatus::Idle,
     };
+    let cfg_obj = config.get("config").unwrap_or(&Value::Null);
+    let capture_mode = if capture_active {
+        parse_capture_mode_field(capture.get("capture_mode"))
+            .or_else(|| parse_capture_mode_field(cfg_obj.get("capture_mode")))
+            .unwrap_or(CaptureMode::VideoAndLogs)
+    } else {
+        parse_capture_mode_field(cfg_obj.get("capture_mode"))
+            .or_else(|| parse_capture_mode_field(capture.get("capture_mode")))
+            .unwrap_or(CaptureMode::VideoAndLogs)
+    };
+    let (multiple_devices_need_selection, waiting_for_preferred_serial) =
+        evaluate_tray_device_selection(cfg_obj, devices);
     let device_serial = capture
         .get("serial")
         .and_then(Value::as_str)
@@ -850,6 +929,9 @@ fn build_view_state(
         badge,
         daemon_online: true,
         capture: capture_status,
+        capture_mode,
+        multiple_devices_need_selection,
+        waiting_for_preferred_serial,
         device_serial,
         device_label,
         save_window_secs,
@@ -1030,6 +1112,9 @@ mod tests {
             badge: TrayBadge::Idle,
             daemon_online: true,
             capture: CaptureStatus::Idle,
+            capture_mode: CaptureMode::VideoAndLogs,
+            multiple_devices_need_selection: false,
+            waiting_for_preferred_serial: None,
             device_serial: None,
             device_label: None,
             save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
@@ -1657,6 +1742,77 @@ mod tests {
         assert_eq!(
             capped.buffered_secs, 300,
             "buffered_secs must clamp cleanly to save_window_secs"
+        );
+    }
+
+    #[test]
+    fn t6c_tray_logs_only_indicator_and_multi_device_guard() {
+        let state = super::build_view_state(
+            &json!({
+                "buffered_secs": 18,
+                "capture": {
+                    "active": true,
+                    "connected": true,
+                    "serial": "192.168.1.50:5555",
+                    "capture_mode": "logs_only"
+                }
+            }),
+            &json!({ "config": { "save_window_secs": 300, "capture_mode": "logs_only" } }),
+            &json!({ "devices": [{ "serial": "192.168.1.50:5555", "state": "device", "model": "Pixel 9" }] }),
+            &json!({ "jobs": [] }),
+            &json!({ "bundles": [] }),
+        );
+        assert_eq!(state.capture_mode, CaptureMode::LogsOnly);
+        assert_eq!(
+            state.status_line(),
+            "REC (ログのみ) Pixel 9 (192.168.1.50:5555) · 18s / 300s"
+        );
+        assert!(!contains_emoji(&state.status_line()));
+
+        let multi = super::build_view_state(
+            &json!({ "buffered_secs": 0, "capture": { "active": false, "connected": false } }),
+            &json!({ "config": { "save_window_secs": 300 } }),
+            &json!({
+                "devices": [
+                    { "serial": "emulator-5554", "state": "device" },
+                    { "serial": "192.168.1.50:5555", "state": "device" }
+                ]
+            }),
+            &json!({ "jobs": [] }),
+            &json!({ "bundles": [] }),
+        );
+        assert!(multi.multiple_devices_need_selection);
+        assert!(multi.status_line().contains("複数端末接続中"));
+        let menu = build_menu(&multi);
+        let toggle = menu
+            .iter()
+            .find(|item| item.event == Some(TrayMenuEvent::ToggleCapture))
+            .expect("toggle menu item");
+        assert!(
+            !toggle.enabled,
+            "tray must disable capture start when 2+ devices are online with no selection"
+        );
+
+        let waiting = super::build_view_state(
+            &json!({ "buffered_secs": 0, "capture": { "active": false, "connected": false } }),
+            &json!({ "config": { "save_window_secs": 300, "device_serial": "192.168.1.50:5555" } }),
+            &json!({
+                "devices": [
+                    { "serial": "emulator-5554", "state": "device" }
+                ]
+            }),
+            &json!({ "jobs": [] }),
+            &json!({ "bundles": [] }),
+        );
+        assert!(!waiting.multiple_devices_need_selection);
+        assert_eq!(
+            waiting.waiting_for_preferred_serial.as_deref(),
+            Some("192.168.1.50:5555")
+        );
+        assert!(
+            waiting
+                .status_line()
+                .contains("再接続待機中 192.168.1.50:5555")
         );
     }
 }
