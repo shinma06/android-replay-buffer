@@ -359,20 +359,21 @@ class ArbBundleFileEditor(
         fallbackAvOffsetMs: Long,
         controller: PlaybackController,
     ) {
-        audioDecodeWorker.submit {
-            if (disposed || controller.isClosed) return@submit
+        val task = Runnable {
+            if (disposed || controller.isClosed) return@Runnable
             val decoded = runCatching {
                 daemonService.withClient { it.mediaDecodeAudioPcmOrNull(bundleId) }
             }.onFailure { err ->
                 logger.debug("ARB media.decode_audio_pcm failed, continuing video-only", err)
-            }.getOrNull() ?: return@submit
+            }.getOrNull() ?: return@Runnable
 
-            if (disposed || controller.isClosed || !decoded.available) return@submit
-            val wavPathStr = decoded.wavPath ?: return@submit
-            val wavPath = runCatching { Path.of(wavPathStr) }.getOrNull() ?: return@submit
-            if (!Files.isRegularFile(wavPath)) return@submit
+            if (disposed || controller.isClosed || !decoded.available) return@Runnable
+            val wavPathStr = decoded.wavPath ?: return@Runnable
+            val wavPath = runCatching { Path.of(wavPathStr) }.getOrNull() ?: return@Runnable
+            if (!Files.isRegularFile(wavPath)) return@Runnable
 
-            val effectiveAvOffsetMs = if (decoded.avOffsetMs != 0L) decoded.avOffsetMs else fallbackAvOffsetMs
+            // decoded.available is guaranteed here, so a daemon-reported 0 ms is authoritative.
+            val effectiveAvOffsetMs = decoded.avOffsetMs
             val player = runCatching {
                 AudioSyncPlayer(
                     source = WavFilePcmSource.open(wavPath),
@@ -380,13 +381,19 @@ class ArbBundleFileEditor(
                 )
             }.onFailure { err ->
                 logger.debug("ARB audio player unavailable, continuing video-only", err)
-            }.getOrNull() ?: return@submit
+            }.getOrNull() ?: return@Runnable
 
             if (disposed || controller.isClosed) {
                 runCatching { player.close() }
-                return@submit
+                return@Runnable
             }
             controller.attachAudioPlayer(player, effectiveAvOffsetMs)
+        }
+        try {
+            audioDecodeWorker.submit(task)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Editor was disposed (worker shut down) between the disposed check and submit.
+            logger.debug("ARB audio decode worker already shut down; skipping audio attach")
         }
     }
 
@@ -545,7 +552,8 @@ class ArbBundleFileEditor(
                         } else {
                             ""
                         }
-                        val summaryText = "共有用 MP4 を書き出しました: $mp4Name (${shareResp.videoFrameCount}f · $trackLabel)$trimmedNote$trashedNote"
+                        val warningNote = shareResp.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
+                        val summaryText = "共有用 MP4 を書き出しました: $mp4Name (${shareResp.videoFrameCount}f · $trackLabel)$trimmedNote$trashedNote$warningNote"
                         val completion = ExportCompletionInfo(
                             summaryText = summaryText,
                             outputPath = shareResp.shareMp4Path,

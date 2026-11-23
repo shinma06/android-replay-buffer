@@ -361,6 +361,9 @@ class ArbSettingsConfigurable internal constructor(
     private val daemonConfigWriter: (ArbConfig, ArbSettingsDraft) -> ArbConfig,
     private val localBinaryReader: () -> String,
     private val localBinaryWriter: (String) -> Unit,
+    // Runs a blocking arbd call. Production wraps it in a modal progress so the EDT keeps pumping
+    // events (no IDE freeze while arbd spawns or another RPC holds the daemon lock); tests run inline.
+    private val blockingRunner: DaemonCallRunner = DaemonCallRunner.Inline,
 ) : Configurable {
     // Constructor used by IntelliJ Platform `projectConfigurable` extension instantiation.
     constructor(project: Project) : this(
@@ -384,6 +387,7 @@ class ArbSettingsConfigurable internal constructor(
             ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath = newPath
             runCatching { ArbdDaemonService.getInstance().disconnect() }
         },
+        blockingRunner = ProgressDaemonCallRunner(project),
     )
 
     private var panel: ArbSettingsPanel? = null
@@ -446,14 +450,14 @@ class ArbSettingsConfigurable internal constructor(
                 throw ConfigurationException(validationError)
             }
             try {
-                baselineConfig = daemonConfigWriter(baselineConfig, draft)
+                baselineConfig = blockingRunner.run { daemonConfigWriter(baselineConfig, draft) }
             } catch (t: Throwable) {
                 throw ConfigurationException("arbd への設定保存に失敗しました: ${t.message}")
             }
         }
 
         if (newCustomPath != baselineCustomBinary) {
-            localBinaryWriter(newCustomPath)
+            blockingRunner.run { localBinaryWriter(newCustomPath) }
             baselineCustomBinary = newCustomPath
         }
 
@@ -463,7 +467,7 @@ class ArbSettingsConfigurable internal constructor(
     override fun reset() {
         val currentPanel = panel ?: return
         baselineCustomBinary = localBinaryReader().trim()
-        val loaded = runCatching { daemonConfigReader() }
+        val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
         if (loaded.isSuccess) {
             daemonOnline = true
             baselineConfig = loaded.getOrThrow()
@@ -487,4 +491,26 @@ class ArbSettingsConfigurable internal constructor(
     }
 
     internal fun currentPanelForTest(): ArbSettingsPanel? = panel
+}
+
+/** Runs a potentially blocking arbd call; see [ArbSettingsConfigurable]. */
+internal interface DaemonCallRunner {
+    fun <T> run(block: () -> T): T
+
+    object Inline : DaemonCallRunner {
+        override fun <T> run(block: () -> T): T = block()
+    }
+}
+
+internal class ProgressDaemonCallRunner(private val project: Project?) : DaemonCallRunner {
+    override fun <T> run(block: () -> T): T {
+        val app = com.intellij.openapi.application.ApplicationManager.getApplication()
+        if (app == null || !app.isDispatchThread) return block()
+        return com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(
+            com.intellij.openapi.util.ThrowableComputable<T, Exception> { block() },
+            "arbd と通信中...",
+            false,
+            project,
+        )
+    }
 }

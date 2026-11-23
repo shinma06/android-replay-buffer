@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.VirtualFile
 class ArbBundleFileEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile): Boolean {
         if (file is ArbBundleVirtualFile) return true
+        if (file.fileType == ArbBundleFileType) return true
         return ArbBundleDetector.detectVirtualFile(file) != null
     }
 

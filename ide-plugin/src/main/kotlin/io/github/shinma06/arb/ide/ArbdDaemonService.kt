@@ -72,7 +72,7 @@ class ArbdDaemonService : Disposable {
         }
     }
 
-    fun isConnected(): Boolean = synchronized(lock) { client != null }
+    fun isConnected(): Boolean = client != null
 
     fun disconnect() = synchronized(lock) {
         closeClientLocked()

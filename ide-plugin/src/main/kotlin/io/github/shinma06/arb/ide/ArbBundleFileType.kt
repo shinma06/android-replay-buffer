@@ -71,14 +71,15 @@ object ArbBundleDetector {
             return null
         }
         val parent = file.parent ?: return null
-        val siblings = parent.children
-            ?.asSequence()
-            ?.filter { !it.isDirectory }
-            ?.map { it.name }
-            ?.toSet()
-            ?: runCatching {
-                listSiblingRegularFileNames(file.toNioPath().parent)
-            }.getOrDefault(emptySet())
+        // Probe only the few marker siblings by name (no full directory listing during detection).
+        val markerNames = when (fileName) {
+            "manifest.json" -> V2_SIBLING_FILES
+            "replay.json" -> LEGACY_S4_SIBLING_FILES
+            else -> LEGACY_S3_SIBLING_FILES
+        }
+        val siblings = markerNames
+            .filter { name -> parent.findChild(name)?.takeIf { !it.isDirectory } != null }
+            .toSet()
 
         val text = prefixChars?.toString()
             ?: runCatching { String(file.contentsToByteArray(), StandardCharsets.UTF_8) }.getOrNull()
