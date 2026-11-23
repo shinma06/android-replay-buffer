@@ -47,7 +47,19 @@ struct RpcClient {
 
 impl RpcClient {
     fn connect(endpoint: &Path) -> Self {
-        let stream = LocalIpcStream::connect(endpoint).expect("connect to arbd");
+        // Windows named pipes report `ERROR_PIPE_BUSY` ("All pipe instances are busy") while
+        // the server is between accepting one client and listening for the next, so concurrent
+        // clients must retry briefly (the standard `WaitNamedPipe` pattern).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match LocalIpcStream::connect(endpoint) {
+                Ok(stream) => break stream,
+                Err(err) => {
+                    assert!(Instant::now() < deadline, "connect to arbd: {err:?}");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
         let writer = stream.try_clone().expect("clone IPC stream");
         Self {
             reader: BufReader::new(stream),
