@@ -263,6 +263,7 @@ class ArbT5IdeIntegrationTest {
         assertTrue(xml.contains("""parentId="tools""""))
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"))
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"))
+        assertTrue(xml.contains("io.github.shinma06.arb.LaunchTray"))
         assertTrue(xml.contains("Android Replay Buffer (v2) について"))
 
         // Export format selector defaults to SHARE_MP4 and has zero emoji
@@ -277,6 +278,419 @@ class ArbT5IdeIntegrationTest {
         assertEquals(StudioExportFormat.WORM_BUNDLE_ONLY, viewer.selectedExportFormat())
         for (fmt in StudioExportFormat.entries) {
             assertFalse(ArbFormatters.containsEmoji(fmt.label))
+        }
+    }
+
+    @Test
+    fun logcatTitleActionsAppendsNonDestructivelyAndIdempotently() {
+        val builtInA = object : com.intellij.openapi.actionSystem.AnAction("Built-in A") {
+            override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = Unit
+        }
+        val builtInB = object : com.intellij.openapi.actionSystem.AnAction("Built-in B") {
+            override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = Unit
+        }
+        val arbSaveLogs = ArbLogcatSaveLogsAction()
+
+        val mergedOnce = ArbLogcatTitleActions.mergeTitleActions(
+            existing = listOf(builtInA, builtInB, com.intellij.openapi.actionSystem.Separator.getInstance()),
+            actionToAppend = arbSaveLogs,
+            actionIdResolver = { null },
+        )
+        assertEquals(listOf(builtInA, builtInB, arbSaveLogs), mergedOnce)
+
+        val mergedTwice = ArbLogcatTitleActions.mergeTitleActions(
+            existing = mergedOnce,
+            actionToAppend = arbSaveLogs,
+            actionIdResolver = { null },
+        )
+        assertEquals(listOf(builtInA, builtInB, arbSaveLogs), mergedTwice, "re-attaching must be idempotent")
+    }
+
+    @Test
+    fun videoViewportCanvasScalesTapsWithDisplaySizeAndFallsBackForLegacyBundles() {
+        val drawRect = java.awt.Rectangle(10, 20, 460, 1024)
+        // Downscaled 460x1024 video recorded from a 1080x2400 physical display:
+        // physical center tap (540, 1200) must land at exact canvas center (10 + 230, 20 + 512)!
+        val (scaledX, scaledY) = io.github.shinma06.arb.ui.VideoViewportCanvas.mapTapToCanvasPoint(
+            tapX = 540.0,
+            tapY = 1200.0,
+            drawRect = drawRect,
+            videoW = 460,
+            videoH = 1024,
+            displayW = 1080,
+            displayH = 2400,
+        )
+        assertEquals(240, scaledX)
+        assertEquals(532, scaledY)
+
+        // Legacy bundle (displayW/displayH absent): falls back cleanly to video dimensions (460x1024)
+        val (legacyX, legacyY) = io.github.shinma06.arb.ui.VideoViewportCanvas.mapTapToCanvasPoint(
+            tapX = 230.0,
+            tapY = 512.0,
+            drawRect = drawRect,
+            videoW = 460,
+            videoH = 1024,
+            displayW = null,
+            displayH = null,
+        )
+        assertEquals(240, legacyX)
+        assertEquals(532, legacyY)
+    }
+
+    @Test
+    fun daemonServiceBroadcastsConfigUpdateAndBinaryChangeImmediately() {
+        val service = ArbdDaemonService()
+        var receivedConfig: ArbConfig? = null
+        var connectionChangedCount = 0
+        val listener = object : ArbDaemonStateListener {
+            override fun onConfigUpdated(config: ArbConfig) {
+                receivedConfig = config
+            }
+            override fun onDaemonConnectionChanged() {
+                connectionChangedCount++
+            }
+        }
+        service.addStateListener(listener)
+        try {
+            val updated = ArbConfig(saveWindowSecs = 75, ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_ONLY)
+            service.notifyConfigUpdated(updated)
+            assertEquals(updated, service.cachedConfig)
+            assertEquals(updated, receivedConfig)
+
+            service.notifyBinaryPathChanged()
+            assertEquals(1, connectionChangedCount)
+        } finally {
+            service.removeStateListener(listener)
+            service.dispose()
+        }
+    }
+
+    @Test
+    fun captureBarEmptyDevicePlaceholderAndTopRowAlignmentLayout() {
+        val bar = io.github.shinma06.arb.ui.CaptureBarPanel(
+            onStartCapture = {},
+            onStopCapture = {},
+            onSaveNow = {},
+            onRefresh = {},
+        )
+
+        // 1. Initial empty state: disabled placeholder, popup blocked, null serial
+        assertFalse(bar.deviceComboEnabled(), "empty device dropdown must be disabled")
+        assertEquals(io.github.shinma06.arb.ui.CaptureBarPanel.NO_DEVICES_PLACEHOLDER, bar.deviceComboSelectedText())
+        assertEquals(1, bar.deviceComboItemCount())
+        assertTrue(bar.isDevicePopupBlockedForTest(), "empty popup must be blocked")
+        assertNull(bar.selectedDeviceSerialForTest(), "placeholder text must never be returned as serial")
+        assertFalse(ArbFormatters.containsEmoji(bar.deviceComboSelectedText().orEmpty()))
+
+        // 2. Real device connects -> dropdown enables and selects real serial
+        val withDevice = io.github.shinma06.arb.state.CaptureBarState(
+            daemonConnected = true,
+            devices = listOf(
+                io.github.shinma06.arb.model.AdbDeviceInfo(
+                    serial = "emulator-5554",
+                    state = io.github.shinma06.arb.model.AdbDeviceState.Device,
+                ),
+            ),
+            selectedSerial = "emulator-5554",
+        )
+        bar.render(withDevice)
+        assertTrue(bar.deviceComboEnabled())
+        assertFalse(bar.isDevicePopupBlockedForTest())
+        assertEquals("emulator-5554", bar.selectedDeviceSerialForTest())
+
+        // 3. Device disconnects -> reverts cleanly to disabled placeholder
+        bar.render(withDevice.copy(devices = emptyList(), selectedSerial = null))
+        assertFalse(bar.deviceComboEnabled())
+        assertTrue(bar.isDevicePopupBlockedForTest())
+        assertEquals(io.github.shinma06.arb.ui.CaptureBarPanel.NO_DEVICES_PLACEHOLDER, bar.deviceComboSelectedText())
+        assertNull(bar.selectedDeviceSerialForTest())
+
+        // 4. Layout pass at typical ToolWindow width (320px): square gear button, single vertical baseline
+        val (combo, pill, gear) = bar.headerControlsForLayoutTest()
+        val headerRow = requireNotNull(combo.parent)
+        headerRow.setSize(320, 28)
+        headerRow.doLayout()
+
+        assertEquals(gear.height, gear.width, "gear settings button must be a crisp square icon button")
+        assertTrue(gear.width in 24..34, "gear button should be ~28x28px, was ${gear.width}x${gear.height}")
+        assertTrue(combo.width > pill.width * 2, "only device dropdown should stretch horizontally (combo=${combo.width}, pill=${pill.width})")
+
+        val comboMidY = combo.y + combo.height / 2
+        val pillMidY = pill.y + pill.height / 2
+        val gearMidY = gear.y + gear.height / 2
+        assertTrue(kotlin.math.abs(comboMidY - pillMidY) <= 1, "combo/pill vertical centers misaligned: $comboMidY vs $pillMidY")
+        assertTrue(kotlin.math.abs(comboMidY - gearMidY) <= 1, "combo/gear vertical centers misaligned: $comboMidY vs $gearMidY")
+    }
+
+    @Test
+    fun settingsPanelFitsDefaultWidthWithWrappedBannerAndCompactSpinners() {
+        val panel = ArbSettingsPanel()
+        panel.setDaemonStatus(
+            online = false,
+            detailMessage = "古いバージョンの arbd が起動中です（config.get 非対応）。新しい arbd へ再起動してください。",
+            showRestartAction = true,
+        )
+
+        assertTrue(panel.bannerWrapsLines(), "warning banner must wrap text cleanly")
+        assertTrue(panel.isRestartButtonVisible(), "1-click restart button must be visible in banner")
+
+        // Preferred width must fit comfortably inside Android Studio's default Settings pane (~520-560px)
+        val prefW = panel.preferredSize.width
+        assertTrue(prefW <= 540, "Settings panel preferred width ($prefW) must fit default 540px pane without horizontal scroll")
+
+        panel.setSize(520, 580)
+        fun layoutTree(c: java.awt.Container) {
+            c.doLayout()
+            for (child in c.components) {
+                if (child is java.awt.Container) layoutTree(child)
+            }
+        }
+        layoutTree(panel)
+
+        for (spinner in panel.spinnersForLayoutTest()) {
+            assertTrue(
+                spinner.preferredSize.width <= 130,
+                "spinner preferred width must stay compact, was ${spinner.preferredSize.width}",
+            )
+            assertTrue(
+                spinner.width <= 130,
+                "spinner laid-out width must not stretch off-screen, was ${spinner.width}",
+            )
+        }
+    }
+
+    @Test
+    fun settingsConfigurableDetectsStaleDaemonMethodNotFoundAndSupportsOneClickRestart() {
+        var daemonUpgraded = false
+        var restartCalls = 0
+        val upgradedConfig = ArbConfig(saveWindowSecs = 120, videoMaxFps = 60)
+
+        val staleError = io.github.shinma06.arb.model.ArbdRpcException(
+            code = io.github.shinma06.arb.model.ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+            message = "method not found: config.get",
+            method = "config.get",
+        )
+        val diag = ArbSettingsConfigurable.classifyDaemonError(staleError)
+        assertEquals(ArbSettingsConfigurable.DaemonDiagnosticKind.STALE_OR_MISMATCHED, diag.kind)
+        assertTrue(diag.message.contains("古いバージョンの arbd"), diag.message)
+        assertTrue(diag.message.contains("config.get 非対応"), diag.message)
+        assertFalse(ArbFormatters.containsEmoji(diag.message))
+
+        val configurable = ArbSettingsConfigurable(
+            project = null,
+            daemonConfigReader = {
+                if (!daemonUpgraded) throw staleError
+                upgradedConfig
+            },
+            daemonConfigWriter = { _, _ -> upgradedConfig },
+            localBinaryReader = { "" },
+            localBinaryWriter = {},
+            daemonRestarter = {
+                restartCalls++
+                daemonUpgraded = true
+            },
+        )
+
+        configurable.createComponent()
+        val panel = requireNotNull(configurable.currentPanelForTest())
+
+        // Before restart: honest stale-daemon banner + disabled daemon controls + visible 1-click restart button
+        assertTrue(panel.isOfflineBannerVisible())
+        assertTrue(panel.isRestartButtonVisible())
+        assertFalse(panel.isDaemonControlsEnabled())
+        assertTrue(panel.offlineBannerText().contains("古いバージョンの arbd"))
+        assertFalse(panel.offlineBannerText().contains("接続できません"))
+
+        // 1-click restart upgrades daemon and immediately reloads live config
+        panel.clickRestartDaemon()
+        assertEquals(1, restartCalls)
+        assertFalse(panel.isOfflineBannerVisible())
+        assertTrue(panel.isDaemonControlsEnabled())
+        assertEquals(120, panel.currentDraft().saveWindowSecs)
+        assertEquals(60, panel.currentDraft().videoMaxFps)
+        configurable.disposeUIResources()
+    }
+
+    @Test
+    fun backgroundDevicePollingAutoSelectsNewlyBootedEmulatorFromZeroToOne() {
+        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<io.github.shinma06.arb.model.AdbDeviceInfo>>(
+            emptyList(),
+        )
+        // Build a lightweight in-memory mock JSON-RPC transport backed by a pipe/queue so
+        // ArbToolWindowPanel runs its real background poller end-to-end with zero external process!
+        val stubTransport = object : io.github.shinma06.arb.ipc.LocalIpcTransport {
+            override val endpoint: String = "mock://device-poll"
+            private val responseQueue = java.util.concurrent.LinkedBlockingQueue<String>()
+            override fun writeLine(jsonLine: String) {
+                val obj = com.google.gson.JsonParser.parseString(jsonLine).asJsonObject
+                val id = obj.get("id").asLong
+                val method = obj.get("method").asString
+                val resultJson = when (method) {
+                    "system.status" -> """{"pid":999,"uptime_ms":1000,"capture":{"active":false,"connected":false,"storage_pressure_stopped":false,"video_frames":0,"audio_frames":0,"log_records":0,"tap_records":0,"discontinuities":0,"static_hold_events":0},"ring_chunk_count":0,"ring_total_bytes":0,"ring_pinned_chunk_count":0,"buffered_secs":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}}"""
+                    "config.get" -> """{"config":{"config_version":1,"save_window_secs":300,"ring_budget_bytes":1610612736,"min_free_disk_bytes":3221225472,"video_max_size":1920,"video_max_fps":30,"audio_enabled":true,"crash_autosave_enabled":true,"crash_autosave_cooldown_secs":15,"ide_default_save_action":"save_and_open"},"config_path":"/tmp/config.json"}"""
+                    "device.list" -> {
+                        val devs = currentDevices.get().joinToString(",") { d ->
+                            """{"serial":"${d.serial}","state":"${d.state.wireName}"}"""
+                        }
+                        """{"devices":[$devs]}"""
+                    }
+                    "save.list_jobs" -> """{"jobs":[]}"""
+                    "bundle.list" -> """{"bundles":[]}"""
+                    else -> """{}"""
+                }
+                responseQueue.put("""{"jsonrpc":"2.0","id":$id,"result":$resultJson}""")
+            }
+            override fun readLine(): String? = responseQueue.take()
+            override fun close() = Unit
+        }
+        val rpcClient = io.github.shinma06.arb.ipc.ArbdRpcClient(stubTransport)
+        val fakeService = object : ArbdDaemonService() {
+            override fun <T> withClient(block: (io.github.shinma06.arb.ipc.ArbdRpcClient) -> T): T = block(rpcClient)
+        }
+
+        val toolWindow = io.github.shinma06.arb.ui.ArbToolWindowPanel(
+            daemonService = fakeService,
+            onOpenBundle = { _, _, _ -> },
+            pollIntervalMs = 60L,
+        )
+        try {
+            // 1. Initially 0 devices -> disabled placeholder shown, online status = "待機中"
+            val deadlineEmpty = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < deadlineEmpty) {
+                javax.swing.SwingUtilities.invokeAndWait {}
+                if (toolWindow.captureBarPanel.statusBadgeDisplayText() == "待機中") break
+                Thread.sleep(25L)
+            }
+            assertEquals("待機中", toolWindow.captureBarPanel.statusBadgeDisplayText())
+            assertFalse(toolWindow.captureBarPanel.deviceComboEnabled())
+            assertNull(toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+
+            // 2. Emulator boots while Tool Window is open -> poller auto-detects & auto-selects it!
+            currentDevices.set(
+                listOf(
+                    io.github.shinma06.arb.model.AdbDeviceInfo(
+                        serial = "emulator-5554",
+                        state = io.github.shinma06.arb.model.AdbDeviceState.Device,
+                    ),
+                ),
+            )
+            val deadlineDetected = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < deadlineDetected) {
+                javax.swing.SwingUtilities.invokeAndWait {}
+                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "emulator-5554") break
+                Thread.sleep(25L)
+            }
+            assertTrue(toolWindow.captureBarPanel.deviceComboEnabled(), "newly booted emulator must enable dropdown automatically")
+            assertEquals("emulator-5554", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+
+            // 3. First emulator disconnects while a second USB device is online -> auto-switches to online device!
+            currentDevices.set(
+                listOf(
+                    io.github.shinma06.arb.model.AdbDeviceInfo(
+                        serial = "PIXEL9-USB-01",
+                        state = io.github.shinma06.arb.model.AdbDeviceState.Device,
+                    ),
+                ),
+            )
+            val deadlineSwitched = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < deadlineSwitched) {
+                javax.swing.SwingUtilities.invokeAndWait {}
+                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "PIXEL9-USB-01") break
+                Thread.sleep(25L)
+            }
+            assertEquals("PIXEL9-USB-01", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+        } finally {
+            toolWindow.dispose()
+            rpcClient.close()
+            fakeService.dispose()
+        }
+    }
+
+    @Test
+    fun physicalUsbUnauthorizedDeviceTransitionsCleanlyToOnlineAndEnablesControls() {
+        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<io.github.shinma06.arb.model.AdbDeviceInfo>>(
+            emptyList(),
+        )
+        val stubTransport = object : io.github.shinma06.arb.ipc.LocalIpcTransport {
+            override val endpoint: String = "mock://usb-unauth"
+            private val responseQueue = java.util.concurrent.LinkedBlockingQueue<String>()
+            override fun writeLine(jsonLine: String) {
+                val obj = com.google.gson.JsonParser.parseString(jsonLine).asJsonObject
+                val id = obj.get("id").asLong
+                val method = obj.get("method").asString
+                val resultJson = when (method) {
+                    "system.status" -> """{"pid":998,"uptime_ms":1000,"capture":{"active":false,"connected":false,"storage_pressure_stopped":false,"video_frames":0,"audio_frames":0,"log_records":0,"tap_records":0,"discontinuities":0,"static_hold_events":0},"ring_chunk_count":0,"ring_total_bytes":0,"ring_pinned_chunk_count":0,"buffered_secs":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}}"""
+                    "config.get" -> """{"config":{"config_version":1,"save_window_secs":300,"ring_budget_bytes":1610612736,"min_free_disk_bytes":3221225472,"video_max_size":1920,"video_max_fps":30,"audio_enabled":true,"crash_autosave_enabled":true,"crash_autosave_cooldown_secs":15,"ide_default_save_action":"save_and_open"},"config_path":"/tmp/config.json"}"""
+                    "device.list" -> {
+                        val devs = currentDevices.get().joinToString(",") { d ->
+                            """{"serial":"${d.serial}","state":"${d.state.wireName}"}"""
+                        }
+                        """{"devices":[$devs]}"""
+                    }
+                    "save.list_jobs" -> """{"jobs":[]}"""
+                    "bundle.list" -> """{"bundles":[]}"""
+                    else -> """{}"""
+                }
+                responseQueue.put("""{"jsonrpc":"2.0","id":$id,"result":$resultJson}""")
+            }
+            override fun readLine(): String? = responseQueue.take()
+            override fun close() = Unit
+        }
+        val rpcClient = io.github.shinma06.arb.ipc.ArbdRpcClient(stubTransport)
+        val fakeService = object : ArbdDaemonService() {
+            override fun <T> withClient(block: (io.github.shinma06.arb.ipc.ArbdRpcClient) -> T): T = block(rpcClient)
+        }
+        val toolWindow = io.github.shinma06.arb.ui.ArbToolWindowPanel(
+            daemonService = fakeService,
+            onOpenBundle = { _, _, _ -> },
+            pollIntervalMs = 50L,
+        )
+        try {
+            // Verify clear Japanese labels for unauthorized / offline states (zero emoji!)
+            val unauthDevice = io.github.shinma06.arb.model.AdbDeviceInfo(
+                serial = "39101FDH200042",
+                state = io.github.shinma06.arb.model.AdbDeviceState.Unauthorized,
+            )
+            val offlineDevice = io.github.shinma06.arb.model.AdbDeviceInfo(
+                serial = "192.168.1.50:5555",
+                state = io.github.shinma06.arb.model.AdbDeviceState.Offline,
+            )
+            assertTrue(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(unauthDevice).contains("未承認"))
+            assertTrue(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(offlineDevice).contains("オフライン"))
+            assertFalse(ArbFormatters.containsEmoji(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(unauthDevice)))
+            assertFalse(ArbFormatters.containsEmoji(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(offlineDevice)))
+
+            // 1. Physical USB phone plugged in before tapping "Allow USB debugging" -> unauthorized
+            currentDevices.set(listOf(unauthDevice))
+            val d1 = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < d1) {
+                javax.swing.SwingUtilities.invokeAndWait {}
+                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "39101FDH200042") break
+                Thread.sleep(25L)
+            }
+            assertEquals("39101FDH200042", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+            assertEquals("未承認", toolWindow.captureBarPanel.statusBadgeDisplayText())
+            assertFalse(toolWindow.captureBarPanel.isStartStopButtonEnabledForTest(), "capture start must stay disabled while unauthorized")
+            assertFalse(toolWindow.captureBarPanel.isScreenshotButtonEnabledForTest(), "screenshot must stay disabled while unauthorized")
+
+            // 2. User approves USB debugging on phone -> transitions unauthorized -> online ("device")!
+            currentDevices.set(
+                listOf(unauthDevice.copy(state = io.github.shinma06.arb.model.AdbDeviceState.Device)),
+            )
+            val d2 = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < d2) {
+                javax.swing.SwingUtilities.invokeAndWait {}
+                if (toolWindow.captureBarPanel.isStartStopButtonEnabledForTest()) break
+                Thread.sleep(25L)
+            }
+            assertEquals("39101FDH200042", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+            assertEquals("待機中", toolWindow.captureBarPanel.statusBadgeDisplayText())
+            assertTrue(toolWindow.captureBarPanel.isStartStopButtonEnabledForTest(), "capture start must auto-enable on online transition")
+            assertTrue(toolWindow.captureBarPanel.isScreenshotButtonEnabledForTest(), "screenshot must auto-enable on online transition")
+        } finally {
+            toolWindow.dispose()
+            rpcClient.close()
+            fakeService.dispose()
         }
     }
 }

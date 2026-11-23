@@ -28,9 +28,9 @@ use arb_storage::catalog::{Catalog, CatalogFormatVersion, LeaseHolderKind, NewBu
 use crate::capture::FaultInjection;
 use crate::error::DaemonError;
 use crate::protocol::{
-    ExportPngParams, ExportPngResponse, ExportTrimParams, ExportTrimResponse, FilmstripEntryMeta,
-    MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse, MediaFrameRequestParams,
-    MediaOpenViewportResponse, MediaScrubResponse, MediaSeekFrameResponse,
+    EpochFrameRange, ExportPngParams, ExportPngResponse, ExportTrimParams, ExportTrimResponse,
+    FilmstripEntryMeta, MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse,
+    MediaFrameRequestParams, MediaOpenViewportResponse, MediaScrubResponse, MediaSeekFrameResponse,
 };
 use crate::time_util::{next_id, utc_now_iso8601};
 
@@ -767,6 +767,12 @@ fn build_trimmed_bundle_draft(
                 frame_count: video.output_frame_count,
                 tail_may_be_incomplete: video.tail_may_be_incomplete,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
+                display_height: summary
+                    .streams
+                    .video
+                    .as_ref()
+                    .and_then(|v| v.display_height),
             }),
             audio: summary.streams.audio.clone().map(|mut audio| {
                 if let Some(trimmed) = &trimmed_audio {
@@ -1003,6 +1009,95 @@ fn to_rgba8_bytes(format: MediaPixelFormat, data: &[u8]) -> Result<Vec<u8>, Daem
     }
 }
 
+/// Computes per-epoch frame index and `DeviceBoottime` ranges by grouping contiguous runs of
+/// `frames` sharing the same `boot_id`.
+///
+/// Falls back to matching [`EpochSpan`] bounds from the manifest when frames in a run lack
+/// boottime alignment.
+#[must_use]
+pub(crate) fn compute_epoch_frame_ranges(
+    frames: &[FrameRecord],
+    epochs: &[EpochSpan],
+) -> Vec<EpochFrameRange> {
+    if frames.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges: Vec<EpochFrameRange> = Vec::new();
+    let mut run_boot_id = frames[0].boot_id.as_str();
+    let mut start_frame = frames[0].frame_index;
+    let mut end_frame = frames[0].frame_index;
+    let mut min_bt: Option<i64> = frame_boottime_ns(&frames[0]);
+    let mut max_bt: Option<i64> = min_bt;
+
+    let flush = |ranges: &mut Vec<EpochFrameRange>,
+                 boot_id: &str,
+                 start_frame_index: u64,
+                 end_frame_index: u64,
+                 min_bt: Option<i64>,
+                 max_bt: Option<i64>| {
+        let fallback = epochs.iter().find(|e| e.boot_id == boot_id);
+        let start_boottime_ns = min_bt
+            .or_else(|| fallback.map(|e| e.start_boottime_ns))
+            .unwrap_or(0);
+        let end_boottime_ns = max_bt
+            .or_else(|| fallback.map(|e| e.end_boottime_ns))
+            .unwrap_or(start_boottime_ns)
+            .max(start_boottime_ns);
+        ranges.push(EpochFrameRange {
+            epoch_index: ranges.len(),
+            boot_id: boot_id.to_owned(),
+            start_frame_index,
+            end_frame_index,
+            start_boottime_ns,
+            end_boottime_ns,
+        });
+    };
+
+    for frame in &frames[1..] {
+        if frame.boot_id == run_boot_id {
+            end_frame = frame.frame_index;
+            if let Some(bt) = frame_boottime_ns(frame) {
+                min_bt = Some(min_bt.map_or(bt, |prev| prev.min(bt)));
+                max_bt = Some(max_bt.map_or(bt, |prev| prev.max(bt)));
+            }
+        } else {
+            flush(
+                &mut ranges,
+                run_boot_id,
+                start_frame,
+                end_frame,
+                min_bt,
+                max_bt,
+            );
+            run_boot_id = frame.boot_id.as_str();
+            start_frame = frame.frame_index;
+            end_frame = frame.frame_index;
+            min_bt = frame_boottime_ns(frame);
+            max_bt = min_bt;
+        }
+    }
+    flush(
+        &mut ranges,
+        run_boot_id,
+        start_frame,
+        end_frame,
+        min_bt,
+        max_bt,
+    );
+    ranges
+}
+
+fn frame_boottime_ns(frame: &FrameRecord) -> Option<i64> {
+    match &frame.alignment {
+        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
+        TimeAlignment::Bounded {
+            min_boottime_ns, ..
+        } => Some(*min_boottime_ns),
+        _ => None,
+    }
+}
+
 /// Computes a unified [`crate::protocol::TimelineSummaryResponse`] from any [`BundleReader`].
 ///
 /// # Errors
@@ -1015,6 +1110,7 @@ pub fn build_timeline_summary(
     let summary = reader.manifest_summary();
     let frames = reader.frames()?;
     let keyframe_count = frames.iter().filter(|f| f.is_keyframe).count();
+    let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
     let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let unanchored_logs =
         reader.query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
@@ -1035,6 +1131,7 @@ pub fn build_timeline_summary(
         streams: summary.streams.clone(),
         unanchored_summary: summary.unanchored_summary,
         epochs: summary.epochs.clone(),
+        epoch_frame_ranges,
         frame_count: frames.len(),
         keyframe_count,
         log_main_count: main_logs.len(),
@@ -1146,5 +1243,47 @@ mod tests {
             "unmatched frame must be Unanchored, never fabricated Anchored: {:?}",
             out[2].alignment
         );
+    }
+
+    #[test]
+    fn compute_epoch_frame_ranges_splits_multi_epoch_reboot_cleanly() {
+        let make_frame = |frame_index: u64, boot_id: &str, bt: i64| FrameRecord {
+            frame_index,
+            boot_id: boot_id.to_owned(),
+            pts_device_mono_ns: bt,
+            pc_ingest_cont_ns: bt,
+            alignment: TimeAlignment::Anchored {
+                boot_id: boot_id.to_owned(),
+                boottime_ns: bt,
+                half_width_ns: 1_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: frame_index == 0 || frame_index == 3,
+            gop_id: u64::from(frame_index >= 3),
+            mp4_sample_offset: 0,
+            mp4_sample_size: 100,
+        };
+        let frames = vec![
+            make_frame(0, "boot-0", 100_000_000_000),
+            make_frame(1, "boot-0", 101_000_000_000),
+            make_frame(2, "boot-0", 102_000_000_000),
+            make_frame(3, "boot-1", 5_000_000_000),
+            make_frame(4, "boot-1", 6_000_000_000),
+        ];
+        let ranges = super::compute_epoch_frame_ranges(&frames, &[]);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].epoch_index, 0);
+        assert_eq!(ranges[0].boot_id, "boot-0");
+        assert_eq!(ranges[0].start_frame_index, 0);
+        assert_eq!(ranges[0].end_frame_index, 2);
+        assert_eq!(ranges[0].start_boottime_ns, 100_000_000_000);
+        assert_eq!(ranges[0].end_boottime_ns, 102_000_000_000);
+
+        assert_eq!(ranges[1].epoch_index, 1);
+        assert_eq!(ranges[1].boot_id, "boot-1");
+        assert_eq!(ranges[1].start_frame_index, 3);
+        assert_eq!(ranges[1].end_frame_index, 4);
+        assert_eq!(ranges[1].start_boottime_ns, 5_000_000_000);
+        assert_eq!(ranges[1].end_boottime_ns, 6_000_000_000);
     }
 }

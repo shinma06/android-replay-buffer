@@ -69,6 +69,65 @@ tasks.buildSearchableOptions {
     enabled = false
 }
 
+// Bundle native Rust binaries (`native/<os>-<arch>/{arbd,arb-cli,arb-tray}`) and Android
+// `device-agent/*.dex.jar` into the plugin sandbox / ZIP when available so Android Studio users
+// can install one single `arb-ide-plugin-*.zip` with zero terminal setup.
+fun detectHostNativeSlug(): String {
+    val osName = System.getProperty("os.name").lowercase()
+    val osSlug = when {
+        osName.contains("mac") || osName.contains("darwin") -> "macos"
+        osName.contains("win") -> "windows"
+        else -> "linux"
+    }
+    val archRaw = System.getProperty("os.arch").lowercase()
+    val archSlug = when (archRaw) {
+        "aarch64", "arm64" -> "arm64"
+        "amd64", "x86_64", "x64" -> "x86_64"
+        else -> archRaw
+    }
+    return "$osSlug-$archSlug"
+}
+
+val arbNativeSlug = providers.gradleProperty("arbNativeSlug").orElse(detectHostNativeSlug()).get()
+val arbExeExt = if (arbNativeSlug.startsWith("windows-")) ".exe" else ""
+val arbNativeDir = providers.gradleProperty("arbNativeDir").orNull?.let { file(it) }
+    ?: listOf(
+        file("../core/target/release"),
+        file("../core/target/debug"),
+    ).firstOrNull { dir -> dir.resolve("arbd$arbExeExt").isFile }
+val arbDeviceAgentDir = providers.gradleProperty("arbDeviceAgentDir").orNull?.let { file(it) }
+    ?: file("../device-agent/build").takeIf { it.isDirectory }
+
+tasks.prepareSandbox {
+    val nativeSrc = arbNativeDir
+    if (nativeSrc != null && nativeSrc.isDirectory) {
+        from(nativeSrc) {
+            include("arbd$arbExeExt", "arb-cli$arbExeExt", "arb-tray$arbExeExt")
+            into("${pluginName.get()}/native/$arbNativeSlug")
+            filePermissions {
+                unix("rwxr-xr-x")
+            }
+        }
+    }
+    val agentSrc = arbDeviceAgentDir
+    if (agentSrc != null && agentSrc.isDirectory) {
+        from(agentSrc) {
+            include("arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar")
+            into("${pluginName.get()}/device-agent")
+        }
+    }
+}
+
+tasks.buildPlugin {
+    eachFile {
+        if (relativePath.pathString.contains("/native/")) {
+            permissions {
+                unix("rwxr-xr-x")
+            }
+        }
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
     systemProperty("java.awt.headless", "true")

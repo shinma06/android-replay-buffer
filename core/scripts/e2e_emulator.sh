@@ -52,6 +52,7 @@ SCRCPY_JAR="${REPO_ROOT}/device-agent/build/replay-scrcpy-audio.dex.jar"
 
 EMU_PID=""
 EMU_SERIAL=""
+LAUNCHED_EMU=0
 AUDIO_PLAY_PID=""
 CLEANED_UP=0
 
@@ -103,11 +104,14 @@ cleanup() {
     fi
 
     # R3 M9: NEVER kill arbitrary pre-existing emulators — only act on the specific
-    # EMU_SERIAL and EMU_PID started by this script.
+    # EMU_SERIAL and EMU_PID started by this script (LAUNCHED_EMU=1).
     if [[ -n "${EMU_SERIAL}" ]]; then
-        "${ADB}" -s "${EMU_SERIAL}" shell 'pkill -f arb-e2e-tone.wav 2>/dev/null || true; rm -f /data/local/tmp/arb-* /data/local/tmp/replay-scrcpy-*' >/dev/null 2>&1 || true
-        "${ADB}" -s "${EMU_SERIAL}" forward --remove-all >/dev/null 2>&1 || true
-        "${ADB}" -s "${EMU_SERIAL}" emu kill >/dev/null 2>&1 || true
+        "${ADB}" -s "${EMU_SERIAL}" shell 'pkill -f arb-e2e-tone.wav 2>/dev/null || true; rm -f /data/local/tmp/arb-e2e-tone.wav' >/dev/null 2>&1 || true
+        if [[ "${LAUNCHED_EMU}" -eq 1 ]]; then
+            "${ADB}" -s "${EMU_SERIAL}" shell 'rm -f /data/local/tmp/arb-* /data/local/tmp/replay-scrcpy-*' >/dev/null 2>&1 || true
+            "${ADB}" -s "${EMU_SERIAL}" forward --remove-all >/dev/null 2>&1 || true
+            "${ADB}" -s "${EMU_SERIAL}" emu kill >/dev/null 2>&1 || true
+        fi
     fi
 
     if [[ -n "${EMU_PID}" ]]; then
@@ -127,7 +131,7 @@ cleanup() {
     fi
 
     # Wait until our specific EMU_SERIAL (if launched) disappears from `adb devices`.
-    if [[ -n "${EMU_SERIAL}" ]]; then
+    if [[ "${LAUNCHED_EMU}" -eq 1 && -n "${EMU_SERIAL}" ]]; then
         for _ in $(seq 1 20); do
             local still_attached
             still_attached="$("${ADB}" devices | awk -v target="${EMU_SERIAL}" 'NR>1 && $1 == target {print $1}')"
@@ -179,54 +183,66 @@ cargo build --manifest-path "${REPO_ROOT}/core/Cargo.toml" "${CARGO_PROFILE_ARGS
 test -x "${ARBD_BIN}"
 test -x "${ARB_CLI_BIN}"
 
-echo "==> [3/9] Booting headless Android Emulator (${AVD_NAME})..."
-EXISTING_DEVICES="$("${ADB}" devices | awk 'NR>1 && NF>=2 {print $1}')"
-if [[ -n "${EXISTING_DEVICES}" ]]; then
-    echo "ERROR: adb already has attached devices before E2E start: ${EXISTING_DEVICES}" >&2
-    # R3 M9: skip cleanup kills so pre-existing developer emulators/devices are untouched.
-    CLEANED_UP=1
-    rm -rf "${WORK_DIR}"
-    exit 1
-fi
+if [[ -n "${ARB_E2E_ATTACH_SERIAL:-}" ]]; then
+    echo "==> [3/9] Attaching to pre-existing Android Emulator (${ARB_E2E_ATTACH_SERIAL})..."
+    EMU_SERIAL="${ARB_E2E_ATTACH_SERIAL}"
+    LAUNCHED_EMU=0
+    BOOT_VAL="$("${ADB}" -s "${EMU_SERIAL}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n' || true)"
+    if [[ "${BOOT_VAL}" != "1" ]]; then
+        echo "ERROR: pre-existing device ${EMU_SERIAL} is not booted (sys.boot_completed=${BOOT_VAL})" >&2
+        exit 1
+    fi
+else
+    echo "==> [3/9] Booting headless Android Emulator (${AVD_NAME})..."
+    EXISTING_DEVICES="$("${ADB}" devices | awk 'NR>1 && NF>=2 {print $1}')"
+    if [[ -n "${EXISTING_DEVICES}" ]]; then
+        echo "ERROR: adb already has attached devices before E2E start: ${EXISTING_DEVICES}" >&2
+        # R3 M9: skip cleanup kills so pre-existing developer emulators/devices are untouched.
+        CLEANED_UP=1
+        rm -rf "${WORK_DIR}"
+        exit 1
+    fi
 
-EMU_AUDIO_ARGS=()
-if [[ "${ENABLE_AUDIO}" == "0" ]]; then
-    EMU_AUDIO_ARGS=(-no-audio)
-fi
-"${EMULATOR}" \
-    -avd "${AVD_NAME}" \
-    -no-window \
-    ${EMU_AUDIO_ARGS[@]+"${EMU_AUDIO_ARGS[@]}"} \
-    -gpu host \
-    -no-boot-anim \
-    -no-snapshot-save \
-    >"${EMU_LOG}" 2>&1 &
-EMU_PID=$!
+    EMU_AUDIO_ARGS=()
+    if [[ "${ENABLE_AUDIO}" == "0" ]]; then
+        EMU_AUDIO_ARGS=(-no-audio)
+    fi
+    "${EMULATOR}" \
+        -avd "${AVD_NAME}" \
+        -no-window \
+        ${EMU_AUDIO_ARGS[@]+"${EMU_AUDIO_ARGS[@]}"} \
+        -gpu host \
+        -no-boot-anim \
+        -no-snapshot-save \
+        >"${EMU_LOG}" 2>&1 &
+    EMU_PID=$!
+    LAUNCHED_EMU=1
 
-echo "    Waiting for emulator ADB device & sys.boot_completed=1 (pid=${EMU_PID})..."
-BOOT_READY=0
-for i in $(seq 1 120); do
-    if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        echo "ERROR: emulator process exited prematurely. Last 40 log lines:" >&2
+    echo "    Waiting for emulator ADB device & sys.boot_completed=1 (pid=${EMU_PID})..."
+    BOOT_READY=0
+    for i in $(seq 1 120); do
+        if ! kill -0 "${EMU_PID}" 2>/dev/null; then
+            echo "ERROR: emulator process exited prematurely. Last 40 log lines:" >&2
+            tail -n 40 "${EMU_LOG}" >&2 || true
+            exit 1
+        fi
+        EMU_SERIAL="$("${ADB}" devices | awk 'NR>1 && $2 == "device" && $1 ~ /^emulator-/ {print $1; exit}')"
+        if [[ -n "${EMU_SERIAL}" ]]; then
+            BOOT_VAL="$("${ADB}" -s "${EMU_SERIAL}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n' || true)"
+            if [[ "${BOOT_VAL}" == "1" ]]; then
+                BOOT_READY=1
+                echo "    Booted ${EMU_SERIAL} in ${i}s."
+                break
+            fi
+        fi
+        sleep 1
+    done
+
+    if [[ "${BOOT_READY}" -ne 1 ]]; then
+        echo "ERROR: emulator did not complete boot within 120s." >&2
         tail -n 40 "${EMU_LOG}" >&2 || true
         exit 1
     fi
-    EMU_SERIAL="$("${ADB}" devices | awk 'NR>1 && $2 == "device" && $1 ~ /^emulator-/ {print $1; exit}')"
-    if [[ -n "${EMU_SERIAL}" ]]; then
-        BOOT_VAL="$("${ADB}" -s "${EMU_SERIAL}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n' || true)"
-        if [[ "${BOOT_VAL}" == "1" ]]; then
-            BOOT_READY=1
-            echo "    Booted ${EMU_SERIAL} in ${i}s."
-            break
-        fi
-    fi
-    sleep 1
-done
-
-if [[ "${BOOT_READY}" -ne 1 ]]; then
-    echo "ERROR: emulator did not complete boot within 120s." >&2
-    tail -n 40 "${EMU_LOG}" >&2 || true
-    exit 1
 fi
 
 # Wake & unlock screen so SurfaceFlinger continuously renders launcher/settings.

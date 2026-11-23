@@ -230,6 +230,30 @@ class ArbLogcatSaveLogsAction : AnAction("ARB v2: 直前のログのみ保存", 
     }
 }
 
+class ArbLaunchTrayAction : AnAction(
+    "ARB v2: メニューバー (arb-tray) を起動",
+    "同梱の arb-tray をターミナル不要で起動します",
+    AllIcons.Toolwindows.ToolWindowRun,
+), DumbAware {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val bin = ArbdDaemonService.getInstance().launchBundledTray()
+                notifyArb(project, "メニューバー / トレイ (arb-tray) を起動しました: ${bin.fileName}")
+            } catch (t: Throwable) {
+                notifyArb(
+                    project,
+                    "arb-tray の起動に失敗しました: ${t.message}",
+                    NotificationType.WARNING,
+                )
+            }
+        }
+    }
+}
+
 class ArbOpenBundleAction : AnAction("ARB v2: バンドルフォルダを開く...", "v2 バンドルまたは旧形式フォルダを統合スタジオで開きます", AllIcons.Nodes.Folder), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 

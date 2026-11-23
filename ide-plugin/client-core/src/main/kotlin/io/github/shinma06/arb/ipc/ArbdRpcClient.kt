@@ -68,6 +68,9 @@ import java.util.concurrent.atomic.AtomicLong
 /** Default bounded read timeout for a single JSON-RPC response (30 s, R4 S5/C5). */
 const val DEFAULT_READ_TIMEOUT_MS: Long = 30_000L
 
+/** Generous per-call read timeout for long-running exports & PCM audio decodes (120 s, T-6A). */
+const val LONG_RUNNING_READ_TIMEOUT_MS: Long = 120_000L
+
 /**
  * Transport-level IPC failure tagged with the JSON-RPC `method` that was in flight, so the
  * reconnect/retry policy can distinguish idempotent reads from mutating calls (R4 S4).
@@ -84,6 +87,7 @@ class ArbdIoException(
 class ArbdRpcClient(
     private val transport: LocalIpcTransport,
     private val readTimeoutMs: Long = DEFAULT_READ_TIMEOUT_MS,
+    private val longRunningReadTimeoutMs: Long = LONG_RUNNING_READ_TIMEOUT_MS,
 ) : Closeable {
     private val gson = ProtocolJson.gson
     // Preserves explicit JsonNull entries placed intentionally by adapters (e.g. OutputDirPatch.Clear)
@@ -261,13 +265,13 @@ class ArbdRpcClient(
     // ---------------- Export ----------------
 
     fun exportTrim(params: ExportTrimParams): ExportTrimResponse =
-        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
+        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java, timeoutMs = longRunningReadTimeoutMs)
 
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
     fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response =
-        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java, timeoutMs = longRunningReadTimeoutMs)
 
     /**
      * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected
@@ -328,6 +332,7 @@ class ArbdRpcClient(
         "media.decode_audio_pcm",
         gson.toJsonTree(MediaDecodeAudioPcmParams(bundleIdOrPath, outputPath)),
         MediaDecodeAudioPcmResponse::class.java,
+        timeoutMs = longRunningReadTimeoutMs,
     )
 
     /**
@@ -345,13 +350,22 @@ class ArbdRpcClient(
 
     // ---------------- Low-level JSON-RPC 2.0 ----------------
 
-    fun <T> call(method: String, params: JsonElement, responseType: Class<T>): T {
-        val resultElement = callRaw(method, params)
+    fun <T> call(
+        method: String,
+        params: JsonElement,
+        responseType: Class<T>,
+        timeoutMs: Long = readTimeoutMs,
+    ): T {
+        val resultElement = callRaw(method, params, timeoutMs)
         return gson.fromJson(resultElement, responseType)
             ?: throw IOException("arbd returned null result for method '$method'")
     }
 
-    fun callRaw(method: String, params: JsonElement = JsonObject()): JsonElement = synchronized(callLock) {
+    fun callRaw(
+        method: String,
+        params: JsonElement = JsonObject(),
+        timeoutMs: Long = readTimeoutMs,
+    ): JsonElement = synchronized(callLock) {
         val id = nextId.getAndIncrement()
         val req = JsonObject().apply {
             addProperty("jsonrpc", JSONRPC_VERSION)
@@ -361,7 +375,7 @@ class ArbdRpcClient(
         }
         val rawLine = try {
             transport.writeLine(envelopeGson.toJson(req))
-            readResponseLine()
+            readResponseLine(timeoutMs)
                 ?: throw IOException("arbd closed IPC connection before responding to '$method'")
         } catch (e: IOException) {
             // Tag every transport-level failure with its method so the retry policy can
@@ -391,11 +405,11 @@ class ArbdRpcClient(
      * Reads one NDJSON response line with a bounded wait (R4 S5/C5). On timeout the transport
      * is closed — a late response must never desync the framing of the next call.
      */
-    private fun readResponseLine(): String? = try {
-        readExecutor.submit(Callable { transport.readLine() }).get(readTimeoutMs, TimeUnit.MILLISECONDS)
+    private fun readResponseLine(timeoutMs: Long): String? = try {
+        readExecutor.submit(Callable { transport.readLine() }).get(timeoutMs, TimeUnit.MILLISECONDS)
     } catch (e: TimeoutException) {
         runCatching { transport.close() }
-        throw IOException("arbd IPC read timed out after ${readTimeoutMs} ms; transport closed")
+        throw IOException("arbd IPC read timed out after ${timeoutMs} ms; transport closed")
     } catch (e: ExecutionException) {
         throw e.cause as? IOException ?: IOException("arbd IPC read failed", e.cause)
     } catch (e: InterruptedException) {

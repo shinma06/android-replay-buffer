@@ -219,6 +219,9 @@ pub struct SystemStatusResponse {
     pub ring_total_bytes: u64,
     /// Number of pinned Zone-1 ring chunks protected by active save jobs.
     pub ring_pinned_chunk_count: usize,
+    /// Honest real elapsed duration currently retained in the Zone-1 ring buffer in seconds.
+    #[serde(default)]
+    pub buffered_secs: u64,
     /// Number of currently open SHM viewports.
     pub active_viewports: usize,
     /// Number of non-terminal save jobs in the catalog.
@@ -606,6 +609,23 @@ pub struct TimelineQueryParams {
     pub limit: Option<usize>,
 }
 
+/// Per-epoch frame index and `DeviceBoottime` bounds for multi-epoch (cross-reboot) timelines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochFrameRange {
+    /// Zero-based sequential epoch index within this bundle.
+    pub epoch_index: usize,
+    /// Device boot UUID (`boot_id`) for this epoch.
+    pub boot_id: String,
+    /// Inclusive starting zero-based video frame index belonging to this epoch.
+    pub start_frame_index: u64,
+    /// Inclusive ending zero-based video frame index belonging to this epoch.
+    pub end_frame_index: u64,
+    /// Earliest observed `DeviceBoottime` in nanoseconds among frames in this epoch.
+    pub start_boottime_ns: i64,
+    /// Latest observed `DeviceBoottime` in nanoseconds among frames in this epoch.
+    pub end_boottime_ns: i64,
+}
+
 /// Response payload for `timeline.summary`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineSummaryResponse {
@@ -632,6 +652,9 @@ pub struct TimelineSummaryResponse {
     pub unanchored_summary: UnanchoredSummary,
     /// Covered device boot epochs.
     pub epochs: Vec<EpochSpan>,
+    /// Per-epoch video frame index and boottime bounds for exact cross-reboot event mapping.
+    #[serde(default)]
+    pub epoch_frame_ranges: Vec<EpochFrameRange>,
     /// Total indexed video frames.
     pub frame_count: usize,
     /// Total video IDR keyframes.
@@ -1078,6 +1101,15 @@ pub struct TimelineOverviewResponse {
     pub width: Option<u32>,
     /// Video frame height in pixels, if a video track is present.
     pub height: Option<u32>,
+    /// Physical device display width in pixels from bundle metadata, if recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_width: Option<u32>,
+    /// Physical device display height in pixels from bundle metadata, if recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_height: Option<u32>,
+    /// Per-epoch video frame index and boottime bounds for multi-epoch bundles.
+    #[serde(default)]
+    pub epoch_frame_ranges: Vec<EpochFrameRange>,
     /// Estimated average frame rate in frames per second, when measurable.
     pub fps_estimate: Option<f64>,
     /// Audio track presence status.

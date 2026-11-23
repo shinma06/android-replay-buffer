@@ -499,10 +499,16 @@ impl DaemonState {
     }
 
     fn handle_system_status(&self) -> Result<Value, DaemonError> {
-        let (capture_view, ring_chunks, ring_bytes, ring_pinned) = {
+        let (capture_view, ring_chunks, ring_bytes, ring_pinned, buffered_secs) = {
             let cap = self.lock_capture()?;
             let (chunks, bytes, pinned) = cap.ring_stats()?;
-            (cap.status_view(), chunks, bytes, pinned)
+            (
+                cap.status_view(),
+                chunks,
+                bytes,
+                pinned,
+                cap.buffered_secs(),
+            )
         };
         let active_viewports = self.lock_media()?.active_viewport_count();
         let active_save_jobs = self
@@ -526,6 +532,7 @@ impl DaemonState {
             ring_chunk_count: ring_chunks,
             ring_total_bytes: ring_bytes,
             ring_pinned_chunk_count: ring_pinned,
+            buffered_secs,
             active_viewports,
             active_save_jobs,
             recovery: RecoverySummaryView {

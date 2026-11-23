@@ -2251,6 +2251,8 @@ fn build_legacy_summary(
             frame_count: u64::try_from(frames.len()).unwrap_or(u64::MAX),
             tail_may_be_incomplete: false,
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            display_width: None,
+            display_height: None,
         }),
         audio: None,
         logcat: Some(LogcatStreamMeta {
@@ -2462,6 +2464,8 @@ mod tests {
                     frame_count: 1,
                     tail_may_be_incomplete: false,
                     semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                    display_width: None,
+                    display_height: None,
                 }),
                 audio: None,
                 logcat: Some(LogcatStreamMeta {
@@ -2624,6 +2628,8 @@ mod tests {
             frame_count: 0,
             tail_may_be_incomplete: false,
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            display_width: None,
+            display_height: None,
         });
         draft.streams.audio = Some(arb_core::bundle::AudioStreamMeta {
             status: StreamStatus::Absent,

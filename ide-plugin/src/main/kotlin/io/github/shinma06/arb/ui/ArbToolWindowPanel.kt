@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
+import io.github.shinma06.arb.ide.ArbDaemonStateListener
 import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.BundleKind
@@ -35,12 +36,16 @@ class ArbToolWindowPanel(
     private val daemonService: ArbdDaemonService,
     private val onOpenBundle: (bundleIdOrPath: String, title: String, isLegacy: Boolean) -> Unit,
     private val onOpenSettings: (() -> Unit)? = null,
+    private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
 ) : JPanel(BorderLayout(0, 4)), Disposable {
     private val logger = Logger.getInstance(ArbToolWindowPanel::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "arb-toolwindow-worker").apply { isDaemon = true }
     }
 
+    private val captureStateLock = Any()
+
+    @Volatile
     private var captureState = CaptureBarState()
     private var recoveryState = FailedSaveRecoveryState()
     private var catalogState = BundleCatalogState()
@@ -91,9 +96,11 @@ class ArbToolWindowPanel(
                     ArbQuickConfigDialog.show(this, captureState.config) { patch ->
                         runAsync {
                             val updated = daemonService.withClient { it.configUpdate(patch) }.config
-                            daemonService.updateCachedConfig(updated)
-                            captureState = CaptureBarReducer.withConfig(captureState, updated)
-                            SwingUtilities.invokeLater { captureBarPanel.render(captureState) }
+                            daemonService.notifyConfigUpdated(updated)
+                            val applied = synchronized(captureStateLock) {
+                                CaptureBarReducer.withConfig(captureState, updated).also { captureState = it }
+                            }
+                            SwingUtilities.invokeLater { captureBarPanel.render(applied) }
                             notifyBalloon(
                                 "設定を保存しました（保持ウィンドウ: ${ArbFormatters.formatSeconds(updated.saveWindowSecs)}）",
                             )
@@ -177,6 +184,20 @@ class ArbToolWindowPanel(
         },
     )
 
+    private val daemonStateListener = object : ArbDaemonStateListener {
+        override fun onConfigUpdated(config: ArbConfig) {
+            val next = synchronized(captureStateLock) {
+                CaptureBarReducer.withConfig(captureState, config).also { captureState = it }
+            }
+            SwingUtilities.invokeLater { captureBarPanel.render(next) }
+            runAsync { refreshAll() }
+        }
+
+        override fun onDaemonConnectionChanged() {
+            runAsync { refreshAll() }
+        }
+    }
+
     init {
         background = ArbTheme.surfaceBg
         isOpaque = true
@@ -190,12 +211,16 @@ class ArbToolWindowPanel(
         add(northStack, BorderLayout.NORTH)
         add(bundleCatalogPanel, BorderLayout.CENTER)
 
-        executor.scheduleWithFixedDelay(
-            { refreshAll() },
-            0L,
-            3L,
-            TimeUnit.SECONDS,
-        )
+        daemonService.addStateListener(daemonStateListener)
+
+        if (pollIntervalMs > 0L) {
+            executor.scheduleWithFixedDelay(
+                { refreshAll() },
+                0L,
+                pollIntervalMs,
+                TimeUnit.MILLISECONDS,
+            )
+        }
     }
 
     private fun triggerSave(durationSec: Long, openEditor: Boolean) {
@@ -248,6 +273,8 @@ class ArbToolWindowPanel(
             }.getOrDefault(captureState.config)
             val devices = runCatching {
                 daemonService.withClient { it.deviceList().devices }
+            }.onFailure { err ->
+                logger.warn("ARB device.list poll failed: ${err.message}")
             }.getOrDefault(captureState.devices)
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
@@ -284,12 +311,14 @@ class ArbToolWindowPanel(
                 if (meta.crashed) crashIds.add(entry.bundleId)
             }
 
-            val nextCapture = CaptureBarReducer.fromStatus(
-                previous = captureState,
-                status = status,
-                devices = devices,
-                config = config,
-            )
+            val nextCapture = synchronized(captureStateLock) {
+                CaptureBarReducer.fromStatus(
+                    previous = captureState,
+                    status = status,
+                    devices = devices,
+                    config = config,
+                ).also { captureState = it }
+            }
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(recoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
@@ -299,7 +328,6 @@ class ArbToolWindowPanel(
                 kindsByBundleId = kinds,
             )
 
-            captureState = nextCapture
             recoveryState = nextRecovery
             catalogState = nextCatalog
 
@@ -333,10 +361,12 @@ class ArbToolWindowPanel(
     }
 
     override fun dispose() {
+        daemonService.removeStateListener(daemonStateListener)
         executor.shutdownNow()
     }
 
     private companion object {
         const val META_BUDGET_PER_POLL = 24
+        const val DEFAULT_POLL_INTERVAL_MS = 2_000L
     }
 }

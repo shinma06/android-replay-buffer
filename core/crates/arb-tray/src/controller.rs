@@ -799,12 +799,16 @@ fn build_view_state(
         .as_deref()
         .and_then(|serial| resolve_device_label(devices, serial));
     let (save_window_secs, video_max_fps) = parse_config_timing(config);
-    let video_frames = capture
-        .get("video_frames")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
     let buffered_secs_u64 =
-        (video_frames / u64::from(video_max_fps.max(1))).min(u64::from(save_window_secs));
+        if let Some(real_buffered) = status.get("buffered_secs").and_then(Value::as_u64) {
+            real_buffered.min(u64::from(save_window_secs))
+        } else {
+            let video_frames = capture
+                .get("video_frames")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (video_frames / u64::from(video_max_fps.max(1))).min(u64::from(save_window_secs))
+        };
     let buffered_secs = u32::try_from(buffered_secs_u64).unwrap_or(save_window_secs);
     let discontinuities = capture
         .get("discontinuities")
@@ -1606,5 +1610,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn build_view_state_prefers_honest_buffered_secs_over_frame_estimate() {
+        let status = json!({
+            "buffered_secs": 42,
+            "capture": {
+                "active": true,
+                "connected": true,
+                "serial": "emulator-5554",
+                "video_frames": 3,
+                "discontinuities": 0,
+                "static_hold_events": 0,
+                "storage_pressure_stopped": false
+            }
+        });
+        let config = json!({
+            "config": {
+                "save_window_secs": 300,
+                "video_max_fps": 30
+            }
+        });
+        let state = super::build_view_state(
+            &status,
+            &config,
+            &json!({ "devices": [] }),
+            &json!({ "jobs": [] }),
+            &json!({ "bundles": [] }),
+        );
+        assert_eq!(
+            state.buffered_secs, 42,
+            "tray must display honest buffered_secs from system.status even on static screen"
+        );
+
+        let capped = super::build_view_state(
+            &json!({
+                "buffered_secs": 999,
+                "capture": { "active": true, "connected": true }
+            }),
+            &config,
+            &json!({ "devices": [] }),
+            &json!({ "jobs": [] }),
+            &json!({ "bundles": [] }),
+        );
+        assert_eq!(
+            capped.buffered_secs, 300,
+            "buffered_secs must clamp cleanly to save_window_secs"
+        );
     }
 }
