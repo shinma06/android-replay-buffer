@@ -10,6 +10,7 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.compose</depends>
     <depends optional="true">org.jetbrains.android</depends>
     <depends optional="true">com.intellij.modules.java</depends>
 
@@ -34,11 +35,6 @@
         <fileEditorProvider implementation="io.github.shinma06.arb.ide.ArbBundleFileEditorProvider"/>
         <virtualFilePreCloseCheck implementation="io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"/>
     </extensions>
-
-    <projectListeners>
-        <listener class="io.github.shinma06.arb.ide.ArbLogcatTitleActions"
-                  topic="com.intellij.openapi.wm.ex.ToolWindowManagerListener"/>
-    </projectListeners>
 
     <actions>
         <group id="io.github.shinma06.arb.Actions" text="Android Replay Buffer (v2)" popup="true">
@@ -92,15 +88,6 @@
                     text="ARB v2: スクリーンショットを保存"
                     description="対象端末の現在画面を PNG として即時保存します"/>
             <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
-        </group>
-
-        <group id="io.github.shinma06.arb.Logcat">
-            <separator/>
-            <action id="io.github.shinma06.arb.Logcat.SaveLogs"
-                    class="io.github.shinma06.arb.ide.ArbLogcatSaveLogsAction"
-                    text="ARB v2: 直前のログのみ保存"
-                    description="映像キャプチャを中断せず直前のログのみを保存します"/>
-            <add-to-group group-id="Logcat.PopupActions" anchor="last"/>
         </group>
     </actions>
 </idea-plugin>

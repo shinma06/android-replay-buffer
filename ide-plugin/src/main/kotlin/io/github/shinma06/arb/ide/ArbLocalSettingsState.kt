@@ -9,7 +9,8 @@ import java.nio.file.Path
 
 /**
  * Application-level IntelliJ [PersistentStateComponent] storing IDE-local preferences that
- * must remain available even when `arbd` is offline (e.g. a manual `arbd` binary path override).
+ * must remain available even when `arbd` is offline (e.g. a manual `arbd` binary path override
+ * and Android Studio Logcat screenshot destination inheritance).
  */
 @Service(Service.Level.APP)
 @State(
@@ -19,6 +20,8 @@ import java.nio.file.Path
 class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.State> {
     data class State(
         var customArbdBinaryPath: String = "",
+        var screenshotInheritLogcat: Boolean = true,
+        var customScreenshotDir: String = "",
     )
 
     private var internalState = State()
@@ -29,15 +32,36 @@ class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.Sta
             internalState.customArbdBinaryPath = value.trim()
         }
 
+    var screenshotInheritLogcat: Boolean
+        get() = internalState.screenshotInheritLogcat
+        set(value) {
+            internalState.screenshotInheritLogcat = value
+        }
+
+    var customScreenshotDir: String
+        get() = internalState.customScreenshotDir
+        set(value) {
+            internalState.customScreenshotDir = value.trim()
+        }
+
     fun customArbdBinaryPathOrNull(): Path? =
         internalState.customArbdBinaryPath.trim().takeIf { it.isNotEmpty() }?.let { raw ->
+            runCatching { Path.of(raw) }.getOrNull()
+        }
+
+    fun customScreenshotDirOrNull(): Path? =
+        internalState.customScreenshotDir.trim().takeIf { it.isNotEmpty() }?.let { raw ->
             runCatching { Path.of(raw) }.getOrNull()
         }
 
     override fun getState(): State = internalState
 
     override fun loadState(state: State) {
-        internalState = State(customArbdBinaryPath = state.customArbdBinaryPath.trim())
+        internalState = State(
+            customArbdBinaryPath = state.customArbdBinaryPath.trim(),
+            screenshotInheritLogcat = state.screenshotInheritLogcat,
+            customScreenshotDir = state.customScreenshotDir.trim(),
+        )
     }
 
     companion object {
