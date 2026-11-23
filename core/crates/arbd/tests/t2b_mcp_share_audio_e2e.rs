@@ -248,6 +248,8 @@ fn seed_rich_v2_bundle(
             tag: Some("wm_resumed_activity".to_owned()),
             pid: Some(1000),
             tid: Some(1000),
+            uid: None,
+            package_name: None,
             message: "[0,12345,com.example.shop/.CheckoutActivity]".to_owned(),
         },
         LogRecord {
@@ -267,6 +269,8 @@ fn seed_rich_v2_bundle(
             tag: Some("PaymentRepo".to_owned()),
             pid: Some(4200),
             tid: Some(4201),
+            uid: Some(10242),
+            package_name: Some("com.example.shop".to_owned()),
             message: "HTTP 500 timeout charging card".to_owned(),
         },
         LogRecord {
@@ -286,6 +290,8 @@ fn seed_rich_v2_bundle(
             tag: Some("am_crash".to_owned()),
             pid: Some(1000),
             tid: Some(1000),
+            uid: None,
+            package_name: None,
             message: "[0,4200,com.example.shop,8912896,java.lang.IllegalStateException,Cart empty,Checkout.kt,88]".to_owned(),
         },
     ];

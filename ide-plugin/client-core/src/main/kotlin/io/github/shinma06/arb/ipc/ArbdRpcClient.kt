@@ -216,8 +216,17 @@ class ArbdRpcClient(
         startNs: Long? = null,
         endNs: Long? = null,
         limit: Int? = null,
+        packageName: String? = null,
+        tag: String? = null,
+        level: String? = null,
+        keyword: String? = null,
     ): TimelineLogsResponse {
-        val params = buildTimelineQueryParams(bundleIdOrPath, bucket, startNs, endNs, limit)
+        val params = buildTimelineQueryParams(bundleIdOrPath, bucket, startNs, endNs, limit).apply {
+            if (!packageName.isNullOrBlank()) addProperty("package", packageName)
+            if (!tag.isNullOrBlank()) addProperty("tag", tag)
+            if (!level.isNullOrBlank()) addProperty("level", level)
+            if (!keyword.isNullOrBlank()) addProperty("keyword", keyword)
+        }
         return call("timeline.query_logs", params, TimelineLogsResponse::class.java)
     }
 

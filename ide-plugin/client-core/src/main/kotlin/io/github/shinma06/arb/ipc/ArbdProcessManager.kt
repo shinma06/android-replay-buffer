@@ -389,9 +389,9 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            if (shouldAutoUpgradeBinary(runningExe, bundledBinary)) {
+            if (shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs)) {
                 runCatching { client.close() }
-                return ProbeResult.Stale("bundled arbd is newer than running ${runningExe}")
+                return ProbeResult.Stale("bundled arbd is newer than running $runningExe")
             }
             ProbeResult.Healthy(ConnectedDaemon(client = client, hello = hello, spawnedProcess = null))
         } catch (_: Exception) {
@@ -463,16 +463,24 @@ class ArbdProcessManager(
         private const val POLL_INTERVAL_MS: Long = 50L
 
         /**
-         * Returns `true` when a bundled plugin `arbd` exists at a different path than [runningExe]
-         * and is strictly newer on disk (so installing a newer plugin ZIP seamlessly upgrades).
+         * Returns `true` when a bundled plugin `arbd` is strictly newer on disk than the running
+         * daemon binary — either at a different path (normal plugin upgrade) OR at the same path
+         * when [runningBinaryMtimeSecs] from `system.hello` is older than the current on-disk file
+         * mtime (in-place plugin upgrade).
          */
-        fun shouldAutoUpgradeBinary(runningExe: Path?, bundledBinary: Path?): Boolean {
+        fun shouldAutoUpgradeBinary(
+            runningExe: Path?,
+            bundledBinary: Path?,
+            runningBinaryMtimeSecs: Long? = null,
+        ): Boolean {
             if (runningExe == null || bundledBinary == null) return false
             if (!Files.isRegularFile(runningExe) || !Files.isRegularFile(bundledBinary)) return false
-            val sameFile = runCatching { Files.isSameFile(runningExe, bundledBinary) }.getOrDefault(false)
-            if (sameFile) return false
-            val runningMtime = runCatching { Files.getLastModifiedTime(runningExe) }.getOrNull() ?: return false
             val bundledMtime = runCatching { Files.getLastModifiedTime(bundledBinary) }.getOrNull() ?: return false
+            val sameFile = runCatching { Files.isSameFile(runningExe, bundledBinary) }.getOrDefault(false)
+            if (sameFile) {
+                return runningBinaryMtimeSecs != null && bundledMtime.toInstant().epochSecond > runningBinaryMtimeSecs
+            }
+            val runningMtime = runCatching { Files.getLastModifiedTime(runningExe) }.getOrNull() ?: return false
             return bundledMtime > runningMtime
         }
     }

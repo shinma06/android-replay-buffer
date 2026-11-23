@@ -299,26 +299,80 @@ pub struct AdbDeviceInfo {
 
 /// Parses the stdout of `adb shell wm size` into physical display `(width, height)` pixels.
 ///
-/// Prefers `Physical size: WxH`, falling back to `Override size: WxH` if only an override line
-/// is present. Returns `None` when dimensions are absent, malformed, or zero.
+/// Prefers `Physical size: WxH` (raw `getevent` touch coordinates live in the physical panel
+/// space, so tap mapping must not use a `wm size` override), falling back to
+/// `Override size: WxH` if only an override line is valid. Returns `None` when dimensions are
+/// absent, malformed, or zero.
 #[must_use]
 pub fn parse_wm_size_output(stdout: &str) -> Option<(u32, u32)> {
+    let mut physical_size: Option<(u32, u32)> = None;
     let mut override_size: Option<(u32, u32)> = None;
     for raw_line in stdout.lines() {
         let line = raw_line.trim();
         if let Some(rest) = line.strip_prefix("Physical size:")
             && let Some(dims) = parse_wxh_dims(rest.trim())
         {
-            return Some(dims);
-        }
-        if let Some(rest) = line.strip_prefix("Override size:")
+            physical_size = Some(dims);
+        } else if let Some(rest) = line.strip_prefix("Override size:")
             && let Some(dims) = parse_wxh_dims(rest.trim())
         {
             override_size = Some(dims);
         }
     }
-    override_size
+    physical_size.or(override_size)
 }
+
+/// Parses `adb shell cmd package list packages -U` stdout into a `uid -> package_name` map.
+///
+/// Expected line format: `package:<pkg_name> uid:<uid>` (or comma-separated UIDs for multi-user).
+///
+/// Only unambiguous application UIDs are returned: system UIDs (app id below
+/// [`FIRST_APPLICATION_UID`], e.g. `1000` = `system_server`) and UIDs shared by several packages
+/// (`sharedUserId`) are dropped so their logs are never attributed to an arbitrary package.
+#[must_use]
+pub fn parse_package_uid_list(stdout: &str) -> BTreeMap<u32, String> {
+    let mut map: BTreeMap<u32, String> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<u32> = BTreeSet::new();
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        let Some(rest) = line.strip_prefix("package:") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let Some(pkg) = parts.next().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let Some(uid_token) = parts.find_map(|tok| tok.strip_prefix("uid:")) else {
+            continue;
+        };
+        for uid_str in uid_token.split(',') {
+            let Ok(uid) = uid_str.trim().parse::<u32>() else {
+                continue;
+            };
+            if uid % PER_USER_UID_RANGE < FIRST_APPLICATION_UID {
+                continue;
+            }
+            match map.get(&uid) {
+                Some(existing) if existing != pkg => {
+                    ambiguous.insert(uid);
+                }
+                Some(_) => {}
+                None => {
+                    map.insert(uid, pkg.to_owned());
+                }
+            }
+        }
+    }
+    for uid in ambiguous {
+        map.remove(&uid);
+    }
+    map
+}
+
+/// First Android application UID (`android.os.Process.FIRST_APPLICATION_UID`).
+pub const FIRST_APPLICATION_UID: u32 = 10_000;
+/// Per-user UID range (`android.os.UserHandle.PER_USER_RANGE`).
+pub const PER_USER_UID_RANGE: u32 = 100_000;
 
 fn parse_wxh_dims(token: &str) -> Option<(u32, u32)> {
     let (w_str, h_str) = token.split_once('x').or_else(|| token.split_once('X'))?;
@@ -673,6 +727,17 @@ impl<R: AdbCommandRunner> AdbClient<R> {
     pub fn query_display_size(&self, serial: &str) -> Option<(u32, u32)> {
         let out = self.shell(serial, &["wm", "size"]).ok()?;
         parse_wm_size_output(&out)
+    }
+
+    /// Best-effort query of installed package UIDs via `adb -s <serial> shell cmd package list packages -U`.
+    ///
+    /// Returns an empty map if the command fails (never blocks capture).
+    #[must_use]
+    pub fn query_package_uids(&self, serial: &str) -> BTreeMap<u32, String> {
+        let Ok(out) = self.shell(serial, &["cmd", "package", "list", "packages", "-U"]) else {
+            return BTreeMap::new();
+        };
+        parse_package_uid_list(&out)
     }
 
     /// Pushes `arb-companion.dex.jar` and optional `replay-scrcpy-audio.dex.jar`
@@ -2587,20 +2652,88 @@ R5CX123456A            unauthorized usb:1-1 transport_id:2
 
     #[test]
     fn parse_wm_size_output_prefers_physical_and_handles_overrides() {
+        // Raw getevent touch coordinates live in the physical panel space, so the physical
+        // size must win over a (lower) `wm size` override for tap mapping.
         assert_eq!(
             super::parse_wm_size_output("Physical size: 1080x2400\r\n"),
             Some((1080, 2400))
         );
         assert_eq!(
-            super::parse_wm_size_output("Physical size: 1080x2400\nOverride size: 720x1600\n"),
-            Some((1080, 2400))
+            super::parse_wm_size_output("Physical size: 1440x3200\nOverride size: 1080x2400\n"),
+            Some((1440, 3200)),
+            "Physical size must take precedence over Override size"
+        );
+        assert_eq!(
+            super::parse_wm_size_output("Override size: 1080x2400\nPhysical size: 1440x3200\n"),
+            Some((1440, 3200)),
+            "Physical size must take precedence regardless of line order"
         );
         assert_eq!(
             super::parse_wm_size_output("Override size: 720x1600\n"),
             Some((720, 1600))
         );
+        assert_eq!(
+            super::parse_wm_size_output("Physical size: 0x0\nOverride size: 720x1600\n"),
+            Some((720, 1600)),
+            "malformed Physical size falls back to Override size"
+        );
+        assert_eq!(
+            super::parse_wm_size_output("Physical size: garbage\nOverride size: 1x\n"),
+            None
+        );
         assert_eq!(super::parse_wm_size_output("Physical size: 0x2400\n"), None);
         assert_eq!(super::parse_wm_size_output(""), None);
+    }
+
+    #[test]
+    fn parse_package_uid_list_handles_standard_and_multi_user_lines() {
+        let raw = "\
+package:com.example.app uid:10234\r\n\
+package:com.example.multi uid:10235,1010235\n\
+package:com.google.android.gms uid:10012\n\
+malformed line without prefix\n";
+        let map = super::parse_package_uid_list(raw);
+        assert_eq!(map.get(&10234).map(String::as_str), Some("com.example.app"));
+        assert_eq!(
+            map.get(&10235).map(String::as_str),
+            Some("com.example.multi")
+        );
+        assert_eq!(
+            map.get(&1_010_235).map(String::as_str),
+            Some("com.example.multi")
+        );
+        assert_eq!(
+            map.get(&10012).map(String::as_str),
+            Some("com.google.android.gms")
+        );
+    }
+
+    #[test]
+    fn parse_package_uid_list_drops_system_and_shared_uids() {
+        let raw = "\
+package:android uid:1000\n\
+package:com.android.settings uid:1000\n\
+package:com.android.phone uid:1001\n\
+package:com.google.android.gms uid:10012\n\
+package:com.google.android.gsf uid:10012\n\
+package:com.example.app uid:10234,1010234\n";
+        let map = super::parse_package_uid_list(raw);
+        assert_eq!(
+            map.get(&1000),
+            None,
+            "system_server uid must never map to an app"
+        );
+        assert_eq!(
+            map.get(&1001),
+            None,
+            "system uids below 10000 are not app uids"
+        );
+        assert_eq!(map.get(&10012), None, "sharedUserId uids are ambiguous");
+        assert_eq!(map.get(&10234).map(String::as_str), Some("com.example.app"));
+        assert_eq!(
+            map.get(&1_010_234).map(String::as_str),
+            Some("com.example.app")
+        );
     }
 
     #[test]

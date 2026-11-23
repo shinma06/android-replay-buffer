@@ -36,7 +36,20 @@ data class SystemHelloResponse(
     val cacheDir: String,
     val runtimeDir: String,
     val daemonVersion: String,
+    val buildId: String? = null,
+    val binaryMtimeSecs: Long? = null,
 )
+
+enum class CaptureMode(val wire: String) {
+    VIDEO_AND_LOGS("video_and_logs"),
+    LOGS_ONLY("logs_only");
+
+    companion object {
+        fun fromWire(value: String): CaptureMode =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown CaptureMode: $value")
+    }
+}
 
 data class CaptureStatusView(
     val active: Boolean,
@@ -44,6 +57,8 @@ data class CaptureStatusView(
     val serial: String? = null,
     val bootId: String? = null,
     val storagePressureStopped: Boolean,
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val lastVideoError: String? = null,
     val videoFrames: Long,
     val audioFrames: Long,
     val logRecords: Long,
@@ -117,9 +132,12 @@ data class ArbConfig(
     val videoMaxSize: Int = DEFAULT_VIDEO_MAX_SIZE,
     val videoMaxFps: Int = DEFAULT_VIDEO_MAX_FPS,
     val audioEnabled: Boolean = true,
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val deviceSerial: String? = null,
     val crashAutosaveEnabled: Boolean = true,
     val crashAutosaveCooldownSecs: Int = DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
     val outputDirOverride: String? = null,
+    val screenshotDirOverride: String? = null,
     val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
 ) {
     companion object {
@@ -156,6 +174,12 @@ sealed class OutputDirPatch {
     data class Set(val path: String) : OutputDirPatch()
 }
 
+sealed class StringPatch {
+    data object Unchanged : StringPatch()
+    data object Clear : StringPatch()
+    data class Set(val value: String) : StringPatch()
+}
+
 data class ArbConfigPatch(
     val saveWindowSecs: Int? = null,
     val ringBudgetBytes: Long? = null,
@@ -163,9 +187,12 @@ data class ArbConfigPatch(
     val videoMaxSize: Int? = null,
     val videoMaxFps: Int? = null,
     val audioEnabled: Boolean? = null,
+    val captureMode: CaptureMode? = null,
+    val deviceSerial: StringPatch = StringPatch.Unchanged,
     val crashAutosaveEnabled: Boolean? = null,
     val crashAutosaveCooldownSecs: Int? = null,
     val outputDirOverride: OutputDirPatch = OutputDirPatch.Unchanged,
+    val screenshotDirOverride: OutputDirPatch = OutputDirPatch.Unchanged,
     val ideDefaultSaveAction: IdeDefaultSaveAction? = null,
 )
 
@@ -205,6 +232,7 @@ data class DeviceListResponse(
 
 data class CaptureStartParams(
     val serial: String? = null,
+    val captureMode: CaptureMode? = null,
     val companionJar: String? = null,
     val scrcpyJar: String? = null,
     val maxSize: Int? = null,
@@ -219,6 +247,7 @@ data class CaptureStartParams(
 data class CaptureStartResponse(
     val serial: String,
     val started: Boolean,
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
 )
 
 data class CaptureStopResponse(
@@ -304,6 +333,7 @@ data class SaveLogsParams(
 data class SaveScreenshotParams(
     val serial: String? = null,
     val outputPath: String? = null,
+    val outputDir: String? = null,
     val overwrite: Boolean = false,
 )
 
@@ -658,6 +688,14 @@ data class StreamsSummary(
     val input: InputStreamMeta? = null,
 )
 
+data class AppLogSummary(
+    val packageName: String,
+    val relativePath: String,
+    val lineCount: Long,
+    val crashCount: Long,
+    val sha256: String,
+)
+
 data class TimelineSummaryResponse(
     val bundleId: String,
     val path: String,
@@ -680,6 +718,7 @@ data class TimelineSummaryResponse(
     val discontinuityCount: Int,
     val videoPath: String? = null,
     val audioPath: String? = null,
+    val appLogs: List<AppLogSummary> = emptyList(),
 )
 
 data class LogRecord(
@@ -694,6 +733,8 @@ data class LogRecord(
     val tag: String? = null,
     val pid: Int? = null,
     val tid: Int? = null,
+    val uid: Long? = null,
+    val packageName: String? = null,
     val message: String,
 )
 

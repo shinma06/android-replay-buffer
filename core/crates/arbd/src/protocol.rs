@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use arb_adb::adb::AdbDeviceInfo;
 use arb_core::analytics::{CrashMarker, ScreenSpan};
 use arb_core::bundle::{
-    BundleKind, DeviceInfo, EpochSpan, LogCompleteness, LogRecord, Provenance, StreamStatus,
-    StreamsSummary, TapRecord, UnanchoredSummary,
+    AppLogSummary, BundleKind, DeviceInfo, EpochSpan, LogCompleteness, LogRecord, Provenance,
+    StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary,
 };
-use arb_core::config::ArbConfig;
+use arb_core::config::{ArbConfig, CaptureMode};
 use arb_core::selection::SelectionPolicy;
 use arb_core::state::{BundleLifecycleState, SaveJobState, SaveTriggerKind};
 use arb_core::time::DiscontinuityEvent;
@@ -123,6 +123,12 @@ pub struct SystemHelloResponse {
     pub runtime_dir: PathBuf,
     /// Daemon crate version string.
     pub daemon_version: String,
+    /// Optional build/binary fingerprint (`version` + executable mtime/size) for same-path upgrade detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// Optional Unix timestamp (seconds) of the running `arbd` executable's last modification time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_mtime_secs: Option<u64>,
 }
 
 /// Live capture telemetry inside [`SystemStatusResponse`].
@@ -132,6 +138,9 @@ pub struct CaptureStatusView {
     pub active: bool,
     /// Whether transport is currently connected.
     pub connected: bool,
+    /// Active (or configured) continuous capture mode (`video_and_logs` or `logs_only`).
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
     /// Active device serial, if capturing.
     pub serial: Option<String>,
     /// Active device `boot_id`, if observed.
@@ -154,6 +163,10 @@ pub struct CaptureStatusView {
     /// `stream_gap` discontinuity).
     #[serde(default)]
     pub ring_write_errors: usize,
+    /// Optional honest diagnostic when video encoder initialization fails (e.g., HW encoder
+    /// contention with Android Studio Running Devices mirroring).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_video_error: Option<String>,
 }
 
 /// Startup recovery summary inside [`SystemStatusResponse`].
@@ -261,6 +274,9 @@ pub struct DeviceListResponse {
 pub struct CaptureStartParams {
     /// Optional ADB device serial (auto-selects sole online device if omitted).
     pub serial: Option<String>,
+    /// Optional continuous capture mode (`video_and_logs` or `logs_only`; defaults to config).
+    #[serde(default, alias = "mode")]
+    pub capture_mode: Option<CaptureMode>,
     /// Optional explicit path to `arb-companion.dex.jar`.
     pub companion_jar: Option<PathBuf>,
     /// Optional explicit path to `replay-scrcpy-audio.dex.jar`.
@@ -288,6 +304,9 @@ pub struct CaptureStartResponse {
     pub serial: String,
     /// `true` once live capture has been started.
     pub started: bool,
+    /// Effective continuous capture mode (`video_and_logs` or `logs_only`).
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
 }
 
 /// Response payload for `capture.stop`.
@@ -349,8 +368,12 @@ pub struct SaveLogsParams {
 pub struct SaveScreenshotParams {
     /// Optional ADB serial (defaults to active capture serial or sole online ADB device).
     pub serial: Option<String>,
-    /// Optional explicit absolute PNG destination path (defaults to `<output_dir>/screenshot-*.png`).
+    /// Optional explicit absolute PNG destination file path (mutually exclusive with `output_dir`).
     pub output_path: Option<PathBuf>,
+    /// Optional explicit absolute destination directory (e.g., inherited from Android Studio
+    /// Logcat screenshot settings); writes `<output_dir>/screenshot-*.png`.
+    #[serde(default)]
+    pub output_dir: Option<PathBuf>,
     /// Whether an existing destination file may be atomically replaced (default `false`).
     #[serde(default)]
     pub overwrite: bool,
@@ -604,6 +627,9 @@ pub struct TimelineQueryParams {
     /// Optional case-insensitive substring filter on `LogRecord::message` or `tag`.
     #[serde(default)]
     pub keyword: Option<String>,
+    /// Optional Android application package name filter (`timeline.query_logs`, e.g. `com.example.app`).
+    #[serde(default)]
+    pub package: Option<String>,
     /// Optional maximum row count (default [`DEFAULT_QUERY_LIMIT`], capped at
     /// [`MAX_QUERY_LIMIT`]).
     pub limit: Option<usize>,
@@ -673,6 +699,9 @@ pub struct TimelineSummaryResponse {
     pub video_path: Option<PathBuf>,
     /// Path to `audio.m4a` if present.
     pub audio_path: Option<PathBuf>,
+    /// Per-app extracted foreground logcat sidecars (`app-logs/<package>.jsonl`).
+    #[serde(default)]
+    pub app_logs: Vec<AppLogSummary>,
 }
 
 /// Response payload for `timeline.query_logs`.
@@ -1132,6 +1161,9 @@ pub struct TimelineOverviewResponse {
     pub unanchored_count: u64,
     /// Count of `unanchored` records truncated by quarantine caps.
     pub unanchored_truncated_count: u64,
+    /// Per-app extracted foreground logcat sidecars (`app-logs/<package>.jsonl`).
+    #[serde(default)]
+    pub app_logs: Vec<AppLogSummary>,
 }
 
 /// Visual inspection mode for `media.inspect_frames`.
