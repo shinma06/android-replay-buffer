@@ -5,7 +5,9 @@
 //! used by both save and trim, WORM bundle v2 schemas, legacy read-only
 //! parsing helpers, and save/lease/ring-budget state machines.
 
+pub mod analytics;
 pub mod bundle;
+pub mod config;
 pub mod legacy;
 pub mod selection;
 pub mod state;

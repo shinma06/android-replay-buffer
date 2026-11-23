@@ -12,12 +12,14 @@ pub mod error;
 pub mod live_adb;
 pub mod media_engine;
 pub mod protocol;
+pub mod screenshot;
 pub mod time_util;
 
 use std::io::BufReader;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -25,9 +27,11 @@ use std::time::{Duration, Instant};
 use arb_adb::adb::AdbClient;
 use arb_adb::mock::DeviceEventSource;
 use arb_core::BUNDLE_SCHEMA_VERSION;
+use arb_core::analytics::{CrashAutoSaveDecision, CrashAutoSaveEval, CrashAutoSaveGate};
 use arb_core::bundle::RecordBucket;
+use arb_core::config::{ArbConfig, ArbConfigPatch};
 use arb_core::selection::{DrainOutcome, SelectionPolicy, evaluate_stream_drain};
-use arb_core::state::RingBudgetPolicy;
+use arb_core::state::{RingBudgetPolicy, SaveTriggerKind};
 use arb_media::codec::default_codec_backend;
 use arb_os::fs::{SingleInstanceLock, is_pid_alive};
 use arb_os::ipc::{
@@ -39,13 +43,15 @@ use arb_storage::catalog::{
     BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
     PinReconcileReport, RecoveryReport,
 };
+use arb_storage::config::ConfigStore;
 use arb_storage::ring::PinJournal;
+use arb_storage::sha256_hex;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::capture::{
-    CapturePipeline, FaultInjection, SharedDiskSpaceProvider, TailCompleteness, phase2_materialize,
-    save_job_to_view,
+    CapturePipeline, CrashAutoSaveNotice, FaultInjection, SharedDiskSpaceProvider,
+    TailCompleteness, phase2_materialize, save_job_to_view,
 };
 use crate::error::{
     DaemonError, RPC_ERR_INTERNAL, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE,
@@ -56,18 +62,21 @@ use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
 use crate::protocol::{
     BundleEntryView, BundleGcFailure, BundleGcParams, BundleGcResponse, BundleIdParams,
     BundleListParams, BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams,
-    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, DEFAULT_QUERY_LIMIT,
-    DeviceListResponse, EditGetSessionParams, EditSessionView, EditUpdateSessionParams,
-    ExportPngParams, ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams,
-    MAX_QUERY_LIMIT, MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
+    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, ConfigResponse,
+    CrashAutoSaveStatusView, DEFAULT_QUERY_LIMIT, DeviceListResponse, EditGetSessionParams,
+    EditSessionView, EditUpdateSessionParams, ExportPngParams, ExportTrimParams,
+    IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MAX_QUERY_LIMIT,
+    MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
     MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
-    SaveJobIdParams, SaveListJobsResponse, SaveRetargetParams, SaveTriggerParams,
-    SystemHelloResponse, SystemStatusResponse, TimelineDiscontinuitiesResponse,
-    TimelineLogsResponse, TimelineQueryParams, TimelineTapsResponse,
+    SaveJobIdParams, SaveListJobsResponse, SaveLogsParams, SaveMode, SaveOutcomeResponse,
+    SaveRetargetParams, SaveScreenshotParams, SaveScreenshotResponse, SaveTriggerParams,
+    SystemHelloResponse, SystemStatusResponse, TimelineCrashesResponse,
+    TimelineDiscontinuitiesResponse, TimelineLogsResponse, TimelineQueryParams,
+    TimelineScreensResponse, TimelineTapsResponse,
 };
-use crate::time_util::utc_now_iso8601;
+use crate::screenshot::{ScreenshotOverwrite, SharedScreenshotProvider, write_screenshot_atomic};
+use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
 
-const DEFAULT_SAVE_DURATION_SEC: u64 = 30;
 const DRAIN_POLL_INTERVAL_MS: u64 = 20;
 /// Upper bound on how long shutdown waits for in-flight client requests to finish.
 const CLIENT_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -104,8 +113,11 @@ pub struct DaemonConfig {
     pub ring_policy: RingBudgetPolicy,
     /// Injectable filesystem disk-space provider (defaults to host OS `statvfs` / Win32).
     pub disk_provider: SharedDiskSpaceProvider,
+    /// Injectable screenshot provider (defaults to `adb exec-out screencap -p`).
+    pub screenshot_provider: SharedScreenshotProvider,
     /// One-shot fault injection switches (all off by default; used by the E2E suite).
     pub faults: Arc<FaultInjection>,
+    ring_policy_overridden: bool,
 }
 
 impl DaemonConfig {
@@ -116,7 +128,9 @@ impl DaemonConfig {
             paths,
             ring_policy: RingBudgetPolicy::default(),
             disk_provider: SharedDiskSpaceProvider::os_default(),
+            screenshot_provider: SharedScreenshotProvider::adb_default(),
             faults: Arc::new(FaultInjection::default()),
+            ring_policy_overridden: false,
         }
     }
 
@@ -131,6 +145,7 @@ impl DaemonConfig {
     #[must_use]
     pub const fn with_ring_policy(mut self, policy: RingBudgetPolicy) -> Self {
         self.ring_policy = policy;
+        self.ring_policy_overridden = true;
         self
     }
 
@@ -140,6 +155,13 @@ impl DaemonConfig {
         self.disk_provider = provider;
         self
     }
+
+    /// Overrides the [`SharedScreenshotProvider`] (for deterministic screenshot tests).
+    #[must_use]
+    pub fn with_screenshot_provider(mut self, provider: SharedScreenshotProvider) -> Self {
+        self.screenshot_provider = provider;
+        self
+    }
 }
 
 struct DaemonState {
@@ -147,10 +169,15 @@ struct DaemonState {
     started_at: Instant,
     recovery: RecoveryReport,
     pin_reconcile: PinReconcileReport,
+    config_store: ConfigStore,
+    user_config: Mutex<ArbConfig>,
     catalog: Catalog,
     capture: Arc<Mutex<CapturePipeline>>,
     live_capture: Mutex<Option<LiveCaptureHandle>>,
     media: Mutex<MediaEngine>,
+    screenshot_provider: SharedScreenshotProvider,
+    crash_autosave_status: Mutex<CrashAutoSaveStatusView>,
+    crash_autosave_gate: Mutex<CrashAutoSaveGate>,
     faults: Arc<FaultInjection>,
     shutdown_flag: Arc<AtomicBool>,
     endpoint: PathBuf,
@@ -367,10 +394,14 @@ impl DaemonState {
             })?),
             "system.status" => self.handle_system_status(),
             "system.shutdown" => Ok(json!({ "ok": true })),
+            "config.get" => self.handle_config_get(),
+            "config.update" => self.handle_config_update(params),
             "device.list" => Self::handle_device_list(),
             "capture.start" => self.handle_capture_start(params),
             "capture.stop" => Ok(serde_json::to_value(self.stop_active_capture()?)?),
             "save.trigger" => self.handle_save_trigger(params),
+            "save.logs" => self.handle_save_logs(params),
+            "save.screenshot" => self.handle_save_screenshot(params),
             "save.list_jobs" => self.handle_save_list_jobs(),
             "save.retry" => self.handle_save_retry(params),
             "save.retarget" => self.handle_save_retarget(params),
@@ -386,6 +417,8 @@ impl DaemonState {
             "timeline.query_logs" => self.handle_timeline_query_logs(params),
             "timeline.query_taps" => self.handle_timeline_query_taps(params),
             "timeline.discontinuities" => self.handle_timeline_discontinuities(params),
+            "timeline.crashes" => self.handle_timeline_crashes(params),
+            "timeline.screens" => self.handle_timeline_screens(params),
             "edit.get_session" => self.handle_edit_get_session(params),
             "edit.update_session" => self.handle_edit_update_session(params),
             "export.trim" => self.handle_export_trim(params),
@@ -413,6 +446,12 @@ impl DaemonState {
             .filter(|j| !j.job.state.is_terminal())
             .count();
         let uptime_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let cfg = self.lock(&self.user_config, "user config")?.clone();
+        let mut crash_autosave = self
+            .lock(&self.crash_autosave_status, "crash autosave status")?
+            .clone();
+        crash_autosave.enabled = cfg.crash_autosave_enabled;
+        crash_autosave.cooldown_secs = cfg.crash_autosave_cooldown_secs;
 
         Ok(serde_json::to_value(SystemStatusResponse {
             pid: std::process::id(),
@@ -431,6 +470,39 @@ impl DaemonState {
                 released_pin_journals: self.pin_reconcile.released_job_ids.len(),
                 repinned_jobs: self.pin_reconcile.repinned_job_ids.len(),
             },
+            crash_autosave,
+        })?)
+    }
+
+    fn handle_config_get(&self) -> Result<Value, DaemonError> {
+        let config = self.lock(&self.user_config, "user config")?.clone();
+        Ok(serde_json::to_value(ConfigResponse {
+            config,
+            config_path: self.config_store.path(),
+        })?)
+    }
+
+    fn handle_config_update(&self, params: Value) -> Result<Value, DaemonError> {
+        let patch: ArbConfigPatch = parse_params(params)?;
+        let candidate = {
+            let current = self.lock(&self.user_config, "user config")?;
+            current
+                .apply_patch(&patch)
+                .map_err(|err| DaemonError::InvalidParams(err.to_string()))?
+        };
+        if let Some(dir) = &candidate.output_dir_override {
+            self.validate_output_location(dir, "output_dir_override", None)?;
+        }
+        self.config_store.save_atomic(&candidate)?;
+        {
+            let mut guard = self.lock(&self.user_config, "user config")?;
+            *guard = candidate.clone();
+        }
+        self.lock_capture()?
+            .set_ring_policy(candidate.to_ring_budget_policy());
+        Ok(serde_json::to_value(ConfigResponse {
+            config: candidate,
+            config_path: self.config_store.path(),
         })?)
     }
 
@@ -441,7 +513,17 @@ impl DaemonState {
     }
 
     fn handle_capture_start(&self, params: Value) -> Result<Value, DaemonError> {
-        let parsed: CaptureStartParams = parse_optional_params(params)?;
+        let mut parsed: CaptureStartParams = parse_optional_params(params)?;
+        let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+        if parsed.max_size.is_none() {
+            parsed.max_size = Some(user_cfg.video_max_size);
+        }
+        if parsed.max_fps.is_none() {
+            parsed.max_fps = Some(user_cfg.video_max_fps);
+        }
+        if parsed.audio_enabled.is_none() {
+            parsed.audio_enabled = Some(user_cfg.audio_enabled);
+        }
         for (name, jar) in [
             ("companion_jar", parsed.companion_jar.as_deref()),
             ("scrcpy_jar", parsed.scrcpy_jar.as_deref()),
@@ -479,23 +561,67 @@ impl DaemonState {
 
     fn handle_save_trigger(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveTriggerParams = parse_optional_params(params)?;
-        let duration_sec = parsed.duration_sec.unwrap_or(DEFAULT_SAVE_DURATION_SEC);
-        let dest_dir = match parsed.dest_dir {
+        let outcome = self.execute_save(
+            parsed.duration_sec,
+            parsed.dest_dir,
+            parsed.drain_timeout_ms,
+            parsed.selection_policy,
+            parsed.mode,
+            SaveTriggerKind::Manual,
+        )?;
+        Ok(serde_json::to_value(outcome)?)
+    }
+
+    fn handle_save_logs(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: SaveLogsParams = parse_optional_params(params)?;
+        let outcome = self.execute_save(
+            parsed.window_secs,
+            parsed.dest_dir,
+            parsed.drain_timeout_ms,
+            parsed.selection_policy,
+            SaveMode::LogsOnly,
+            SaveTriggerKind::Manual,
+        )?;
+        Ok(serde_json::to_value(outcome)?)
+    }
+
+    fn execute_save(
+        &self,
+        duration_sec: Option<u64>,
+        dest_dir: Option<PathBuf>,
+        drain_timeout_ms: Option<u64>,
+        selection_policy: Option<SelectionPolicy>,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+    ) -> Result<SaveOutcomeResponse, DaemonError> {
+        let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+        let duration_sec = duration_sec.unwrap_or_else(|| u64::from(user_cfg.save_window_secs));
+        let dest_dir = match dest_dir {
             Some(dest) => {
                 self.validate_output_location(&dest, "dest_dir", None)?;
                 dest
             }
-            None => self.catalog.managed_bundles_root().to_path_buf(),
+            None => match user_cfg.output_dir_override {
+                Some(override_dir) => {
+                    self.validate_output_location(&override_dir, "output_dir_override", None)?;
+                    override_dir
+                }
+                None => self.catalog.managed_bundles_root().to_path_buf(),
+            },
         };
-        let mut policy = parsed.selection_policy.unwrap_or_default();
-        if let Some(drain_ms) = parsed.drain_timeout_ms {
+        let mut policy = selection_policy.unwrap_or_default();
+        if let Some(drain_ms) = drain_timeout_ms {
             policy.drain_timeout_ms = drain_ms;
         }
 
         // Phase 1 (R3 S1): fix T_trigger and pin the window chunks immediately, under `C`.
-        let pending = self
-            .lock_capture()?
-            .phase1_pin(duration_sec, &dest_dir, policy)?;
+        let pending = self.lock_capture()?.phase1_pin_with_options(
+            duration_sec,
+            &dest_dir,
+            policy,
+            mode,
+            trigger_kind,
+        )?;
 
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
@@ -509,8 +635,51 @@ impl DaemonState {
             .phase1_commit(&self.catalog, pending, tail)?;
 
         // Phase 2 without `C` (R3 M2): live readers, heartbeats and status never stall.
-        let outcome = phase2_materialize(&plan, &self.catalog, &job.job.job_id)?;
-        Ok(serde_json::to_value(outcome)?)
+        phase2_materialize(&plan, &self.catalog, &job.job.job_id)
+    }
+
+    fn handle_save_screenshot(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: SaveScreenshotParams = parse_optional_params(params)?;
+        let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+        let active_serial = self.lock_capture()?.active_serial();
+        let requested_serial = parsed
+            .serial
+            .filter(|s| !s.trim().is_empty())
+            .or(active_serial);
+
+        let dest_path = if let Some(explicit) = parsed.output_path {
+            self.validate_output_location(&explicit, "output_path", None)?;
+            explicit
+        } else {
+            let base_dir = if let Some(override_dir) = user_cfg.output_dir_override {
+                self.validate_output_location(&override_dir, "output_dir_override", None)?;
+                override_dir
+            } else {
+                self.paths.data_dir.join("screenshots")
+            };
+            base_dir.join(format!("{}.png", next_id("screenshot")))
+        };
+
+        let (serial, png_bytes) = self
+            .screenshot_provider
+            .capture_png(requested_serial.as_deref())?;
+        let captured_at_unix_ms = current_unix_millis();
+        let overwrite = if parsed.overwrite {
+            ScreenshotOverwrite::Replace
+        } else {
+            ScreenshotOverwrite::NoReplace
+        };
+        let (width, height) = write_screenshot_atomic(&dest_path, &png_bytes, overwrite)?;
+        let sha256 = sha256_hex(&png_bytes);
+
+        Ok(serde_json::to_value(SaveScreenshotResponse {
+            path: dest_path,
+            width,
+            height,
+            sha256,
+            captured_at_unix_ms,
+            serial,
+        })?)
     }
 
     fn wait_for_boundary_drain(
@@ -789,6 +958,22 @@ impl DaemonState {
         })?)
     }
 
+    fn handle_timeline_crashes(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: BundleRefParams = parse_params(params)?;
+        let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        let reader = open_bundle(&path)?;
+        let crashes = reader.crashes()?;
+        Ok(serde_json::to_value(TimelineCrashesResponse { crashes })?)
+    }
+
+    fn handle_timeline_screens(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: BundleRefParams = parse_params(params)?;
+        let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        let reader = open_bundle(&path)?;
+        let screens = reader.screens()?;
+        Ok(serde_json::to_value(TimelineScreensResponse { screens })?)
+    }
+
     fn handle_edit_get_session(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: EditGetSessionParams = parse_params(params)?;
         let session = self
@@ -942,19 +1127,21 @@ pub struct DaemonServer {
     state: Arc<DaemonState>,
     _lock: SingleInstanceLock,
     accept_thread: Option<JoinHandle<()>>,
+    crash_worker_thread: Option<JoinHandle<()>>,
 }
 
 impl DaemonServer {
     /// Starts `arbd` with the given [`DaemonConfig`]:
     /// 1. Acquires [`SingleInstanceLock`] at `<runtime_dir>/arbd.lock`.
     /// 2. Removes stale `*.shm` viewport files left by a crashed daemon (R3 M7).
-    /// 3. Opens [`Catalog`] and runs [`Catalog::recover_on_startup_with_pins`].
-    /// 4. Opens Zone-1 [`CapturePipeline`] (`RingStore`) and [`MediaEngine`].
-    /// 5. Binds [`LocalIpcListener`] and spawns the concurrent accept loop.
+    /// 3. Loads persisted `config.json` (falling back to defaults if absent).
+    /// 4. Opens [`Catalog`] and runs [`Catalog::recover_on_startup_with_pins`].
+    /// 5. Opens Zone-1 [`CapturePipeline`] (`RingStore`) and [`MediaEngine`].
+    /// 6. Binds [`LocalIpcListener`] and spawns the concurrent accept & crash-autosave loops.
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError`] if locking, storage recovery, or IPC binding fails.
+    /// Returns [`DaemonError`] if locking, config loading, storage recovery, or IPC binding fails.
     pub fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
         std::fs::create_dir_all(&config.paths.data_dir)?;
         std::fs::create_dir_all(&config.paths.cache_dir)?;
@@ -964,6 +1151,15 @@ impl DaemonServer {
         let lock = SingleInstanceLock::try_acquire(config.paths.lock_file())?;
         // Safe only now: the lock guarantees no other daemon owns these viewport files.
         let _removed_shm = MediaEngine::sweep_stale_shm_files(&config.paths.shm_dir());
+
+        let config_store = ConfigStore::new(&config.paths.data_dir);
+        let user_config = config_store.load_or_default()?;
+        let effective_ring_policy = if config.ring_policy_overridden {
+            config.ring_policy
+        } else {
+            user_config.to_ring_budget_policy()
+        };
+
         let catalog_db = config.paths.data_dir.join("catalog.sqlite");
         let managed_bundles = config.paths.data_dir.join("bundles");
         let catalog = Catalog::open(&catalog_db, &managed_bundles)?;
@@ -974,27 +1170,39 @@ impl DaemonServer {
         let (recovery, pin_reconcile) =
             catalog.recover_on_startup_with_pins(&utc_now_iso8601(), &pin_journal)?;
 
+        let (crash_tx, crash_rx) = mpsc::channel();
         let mut capture = CapturePipeline::open(
             &config.paths.data_dir,
-            config.ring_policy,
+            effective_ring_policy,
             config.disk_provider,
         )?;
         capture.set_fault_injection(Arc::clone(&config.faults));
+        capture.set_crash_notifier(Some(crash_tx));
         let media = MediaEngine::new(config.paths.cache_dir.clone(), config.paths.shm_dir());
 
         let endpoint = config.paths.ipc_endpoint();
         let listener = LocalIpcListener::bind(&endpoint)?;
         let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let initial_crash_status = CrashAutoSaveStatusView {
+            enabled: user_config.crash_autosave_enabled,
+            cooldown_secs: user_config.crash_autosave_cooldown_secs,
+            ..CrashAutoSaveStatusView::default()
+        };
 
         let state = Arc::new(DaemonState {
             paths: config.paths,
             started_at: Instant::now(),
             recovery,
             pin_reconcile,
+            config_store,
+            user_config: Mutex::new(user_config),
             catalog,
             capture: Arc::new(Mutex::new(capture)),
             live_capture: Mutex::new(None),
             media: Mutex::new(media),
+            screenshot_provider: config.screenshot_provider,
+            crash_autosave_status: Mutex::new(initial_crash_status),
+            crash_autosave_gate: Mutex::new(CrashAutoSaveGate::new()),
             faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
             endpoint,
@@ -1007,10 +1215,18 @@ impl DaemonServer {
                 run_accept_loop(&listener, &accept_state);
             })?;
 
+        let crash_state = Arc::clone(&state);
+        let crash_worker_thread = thread::Builder::new()
+            .name("arbd-crash-autosave".to_owned())
+            .spawn(move || {
+                run_crash_autosave_worker(&crash_state, &crash_rx);
+            })?;
+
         Ok(Self {
             state,
             _lock: lock,
             accept_thread: Some(accept_thread),
+            crash_worker_thread: Some(crash_worker_thread),
         })
     }
 
@@ -1110,7 +1326,7 @@ impl DaemonServer {
 
     /// Stops capture and closes every viewport. Tolerates poisoned locks so a daemon that
     /// is shutting down because of a panic still releases its devices and SHM files.
-    fn cleanup_subsystems(&self) {
+    fn cleanup_subsystems(&mut self) {
         let handle = self
             .state
             .live_capture
@@ -1120,11 +1336,18 @@ impl DaemonServer {
         if let Some(mut handle) = handle {
             handle.stop();
         }
-        self.state
-            .capture
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .mark_stopped();
+        {
+            let mut cap = self
+                .state
+                .capture
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            cap.set_crash_notifier(None);
+            cap.mark_stopped();
+        }
+        if let Some(worker) = self.crash_worker_thread.take() {
+            let _ = worker.join();
+        }
         self.state
             .media
             .lock()
@@ -1140,6 +1363,96 @@ impl Drop for DaemonServer {
             let _ = handle.join();
         }
         self.cleanup_subsystems();
+    }
+}
+
+fn run_crash_autosave_worker(state: &Arc<DaemonState>, rx: &Receiver<CrashAutoSaveNotice>) {
+    while let Ok(notice) = rx.recv() {
+        if state.is_shutting_down() {
+            break;
+        }
+        handle_crash_autosave_notice(state, notice);
+    }
+}
+
+fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveNotice) {
+    let cfg = state
+        .user_config
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let storage_pressure_active = notice.storage_pressure_stopped
+        || state
+            .capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_storage_pressure_stopped();
+
+    let decision = {
+        let mut gate = state
+            .crash_autosave_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        gate.evaluate(CrashAutoSaveEval {
+            enabled: cfg.crash_autosave_enabled,
+            storage_pressure_active,
+            cooldown_secs: cfg.crash_autosave_cooldown_secs,
+            now_ns: notice.pc_cont_ns,
+        })
+    };
+
+    {
+        let mut status = state
+            .crash_autosave_status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        status.enabled = cfg.crash_autosave_enabled;
+        status.cooldown_secs = cfg.crash_autosave_cooldown_secs;
+        status.detected_crashes = status.detected_crashes.saturating_add(1);
+        status.last_crash_process = Some(notice.process_name);
+        status.last_crash_exception = Some(notice.exception_class);
+        match decision {
+            CrashAutoSaveDecision::Trigger => {
+                status.triggered_saves = status.triggered_saves.saturating_add(1);
+                status.in_flight = true;
+                status.last_error = None;
+            }
+            CrashAutoSaveDecision::SuppressedCooldown => {
+                status.suppressed_cooldown = status.suppressed_cooldown.saturating_add(1);
+                return;
+            }
+            CrashAutoSaveDecision::SuppressedStoragePressure => {
+                status.suppressed_storage_pressure =
+                    status.suppressed_storage_pressure.saturating_add(1);
+                return;
+            }
+            CrashAutoSaveDecision::Disabled | _ => return,
+        }
+    }
+
+    let save_res = state.execute_save(
+        Some(u64::from(cfg.save_window_secs)),
+        None,
+        None,
+        None,
+        SaveMode::Full,
+        SaveTriggerKind::CrashAutoSave,
+    );
+
+    let mut status = state
+        .crash_autosave_status
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    status.in_flight = false;
+    match save_res {
+        Ok(outcome) => {
+            status.last_job_id = Some(outcome.job.job_id);
+            status.last_bundle_id = outcome.bundle_id;
+            status.last_error = outcome.job.last_error;
+        }
+        Err(err) => {
+            status.last_error = Some(err.to_string());
+        }
     }
 }
 

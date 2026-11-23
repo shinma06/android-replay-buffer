@@ -16,10 +16,11 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use arb_core::BUNDLE_SCHEMA_VERSION;
+use arb_core::analytics::{CrashMarker, ScreenSpan, extract_crash_markers, extract_screen_spans};
 use arb_core::bundle::{
-    DeviceInfo, EpochSpan, FileDigest, FrameRecord, InputStreamMeta, LogCompleteness, LogRecord,
-    LogcatStreamMeta, ManifestV2, Provenance, RecordBucket, RequestedWindow, StreamStatus,
-    StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
+    BundleKind, DeviceInfo, EpochSpan, FileDigest, FrameRecord, InputStreamMeta, LogCompleteness,
+    LogRecord, LogcatStreamMeta, ManifestV2, Provenance, RecordBucket, RequestedWindow,
+    StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::legacy::{
     LegacyBundleMetadata, LegacySaveKind, LegacySchemaVersion, parse_schema3_frames_jsonl,
@@ -47,6 +48,10 @@ pub const TIMELINE_DB_FILE: &str = "timeline.sqlite";
 pub const VIDEO_MP4_FILE: &str = "video.mp4";
 /// File name of the optional v2 audio payload.
 pub const AUDIO_M4A_FILE: &str = "audio.m4a";
+/// File name of the main-timeline JSONL log sidecar written for `logs_only` bundles.
+pub const LOGS_JSONL_FILE: &str = "logs.jsonl";
+/// File name of the quarantined `unanchored` JSONL log sidecar written for `logs_only` bundles.
+pub const UNANCHORED_JSONL_FILE: &str = "unanchored.jsonl";
 
 const LEGACY_SCHEMA4_MANIFEST: &str = "replay.json";
 const LEGACY_SCHEMA3_MANIFEST: &str = "session.json";
@@ -130,6 +135,18 @@ CREATE TABLE clock_anchors (
   payload_json TEXT NOT NULL
 );
 
+CREATE TABLE crashes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  boottime_ns INTEGER,
+  frame_index_hint INTEGER,
+  process_name TEXT NOT NULL,
+  package_name TEXT NOT NULL,
+  pid INTEGER,
+  exception_class TEXT NOT NULL,
+  message TEXT NOT NULL,
+  source_log_seq INTEGER NOT NULL
+);
+
 CREATE INDEX idx_frames_boottime_ns ON frames(aligned_boottime_ns);
 CREATE INDEX idx_frames_gop_id ON frames(gop_id);
 CREATE INDEX idx_discontinuities_boottime_ns ON discontinuities(start_boottime_ns);
@@ -137,6 +154,7 @@ CREATE INDEX idx_logs_bucket_boottime_ns ON logs(bucket, aligned_boottime_ns);
 CREATE INDEX idx_logs_pc_ingest_cont_ns ON logs(pc_ingest_cont_ns);
 CREATE INDEX idx_taps_bucket_boottime_ns ON taps(bucket, aligned_boottime_ns);
 CREATE INDEX idx_clock_anchors_boot_id ON clock_anchors(boot_id);
+CREATE INDEX idx_crashes_boottime_ns ON crashes(boottime_ns);
 ";
 
 /// Inclusive nanosecond filter range for log and tap queries.
@@ -208,6 +226,8 @@ pub struct BundleManifestSummary {
     pub bundle_id: String,
     /// Detected storage format.
     pub format: BundleFormat,
+    /// High-level bundle payload kind (`Full` or `LogsOnly`).
+    pub bundle_kind: BundleKind,
     /// Creation timestamp string in UTC, when recorded.
     pub created_at_utc: Option<String>,
     /// Provenance (original capture or trim).
@@ -277,6 +297,20 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
 
     /// Returns `true` for legacy schema 3 / schema 4 read-only bundles, `false` for v2.
     fn is_legacy(&self) -> bool;
+
+    /// Returns structured crash markers detected in this bundle's logcat.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if reading persisted crash markers or log rows fails.
+    fn crashes(&self) -> Result<Vec<CrashMarker>, StorageError>;
+
+    /// Returns PC-derived Activity / screen transition spans from this bundle's logcat.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if reading log or frame rows fails.
+    fn screens(&self) -> Result<Vec<ScreenSpan>, StorageError>;
 }
 
 /// Media payload input accepted by [`V2BundleWriter`].
@@ -303,6 +337,8 @@ pub enum ClockAnchorRecord {
 /// Complete input draft materialized atomically by [`V2BundleWriter`].
 #[derive(Debug, Clone)]
 pub struct V2BundleDraft {
+    /// High-level bundle payload category (`Full` or `LogsOnly`).
+    pub bundle_kind: BundleKind,
     /// Globally unique bundle identifier.
     pub bundle_id: String,
     /// Creation timestamp in ISO-8601 UTC format.
@@ -397,6 +433,19 @@ impl V2BundleWriter {
             files.push(digest);
         }
 
+        if draft.bundle_kind == BundleKind::LogsOnly {
+            let logs_digest =
+                stage_logs_jsonl(&staging, LOGS_JSONL_FILE, &draft.logs, RecordBucket::Main)?;
+            files.push(logs_digest);
+            let unanchored_digest = stage_logs_jsonl(
+                &staging,
+                UNANCHORED_JSONL_FILE,
+                &draft.logs,
+                RecordBucket::Unanchored,
+            )?;
+            files.push(unanchored_digest);
+        }
+
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
         write_timeline_sqlite(&timeline_path, draft)?;
         let timeline_digest = hash_and_sync_file(&timeline_path, TIMELINE_DB_FILE)?;
@@ -406,6 +455,7 @@ impl V2BundleWriter {
 
         let manifest = ManifestV2 {
             schema_version: BUNDLE_SCHEMA_VERSION,
+            bundle_kind: draft.bundle_kind,
             bundle_id: draft.bundle_id.clone(),
             created_at_utc: draft.created_at_utc.clone(),
             provenance: draft.provenance.clone(),
@@ -504,6 +554,7 @@ impl V2BundleReader {
         let summary = BundleManifestSummary {
             bundle_id: manifest.bundle_id.clone(),
             format: BundleFormat::V2,
+            bundle_kind: manifest.bundle_kind,
             created_at_utc: Some(manifest.created_at_utc.clone()),
             provenance: manifest.provenance.clone(),
             device: Some(manifest.device.clone()),
@@ -566,6 +617,10 @@ impl V2BundleReader {
             .is_some_and(|a| a.status == StreamStatus::Present)
         {
             required.push(AUDIO_M4A_FILE);
+        }
+        if self.manifest.bundle_kind == BundleKind::LogsOnly {
+            required.push(LOGS_JSONL_FILE);
+            required.push(UNANCHORED_JSONL_FILE);
         }
         for rel in required {
             if !self.manifest_lists(rel) {
@@ -885,6 +940,22 @@ impl BundleReader for V2BundleReader {
     fn is_legacy(&self) -> bool {
         false
     }
+
+    fn crashes(&self) -> Result<Vec<CrashMarker>, StorageError> {
+        let conn = self.open_timeline_ro()?;
+        if sqlite_table_exists(&conn, "crashes")? {
+            return read_persisted_crashes(&conn);
+        }
+        let logs = self.query_logs(None, TimeRange::all(), None)?;
+        let frames = self.frames()?;
+        Ok(extract_crash_markers(&logs, &frames))
+    }
+
+    fn screens(&self) -> Result<Vec<ScreenSpan>, StorageError> {
+        let logs = self.query_logs(None, TimeRange::all(), None)?;
+        let frames = self.frames()?;
+        Ok(extract_screen_spans(&logs, &frames))
+    }
 }
 
 /// Strictly read-only adapter for legacy Schema 4 (`replay.json`, including log-only)
@@ -1099,6 +1170,14 @@ impl BundleReader for LegacyBundleReader {
     fn is_legacy(&self) -> bool {
         true
     }
+
+    fn crashes(&self) -> Result<Vec<CrashMarker>, StorageError> {
+        Ok(extract_crash_markers(&self.logs, &self.frames))
+    }
+
+    fn screens(&self) -> Result<Vec<ScreenSpan>, StorageError> {
+        Ok(extract_screen_spans(&self.logs, &self.frames))
+    }
 }
 
 /// Auto-detects whether `bundle_dir` is a WORM v2 bundle or a legacy schema 3/4
@@ -1125,6 +1204,29 @@ pub fn open_bundle(bundle_dir: impl AsRef<Path>) -> Result<Box<dyn BundleReader>
 // ---------------------------------------------------------------------------
 // Staging & Hashing Helpers
 // ---------------------------------------------------------------------------
+
+fn stage_logs_jsonl(
+    staging: &AtomicStagingDir,
+    rel_name: &str,
+    logs: &[LogRecord],
+    bucket: RecordBucket,
+) -> Result<FileDigest, StorageError> {
+    let mut bytes = Vec::new();
+    for log in logs.iter().filter(|l| l.bucket == bucket) {
+        let line = serde_json::to_string(log)
+            .map_err(|source| StorageError::json("serialize_log_jsonl", source))?;
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    let _staged_path = staging.write_file_synced(rel_name, &bytes)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(FileDigest {
+        path: rel_name.to_owned(),
+        bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        sha256: hex_lower(&hasher.finalize()),
+    })
+}
 
 fn stage_media_file(
     staging: &AtomicStagingDir,
@@ -1248,6 +1350,8 @@ fn write_timeline_sqlite(path: &Path, draft: &V2BundleDraft) -> Result<(), Stora
     insert_logs(&tx, &draft.logs)?;
     insert_taps(&tx, &draft.taps)?;
     insert_clock_anchors(&tx, &draft.clock_anchors)?;
+    let crashes = extract_crash_markers(&draft.logs, &draft.frames);
+    insert_crashes(&tx, &crashes)?;
 
     tx.commit()
         .map_err(|source| StorageError::sqlite("commit_timeline_tx", source))?;
@@ -1580,6 +1684,112 @@ fn insert_clock_anchors(
         }
     }
     Ok(())
+}
+
+fn insert_crashes(
+    tx: &rusqlite::Transaction<'_>,
+    crashes: &[CrashMarker],
+) -> Result<(), StorageError> {
+    let mut stmt = tx
+        .prepare(
+            "INSERT INTO crashes (
+                boottime_ns, frame_index_hint, process_name, package_name,
+                pid, exception_class, message, source_log_seq
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .map_err(|source| StorageError::sqlite("prepare_insert_crashes", source))?;
+
+    for crash in crashes {
+        let frame_hint = crash
+            .frame_index_hint
+            .map(|idx| u64_to_i64(idx, "crash.frame_index_hint"))
+            .transpose()?;
+        let source_seq = u64_to_i64(crash.source_log_seq, "crash.source_log_seq")?;
+        stmt.execute(params![
+            crash.boottime_ns,
+            frame_hint,
+            crash.process_name,
+            crash.package_name,
+            crash.pid,
+            crash.exception_class,
+            crash.message,
+            source_seq,
+        ])
+        .map_err(|source| StorageError::sqlite("insert_crash", source))?;
+    }
+    Ok(())
+}
+
+fn sqlite_table_exists(conn: &Connection, table_name: &str) -> Result<bool, StorageError> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table_name],
+            |row| row.get(0),
+        )
+        .map_err(|source| StorageError::sqlite("check_table_exists", source))?;
+    Ok(count > 0)
+}
+
+fn read_persisted_crashes(conn: &Connection) -> Result<Vec<CrashMarker>, StorageError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT boottime_ns, frame_index_hint, process_name, package_name,
+                    pid, exception_class, message, source_log_seq
+             FROM crashes
+             ORDER BY id ASC",
+        )
+        .map_err(|source| StorageError::sqlite("prepare_query_crashes", source))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i32>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })
+        .map_err(|source| StorageError::sqlite("query_crashes", source))?;
+
+    let mut crashes = Vec::new();
+    for row in rows {
+        let (
+            boottime_ns,
+            frame_hint_raw,
+            process_name,
+            package_name,
+            pid,
+            exception_class,
+            message,
+            seq_raw,
+        ) = row.map_err(|source| StorageError::sqlite("read_crash_row", source))?;
+        let frame_index_hint = frame_hint_raw
+            .map(|v| {
+                u64::try_from(v).map_err(|_| StorageError::CorruptData {
+                    reason: format!("negative crash frame_index_hint {v}"),
+                })
+            })
+            .transpose()?;
+        let source_log_seq = u64::try_from(seq_raw).map_err(|_| StorageError::CorruptData {
+            reason: format!("negative crash source_log_seq {seq_raw}"),
+        })?;
+        crashes.push(CrashMarker {
+            boottime_ns,
+            frame_index_hint,
+            process_name,
+            package_name,
+            pid,
+            exception_class,
+            message,
+            source_log_seq,
+        });
+    }
+    Ok(crashes)
 }
 
 struct RawFrameSqlRow {
@@ -2079,6 +2289,11 @@ fn build_legacy_summary(
     BundleManifestSummary {
         bundle_id: meta.save_id.clone(),
         format,
+        bundle_kind: if meta.save_kind == LegacySaveKind::LogsOnly {
+            BundleKind::LogsOnly
+        } else {
+            BundleKind::Full
+        },
         created_at_utc: meta.created_at.clone(),
         provenance: Provenance::Original,
         device: None,
@@ -2163,9 +2378,9 @@ fn i64_to_u64(value: i64, field: &'static str) -> Result<u64, StorageError> {
 #[cfg(test)]
 mod tests {
     use arb_core::bundle::{
-        DeviceInfo, EpochSpan, FrameRecord, InputStreamMeta, LogCompleteness, LogRecord,
-        LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary,
-        TapRecord, UnanchoredSummary, VideoStreamMeta,
+        BundleKind, DeviceInfo, EpochSpan, FrameRecord, InputStreamMeta, LogCompleteness,
+        LogRecord, LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus,
+        StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
     };
     use arb_core::time::{
         DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, StreamKind, TimeAlignment,
@@ -2222,6 +2437,7 @@ mod tests {
 
     fn sample_draft() -> V2BundleDraft {
         V2BundleDraft {
+            bundle_kind: BundleKind::Full,
             bundle_id: "01JTEST0000000000000000001".to_owned(),
             created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
             provenance: Provenance::Original,
@@ -2389,6 +2605,98 @@ mod tests {
         assert!(
             matches!(err, StorageError::IntegrityMismatch { .. }),
             "expected IntegrityMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn logs_only_v2_bundle_writes_jsonl_sidecars_persists_crashes_and_verifies_sha256() {
+        let tmp = TempDir::new().expect("tempdir");
+        let dest = tmp.path().join("bundle-logs-only");
+        let mut draft = sample_draft();
+        draft.bundle_kind = BundleKind::LogsOnly;
+        draft.bundle_id = "01JLOGS0000000000000000001".to_owned();
+        draft.video_mp4 = None;
+        draft.audio_m4a = None;
+        draft.frames.clear();
+        draft.taps.clear();
+        draft.streams.video = Some(VideoStreamMeta {
+            status: StreamStatus::Absent,
+            frame_count: 0,
+            tail_may_be_incomplete: false,
+            semantics: TimestampSemantics::VideoEncoderInputEstimate,
+        });
+        draft.streams.audio = Some(arb_core::bundle::AudioStreamMeta {
+            status: StreamStatus::Absent,
+            av_offset_status: arb_core::bundle::AvOffsetStatus::Uncalibrated,
+            av_offset_ms: 0,
+            audio_lead_in_offset_ns: 0,
+            tail_may_be_incomplete: false,
+        });
+        draft.logs.push(LogRecord {
+            seq: 2,
+            boot_id: Some("boot-1".to_owned()),
+            header_epoch_ns: Some(1_700_000_002_000),
+            device_read_boottime_ns: Some(1_700),
+            pc_ingest_cont_ns: 5_300,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-1".to_owned(),
+                boottime_ns: 1_700,
+                half_width_ns: 10,
+                semantics: TimestampSemantics::LogcatHeaderWall,
+            },
+            bucket: RecordBucket::Main,
+            level: Some("E".to_owned()),
+            tag: Some("am_crash".to_owned()),
+            pid: Some(1000),
+            tid: Some(1000),
+            message:
+                "[0,4321,com.example.demo,8929190,java.lang.NullPointerException,boom,Main.kt,14,0]"
+                    .to_owned(),
+        });
+
+        let manifest =
+            V2BundleWriter::write(&dest, "job-logs", &draft).expect("logs_only write must succeed");
+        assert_eq!(
+            manifest.bundle_kind,
+            BundleKind::LogsOnly,
+            "manifest must mark logs_only"
+        );
+        assert!(
+            !dest.join("video.mp4").exists(),
+            "logs_only bundle must not create video.mp4"
+        );
+        assert!(
+            dest.join(super::LOGS_JSONL_FILE).is_file(),
+            "logs.jsonl must be written"
+        );
+        assert!(
+            dest.join(super::UNANCHORED_JSONL_FILE).is_file(),
+            "unanchored.jsonl must be written"
+        );
+
+        let reader = V2BundleReader::open(&dest).expect("logs_only open must succeed");
+        reader
+            .verify_integrity()
+            .expect("logs_only SHA-256 verification must pass");
+        assert!(
+            reader.video_path().is_none(),
+            "logs_only must expose no video path"
+        );
+        let crashes = reader.crashes().expect("crashes query must succeed");
+        assert_eq!(crashes.len(), 1, "must persist and return 1 crash marker");
+        assert_eq!(
+            crashes[0].exception_class, "java.lang.NullPointerException",
+            "crash exception must match"
+        );
+
+        // Tampering logs.jsonl must fail integrity check.
+        std::fs::write(dest.join(super::LOGS_JSONL_FILE), b"tampered\n").expect("tamper logs");
+        assert!(
+            matches!(
+                reader.verify_integrity(),
+                Err(StorageError::IntegrityMismatch { .. })
+            ),
+            "tampered logs.jsonl must fail SHA-256 check"
         );
     }
 }

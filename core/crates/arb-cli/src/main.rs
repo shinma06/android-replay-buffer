@@ -195,6 +195,20 @@ enum CommandSpec {
         dest: Option<PathBuf>,
         drain_timeout_ms: Option<u64>,
     },
+    SaveLogs {
+        window_secs: Option<u64>,
+        dest: Option<PathBuf>,
+        drain_timeout_ms: Option<u64>,
+    },
+    Screenshot {
+        serial: Option<String>,
+        out: Option<PathBuf>,
+        overwrite: bool,
+    },
+    ConfigGet,
+    ConfigSet {
+        patch: Value,
+    },
     JobsList,
     JobsRetry {
         job_id: String,
@@ -330,6 +344,9 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
         "daemon" => parse_daemon_cmd(&rest[1..])?,
         "capture" => parse_capture_cmd(&rest[1..])?,
         "save" => parse_save_cmd(&rest[1..])?,
+        "save-logs" => parse_save_logs_cmd(&rest[1..])?,
+        "screenshot" => parse_screenshot_cmd(&rest[1..])?,
+        "config" => parse_config_cmd(&rest[1..])?,
         "jobs" => parse_jobs_cmd(&rest[1..])?,
         "bundles" => parse_bundles_cmd(&rest[1..])?,
         "inspect" => {
@@ -497,6 +514,195 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         dest,
         drain_timeout_ms,
     })
+}
+
+fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut window_secs = None;
+    let mut dest = None;
+    let mut drain_timeout_ms = None;
+    let mut i = 0_usize;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seconds" | "--window-secs" => {
+                let flag = args[i].as_str();
+                window_secs = Some(parse_u64(require_val(args, i, flag)?, flag)?);
+                i += 2;
+            }
+            "--dest" => {
+                dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
+                i += 2;
+            }
+            "--drain-timeout-ms" => {
+                drain_timeout_ms = Some(parse_u64(
+                    require_val(args, i, "--drain-timeout-ms")?,
+                    "--drain-timeout-ms",
+                )?);
+                i += 2;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown save-logs option `{other}`"
+                )));
+            }
+        }
+    }
+
+    Ok(CommandSpec::SaveLogs {
+        window_secs,
+        dest,
+        drain_timeout_ms,
+    })
+}
+
+fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut serial = None;
+    let mut out = None;
+    let mut overwrite = false;
+    let mut i = 0_usize;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--serial" => {
+                serial = Some(require_val(args, i, "--serial")?.to_owned());
+                i += 2;
+            }
+            "--out" => {
+                out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
+                i += 2;
+            }
+            "--overwrite" => {
+                overwrite = true;
+                i += 1;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown screenshot option `{other}`"
+                )));
+            }
+        }
+    }
+
+    Ok(CommandSpec::Screenshot {
+        serial,
+        out,
+        overwrite,
+    })
+}
+
+fn parse_config_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    match args.first().map(String::as_str) {
+        Some("get") => Ok(CommandSpec::ConfigGet),
+        Some("set") => parse_config_set_flags(&args[1..]),
+        other => Err(CliError::usage(format!(
+            "usage: arb-cli config <get|set ...> (got {other:?})"
+        ))),
+    }
+}
+
+fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut patch = serde_json::Map::new();
+    let mut i = 0_usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--save-window-secs" => {
+                let v = parse_u32(
+                    require_val(args, i, "--save-window-secs")?,
+                    "--save-window-secs",
+                )?;
+                patch.insert("save_window_secs".to_owned(), json!(v));
+                i += 2;
+            }
+            "--ring-budget-bytes" => {
+                let v = parse_u64(
+                    require_val(args, i, "--ring-budget-bytes")?,
+                    "--ring-budget-bytes",
+                )?;
+                patch.insert("ring_budget_bytes".to_owned(), json!(v));
+                i += 2;
+            }
+            "--min-free-disk-bytes" => {
+                let v = parse_u64(
+                    require_val(args, i, "--min-free-disk-bytes")?,
+                    "--min-free-disk-bytes",
+                )?;
+                patch.insert("min_free_disk_bytes".to_owned(), json!(v));
+                i += 2;
+            }
+            "--video-max-size" => {
+                let v = parse_u32(
+                    require_val(args, i, "--video-max-size")?,
+                    "--video-max-size",
+                )?;
+                patch.insert("video_max_size".to_owned(), json!(v));
+                i += 2;
+            }
+            "--video-max-fps" => {
+                let v = parse_u32(require_val(args, i, "--video-max-fps")?, "--video-max-fps")?;
+                patch.insert("video_max_fps".to_owned(), json!(v));
+                i += 2;
+            }
+            "--audio-enabled" => {
+                let v = parse_bool(require_val(args, i, "--audio-enabled")?, "--audio-enabled")?;
+                patch.insert("audio_enabled".to_owned(), json!(v));
+                i += 2;
+            }
+            "--crash-autosave-enabled" => {
+                let v = parse_bool(
+                    require_val(args, i, "--crash-autosave-enabled")?,
+                    "--crash-autosave-enabled",
+                )?;
+                patch.insert("crash_autosave_enabled".to_owned(), json!(v));
+                i += 2;
+            }
+            "--crash-autosave-cooldown-secs" => {
+                let v = parse_u32(
+                    require_val(args, i, "--crash-autosave-cooldown-secs")?,
+                    "--crash-autosave-cooldown-secs",
+                )?;
+                patch.insert("crash_autosave_cooldown_secs".to_owned(), json!(v));
+                i += 2;
+            }
+            "--output-dir-override" => {
+                let raw = require_val(args, i, "--output-dir-override")?;
+                if raw.is_empty() || raw.eq_ignore_ascii_case("none") || raw == "null" {
+                    patch.insert("output_dir_override".to_owned(), Value::Null);
+                } else {
+                    let abs = absolutize_path(Path::new(raw))?;
+                    patch.insert("output_dir_override".to_owned(), json!(abs));
+                }
+                i += 2;
+            }
+            "--ide-default-save-action" => {
+                let raw = require_val(args, i, "--ide-default-save-action")?;
+                patch.insert("ide_default_save_action".to_owned(), json!(raw));
+                i += 2;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown config set option `{other}`"
+                )));
+            }
+        }
+    }
+    if patch.is_empty() {
+        return Err(CliError::usage(
+            "config set requires at least one option (run with --help)",
+        ));
+    }
+    Ok(CommandSpec::ConfigSet {
+        patch: Value::Object(patch),
+    })
+}
+
+fn parse_bool(raw: &str, flag: &str) -> Result<bool, CliError> {
+    match raw {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(CliError::usage(format!(
+            "{flag} expects true or false, got `{raw}`"
+        ))),
+    }
 }
 
 fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
@@ -785,6 +991,7 @@ fn dispatch_connected(
             let check = if matches!(
                 other,
                 CommandSpec::Save { .. }
+                    | CommandSpec::SaveLogs { .. }
                     | CommandSpec::JobsRetry { .. }
                     | CommandSpec::JobsRetarget { .. }
             ) {
@@ -821,27 +1028,7 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
     match cmd {
         CommandSpec::DaemonStop => ("system.shutdown", json!({}), "arbd shutdown requested"),
         CommandSpec::Devices => ("device.list", json!({}), "devices"),
-        CommandSpec::CaptureStart {
-            serial,
-            companion_jar,
-            scrcpy_jar,
-            max_size,
-            max_fps,
-            video_bit_rate,
-            audio_enabled,
-            logcat_enabled,
-            input_enabled,
-            heartbeat_ms,
-        } => (
-            "capture.start",
-            json!({
-                "serial": serial, "companion_jar": companion_jar, "scrcpy_jar": scrcpy_jar,
-                "max_size": max_size, "max_fps": max_fps, "video_bit_rate": video_bit_rate,
-                "audio_enabled": audio_enabled, "logcat_enabled": logcat_enabled,
-                "input_enabled": input_enabled, "heartbeat_ms": heartbeat_ms,
-            }),
-            "capture started",
-        ),
+        CommandSpec::CaptureStart { .. } => capture_start_to_rpc(cmd),
         CommandSpec::CaptureStop => ("capture.stop", json!({}), "capture stopped"),
         CommandSpec::Save {
             seconds,
@@ -852,6 +1039,26 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             json!({ "duration_sec": seconds, "dest_dir": dest, "drain_timeout_ms": drain_timeout_ms }),
             "save result",
         ),
+        CommandSpec::SaveLogs {
+            window_secs,
+            dest,
+            drain_timeout_ms,
+        } => (
+            "save.logs",
+            json!({ "window_secs": window_secs, "dest_dir": dest, "drain_timeout_ms": drain_timeout_ms }),
+            "log-only save result",
+        ),
+        CommandSpec::Screenshot {
+            serial,
+            out,
+            overwrite,
+        } => (
+            "save.screenshot",
+            json!({ "serial": serial, "output_path": out, "overwrite": overwrite }),
+            "screenshot saved",
+        ),
+        CommandSpec::ConfigGet => ("config.get", json!({}), "config"),
+        CommandSpec::ConfigSet { patch } => ("config.update", patch, "config updated"),
         CommandSpec::JobsList => ("save.list_jobs", json!({}), "save jobs"),
         CommandSpec::JobsRetry { job_id } => {
             ("save.retry", json!({ "job_id": job_id }), "job retried")
@@ -914,6 +1121,34 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         | CommandSpec::Inspect { .. }
         | CommandSpec::ScrubBench { .. } => ("system.status", json!({}), "arbd status"),
     }
+}
+
+fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
+    let CommandSpec::CaptureStart {
+        serial,
+        companion_jar,
+        scrcpy_jar,
+        max_size,
+        max_fps,
+        video_bit_rate,
+        audio_enabled,
+        logcat_enabled,
+        input_enabled,
+        heartbeat_ms,
+    } = cmd
+    else {
+        return ("system.status", json!({}), "arbd status");
+    };
+    (
+        "capture.start",
+        json!({
+            "serial": serial, "companion_jar": companion_jar, "scrcpy_jar": scrcpy_jar,
+            "max_size": max_size, "max_fps": max_fps, "video_bit_rate": video_bit_rate,
+            "audio_enabled": audio_enabled, "logcat_enabled": logcat_enabled,
+            "input_enabled": input_enabled, "heartbeat_ms": heartbeat_ms,
+        }),
+        "capture started",
+    )
 }
 
 /// Checks whether a `save.trigger` / `save.retry` / `save.retarget` response indicates a
@@ -1183,6 +1418,9 @@ COMMANDS:\n  \
   capture start [--serial <S>] [--companion-jar <JAR>] [--scrcpy-jar <JAR>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
   capture stop\n  \
   save [--seconds <30>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
+  save-logs [--window-secs <N>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
+  screenshot [--serial <S>] [--out <FILE.png>] [--overwrite]\n  \
+  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
@@ -1474,5 +1712,79 @@ mod tests {
             "JSON error exit_code"
         );
         assert_eq!(parsed["error"]["message"], "missing", "JSON error message");
+    }
+
+    #[test]
+    fn t1_parses_screenshot_save_logs_and_config_commands() {
+        let cwd = std::env::current_dir().expect("cwd");
+
+        let (_, shot) = parse_args(&vec_str(&[
+            "screenshot",
+            "--serial",
+            "emu-5554",
+            "--out",
+            "shots/s1.png",
+            "--overwrite",
+        ]))
+        .expect("screenshot parses");
+        assert_eq!(
+            shot,
+            CommandSpec::Screenshot {
+                serial: Some("emu-5554".to_owned()),
+                out: Some(cwd.join("shots/s1.png")),
+                overwrite: true,
+            },
+            "screenshot command must match"
+        );
+
+        let (_, save_logs) = parse_args(&vec_str(&[
+            "save-logs",
+            "--window-secs",
+            "90",
+            "--dest",
+            "logs-out",
+        ]))
+        .expect("save-logs parses");
+        assert_eq!(
+            save_logs,
+            CommandSpec::SaveLogs {
+                window_secs: Some(90),
+                dest: Some(cwd.join("logs-out")),
+                drain_timeout_ms: None,
+            },
+            "save-logs command must match"
+        );
+
+        let (_, cfg_get) = parse_args(&vec_str(&["config", "get"])).expect("config get parses");
+        assert_eq!(cfg_get, CommandSpec::ConfigGet, "config get must match");
+
+        let (_, cfg_set) = parse_args(&vec_str(&[
+            "config",
+            "set",
+            "--save-window-secs",
+            "120",
+            "--audio-enabled",
+            "false",
+            "--crash-autosave-cooldown-secs",
+            "20",
+            "--output-dir-override",
+            "none",
+            "--ide-default-save-action",
+            "save_only",
+        ]))
+        .expect("config set parses");
+        assert_eq!(
+            cfg_set,
+            CommandSpec::ConfigSet {
+                patch: json!({
+                    "save_window_secs": 120,
+                    "audio_enabled": false,
+                    "crash_autosave_cooldown_secs": 20,
+                    "output_dir_override": null,
+                    "ide_default_save_action": "save_only",
+                }),
+            },
+            "config set patch must match"
+        );
     }
 }

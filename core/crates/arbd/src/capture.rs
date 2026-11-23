@@ -26,17 +26,21 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
 use arb_adb::scrcpy::VideoPacketKind;
-use arb_adb::wire::{StreamId, StreamLifecycleState, TouchEventPayload};
+use arb_adb::wire::{LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload};
+use arb_core::analytics::{
+    ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary, parse_am_crash_text,
+};
 use arb_core::bundle::{
-    AudioStreamMeta, AvOffsetStatus, DeviceInfo, EpochSpan, FrameRecord, InputStreamMeta,
-    LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow,
-    StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
+    AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
+    InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
+    RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
-use arb_core::state::{RingBudgetPolicy, SaveJobState};
+use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
 use arb_core::time::{
     ClockTimeline, ClockTimelineConfig, DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind,
     StreamKind, TimeAlignment, TimestampSemantics,
@@ -60,7 +64,7 @@ use arb_storage::ring::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
-use crate::protocol::{CaptureStatusView, SaveJobView, SaveOutcomeResponse};
+use crate::protocol::{CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse};
 use crate::time_util::{next_id, utc_now_iso8601};
 
 const NANOS_PER_SEC: i64 = 1_000_000_000;
@@ -264,11 +268,26 @@ fn decode_ring_chunk(bytes: &[u8]) -> Result<Vec<CaptureEvent>, DaemonError> {
     Ok(events)
 }
 
+/// Notification emitted by [`CapturePipeline::ingest_event`] when a live fatal `am_crash` arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrashAutoSaveNotice {
+    /// Host continuous monotonic timestamp associated with the crash event.
+    pub pc_cont_ns: i64,
+    /// Crashing Android process name.
+    pub process_name: String,
+    /// Exception class reported by `am_crash`.
+    pub exception_class: String,
+    /// Whether `STORAGE_PRESSURE_STOP` was active when the crash arrived.
+    pub storage_pressure_stopped: bool,
+}
+
 /// Durable Phase-1 parameters saved alongside `<data_dir>/save_jobs/<job-id>.json`
 /// so `save.retry` / `save.retarget` can rematerialize identically even across restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SaveJobMaterializeParams {
     bundle_id: String,
+    #[serde(default)]
+    mode: SaveMode,
     duration_sec: u64,
     trigger_utc: String,
     window: WindowSpec,
@@ -361,6 +380,8 @@ pub struct PendingSave {
     guard: PinRollbackGuard,
     bundle_id: String,
     dest_bundle_dir: PathBuf,
+    mode: SaveMode,
+    trigger_kind: SaveTriggerKind,
     duration_sec: u64,
     trigger_utc: String,
     window: WindowSpec,
@@ -530,6 +551,7 @@ pub struct CapturePipeline {
     last_discontinuities: Vec<DiscontinuityEvent>,
     pressure_discontinuities: Vec<DiscontinuityEvent>,
     chunk_contents: BTreeMap<String, ChunkContent>,
+    crash_notifier: Option<Sender<CrashAutoSaveNotice>>,
 }
 
 impl CapturePipeline {
@@ -582,12 +604,35 @@ impl CapturePipeline {
             last_discontinuities: Vec::new(),
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
+            crash_notifier: None,
         })
     }
 
     /// Installs the shared [`FaultInjection`] switches (tests only; defaults to all-off).
     pub fn set_fault_injection(&mut self, faults: Arc<FaultInjection>) {
         self.faults = faults;
+    }
+
+    /// Installs or clears the channel receiving live fatal `am_crash` notifications.
+    pub fn set_crash_notifier(&mut self, notifier: Option<Sender<CrashAutoSaveNotice>>) {
+        self.crash_notifier = notifier;
+    }
+
+    /// Updates the Zone-1 ring budget and free-disk safety floor policy live.
+    pub const fn set_ring_policy(&mut self, policy: RingBudgetPolicy) {
+        self.ring.set_policy(policy);
+    }
+
+    /// Returns the serial of the currently active capture session, if any.
+    #[must_use]
+    pub fn active_serial(&self) -> Option<String> {
+        self.serial.clone()
+    }
+
+    /// Returns `true` while capture is halted due to `STORAGE_PRESSURE_STOP`.
+    #[must_use]
+    pub const fn is_storage_pressure_stopped(&self) -> bool {
+        self.storage_pressure_stopped
     }
 
     /// Marks the start of a new (replayed / mock) capture session for `serial` whose event
@@ -741,7 +786,9 @@ impl CapturePipeline {
     /// Returns [`DaemonError::Storage`] for non-pressure storage errors (already recorded as
     /// a `StreamGap` discontinuity, see [`Self::flush_pending_chunk`]).
     pub fn ingest_event(&mut self, event: CaptureEvent) -> Result<(), DaemonError> {
+        let detected_crash = detect_crash_from_event(&event);
         if self.storage_pressure_stopped {
+            self.notify_detected_crash(detected_crash);
             return Ok(());
         }
 
@@ -750,7 +797,7 @@ impl CapturePipeline {
             self.latest_pc_cont_ns = Some(self.latest_pc_cont_ns.map_or(ts, |prev| prev.max(ts)));
         }
 
-        let mut should_flush = false;
+        let mut should_flush = detected_crash.is_some();
         let approx_bytes = estimate_event_bytes(&event);
 
         match &event {
@@ -835,7 +882,19 @@ impl CapturePipeline {
             self.flush_pending_chunk()?;
         }
 
+        self.notify_detected_crash(detected_crash);
         Ok(())
+    }
+
+    fn notify_detected_crash(&self, detected_crash: Option<(i64, ParsedAmCrash)>) {
+        if let (Some(tx), Some((pc_cont_ns, crash))) = (&self.crash_notifier, detected_crash) {
+            let _ = tx.send(CrashAutoSaveNotice {
+                pc_cont_ns,
+                process_name: crash.process_name,
+                exception_class: crash.exception_class,
+                storage_pressure_stopped: self.storage_pressure_stopped,
+            });
+        }
     }
 
     fn push_live_discontinuity(&mut self, event: DiscontinuityEvent) {
@@ -1015,6 +1074,30 @@ impl CapturePipeline {
         dest_parent_dir: &Path,
         policy: SelectionPolicy,
     ) -> Result<PendingSave, DaemonError> {
+        self.phase1_pin_with_options(
+            duration_sec,
+            dest_parent_dir,
+            policy,
+            SaveMode::Full,
+            SaveTriggerKind::Manual,
+        )
+    }
+
+    /// Variant of [`Self::phase1_pin`] accepting an explicit [`SaveMode`] (`Full` or `LogsOnly`)
+    /// and [`SaveTriggerKind`] (`Manual` or `CrashAutoSave`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonError::Conflict`] if no ring chunk overlaps the requested window, or
+    /// storage errors if the pin journal cannot be written.
+    pub fn phase1_pin_with_options(
+        &mut self,
+        duration_sec: u64,
+        dest_parent_dir: &Path,
+        policy: SelectionPolicy,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+    ) -> Result<PendingSave, DaemonError> {
         // Flush buffered events into closed immutable chunks first. A failed flush is already
         // recorded as a discontinuity; the chunks written so far can still be saved.
         let _ = self.flush_pending_chunk();
@@ -1054,6 +1137,8 @@ impl CapturePipeline {
             guard,
             bundle_id,
             dest_bundle_dir,
+            mode,
+            trigger_kind,
             duration_sec,
             trigger_utc: now_utc,
             window,
@@ -1100,6 +1185,7 @@ impl CapturePipeline {
 
         let params = SaveJobMaterializeParams {
             bundle_id: pending.bundle_id.clone(),
+            mode: pending.mode,
             duration_sec: pending.duration_sec,
             trigger_utc: pending.trigger_utc.clone(),
             window: pending.window.clone(),
@@ -1114,11 +1200,12 @@ impl CapturePipeline {
         };
         write_job_params(&self.data_dir, &job_id, &params)?;
 
-        let created = catalog.create_pinned_job(
+        let created = catalog.create_pinned_job_with_trigger(
             &job_id,
             &pending.dest_bundle_dir,
             &chunk_ids,
             &pending.trigger_utc,
+            pending.trigger_kind,
         )?;
         let plan = self.phase2_plan(&created.job.pinned_chunk_ids)?;
         pending.guard.armed = false;
@@ -1707,12 +1794,7 @@ impl ReplayCollector {
                 payload,
                 ..
             } => {
-                let (tag, message) = payload.parse_text_tag_and_message().unwrap_or_else(|| {
-                    (
-                        String::new(),
-                        format!("<binary {} bytes>", payload.payload.len()),
-                    )
-                });
+                let (tag, message) = decode_log_tag_and_message(&payload);
                 let level = Some(log_priority_label(payload.priority).to_owned());
                 self.raw_logs.push(RawCapturedLog {
                     boot_id,
@@ -1989,68 +2071,52 @@ impl ReplayCollector {
         data_dir: &Path,
     ) -> Result<V2BundleDraft, DaemonError> {
         let audio_continuity = self.audio_continuity();
-        let selected_video = Self::select_video(&self.timeline, self.raw_video, params);
-        let selected_audio = Self::select_audio(&self.timeline, self.raw_audio, params);
-        let av_lead_in_offset_ns = av_lead_in_offset_ns(&selected_video, &selected_audio);
         let mut discontinuities = self.discontinuities;
-        for (kind, label, excluded) in [
-            (
-                StreamKind::Video,
-                "video frames",
-                selected_video.unanchored_excluded,
-            ),
-            (
-                StreamKind::Audio,
-                "audio packets",
-                selected_audio.unanchored_excluded,
-            ),
-        ] {
-            if excluded > 0 {
-                push_unanchored_exclusion_gap(&mut discontinuities, kind, params, excluded, label);
-            }
-        }
-        let (video_mp4, final_frames, video_status) = mux_selected_video(
-            job_id,
-            data_dir,
-            self.video_width,
-            self.video_height,
-            self.video_config.as_deref(),
-            selected_video.main,
-        )?;
-        let (audio_m4a, audio_status) = mux_selected_audio(
-            job_id,
-            data_dir,
-            self.audio_config.as_deref(),
-            audio_continuity,
-            selected_audio.main,
-        )?;
         let (final_logs, unanchored_logs, trunc_logs) =
             Self::select_logs(&self.timeline, self.raw_logs, params);
-        let (final_taps, unanchored_taps, trunc_taps) =
-            Self::select_taps(&self.timeline, self.raw_taps, params);
+
+        let media = if params.mode == SaveMode::LogsOnly {
+            SelectedMediaTracks::logs_only()
+        } else {
+            build_full_media_tracks(
+                &self.timeline,
+                job_id,
+                params,
+                data_dir,
+                self.video_width,
+                self.video_height,
+                self.video_config.as_deref(),
+                self.audio_config.as_deref(),
+                audio_continuity,
+                self.raw_video,
+                self.raw_audio,
+                self.raw_taps,
+                &mut discontinuities,
+            )?
+        };
 
         let unanchored_summary = UnanchoredSummary {
-            included_count: u64::try_from(unanchored_logs.saturating_add(unanchored_taps))
+            included_count: u64::try_from(unanchored_logs.saturating_add(media.unanchored_taps))
                 .unwrap_or(u64::MAX),
             truncated_count: u64::try_from(
                 trunc_logs
-                    .saturating_add(trunc_taps)
-                    .saturating_add(selected_video.unanchored_excluded),
+                    .saturating_add(media.trunc_taps)
+                    .saturating_add(media.video_unanchored_excluded),
             )
             .unwrap_or(u64::MAX),
         };
 
-        let frame_count = u64::try_from(final_frames.len()).unwrap_or(0);
+        let frame_count = u64::try_from(media.frames.len()).unwrap_or(0);
         let streams = build_streams_summary(&StreamSummaryCounts {
             frame_count,
-            video_status,
-            audio_status,
+            video_status: media.video_status,
+            audio_status: media.audio_status,
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
             log_overflow_events: self.log_overflow_events,
-            taps_count: final_taps.len(),
+            taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
-            av_lead_in_offset_ns,
+            av_lead_in_offset_ns: media.av_lead_in_offset_ns,
         });
 
         let epochs: Vec<EpochSpan> = if self.epochs_map.is_empty() {
@@ -2073,6 +2139,7 @@ impl ReplayCollector {
         };
 
         Ok(V2BundleDraft {
+            bundle_kind: media.bundle_kind,
             bundle_id: params.bundle_id.clone(),
             created_at_utc: params.trigger_utc.clone(),
             provenance: Provenance::Original,
@@ -2084,15 +2151,117 @@ impl ReplayCollector {
             epochs,
             streams,
             unanchored_summary,
-            video_mp4,
-            audio_m4a,
-            frames: final_frames,
+            video_mp4: media.video_mp4,
+            audio_m4a: media.audio_m4a,
+            frames: media.frames,
             discontinuities,
             logs: final_logs,
-            taps: final_taps,
+            taps: media.taps,
             clock_anchors: self.clock_anchors,
         })
     }
+}
+
+struct SelectedMediaTracks {
+    bundle_kind: BundleKind,
+    video_mp4: Option<MediaPayload>,
+    audio_m4a: Option<MediaPayload>,
+    frames: Vec<FrameRecord>,
+    taps: Vec<TapRecord>,
+    video_status: StreamStatus,
+    audio_status: StreamStatus,
+    av_lead_in_offset_ns: i64,
+    unanchored_taps: usize,
+    trunc_taps: usize,
+    video_unanchored_excluded: usize,
+}
+
+impl SelectedMediaTracks {
+    const fn logs_only() -> Self {
+        Self {
+            bundle_kind: BundleKind::LogsOnly,
+            video_mp4: None,
+            audio_m4a: None,
+            frames: Vec::new(),
+            taps: Vec::new(),
+            video_status: StreamStatus::Absent,
+            audio_status: StreamStatus::Absent,
+            av_lead_in_offset_ns: 0,
+            unanchored_taps: 0,
+            trunc_taps: 0,
+            video_unanchored_excluded: 0,
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "assembles independently captured video, audio, and tap streams into a full draft"
+)]
+fn build_full_media_tracks(
+    timeline: &ClockTimeline,
+    job_id: &str,
+    params: &SaveJobMaterializeParams,
+    data_dir: &Path,
+    video_width: u16,
+    video_height: u16,
+    video_config: Option<&[u8]>,
+    audio_config: Option<&[u8]>,
+    audio_continuity: AudioContinuity,
+    raw_video: Vec<RawCapturedVideo>,
+    raw_audio: Vec<RawCapturedAudio>,
+    raw_taps: Vec<RawCapturedTap>,
+    discontinuities: &mut Vec<DiscontinuityEvent>,
+) -> Result<SelectedMediaTracks, DaemonError> {
+    let selected_video = ReplayCollector::select_video(timeline, raw_video, params);
+    let selected_audio = ReplayCollector::select_audio(timeline, raw_audio, params);
+    let av_lead_in_offset_ns = av_lead_in_offset_ns(&selected_video, &selected_audio);
+    for (kind, label, excluded) in [
+        (
+            StreamKind::Video,
+            "video frames",
+            selected_video.unanchored_excluded,
+        ),
+        (
+            StreamKind::Audio,
+            "audio packets",
+            selected_audio.unanchored_excluded,
+        ),
+    ] {
+        if excluded > 0 {
+            push_unanchored_exclusion_gap(discontinuities, kind, params, excluded, label);
+        }
+    }
+    let (video_mp4, frames, video_status) = mux_selected_video(
+        job_id,
+        data_dir,
+        video_width,
+        video_height,
+        video_config,
+        selected_video.main,
+    )?;
+    let (audio_m4a, audio_status) = mux_selected_audio(
+        job_id,
+        data_dir,
+        audio_config,
+        audio_continuity,
+        selected_audio.main,
+    )?;
+    let (taps, unanchored_taps, trunc_taps) =
+        ReplayCollector::select_taps(timeline, raw_taps, params);
+    Ok(SelectedMediaTracks {
+        bundle_kind: BundleKind::Full,
+        video_mp4,
+        audio_m4a,
+        frames,
+        taps,
+        video_status,
+        audio_status,
+        av_lead_in_offset_ns,
+        unanchored_taps,
+        trunc_taps,
+        video_unanchored_excluded: selected_video.unanchored_excluded,
+    })
 }
 
 /// R4 M4: exact lead-in skew `D` between the two rebased file timelines —
@@ -2420,12 +2589,50 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
     SaveJobView {
         job_id: record.job.job_id.clone(),
         state: record.job.state,
+        trigger: record.trigger_kind,
         destination_path: PathBuf::from(&record.job.destination_path),
         pinned_chunk_ids: record.job.pinned_chunk_ids.clone(),
         last_error: record.job.last_error.clone(),
         created_at_utc: record.created_at_utc.clone(),
         updated_at_utc: record.updated_at_utc.clone(),
     }
+}
+
+fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
+    if let Some(parsed) = payload.parse_text_tag_and_message() {
+        return parsed;
+    }
+    if payload.is_binary_event()
+        && let Some(decoded) = decode_binary_android_event(&payload.payload)
+    {
+        return (decoded.tag_name, decoded.message);
+    }
+    (
+        String::new(),
+        format!("<binary {} bytes>", payload.payload.len()),
+    )
+}
+
+fn detect_crash_from_event(event: &CaptureEvent) -> Option<(i64, ParsedAmCrash)> {
+    let CaptureEvent::LogRecord {
+        pc_cont_ns,
+        payload,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    detect_live_fatal_am_crash(payload).map(|parsed| (*pc_cont_ns, parsed))
+}
+
+fn detect_live_fatal_am_crash(payload: &LogRecordPayload) -> Option<ParsedAmCrash> {
+    let parsed = if payload.is_binary_event() {
+        parse_am_crash_binary(&payload.payload)?
+    } else {
+        let (tag, msg) = payload.parse_text_tag_and_message()?;
+        parse_am_crash_text(Some(tag.as_str()), &msg)?
+    };
+    parsed.is_fatal().then_some(parsed)
 }
 
 fn job_params_path(data_dir: &Path, job_id: &str) -> PathBuf {

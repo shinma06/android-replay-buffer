@@ -3,11 +3,14 @@
 use std::path::PathBuf;
 
 use arb_adb::adb::AdbDeviceInfo;
+use arb_core::analytics::{CrashMarker, ScreenSpan};
 use arb_core::bundle::{
-    DeviceInfo, EpochSpan, LogRecord, Provenance, StreamsSummary, TapRecord, UnanchoredSummary,
+    BundleKind, DeviceInfo, EpochSpan, LogRecord, Provenance, StreamsSummary, TapRecord,
+    UnanchoredSummary,
 };
+use arb_core::config::ArbConfig;
 use arb_core::selection::SelectionPolicy;
-use arb_core::state::{BundleLifecycleState, SaveJobState};
+use arb_core::state::{BundleLifecycleState, SaveJobState, SaveTriggerKind};
 use arb_core::time::DiscontinuityEvent;
 use arb_media::trim::{PngExportReport, TrimReport};
 use arb_storage::bundle_io::BundleFormat;
@@ -171,6 +174,35 @@ pub struct RecoverySummaryView {
     pub repinned_jobs: usize,
 }
 
+/// Crash auto-save telemetry inside [`SystemStatusResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CrashAutoSaveStatusView {
+    /// Whether live `am_crash` auto-save is currently enabled in config.
+    pub enabled: bool,
+    /// Configured debounce cooldown in seconds.
+    pub cooldown_secs: u32,
+    /// Total live fatal `am_crash` events observed since daemon start.
+    pub detected_crashes: u64,
+    /// Total background auto-saves triggered since daemon start.
+    pub triggered_saves: u64,
+    /// Crashes suppressed due to the debounce cooldown window.
+    pub suppressed_cooldown: u64,
+    /// Crashes suppressed because `STORAGE_PRESSURE_STOP` was active.
+    pub suppressed_storage_pressure: u64,
+    /// `true` while a background crash auto-save is actively running.
+    pub in_flight: bool,
+    /// Process name of the most recently detected fatal crash, if any.
+    pub last_crash_process: Option<String>,
+    /// Exception class of the most recently detected fatal crash, if any.
+    pub last_crash_exception: Option<String>,
+    /// Save job ID of the most recently triggered crash auto-save, if any.
+    pub last_job_id: Option<String>,
+    /// Completed bundle ID of the most recent successful crash auto-save, if any.
+    pub last_bundle_id: Option<String>,
+    /// Diagnostic error from the last crash auto-save attempt, if it failed.
+    pub last_error: Option<String>,
+}
+
 /// Response payload for `system.status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemStatusResponse {
@@ -192,6 +224,20 @@ pub struct SystemStatusResponse {
     pub active_save_jobs: usize,
     /// Startup crash recovery report summary.
     pub recovery: RecoverySummaryView,
+    /// Live `am_crash` debounced auto-save telemetry.
+    #[serde(default)]
+    pub crash_autosave: CrashAutoSaveStatusView,
+}
+
+// ---------------- Persisted Config ----------------
+
+/// Response payload for `config.get` and `config.update`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigResponse {
+    /// Active validated user configuration.
+    pub config: ArbConfig,
+    /// Filesystem path of the persisted `config.json` file.
+    pub config_path: PathBuf,
 }
 
 // ---------------- Device & Capture ----------------
@@ -248,17 +294,76 @@ pub struct CaptureStopResponse {
 
 // ---------------- Save Jobs ----------------
 
+/// Payload mode for `save.trigger` / `save.logs`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveMode {
+    /// Full bundle including video, optional audio, logcat, and input.
+    #[default]
+    Full,
+    /// Log-only WORM v2 bundle (`timeline.sqlite` + `logs.jsonl` + `unanchored.jsonl`, no video/audio).
+    LogsOnly,
+}
+
 /// Request parameters for `save.trigger`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SaveTriggerParams {
-    /// Requested lookback duration in real elapsed seconds (default `30`).
+    /// Requested lookback duration in real elapsed seconds (defaults to `config.save_window_secs`).
+    #[serde(alias = "window_secs")]
     pub duration_sec: Option<u64>,
-    /// Optional destination parent directory (defaults to `<data_dir>/bundles`).
+    /// Optional destination parent directory (defaults to `config.output_dir_override` or `<data_dir>/bundles`).
     pub dest_dir: Option<PathBuf>,
     /// Optional boundary drain timeout in milliseconds (default `500`).
     pub drain_timeout_ms: Option<u64>,
     /// Optional explicit selection policy overrides (useful in tests).
     pub selection_policy: Option<SelectionPolicy>,
+    /// Save payload mode (`full` default, or `logs_only`).
+    #[serde(default)]
+    pub mode: SaveMode,
+}
+
+/// Request parameters for `save.logs` (dedicated log-only WORM bundle save).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SaveLogsParams {
+    /// Requested lookback duration in real elapsed seconds (defaults to `config.save_window_secs`).
+    #[serde(alias = "duration_sec")]
+    pub window_secs: Option<u64>,
+    /// Optional destination parent directory (defaults to `config.output_dir_override` or `<data_dir>/bundles`).
+    pub dest_dir: Option<PathBuf>,
+    /// Optional boundary drain timeout in milliseconds (default `500`).
+    pub drain_timeout_ms: Option<u64>,
+    /// Optional explicit selection policy overrides (useful in tests).
+    pub selection_policy: Option<SelectionPolicy>,
+}
+
+/// Request parameters for `save.screenshot`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SaveScreenshotParams {
+    /// Optional ADB serial (defaults to active capture serial or sole online ADB device).
+    pub serial: Option<String>,
+    /// Optional explicit absolute PNG destination path (defaults to `<output_dir>/screenshot-*.png`).
+    pub output_path: Option<PathBuf>,
+    /// Whether an existing destination file may be atomically replaced (default `false`).
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Response payload for `save.screenshot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveScreenshotResponse {
+    /// Written PNG file path.
+    pub path: PathBuf,
+    /// Validated PNG width in pixels.
+    pub width: u32,
+    /// Validated PNG height in pixels.
+    pub height: u32,
+    /// Lowercase 64-character hexadecimal SHA-256 digest of the PNG file.
+    pub sha256: String,
+    /// Host Unix epoch milliseconds when the screenshot was captured.
+    pub captured_at_unix_ms: u64,
+    /// Android device ADB serial from which the screenshot was captured.
+    pub serial: String,
 }
 
 /// Serialized view of a persisted save job.
@@ -268,6 +373,9 @@ pub struct SaveJobView {
     pub job_id: String,
     /// Lifecycle state (`pinned`, `draining`, `materializing`, `failed_retryable`, `completed`, `discarded`).
     pub state: SaveJobState,
+    /// Origin that initiated this save job (`manual` or `crash_auto_save`).
+    #[serde(default)]
+    pub trigger: SaveTriggerKind,
     /// Target bundle directory path.
     pub destination_path: PathBuf,
     /// Ring chunk IDs currently pinned by this job.
@@ -487,6 +595,9 @@ pub struct TimelineSummaryResponse {
     pub path: PathBuf,
     /// Detected bundle format.
     pub format: BundleFormat,
+    /// High-level bundle payload kind (`full` or `logs_only`).
+    #[serde(default)]
+    pub bundle_kind: BundleKind,
     /// `true` for legacy schema 3/4 bundles.
     pub is_legacy: bool,
     /// Creation timestamp in UTC, if known.
@@ -540,6 +651,20 @@ pub struct TimelineTapsResponse {
 pub struct TimelineDiscontinuitiesResponse {
     /// Recorded timeline discontinuities.
     pub discontinuities: Vec<DiscontinuityEvent>,
+}
+
+/// Response payload for `timeline.crashes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineCrashesResponse {
+    /// Structured crash markers extracted from the bundle's logcat.
+    pub crashes: Vec<CrashMarker>,
+}
+
+/// Response payload for `timeline.screens`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineScreensResponse {
+    /// PC-derived Activity / screen transition spans from the bundle's logcat.
+    pub screens: Vec<ScreenSpan>,
 }
 
 // ---------------- Edit Session ----------------

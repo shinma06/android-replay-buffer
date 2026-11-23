@@ -49,6 +49,18 @@ pub enum StateTransitionError {
     },
 }
 
+/// Reason that initiated a save job.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveTriggerKind {
+    /// Initiated explicitly by the user via IDE, tray, CLI, or MCP.
+    #[default]
+    Manual,
+    /// Initiated automatically by live `am_crash` detection (debounced).
+    CrashAutoSave,
+}
+
 /// Persistent state of a two-phase save job (`save_jobs` table).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

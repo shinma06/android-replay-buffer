@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use arb_core::bundle::ValidationError;
+use arb_core::config::ConfigValidationError;
 use arb_core::legacy::LegacyParseError;
 use arb_core::state::StateTransitionError;
 use arb_core::time::DiscontinuityEvent;
@@ -53,6 +54,10 @@ pub enum StorageError {
     /// WORM v2 manifest failed structural validation.
     #[error("manifest validation failed: {0}")]
     ManifestValidation(#[from] ValidationError),
+
+    /// User configuration failed schema or range validation.
+    #[error("config validation failed: {0}")]
+    ConfigValidation(#[from] ConfigValidationError),
 
     /// Illegal lifecycle state transition in a save job or bundle.
     #[error("state transition error: {0}")]
