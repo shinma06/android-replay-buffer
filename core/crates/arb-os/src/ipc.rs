@@ -1498,6 +1498,9 @@ mod tests {
                 write_frame_line(inner_stream, &reply, DEFAULT_MAX_IPC_LINE_BYTES)
                     .expect("write server reply");
             }
+            // Wait for the client to consume the replies before `Drop` runs
+            // `DisconnectNamedPipe` on Windows (which otherwise discards unread pipe bytes).
+            inner_stream.drain().expect("drain server replies");
             received
         });
 
@@ -1817,9 +1820,9 @@ mod tests {
                 reason = "Windows uses a named pipe, not a socket file"
             )
         )]
-        let tmp = TestIpcDir::new("timeout-validation");
+        let tmp = TestIpcDir::new("to");
         #[cfg(unix)]
-        let sock_path = tmp.path.join("run").join("timeout-validation.sock");
+        let sock_path = tmp.path.join("run").join("to.sock");
         #[cfg(windows)]
         let sock_path = PathBuf::from(format!(
             r"\\.\pipe\arb-os-ipc-timeout-{}-{}",
