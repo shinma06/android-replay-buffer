@@ -39,6 +39,7 @@ data class ArbAboutInfo(
     val daemonVersion: String?,
     val daemonPid: Long?,
     val protocolVersion: Int,
+    val daemonBuildId: String? = null,
 ) {
     val daemonStatusSummary: String
         get() = if (daemonConnected) {
@@ -81,6 +82,7 @@ data class ArbAboutInfo(
                 daemonVersion = hello?.daemonVersion,
                 daemonPid = hello?.pid,
                 protocolVersion = hello?.protocolVersion ?: IPC_PROTOCOL_VERSION,
+                daemonBuildId = hello?.buildId?.takeIf { it.isNotBlank() },
             )
     }
 }
@@ -102,6 +104,7 @@ internal fun ArbAboutContent(info: ArbAboutInfo) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             AboutMetaRow("プラグインバージョン:", info.pluginVersion)
             AboutMetaRow("arbd デーモン:", info.daemonStatusSummary)
+            info.daemonBuildId?.let { AboutMetaRow("arbd ビルド ID:", it) }
             AboutMetaRow("プロトコル:", info.protocolSummary)
             AboutMetaRow("GPL / AGPL 依存:", "0 件 (MIT / Apache-2.0 / BSD-2-Clause)")
         }

@@ -37,6 +37,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.state.ArbSettingsDraft
 import io.github.shinma06.arb.state.StorageSizeUnit
@@ -85,6 +86,7 @@ class ArbSettingsFormModel(
     var videoMaxFps by mutableStateOf(ArbConfig.DEFAULT_VIDEO_MAX_FPS)
 
     var audioEnabled by mutableStateOf(true)
+    var captureMode by mutableStateOf(CaptureMode.VIDEO_AND_LOGS)
     var crashAutosaveEnabled by mutableStateOf(true)
     val crashCooldownText = TextFieldState(ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS.toString())
 
@@ -98,6 +100,12 @@ class ArbSettingsFormModel(
 
     // Local binary path override (IDE-local)
     val customArbdPathText = TextFieldState("")
+
+    // Daemon fields this page does not edit (pinned device from the Tool Window / CLI, and the
+    // CLI/MCP `screenshot_dir_override`). Carried through unchanged so the draft never reports a
+    // phantom modification and Apply never clears them.
+    private var passthroughDeviceSerial: String = ""
+    private var passthroughScreenshotDirOverride: String = ""
 
     // CLI / MCP copy section
     val cliPathReadOnlyText = TextFieldState(bundledCliPath ?: CLI_PATH_UNAVAILABLE_TEXT)
@@ -160,6 +168,9 @@ class ArbSettingsFormModel(
         videoMaxFps = draft.videoMaxFps
 
         audioEnabled = draft.audioEnabled
+        captureMode = draft.captureMode
+        passthroughDeviceSerial = draft.deviceSerial
+        passthroughScreenshotDirOverride = draft.screenshotDirOverride
         crashAutosaveEnabled = draft.crashAutosaveEnabled
         crashCooldownText.setTextAndPlaceCursorAtEnd(
             draft.crashAutosaveCooldownSecs.coerceIn(
@@ -191,6 +202,9 @@ class ArbSettingsFormModel(
             outputDirOverride = outputDirText.text.toString().trim(),
             ideDefaultSaveAction = ideDefaultSaveAction,
             customArbdBinaryPath = customArbdPathText.text.toString().trim(),
+            captureMode = captureMode,
+            deviceSerial = passthroughDeviceSerial,
+            screenshotDirOverride = passthroughScreenshotDirOverride,
         )
     }
 
@@ -669,6 +683,18 @@ internal fun ArbSettingsContent(
                     )
                 }
             }
+            SettingsFormRow("キャプチャモード:") {
+                val modes = CaptureMode.entries
+                key(form.captureMode) {
+                    ListComboBox(
+                        items = modes.map(::captureModeOptionLabel),
+                        selectedIndex = modes.indexOf(form.captureMode).coerceAtLeast(0),
+                        onSelectedItemChange = { form.captureMode = modes[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(236.dp).semantics { contentDescription = "キャプチャモード" },
+                    )
+                }
+            }
             CheckboxRow(
                 text = "端末の再生音を録音する (API 33+)",
                 checked = form.audioEnabled,
@@ -822,6 +848,11 @@ internal fun ArbSettingsContent(
             }
         }
     }
+}
+
+internal fun captureModeOptionLabel(mode: CaptureMode): String = when (mode) {
+    CaptureMode.VIDEO_AND_LOGS -> "映像＋ログ（画面録画あり）"
+    CaptureMode.LOGS_ONLY -> "ログのみ（低負荷・常時記録）"
 }
 
 /** Runs a potentially blocking arbd call; see [ArbSettingsConfigurable]. */

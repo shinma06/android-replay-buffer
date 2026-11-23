@@ -333,7 +333,7 @@ private fun StudioHeaderBar(
             }
         }
 
-        // Right: Borderless PNG / Finder actions + format selector + Single Jewel DefaultButton
+        // Right: Borderless PNG / reveal-folder actions + format selector + Single Jewel DefaultButton
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -347,10 +347,10 @@ private fun StudioHeaderBar(
                 onClick = { controller.requestPngExport() },
             )
             ArbSubtleAction(
-                label = "Finder",
+                label = "フォルダ",
                 iconKey = AllIconsKeys.Nodes.Folder,
                 enabled = state != null,
-                tooltip = "バンドルフォルダを Finder / エクスプローラで表示",
+                tooltip = "バンドルフォルダをファイルマネージャで表示",
                 compact = true,
                 onClick = { controller.revealBundleInFinder() },
             )
@@ -398,7 +398,7 @@ private fun ExportCompletionStrip(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        ArbSubtleAction(label = "Finder で表示", iconKey = AllIconsKeys.Nodes.Folder, compact = true, onClick = onReveal)
+        ArbSubtleAction(label = "フォルダを表示", iconKey = AllIconsKeys.Nodes.Folder, compact = true, onClick = onReveal)
         ArbSubtleAction(label = "パスをコピー", iconKey = AllIconsKeys.Actions.Copy, compact = true, onClick = onCopy)
         if (info.isTrimBundle && !info.bundleId.isNullOrBlank()) {
             ArbSubtleAction(label = "新しいタブで開く", iconKey = AllIconsKeys.Actions.Execute, compact = true, onClick = onOpenTab)
@@ -689,6 +689,12 @@ private fun RightEventsAndLogsPane(
                     )
                 }
 
+                // Per-app extracted log filter (`app-logs/<package>.jsonl`); hidden for legacy
+                // bundles and bundles without foreground/crashed app extraction.
+                if (controller.isAppPackageFilterVisible) {
+                    AppPackageFilterRow(controller)
+                }
+
                 Divider(
                     orientation = Orientation.Horizontal,
                     modifier = Modifier.fillMaxWidth(),
@@ -707,12 +713,14 @@ private fun RightEventsAndLogsPane(
                     } else {
                         val listState = rememberLazyListState()
                         val jewelSb = JewelTheme.scrollbarStyle
+                        val rowKeys = remember(rows) { ArbStudioController.uniqueKeys(rows, ArbStudioController::syncedRowKey) }
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(1.dp),
                         ) {
-                            items(rows, key = { "${it.kind.name}-${it.seq}-${it.boottimeNs}" }) { row ->
+                            items(rows.size, key = { rowKeys[it] }) { rowIndex ->
+                                val row = rows[rowIndex]
                                 SyncedEventItemRow(
                                     row = row,
                                     onSeek = { row.frameIndex?.let(controller::seekExactFrame) },
@@ -759,13 +767,14 @@ private fun RightEventsAndLogsPane(
                     }
                 } else {
                     val listState = rememberLazyListState()
+                    val recordKeys = remember(records) { ArbStudioController.uniqueKeys(records) { "u-${it.seq}" } }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        items(records, key = { it.seq }) { rec ->
-                            UnanchoredLogRow(rec)
+                        items(records.size, key = { recordKeys[it] }) { recIndex ->
+                            UnanchoredLogRow(records[recIndex])
                         }
                     }
                 }
@@ -774,6 +783,42 @@ private fun RightEventsAndLogsPane(
             StudioRightTab.DETAILS -> {
                 Tier3DetailsTab(state = state)
             }
+        }
+    }
+}
+
+@Composable
+private fun AppPackageFilterRow(controller: ArbStudioController) {
+    val options = controller.appPackageFilterOptions
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, end = 8.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "アプリ",
+            style = ArbJewelPalette.bodyStyle(sizeSp = 11f, color = ArbJewelPalette.mutedText()),
+        )
+        val labels = options.map { it.label }
+        val selectedIdx = controller.selectedAppPackageIndex
+        key(labels, selectedIdx) {
+            ListComboBox(
+                items = labels,
+                selectedIndex = selectedIdx,
+                onSelectedItemChange = { controller.selectAppPackageByIndex(it) },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "アプリ別ログフィルタ" },
+            )
+        }
+        if (controller.appPackageFilterLoading) {
+            Text(
+                text = "読み込み中...",
+                style = ArbJewelPalette.bodyStyle(sizeSp = 10.5f, color = ArbJewelPalette.mutedText()),
+                maxLines = 1,
+            )
         }
     }
 }
@@ -1147,7 +1192,7 @@ private fun MultiTrackTimelineCanvas(
     val trackFill = ArbJewelPalette.subtleTrackFill()
     val hairline = ArbJewelPalette.hairlineDivider()
     val trimAccent = ArbJewelPalette.trimAccent()
-    val onTrimHandle = if (JewelTheme.isDark) Color(0xFF1A1A1A) else Color.White
+    val onTrimHandle = ArbJewelPalette.trimHandleGrip()
     val dimMask = ArbJewelPalette.panelBackground().copy(alpha = if (JewelTheme.isDark) 0.62f else 0.52f)
     val playheadColor = ArbJewelPalette.primaryText()
     val playheadOutline = ArbJewelPalette.panelBackground()

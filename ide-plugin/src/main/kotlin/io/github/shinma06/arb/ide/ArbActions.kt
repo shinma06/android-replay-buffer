@@ -122,9 +122,9 @@ private fun executeScreenshot(project: Project?) {
     ApplicationManager.getApplication().executeOnPooledThread {
         try {
             val service = ArbdDaemonService.getInstance()
-            val outputPath = ArbScreenshotDestinationResolver.resolveOutputFilePath(project)
+            val outputDir = runCatching { ArbScreenshotDestinationResolver.resolveOutputDir(project) }.getOrNull()
             val res = service.withClient {
-                it.saveScreenshot(SaveScreenshotParams(outputPath = outputPath))
+                it.saveScreenshot(SaveScreenshotParams(outputDir = outputDir))
             }
             val fileName = runCatching { Path.of(res.path).fileName.toString() }.getOrDefault(res.path)
             notifyArb(

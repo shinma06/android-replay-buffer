@@ -99,7 +99,10 @@ val arbNativeDir = providers.gradleProperty("arbNativeDir").orNull?.let { file(i
         file("../core/target/release"),
         file("../core/target/debug"),
     ).firstOrNull { dir -> dir.resolve("arbd$arbExeExt").isFile }
-val arbDeviceAgentDir = providers.gradleProperty("arbDeviceAgentDir").orNull?.let { file(it) }
+val arbDeviceAgentDir = (
+    providers.gradleProperty("arbDeviceAgentDir").orNull
+        ?: providers.gradleProperty("deviceAgentDir").orNull
+    )?.let { file(it) }
     ?: file("../device-agent/build").takeIf { it.isDirectory }
 
 tasks.prepareSandbox {

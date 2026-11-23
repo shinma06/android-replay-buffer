@@ -3,6 +3,8 @@ package io.github.shinma06.arb.ide
 import com.intellij.ide.actions.RevealFileAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.fileChooser.FileChooserFactory
+import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorLocation
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -31,7 +33,10 @@ import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
 import io.github.shinma06.arb.state.TrimCloseState
 import io.github.shinma06.arb.ui.ArbStudioContent
+import androidx.compose.ui.graphics.ImageBitmap
+import io.github.shinma06.arb.shm.ShmFrameMeta
 import io.github.shinma06.arb.ui.ArbStudioController
+import io.github.shinma06.arb.ui.LatestValueMailbox
 import io.github.shinma06.arb.ui.StudioExportFormat
 import org.jetbrains.jewel.bridge.JewelComposePanel
 import java.awt.BorderLayout
@@ -39,8 +44,9 @@ import java.beans.PropertyChangeListener
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.RejectedExecutionException
 import javax.swing.JComponent
-import javax.swing.JFileChooser
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.math.roundToLong
@@ -99,7 +105,7 @@ class ArbBundleFileEditor(
         onRangeChanged = { inFrame, outFrame, playhead ->
             trimCloseState.onRangeAdjusted(inFrame, outFrame)
             state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
-            worker.submit {
+            submitWork {
                 runCatching {
                     playbackController?.setInFrame(inFrame)
                     playbackController?.setOutFrame(outFrame)
@@ -108,24 +114,24 @@ class ArbBundleFileEditor(
             persistEditSession(inFrame, outFrame, playhead)
         },
         onPlayPauseToggle = {
-            worker.submit {
+            submitWork {
                 runCatching { playbackController?.togglePlayPause() }
                     .onFailure { logger.debug("ARB play/pause failed", it) }
             }
         },
         onStepFrame = { delta ->
-            worker.submit {
+            submitWork {
                 runCatching { playbackController?.stepFrame(delta) }
                     .onFailure { logger.debug("ARB stepFrame failed", it) }
             }
         },
         onSpeedChange = { speed: PlaybackSpeed ->
-            worker.submit {
+            submitWork {
                 runCatching { playbackController?.setSpeed(speed) }
             }
         },
         onMuteToggle = {
-            worker.submit {
+            submitWork {
                 runCatching { playbackController?.toggleMute() }
             }
         },
@@ -149,10 +155,14 @@ class ArbBundleFileEditor(
             }
         },
         onSourceJump = { target ->
-            val jumped = sourceJumpResolver.resolveAndNavigate(target)
-            if (!jumped) {
-                SwingUtilities.invokeLater {
-                    studioController.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
+            // PSI / FilenameIndex lookups are slow operations: never resolve them on the EDT
+            // (Compose click handlers run there). Navigation itself hops back to the EDT.
+            runOffEdt {
+                val jumped = runCatching { sourceJumpResolver.resolveAndNavigate(target) }.getOrDefault(false)
+                if (!jumped && !disposed) {
+                    SwingUtilities.invokeLater {
+                        studioController.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
+                    }
                 }
             }
         },
@@ -160,17 +170,30 @@ class ArbBundleFileEditor(
             performExport(inFrame, outFrame, format)
         },
         onChoosePngOutputPath = { bundleId, frameIndex, onChosen ->
-            SwingUtilities.invokeLater {
-                val chooser = JFileChooser().apply {
-                    dialogTitle = "フレーム #$frameIndex の PNG 保存先を選択"
-                    selectedFile = java.io.File("$bundleId-frame-$frameIndex.png")
-                }
-                if (chooser.showSaveDialog(rootComponent) == JFileChooser.APPROVE_OPTION) {
-                    onChosen(chooser.selectedFile.toPath())
+            // Default the native IntelliJ save dialog to the same screenshot destination as the
+            // Tool Window / Running Devices screenshot (Logcat inheritance or custom folder).
+            runOffEdt {
+                val baseDir = runCatching { ArbScreenshotDestinationResolver.resolveOutputDir(project) }
+                    .getOrNull()
+                    ?.let { runCatching { Path.of(it) }.getOrNull() }
+                    ?.takeIf { Files.isDirectory(it) }
+                SwingUtilities.invokeLater {
+                    if (disposed || project.isDisposed) return@invokeLater
+                    val descriptor = FileSaverDescriptor("フレーム #$frameIndex の PNG 保存先を選択", "", "png")
+                    val wrapper = FileChooserFactory.getInstance()
+                        .createSaveFileDialog(descriptor, project)
+                        .save(baseDir, "$bundleId-frame-$frameIndex.png")
+                    wrapper?.let { onChosen(it.file.toPath()) }
                 }
             }
         },
+        onAppPackageFilterChanged = { packageName -> performAppPackageFilter(packageName) },
     )
+
+    /** A decoded SHM frame awaiting EDT publication (bitmap already converted off the EDT). */
+    private class PendingFrame(val meta: ShmFrameMeta, val bitmap: ImageBitmap?, val width: Int, val height: Int)
+
+    private val pendingFrame = LatestValueMailbox<PendingFrame>()
 
     private val rootComponent: JPanel = JPanel(BorderLayout()).apply {
         add(JewelComposePanel { ArbStudioContent(studioController) }, BorderLayout.CENTER)
@@ -206,7 +229,7 @@ class ArbBundleFileEditor(
     fun currentTrimRange(): Pair<Long, Long> = trimCloseState.currentRange()
 
     private fun loadBundleAsync() {
-        worker.submit {
+        submitWork {
             try {
                 val opened = daemonService.withClient { rpc ->
                     rpc.bundleOpen(
@@ -228,7 +251,7 @@ class ArbBundleFileEditor(
                 )
                 if (disposed) {
                     releaseResources()
-                    return@submit
+                    return@submitWork
                 }
 
                 val sessionId = "ide-${opened.bundleId}"
@@ -248,10 +271,10 @@ class ArbBundleFileEditor(
                     daemonService.withClient { it.timelineScreens(opened.bundleId).screens }
                 }.getOrDefault(emptyList())
                 val mainLogs = daemonService.withClient {
-                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.MAIN, limit = 5_000).logs
+                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.MAIN, limit = LOG_QUERY_LIMIT).logs
                 }
                 val unanchoredLogs = daemonService.withClient {
-                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.UNANCHORED, limit = 5_000).logs
+                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.UNANCHORED, limit = LOG_QUERY_LIMIT).logs
                 }
                 val mainTaps = daemonService.withClient {
                     it.timelineQueryTaps(opened.bundleId, bucket = QueryBucket.MAIN, limit = 5_000).taps
@@ -272,7 +295,7 @@ class ArbBundleFileEditor(
                     shmReader = ShmFrameRingReader.open(Path.of(vp.shmPath))
                     if (disposed) {
                         releaseResources()
-                        return@submit
+                        return@submitWork
                     }
                     filmstrip = runCatching {
                         daemonService.withClient { it.mediaFilmstrip(vp.viewportId) }.entries
@@ -344,7 +367,7 @@ class ArbBundleFileEditor(
                     playbackController = ctrl
                     if (disposed) {
                         releaseResources()
-                        return@submit
+                        return@submitWork
                     }
 
                     if (hasAudioTrack) {
@@ -404,7 +427,7 @@ class ArbBundleFileEditor(
         }
         try {
             audioDecodeWorker.submit(task)
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        } catch (_: RejectedExecutionException) {
             logger.debug("ARB audio decode worker already shut down; skipping audio attach")
         }
     }
@@ -412,14 +435,14 @@ class ArbBundleFileEditor(
     private fun performScrub(frameIndex: Long) {
         val ctrl = playbackController
         if (ctrl != null) {
-            worker.submit {
+            submitWork {
                 runCatching { ctrl.scrubTo(frameIndex) }
                     .onFailure { logger.debug("ARB scrub failed", it) }
             }
             return
         }
         val vpId = state?.viewportId ?: return
-        worker.submit {
+        submitWork {
             runCatching {
                 daemonService.withClient { it.mediaScrub(vpId, frameIndex) }
                 readShmAndRender()
@@ -430,7 +453,7 @@ class ArbBundleFileEditor(
     private fun performSeekExact(frameIndex: Long) {
         val ctrl = playbackController
         if (ctrl != null) {
-            worker.submit {
+            submitWork {
                 runCatching { ctrl.seekToFrame(frameIndex) }
                     .onFailure { t ->
                         logger.warn("ARB seek_frame failed", t)
@@ -442,7 +465,7 @@ class ArbBundleFileEditor(
             return
         }
         val vpId = state?.viewportId ?: return
-        worker.submit {
+        submitWork {
             try {
                 daemonService.withClient { it.mediaSeekFrame(vpId, frameIndex) }
                 readShmAndRender()
@@ -462,7 +485,7 @@ class ArbBundleFileEditor(
         val fps = current.estimatedFps
         val padBefore = (fps * 1.0).roundToLong().coerceAtLeast(1L)
         val padAfter = (fps * 2.0).roundToLong().coerceAtLeast(1L)
-        worker.submit {
+        submitWork {
             val ctrl = playbackController
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
                 val pb = ctrl.state
@@ -483,7 +506,7 @@ class ArbBundleFileEditor(
         val fps = current.estimatedFps
         val before = (fps * 5.0).roundToLong().coerceAtLeast(1L)
         val after = (fps * 2.0).roundToLong().coerceAtLeast(1L)
-        worker.submit {
+        submitWork {
             val ctrl = playbackController
             if (ctrl != null) {
                 ctrl.selectAroundCrash(crashFrame, before, after)
@@ -511,7 +534,7 @@ class ArbBundleFileEditor(
 
     private fun applyResetFullRange() {
         val current = state ?: return
-        worker.submit {
+        submitWork {
             playbackController?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
             trimCloseState.onRangeAdjusted(0L, maxF)
@@ -528,7 +551,51 @@ class ArbBundleFileEditor(
         val image = frame.toBufferedImage()
         val prev = state ?: return
         state = TimelineViewerReducer.onFramePublished(prev, frame.meta)
-        SwingUtilities.invokeLater { studioController.applyFramePublished(frame.meta, image) }
+        // Full-frame pixel copy happens here on the worker, never on the EDT, and only the newest
+        // frame is ever queued (a slow EDT skips stale frames instead of queueing every bitmap).
+        val bitmap = ArbStudioController.toImageBitmapOrNull(image)
+        if (pendingFrame.offer(PendingFrame(frame.meta, bitmap, image.width, image.height))) {
+            SwingUtilities.invokeLater {
+                if (disposed) return@invokeLater
+                val latest = pendingFrame.take() ?: return@invokeLater
+                studioController.applyFramePublished(latest.meta, latest.bitmap, latest.width, latest.height)
+            }
+        }
+    }
+
+    private fun performAppPackageFilter(packageName: String?) {
+        val current = state ?: return
+        submitWork {
+            try {
+                val mainLogs = daemonService.withClient {
+                    it.timelineQueryLogs(
+                        current.bundleId,
+                        bucket = QueryBucket.MAIN,
+                        limit = LOG_QUERY_LIMIT,
+                        packageName = packageName,
+                    ).logs
+                }
+                val unanchoredLogs = daemonService.withClient {
+                    it.timelineQueryLogs(
+                        current.bundleId,
+                        bucket = QueryBucket.UNANCHORED,
+                        limit = LOG_QUERY_LIMIT,
+                        packageName = packageName,
+                    ).logs
+                }
+                state = state?.let {
+                    TimelineViewerReducer.withBucketedRecords(it, mainLogs, unanchoredLogs, it.mainTaps, it.unanchoredTaps)
+                }
+                SwingUtilities.invokeLater {
+                    studioController.applyAppPackageLogs(packageName, mainLogs, unanchoredLogs)
+                }
+            } catch (t: Throwable) {
+                logger.warn("ARB timeline.query_logs(package=$packageName) failed", t)
+                SwingUtilities.invokeLater {
+                    studioController.appPackageFilterFailed(packageName, "アプリ別ログの取得に失敗しました: ${t.message}")
+                }
+            }
+        }
     }
 
     private fun performExport(
@@ -543,7 +610,7 @@ class ArbBundleFileEditor(
         val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy &&
             !(format == StudioExportFormat.SHARE_MP4 && isFullRange)
 
-        worker.submit {
+        submitWork {
             try {
                 if (format == StudioExportFormat.SHARE_MP4) {
                     val shareResp = daemonService.withClient {
@@ -586,7 +653,7 @@ class ArbBundleFileEditor(
                                 it.copy(exportCompletion = completion, lastActionMessage = summaryText)
                             }
                         }
-                        return@submit
+                        return@submitWork
                     }
                 }
 
@@ -642,7 +709,7 @@ class ArbBundleFileEditor(
 
     private fun performPngExport(frameIndex: Long, outputPath: Path) {
         val current = state ?: return
-        worker.submit {
+        submitWork {
             try {
                 val res = daemonService.withClient {
                     it.exportPng(
@@ -680,7 +747,7 @@ class ArbBundleFileEditor(
     private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
         val current = state ?: return
         val sessionId = editSessionId ?: return
-        worker.submit {
+        submitWork {
             runCatching {
                 daemonService.withClient {
                     it.editUpdateSession(
@@ -720,9 +787,34 @@ class ArbBundleFileEditor(
 
     override fun dispose() {
         disposed = true
-        worker.shutdownNow()
-        audioDecodeWorker.shutdownNow()
+        // Graceful shutdown only: `shutdownNow()` would interrupt a worker blocked inside the
+        // shared app-level IPC client, closing its interruptible SocketChannel for every ARB view.
+        // Queued tasks bail out on `disposed` (see [submitWork]).
+        worker.shutdown()
+        audioDecodeWorker.shutdown()
         releaseResources()
+    }
+
+    /** Submits [block] to the IPC worker unless disposed; never throws on a shut-down executor. */
+    private fun submitWork(block: () -> Unit) {
+        submitGuarded(worker) { if (!disposed) block() }
+    }
+
+    private fun runOffEdt(block: () -> Unit) {
+        val app = ApplicationManager.getApplication()
+        if (app != null) app.executeOnPooledThread(block) else block()
+    }
+
+    private fun submitGuarded(executor: ExecutorService, task: () -> Unit) {
+        try {
+            executor.submit(task)
+        } catch (_: RejectedExecutionException) {
+            logger.debug("ARB studio worker already shut down; dropping task")
+        }
+    }
+
+    private companion object {
+        const val LOG_QUERY_LIMIT: Int = 5_000
     }
 
     @Synchronized

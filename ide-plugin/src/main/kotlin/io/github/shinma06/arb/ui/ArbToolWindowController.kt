@@ -18,23 +18,29 @@ import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbConfigPatch
 import io.github.shinma06.arb.model.BundleKind
+import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartParams
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
+import io.github.shinma06.arb.model.StringPatch
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.BundleCatalogItem
 import io.github.shinma06.arb.state.BundleCatalogState
 import io.github.shinma06.arb.state.BundleFilter
 import io.github.shinma06.arb.state.CaptureBarReducer
 import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.state.DeviceSelectionOutcome
+import io.github.shinma06.arb.state.DeviceSelectionPolicy
 import io.github.shinma06.arb.state.FailedSaveRecoveryReducer
 import io.github.shinma06.arb.state.FailedSaveRecoveryState
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
 
@@ -52,6 +58,14 @@ class ArbToolWindowController(
     private val onOpenBundle: (bundleIdOrPath: String, title: String, isLegacy: Boolean) -> Unit,
     private val onOpenSettings: () -> Unit = {},
     private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
+    /**
+     * Resolves the `save.screenshot` `output_dir` (Android Studio Logcat screenshot destination
+     * inheritance or the IDE-local custom override); `null` lets `arbd` apply its own
+     * `screenshot_dir_override` -> `output_dir_override` -> default chain. Called off the EDT.
+     */
+    private val screenshotDirResolver: () -> String? = {
+        ArbScreenshotDestinationResolver.resolveOutputDir(project)
+    },
 ) : Disposable {
     private val logger = Logger.getInstance(ArbToolWindowController::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
@@ -99,6 +113,9 @@ class ArbToolWindowController(
     var daemonRestartBusy: Boolean by mutableStateOf(false)
         private set
 
+    var captureModeBusy: Boolean by mutableStateOf(false)
+        private set
+
     private val daemonStateListener = object : ArbDaemonStateListener {
         override fun onConfigUpdated(config: ArbConfig) {
             val next = synchronized(captureStateLock) {
@@ -133,22 +150,57 @@ class ArbToolWindowController(
     val deviceDropdownEnabled: Boolean
         get() = hasRealDevices
 
+    /**
+     * Device dropdown entries derived strictly from `client-core`'s [DeviceSelectionPolicy] outcome:
+     * - 0 devices -> single disabled placeholder ([NO_DEVICES_PLACEHOLDER]);
+     * - 2+ online and nothing chosen -> leading prompt ([MULTIPLE_DEVICES_PROMPT], never auto-select);
+     * - pinned device gone while others are online -> the pinned serial stays selected and is
+     *   labelled `切断中（再接続待ち）` (never silently switched to another device).
+     */
+    val deviceDropdownEntries: List<DeviceDropdownEntry>
+        get() = buildDeviceDropdownEntries(captureState)
+
     val deviceDropdownLabels: List<String>
-        get() = if (captureState.devices.isEmpty()) {
-            listOf(NO_DEVICES_PLACEHOLDER)
-        } else {
-            captureState.devices.map(::formatDeviceLabel)
-        }
+        get() = deviceDropdownEntries.map { it.label }
 
     val selectedDeviceIndex: Int
         get() {
-            if (captureState.devices.isEmpty()) return 0
-            val idx = captureState.devices.indexOfFirst { it.serial == captureState.selectedSerial }
+            val entries = deviceDropdownEntries
+            val selected = captureState.selectedSerial ?: return 0
+            val idx = entries.indexOfFirst { it.serial == selected }
             return if (idx >= 0) idx else 0
         }
 
     val selectedDeviceSerial: String?
         get() = if (!hasRealDevices) null else captureState.selectedDevice?.serial
+
+    /** Inline prompt shown under the device row when the user must pick or reconnect a device. */
+    val deviceSelectionNotice: String?
+        get() = when (val sel = captureState.deviceSelection) {
+            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+                if (captureState.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
+            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+                if (captureState.devices.none { it.serial == sel.preferredSerial }) {
+                    "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX。別の端末へは自動で切り替えません。"
+                } else {
+                    null
+                }
+            else -> null
+        }
+
+    /** Current capture mode (`video_and_logs` / `logs_only`) — the running mode while capturing. */
+    val captureMode: CaptureMode
+        get() = captureState.activeCaptureMode
+
+    val isLogsOnlyMode: Boolean
+        get() = captureState.isLogsOnlyMode
+
+    /** Quiet inline status chip text, shown only in `logs_only` mode. */
+    val captureModeChipText: String?
+        get() = if (isLogsOnlyMode) LOGS_ONLY_CHIP_TEXT else null
+
+    val captureModeToggleEnabled: Boolean
+        get() = captureState.daemonConnected && !captureModeBusy
 
     val canUseSelectedDevice: Boolean
         get() = captureState.daemonConnected && captureState.isSelectedDeviceOnline
@@ -195,21 +247,85 @@ class ArbToolWindowController(
     val showGcAction: Boolean
         get() = activeFilter == BundleFilter.TRASH
 
-    private fun disabledDeviceHint(): String? = when (captureState.selectedDevice?.state) {
-        AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
-        AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
-        null -> NO_DEVICES_PLACEHOLDER
-        else -> null
+    private fun disabledDeviceHint(): String? {
+        deviceSelectionNotice?.let { return it }
+        return when (captureState.selectedDevice?.state) {
+            AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
+            AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
+            null -> NO_DEVICES_PLACEHOLDER
+            else -> null
+        }
     }
 
     // ---- Commands invoked from Jewel UI & tests ----
 
+    /**
+     * Explicit user choice: pins the serial (clears the auto-selected marker so the reducer never
+     * re-evaluates it away) and persists it as `config.device_serial`, so the Running Devices
+     * toolbar, `arb-tray`, CLI and MCP all target the same device.
+     */
     fun selectDeviceByIndex(index: Int) {
-        val device = captureState.devices.getOrNull(index) ?: return
+        val serial = deviceDropdownEntries.getOrNull(index)?.serial ?: return
+        // Re-choosing the sole auto-selected device is a no-op: it must stay "auto" so plugging
+        // in a second device still prompts instead of silently keeping a pin nobody asked for.
+        val current = captureState
+        if (serial == current.selectedSerial && serial == current.autoSelectedSerial) return
         val next = synchronized(captureStateLock) {
-            rawCaptureState.copy(selectedSerial = device.serial).also { rawCaptureState = it }
+            rawCaptureState.copy(
+                selectedSerial = serial,
+                autoSelectedSerial = null,
+                deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
+            ).also { rawCaptureState = it }
         }
         publishOnEdt { captureState = next }
+        if (next.config.deviceSerial == serial) return
+        runAsync {
+            val updated = daemonService.withClient {
+                it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+            }
+            daemonService.notifyConfigUpdated(updated)
+        }
+    }
+
+    /**
+     * Switches between `映像＋ログ` and `ログのみ` via `config.update(capture_mode)`. A running capture
+     * is restarted on the same device (`capture.stop` + `capture.start(capture_mode)`) because the
+     * mode only takes effect when a capture starts.
+     */
+    fun setCaptureMode(mode: CaptureMode) {
+        val snapshot = captureState
+        val wasActive = snapshot.capture?.active == true
+        val runningMode = snapshot.capture?.captureMode
+        if (snapshot.config.captureMode == mode && (!wasActive || runningMode == mode)) return
+        val serial = if (wasActive) snapshot.capture?.serial ?: selectedDeviceSerial else selectedDeviceSerial
+        publishOnEdt { captureModeBusy = true }
+        runAsync {
+            val label = captureModeLabel(mode)
+            try {
+                val updated = daemonService.withClient {
+                    it.configUpdate(ArbConfigPatch(captureMode = mode)).config
+                }
+                daemonService.notifyConfigUpdated(updated)
+                if (wasActive && runningMode != mode) {
+                    daemonService.withClient { it.captureStop() }
+                    daemonService.withClient {
+                        it.captureStart(CaptureStartParams(serial = serial, captureMode = mode))
+                    }
+                    notifyBalloon("キャプチャモードを「$label」に切り替え、録画を再開しました")
+                } else {
+                    notifyBalloon("キャプチャモードを「$label」に設定しました")
+                }
+            } catch (t: Throwable) {
+                logger.warn("ARB capture mode switch to ${mode.wire} failed", t)
+                notifyBalloon(
+                    "キャプチャモードを「$label」に切り替えられませんでした: ${t.message ?: "詳細不明"}",
+                    NotificationType.WARNING,
+                )
+            } finally {
+                publishOnEdt { captureModeBusy = false }
+            }
+            refreshAll()
+        }
     }
 
     fun triggerPrimarySave() {
@@ -244,9 +360,11 @@ class ArbToolWindowController(
     fun captureScreenshot() {
         val serial = selectedDeviceSerial
         runAsync {
-            val outputPath = ArbScreenshotDestinationResolver.resolveOutputFilePath(project)
+            val outputDir = runCatching { screenshotDirResolver() }
+                .onFailure { logger.debug("ARB screenshot dir resolution failed", it) }
+                .getOrNull()
             val res = daemonService.withClient {
-                it.saveScreenshot(SaveScreenshotParams(serial = serial, outputPath = outputPath))
+                it.saveScreenshot(SaveScreenshotParams(serial = serial, outputDir = outputDir))
             }
             val fileName = runCatching { Path.of(res.path).fileName.toString() }.getOrDefault(res.path)
             notifyBalloon("スクリーンショットを保存しました: $fileName (${res.width}x${res.height})")
@@ -437,13 +555,18 @@ class ArbToolWindowController(
 
     private fun runAsync(action: () -> Unit) {
         if (disposed) return
-        executor.submit {
-            try {
-                action()
-            } catch (t: Throwable) {
-                logger.warn("ARB toolwindow action failed", t)
-                handleDaemonFailure(t)
+        try {
+            executor.submit {
+                if (disposed) return@submit
+                try {
+                    action()
+                } catch (t: Throwable) {
+                    logger.warn("ARB toolwindow action failed", t)
+                    handleDaemonFailure(t)
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            // Disposed concurrently; nothing to do.
         }
     }
 
@@ -580,11 +703,51 @@ class ArbToolWindowController(
     override fun dispose() {
         disposed = true
         daemonService.removeStateListener(daemonStateListener)
-        executor.shutdownNow()
+        // Never `shutdownNow()`: interrupting a worker blocked in the shared app-level IPC client
+        // closes its interruptible `SocketChannel` (ClosedByInterruptException) and breaks the
+        // in-flight call for every other ARB view. Queued tasks bail out on `disposed` instead.
+        executor.shutdown()
     }
+
+    /** Test hook: whether the worker executor has been shut down without interrupting tasks. */
+    internal val isWorkerShutdown: Boolean
+        get() = executor.isShutdown
+
+    /** One device dropdown row; [serial] is `null` for non-selectable prompts/placeholders. */
+    data class DeviceDropdownEntry(val label: String, val serial: String?)
 
     companion object {
         const val NO_DEVICES_PLACEHOLDER: String = "端末未検出（USB / エミュレータを接続）"
+        const val MULTIPLE_DEVICES_PROMPT: String = "複数端末が接続中です — 対象を選択してください"
+        const val WAITING_FOR_PINNED_SUFFIX: String = "切断中（再接続待ち）"
+        const val CAPTURE_MODE_VIDEO_LABEL: String = "映像＋ログ"
+        const val CAPTURE_MODE_LOGS_LABEL: String = "ログのみ"
+        const val LOGS_ONLY_CHIP_TEXT: String = "ログのみ常時"
+
+        fun captureModeLabel(mode: CaptureMode): String = when (mode) {
+            CaptureMode.VIDEO_AND_LOGS -> CAPTURE_MODE_VIDEO_LABEL
+            CaptureMode.LOGS_ONLY -> CAPTURE_MODE_LOGS_LABEL
+        }
+
+        /** Pure dropdown builder (see [deviceDropdownEntries]). */
+        fun buildDeviceDropdownEntries(state: CaptureBarState): List<DeviceDropdownEntry> {
+            val devices = state.devices
+            val selection = state.deviceSelection
+            val entries = mutableListOf<DeviceDropdownEntry>()
+            val pinnedMissing = (selection as? DeviceSelectionOutcome.WaitingForPreferredDevice)
+                ?.preferredSerial
+                ?.takeIf { pinned -> devices.none { it.serial == pinned } }
+            when {
+                pinnedMissing != null ->
+                    entries += DeviceDropdownEntry("$pinnedMissing — $WAITING_FOR_PINNED_SUFFIX", pinnedMissing)
+                selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection && state.selectedSerial == null ->
+                    entries += DeviceDropdownEntry(MULTIPLE_DEVICES_PROMPT, null)
+                devices.isEmpty() ->
+                    entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
+            }
+            devices.mapTo(entries) { DeviceDropdownEntry(formatDeviceLabel(it), it.serial) }
+            return entries
+        }
         private const val META_BUDGET_PER_POLL = 24
         const val DEFAULT_POLL_INTERVAL_MS: Long = 2_000L
 

@@ -84,6 +84,31 @@ object ArbScreenshotDestinationResolver {
     }
 
     /**
+     * Resolves the `save.screenshot` `output_dir` from the IDE-local screenshot settings (Android
+     * Studio Logcat screenshot destination inheritance, or the custom folder when inheritance is
+     * unchecked). Returns `null` so `arbd` applies its own `screenshot_dir_override` ->
+     * `output_dir_override` -> `<data_dir>/screenshots` chain, keeping file naming identical to the
+     * CLI / MCP / tray. Call off the EDT when passing a live [project].
+     */
+    fun resolveOutputDir(
+        project: Project?,
+        localSettings: ArbLocalSettingsState? = ArbLocalSettingsState.getInstanceOrNull(),
+        logcatLocationProvider: () -> String? = { LogcatScreenshotSettings.saveLocationOrNull() },
+        logcatDirectoryResolver: (Project?, String) -> Path? = { proj, loc ->
+            LogcatScreenshotSettings.resolveDirectoryOrNull(proj, loc)
+        },
+    ): String? {
+        val res = resolveDirectory(
+            project = project,
+            inheritLogcat = localSettings?.screenshotInheritLogcat ?: true,
+            customScreenshotDir = localSettings?.customScreenshotDir.orEmpty(),
+            logcatLocationProvider = logcatLocationProvider,
+            logcatDirectoryResolver = logcatDirectoryResolver,
+        )
+        return res.directory?.toAbsolutePath()?.normalize()?.toString()
+    }
+
+    /**
      * Resolves the concrete PNG output file path for `save.screenshot`, or `null` to let `arbd`
      * save into its configured `output_dir`.
      */

@@ -8,6 +8,7 @@ import java.nio.file.attribute.FileTime
 import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ArbdProcessManagerTest {
@@ -146,5 +147,56 @@ class ArbdProcessManagerTest {
         assertTrue(ArbdProcessManager.shouldAutoUpgradeBinary(oldBin, newBin), "newer bundled arbd must trigger upgrade")
         assertFalse(ArbdProcessManager.shouldAutoUpgradeBinary(newBin, oldBin), "older bundled arbd must not downgrade")
         assertFalse(ArbdProcessManager.shouldAutoUpgradeBinary(newBin, newBin), "identical binary must not restart")
+    }
+
+    @Test
+    fun parsesSystemHelloBuildIdFromTheEnd() {
+        assertEquals(
+            DaemonBuildIdentity(version = "0.1.0", sizeBytes = 12_345L, mtimeSecs = 1_700_000_000L),
+            ArbdProcessManager.parseBuildIdentity("0.1.0-12345-1700000000"),
+        )
+        // Pre-release versions contain '-' themselves.
+        assertEquals(
+            DaemonBuildIdentity(version = "2.0.0-dev.7", sizeBytes = 9L, mtimeSecs = 0L),
+            ArbdProcessManager.parseBuildIdentity("2.0.0-dev.7-9-0"),
+        )
+        assertNull(ArbdProcessManager.parseBuildIdentity(null))
+        assertNull(ArbdProcessManager.parseBuildIdentity(""))
+        assertNull(ArbdProcessManager.parseBuildIdentity("0.1.0"))
+        assertNull(ArbdProcessManager.parseBuildIdentity("0.1.0-abc-1"))
+        assertNull(ArbdProcessManager.parseBuildIdentity("-12-34"))
+    }
+
+    @Test
+    fun samePathUpgradeDetectsSizeChangeWhenZipTimestampsAreFixed(@TempDir tmp: Path) {
+        val bin = tmp.resolve("arbd")
+        Files.writeString(bin, "new-binary-bytes")
+        val fixed = 315_532_800L // 1980-01-01: reproducible ZIP entry timestamp
+        Files.setLastModifiedTime(bin, FileTime.from(Instant.ofEpochSecond(fixed)))
+        val size = Files.size(bin)
+
+        assertFalse(
+            ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed, "0.1.0-$size-$fixed"),
+            "identical identity must not restart",
+        )
+        assertTrue(
+            ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed, "0.1.0-${size + 7}-$fixed"),
+            "same path + same mtime but different size => plugin ZIP was replaced in place",
+        )
+        assertFalse(
+            ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed, "garbage"),
+            "unparseable build_id never forces a restart",
+        )
+    }
+
+    @Test
+    fun identityAutoUpgradeIsClaimedAtMostOncePerSession(@TempDir tmp: Path) {
+        val paths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.LINUX)
+        val mgr = ArbdProcessManager(paths = paths, os = HostOs.LINUX, arch = "x64")
+        assertFalse(mgr.identityUpgradeAttempted)
+        assertTrue(mgr.tryClaimIdentityUpgrade())
+        assertTrue(mgr.identityUpgradeAttempted)
+        assertFalse(mgr.tryClaimIdentityUpgrade(), "loop guard: a second identity restart is refused")
+        assertFalse(mgr.tryClaimIdentityUpgrade())
     }
 }
