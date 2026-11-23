@@ -199,6 +199,23 @@ def ffprobe_json(path, *args):
     return json.loads(out)
 
 
+_FPS_MODE_ARGS = None
+
+
+def fps_mode_args():
+    """`-fps_mode vfr` on FFmpeg 5.1+, else the equivalent `-vsync 0` (FFmpeg 4.x)."""
+    global _FPS_MODE_ARGS
+    if _FPS_MODE_ARGS is None:
+        _FPS_MODE_ARGS = ["-fps_mode", "vfr"]
+        try:
+            rc, out, err = run(["ffmpeg", "-hide_banner", "-h", "full"])
+            if rc != 0 or "-fps_mode" not in out + err:
+                _FPS_MODE_ARGS = ["-vsync", "0"]
+        except Exception:
+            _FPS_MODE_ARGS = ["-vsync", "0"]
+    return _FPS_MODE_ARGS
+
+
 def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     checks = []
     data = path.read_bytes()
@@ -221,7 +238,7 @@ def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     # Full-stream ffmpeg decode verifying 0 decode errors across every frame.
     # `-fps_mode vfr` preserves the track's native 90kHz timebase on VFR Android screen
     # captures so ffmpeg's `null` muxer does not quantize adjacent VFR frames onto the same tick.
-    rc_full, _, e_full = run(["ffmpeg", "-v", "error", "-i", path, "-fps_mode", "vfr", "-f", "null", "-"])
+    rc_full, _, e_full = run(["ffmpeg", "-v", "error", "-i", path, *fps_mode_args(), "-f", "null", "-"])
     checks.append(check("ffmpeg full-stream decode (0 errors)", rc_full == 0 and not e_full.strip(), e_full[-200:]))
     # frame 0 / last PNG via ffmpeg (decoder reference).
     # For the last frame we seek to the final keyframe and use `-update 1` rather than
@@ -229,7 +246,7 @@ def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     # a stream-copied tail GOP whose VUI color tags differ, ffmpeg reconfigures its filter
     # graph at the splice boundary and resets `select`'s `n` counter back to 0.
     f0, fl = outdir / "frame-0.png", outdir / "frame-last.png"
-    rc0, _, e0 = run(["ffmpeg", "-y", "-v", "error", "-i", path, "-fps_mode", "vfr", "-vframes", "1", f0])
+    rc0, _, e0 = run(["ffmpeg", "-y", "-v", "error", "-i", path, *fps_mode_args(), "-vframes", "1", f0])
     last_kf_pts = 0.0
     for pkt in pkts:
         if "K" in pkt.get("flags", ""):
@@ -237,7 +254,7 @@ def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     seek_sec = max(0.0, last_kf_pts - 0.001)
     rcl, _, el = run([
         "ffmpeg", "-y", "-v", "error", "-ss", f"{seek_sec:.6f}", "-i", path,
-        "-fps_mode", "vfr", "-update", "1", fl,
+        *fps_mode_args(), "-update", "1", fl,
     ])
     checks.append(check("ffmpeg decode frame 0 -> PNG", rc0 == 0 and f0.exists() and f0.stat().st_size > 0, e0[-200:]))
     checks.append(check(f"ffmpeg decode frame {expected_frames-1} -> PNG", rcl == 0 and fl.exists() and fl.stat().st_size > 0, el[-200:]))
@@ -288,11 +305,16 @@ def probe_players(path: Path, outdir: Path):
     return players
 
 
+def cli_command(arb_cli, cli_args, subcommand, *rest):
+    """Build an arb-cli argv: global flags (--cli-arg, --json) always precede the subcommand."""
+    return [arb_cli, *cli_args, "--json", subcommand, *rest]
+
+
 def trim_via_cli(args, outdir: Path):
-    base = [args.arb_cli, *args.cli_arg, "--json"]
-    rc, out, err = run([*base, "scrub-bench", args.bundle])
+    rc, out, err = run(cli_command(args.arb_cli, args.cli_arg, "scrub-bench", args.bundle))
     scrub = out.strip()
-    rc2, out2, err2 = run([*base, "trim", args.bundle, "--in-frame", TRIM_IN, "--out-frame", TRIM_OUT, "--dest", outdir])
+    rc2, out2, err2 = run(cli_command(args.arb_cli, args.cli_arg, "trim", args.bundle,
+                                      "--in-frame", TRIM_IN, "--out-frame", TRIM_OUT, "--dest", outdir))
     if rc2 != 0:
         raise RuntimeError(f"arb-cli trim failed: {err2[-400:]}")
     j = json.loads(out2)
@@ -347,6 +369,9 @@ def self_test():
     require("clean ts", not negative_ts([{"pts_time": "0", "dts_time": "0"}]))
     require("N/A ts safe", not negative_ts([{"pts_time": "N/A"}, {"dts_time": "N/A"}, {}]))
     require("safe_float", safe_float("N/A") == 0.0 and safe_float(None, -1) == -1 and safe_float("2.5") == 2.5)
+    cmd = cli_command("arb-cli", ["--data-dir=/d", "--runtime-dir=/r"], "trim", "B")
+    require("global --cli-arg before trim", cmd.index("--data-dir=/d") < cmd.index("trim") and cmd.index("--runtime-dir=/r") < cmd.index("trim") and cmd.index("--json") < cmd.index("trim"), cmd)
+    require("fps_mode fallback args", fps_mode_args() in (["-fps_mode", "vfr"], ["-vsync", "0"]), fps_mode_args())
     r = {"host": "h", "input": "i", "pass": True, "checks": [check("a", True, "d")], "players": [{"player": "p", "status": "ok"}]}
     require("md report", "PASS" in md_report(r))
     msg = "helper logic OK"

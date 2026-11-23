@@ -3,6 +3,7 @@ name: v2 CI
 # 既存の ci.yml（旧プラグイン）とは独立して動く。
 on:
   push:
+    branches: [develop, v2-develop]
     paths:
       - 'core/**'
       - 'device-agent/**'
@@ -10,6 +11,7 @@ on:
       - 'docs/v2/**'
       - '.github/workflows/v2-ci.yml'
   pull_request:
+    branches: [develop, v2-develop]
     paths:
       - 'core/**'
       - 'device-agent/**'
