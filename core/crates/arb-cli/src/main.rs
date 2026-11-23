@@ -6,23 +6,103 @@
 
 //! Scriptable CLI client (`arb-cli`) communicating with `arbd` strictly over local IPC + SHM.
 
+mod process_os;
 mod rpc;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use arb_os::paths::ArbPaths;
 use arb_os::shm::ShmFrameRingReader;
 use serde_json::{Value, json};
 
-use crate::rpc::{AutoStartMode, RpcClient, spawn_daemon_process, wait_for_daemon};
+use crate::rpc::{
+    AutoStartMode, RpcClient, RpcClientError, auto_start_timeout, spawn_daemon_process,
+    wait_for_daemon,
+};
+
+// Exit codes documented in `--help` (R3 S17).
+const EXIT_GENERAL_ERROR: u8 = 1;
+const EXIT_USAGE_ERROR: u8 = 2;
+const EXIT_SAVE_FAILED_RETRYABLE: u8 = 3;
+const EXIT_NOT_FOUND: u8 = 4;
+const EXIT_CONFLICT: u8 = 5;
+
+// JSON-RPC 2.0 error codes returned by `arbd`.
+const RPC_ERR_PARSE: i32 = -32_700;
+const RPC_ERR_INVALID_REQUEST: i32 = -32_600;
+const RPC_ERR_METHOD_NOT_FOUND: i32 = -32_601;
+const RPC_ERR_INVALID_PARAMS: i32 = -32_602;
+const RPC_ERR_NOT_FOUND: i32 = -32_001;
+const RPC_ERR_CONFLICT: i32 = -32_002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Human,
     Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliError {
+    exit_code: u8,
+    rpc_code: Option<i32>,
+    message: String,
+    already_emitted: bool,
+}
+
+impl CliError {
+    fn usage(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: EXIT_USAGE_ERROR,
+            rpc_code: None,
+            message: message.into(),
+            already_emitted: false,
+        }
+    }
+
+    fn general(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: EXIT_GENERAL_ERROR,
+            rpc_code: None,
+            message: message.into(),
+            already_emitted: false,
+        }
+    }
+
+    fn save_failed_already_emitted() -> Self {
+        Self {
+            exit_code: EXIT_SAVE_FAILED_RETRYABLE,
+            rpc_code: None,
+            message: "save failed (retryable); see emitted job status".to_owned(),
+            already_emitted: true,
+        }
+    }
+
+    fn from_rpc(err: RpcClientError) -> Self {
+        match err {
+            RpcClientError::Rpc { code, message } => Self {
+                exit_code: exit_code_for_rpc(code),
+                rpc_code: Some(code),
+                message,
+                already_emitted: false,
+            },
+            other => Self::general(other.to_string()),
+        }
+    }
+}
+
+const fn exit_code_for_rpc(code: i32) -> u8 {
+    match code {
+        RPC_ERR_PARSE
+        | RPC_ERR_INVALID_REQUEST
+        | RPC_ERR_METHOD_NOT_FOUND
+        | RPC_ERR_INVALID_PARAMS => EXIT_USAGE_ERROR,
+        RPC_ERR_NOT_FOUND => EXIT_NOT_FOUND,
+        RPC_ERR_CONFLICT => EXIT_CONFLICT,
+        _ => EXIT_GENERAL_ERROR,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -47,19 +127,47 @@ impl Default for GlobalOptions {
 }
 
 impl GlobalOptions {
-    fn resolve_paths(&self) -> Result<ArbPaths, String> {
-        let mut paths = ArbPaths::resolve().map_err(|e| e.to_string())?;
+    fn resolve_paths(&self) -> Result<ArbPaths, CliError> {
+        let mut paths = ArbPaths::resolve().map_err(|e| CliError::general(e.to_string()))?;
         if let Some(d) = &self.data_dir {
-            paths.data_dir.clone_from(d);
+            paths.data_dir = absolutize_path(d)?;
         }
         if let Some(c) = &self.cache_dir {
-            paths.cache_dir.clone_from(c);
+            paths.cache_dir = absolutize_path(c)?;
         }
         if let Some(r) = &self.runtime_dir {
-            paths.runtime_dir.clone_from(r);
+            paths.runtime_dir = absolutize_path(r)?;
         }
         Ok(paths)
     }
+}
+
+/// Resolves a relative path against the CLI's current working directory without requiring the
+/// target to exist yet (R3 M8).
+fn absolutize_path(path: &Path) -> Result<PathBuf, CliError> {
+    std::path::absolute(path).map_err(|err| {
+        CliError::usage(format!(
+            "cannot resolve path `{}` against current directory: {err}",
+            path.display()
+        ))
+    })
+}
+
+/// Absolutizes a `bundle-id-or-path` argument when it looks like a filesystem path (contains a
+/// path separator, starts with `.`, is already absolute, or exists on disk as a directory),
+/// leaving catalog bundle IDs untouched (R3 M8).
+fn absolutize_bundle_target(target: &str) -> Result<String, CliError> {
+    let path = Path::new(target);
+    let is_path_like = target.contains('/')
+        || target.contains('\\')
+        || target.starts_with('.')
+        || path.is_absolute()
+        || path.is_dir();
+    if !is_path_like {
+        return Ok(target.to_owned());
+    }
+    let abs = absolutize_path(path)?;
+    Ok(abs.to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +211,10 @@ enum CommandSpec {
     },
     BundlesOpen {
         target: String,
+        holder_pid: Option<u32>,
+    },
+    BundlesClose {
+        lease_id: String,
     },
     BundlesTrash {
         bundle_id: String,
@@ -131,18 +243,41 @@ enum CommandSpec {
     },
 }
 
+fn format_error(output: OutputFormat, err: &CliError) -> String {
+    match output {
+        OutputFormat::Json => serde_json::to_string(&json!({
+            "error": {
+                "code": err.rpc_code,
+                "exit_code": err.exit_code,
+                "message": err.message,
+            }
+        }))
+        .unwrap_or_else(|_| format!("{{\"error\":{{\"message\":\"{}\"}}}}", err.message)),
+        OutputFormat::Human => format!("error: {}", err.message),
+    }
+}
+
 fn main() -> ExitCode {
     let raw_args: Vec<String> = env::args().skip(1).collect();
+    let json_requested = raw_args.iter().any(|arg| arg == "--json");
+    let output_hint = if json_requested {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Human
+    };
+
     match parse_args(&raw_args).and_then(|(opts, cmd)| execute(&opts, cmd)) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            ExitCode::FAILURE
+        Err(err) => {
+            if !err.already_emitted {
+                eprintln!("{}", format_error(output_hint, &err));
+            }
+            ExitCode::from(err.exit_code)
         }
     }
 }
 
-fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), String> {
+fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError> {
     let mut opts = GlobalOptions::default();
     let mut rest: Vec<String> = Vec::with_capacity(args.len());
     let mut i = 0_usize;
@@ -152,22 +287,22 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), String> {
             "--data-dir" => {
                 let val = args
                     .get(i + 1)
-                    .ok_or_else(|| "--data-dir requires a path".to_owned())?;
-                opts.data_dir = Some(PathBuf::from(val));
+                    .ok_or_else(|| CliError::usage("--data-dir requires a path"))?;
+                opts.data_dir = Some(absolutize_path(Path::new(val))?);
                 i += 2;
             }
             "--cache-dir" => {
                 let val = args
                     .get(i + 1)
-                    .ok_or_else(|| "--cache-dir requires a path".to_owned())?;
-                opts.cache_dir = Some(PathBuf::from(val));
+                    .ok_or_else(|| CliError::usage("--cache-dir requires a path"))?;
+                opts.cache_dir = Some(absolutize_path(Path::new(val))?);
                 i += 2;
             }
             "--runtime-dir" => {
                 let val = args
                     .get(i + 1)
-                    .ok_or_else(|| "--runtime-dir requires a path".to_owned())?;
-                opts.runtime_dir = Some(PathBuf::from(val));
+                    .ok_or_else(|| CliError::usage("--runtime-dir requires a path"))?;
+                opts.runtime_dir = Some(absolutize_path(Path::new(val))?);
                 i += 2;
             }
             "--json" => {
@@ -198,32 +333,37 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), String> {
         "jobs" => parse_jobs_cmd(&rest[1..])?,
         "bundles" => parse_bundles_cmd(&rest[1..])?,
         "inspect" => {
-            let target = rest
+            let raw = rest
                 .get(1)
-                .ok_or_else(|| "inspect requires <bundle-id-or-path>".to_owned())?
-                .clone();
-            CommandSpec::Inspect { target }
+                .ok_or_else(|| CliError::usage("inspect requires <bundle-id-or-path>"))?;
+            CommandSpec::Inspect {
+                target: absolutize_bundle_target(raw)?,
+            }
         }
         "trim" => parse_trim_cmd(&rest[1..])?,
         "png" => parse_png_cmd(&rest[1..])?,
         "scrub-bench" => parse_scrub_bench_cmd(&rest[1..])?,
-        other => return Err(format!("unknown subcommand `{other}` (run with --help)")),
+        other => {
+            return Err(CliError::usage(format!(
+                "unknown subcommand `{other}` (run with --help)"
+            )));
+        }
     };
 
     Ok((opts, cmd))
 }
 
-fn parse_daemon_cmd(args: &[String]) -> Result<CommandSpec, String> {
+fn parse_daemon_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("start") => Ok(CommandSpec::DaemonStart),
         Some("stop") => Ok(CommandSpec::DaemonStop),
-        other => Err(format!(
+        other => Err(CliError::usage(format!(
             "usage: arb-cli daemon <start|stop> (got {other:?})"
-        )),
+        ))),
     }
 }
 
-fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, String> {
+fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("stop") => Ok(CommandSpec::CaptureStop),
         Some("start") => {
@@ -246,12 +386,19 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, String> {
                         i += 2;
                     }
                     "--companion-jar" => {
-                        companion_jar =
-                            Some(PathBuf::from(require_val(args, i, "--companion-jar")?));
+                        companion_jar = Some(absolutize_path(Path::new(require_val(
+                            args,
+                            i,
+                            "--companion-jar",
+                        )?))?);
                         i += 2;
                     }
                     "--scrcpy-jar" => {
-                        scrcpy_jar = Some(PathBuf::from(require_val(args, i, "--scrcpy-jar")?));
+                        scrcpy_jar = Some(absolutize_path(Path::new(require_val(
+                            args,
+                            i,
+                            "--scrcpy-jar",
+                        )?))?);
                         i += 2;
                     }
                     "--max-size" => {
@@ -291,7 +438,11 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, String> {
                         input_enabled = false;
                         i += 1;
                     }
-                    other => return Err(format!("unknown capture start option `{other}`")),
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unknown capture start option `{other}`"
+                        )));
+                    }
                 }
             }
 
@@ -308,13 +459,13 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 heartbeat_ms,
             })
         }
-        other => Err(format!(
+        other => Err(CliError::usage(format!(
             "usage: arb-cli capture <start|stop> (got {other:?})"
-        )),
+        ))),
     }
 }
 
-fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, String> {
+fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut seconds = 30_u64;
     let mut dest = None;
     let mut drain_timeout_ms = None;
@@ -327,7 +478,7 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 i += 2;
             }
             "--dest" => {
-                dest = Some(PathBuf::from(require_val(args, i, "--dest")?));
+                dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                 i += 2;
             }
             "--drain-timeout-ms" => {
@@ -337,7 +488,7 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 )?);
                 i += 2;
             }
-            other => return Err(format!("unknown save option `{other}`")),
+            other => return Err(CliError::usage(format!("unknown save option `{other}`"))),
         }
     }
 
@@ -348,49 +499,54 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, String> {
     })
 }
 
-fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, String> {
+fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("list") => Ok(CommandSpec::JobsList),
         Some("retry") => {
             let job_id = args
                 .get(1)
-                .ok_or_else(|| "jobs retry requires <job-id>".to_owned())?
+                .ok_or_else(|| CliError::usage("jobs retry requires <job-id>"))?
                 .clone();
             Ok(CommandSpec::JobsRetry { job_id })
         }
         Some("discard") => {
             let job_id = args
                 .get(1)
-                .ok_or_else(|| "jobs discard requires <job-id>".to_owned())?
+                .ok_or_else(|| CliError::usage("jobs discard requires <job-id>"))?
                 .clone();
             Ok(CommandSpec::JobsDiscard { job_id })
         }
         Some("retarget") => {
             let job_id = args
                 .get(1)
-                .ok_or_else(|| "jobs retarget requires <job-id> --dest <dir>".to_owned())?
+                .ok_or_else(|| CliError::usage("jobs retarget requires <job-id> --dest <dir>"))?
                 .clone();
             let mut dest = None;
             let mut i = 2_usize;
             while i < args.len() {
                 match args[i].as_str() {
                     "--dest" => {
-                        dest = Some(PathBuf::from(require_val(args, i, "--dest")?));
+                        dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                         i += 2;
                     }
-                    other => return Err(format!("unknown jobs retarget option `{other}`")),
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unknown jobs retarget option `{other}`"
+                        )));
+                    }
                 }
             }
-            let dest = dest.ok_or_else(|| "jobs retarget requires --dest <dir>".to_owned())?;
+            let dest =
+                dest.ok_or_else(|| CliError::usage("jobs retarget requires --dest <dir>"))?;
             Ok(CommandSpec::JobsRetarget { job_id, dest })
         }
-        other => Err(format!(
+        other => Err(CliError::usage(format!(
             "usage: arb-cli jobs <list|retry|retarget|discard> (got {other:?})"
-        )),
+        ))),
     }
 }
 
-fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, String> {
+fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("list") => {
             let mut state = None;
@@ -401,47 +557,75 @@ fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, String> {
                         state = Some(require_val(args, i, "--state")?.to_owned());
                         i += 2;
                     }
-                    other => return Err(format!("unknown bundles list option `{other}`")),
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unknown bundles list option `{other}`"
+                        )));
+                    }
                 }
             }
             Ok(CommandSpec::BundlesList { state })
         }
         Some("open") => {
-            let target = args
+            let raw = args
                 .get(1)
-                .ok_or_else(|| "bundles open requires <bundle-id-or-path>".to_owned())?
+                .ok_or_else(|| CliError::usage("bundles open requires <bundle-id-or-path>"))?;
+            let target = absolutize_bundle_target(raw)?;
+            let mut holder_pid = None;
+            let mut i = 2_usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--holder-pid" => {
+                        holder_pid = Some(parse_u32(
+                            require_val(args, i, "--holder-pid")?,
+                            "--holder-pid",
+                        )?);
+                        i += 2;
+                    }
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unknown bundles open option `{other}`"
+                        )));
+                    }
+                }
+            }
+            Ok(CommandSpec::BundlesOpen { target, holder_pid })
+        }
+        Some("close") => {
+            let lease_id = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("bundles close requires <lease-id>"))?
                 .clone();
-            Ok(CommandSpec::BundlesOpen { target })
+            Ok(CommandSpec::BundlesClose { lease_id })
         }
         Some("trash") => {
             let bundle_id = args
                 .get(1)
-                .ok_or_else(|| "bundles trash requires <bundle-id>".to_owned())?
+                .ok_or_else(|| CliError::usage("bundles trash requires <bundle-id>"))?
                 .clone();
             Ok(CommandSpec::BundlesTrash { bundle_id })
         }
         Some("restore") => {
             let bundle_id = args
                 .get(1)
-                .ok_or_else(|| "bundles restore requires <bundle-id>".to_owned())?
+                .ok_or_else(|| CliError::usage("bundles restore requires <bundle-id>"))?
                 .clone();
             Ok(CommandSpec::BundlesRestore { bundle_id })
         }
         Some("gc") => Ok(CommandSpec::BundlesGc),
-        other => Err(format!(
-            "usage: arb-cli bundles <list|open|trash|restore|gc> (got {other:?})"
-        )),
+        other => Err(CliError::usage(format!(
+            "usage: arb-cli bundles <list|open|close|trash|restore|gc> (got {other:?})"
+        ))),
     }
 }
 
-fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, String> {
-    let target = args
-        .first()
-        .ok_or_else(|| {
-            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> [--dest <dir>]"
-                .to_owned()
-        })?
-        .clone();
+fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let raw = args.first().ok_or_else(|| {
+        CliError::usage(
+            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> [--dest <dir>]",
+        )
+    })?;
+    let target = absolutize_bundle_target(raw)?;
     let mut in_frame = None;
     let mut out_frame = None;
     let mut dest = None;
@@ -464,15 +648,15 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 i += 2;
             }
             "--dest" => {
-                dest = Some(PathBuf::from(require_val(args, i, "--dest")?));
+                dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                 i += 2;
             }
-            other => return Err(format!("unknown trim option `{other}`")),
+            other => return Err(CliError::usage(format!("unknown trim option `{other}`"))),
         }
     }
 
-    let in_frame = in_frame.ok_or_else(|| "trim requires --in-frame <n>".to_owned())?;
-    let out_frame = out_frame.ok_or_else(|| "trim requires --out-frame <m>".to_owned())?;
+    let in_frame = in_frame.ok_or_else(|| CliError::usage("trim requires --in-frame <n>"))?;
+    let out_frame = out_frame.ok_or_else(|| CliError::usage("trim requires --out-frame <m>"))?;
     Ok(CommandSpec::Trim {
         target,
         in_frame,
@@ -481,13 +665,11 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, String> {
     })
 }
 
-fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, String> {
-    let target = args
-        .first()
-        .ok_or_else(|| {
-            "usage: arb-cli png <bundle-id-or-path> --frame <n> --out <file.png>".to_owned()
-        })?
-        .clone();
+fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let raw = args.first().ok_or_else(|| {
+        CliError::usage("usage: arb-cli png <bundle-id-or-path> --frame <n> --out <file.png>")
+    })?;
+    let target = absolutize_bundle_target(raw)?;
     let mut frame = None;
     let mut out = None;
     let mut i = 1_usize;
@@ -499,23 +681,23 @@ fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 i += 2;
             }
             "--out" => {
-                out = Some(PathBuf::from(require_val(args, i, "--out")?));
+                out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
                 i += 2;
             }
-            other => return Err(format!("unknown png option `{other}`")),
+            other => return Err(CliError::usage(format!("unknown png option `{other}`"))),
         }
     }
 
-    let frame = frame.ok_or_else(|| "png requires --frame <n>".to_owned())?;
-    let out = out.ok_or_else(|| "png requires --out <file.png>".to_owned())?;
+    let frame = frame.ok_or_else(|| CliError::usage("png requires --frame <n>"))?;
+    let out = out.ok_or_else(|| CliError::usage("png requires --out <file.png>"))?;
     Ok(CommandSpec::Png { target, frame, out })
 }
 
-fn parse_scrub_bench_cmd(args: &[String]) -> Result<CommandSpec, String> {
-    let target = args
-        .first()
-        .ok_or_else(|| "usage: arb-cli scrub-bench <bundle-id-or-path> [--frame <n>]".to_owned())?
-        .clone();
+fn parse_scrub_bench_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let raw = args.first().ok_or_else(|| {
+        CliError::usage("usage: arb-cli scrub-bench <bundle-id-or-path> [--frame <n>]")
+    })?;
+    let target = absolutize_bundle_target(raw)?;
     let mut frame = None;
     let mut i = 1_usize;
     while i < args.len() {
@@ -524,29 +706,39 @@ fn parse_scrub_bench_cmd(args: &[String]) -> Result<CommandSpec, String> {
                 frame = Some(parse_u64(require_val(args, i, "--frame")?, "--frame")?);
                 i += 2;
             }
-            other => return Err(format!("unknown scrub-bench option `{other}`")),
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown scrub-bench option `{other}`"
+                )));
+            }
         }
     }
     Ok(CommandSpec::ScrubBench { target, frame })
 }
 
-fn require_val<'a>(args: &'a [String], idx: usize, flag: &str) -> Result<&'a str, String> {
+fn require_val<'a>(args: &'a [String], idx: usize, flag: &str) -> Result<&'a str, CliError> {
     args.get(idx + 1)
         .map(String::as_str)
-        .ok_or_else(|| format!("{flag} requires a value"))
+        .ok_or_else(|| CliError::usage(format!("{flag} requires a value")))
 }
 
-fn parse_u32(raw: &str, flag: &str) -> Result<u32, String> {
-    raw.parse::<u32>()
-        .map_err(|_| format!("{flag} expects an unsigned 32-bit integer, got `{raw}`"))
+fn parse_u32(raw: &str, flag: &str) -> Result<u32, CliError> {
+    raw.parse::<u32>().map_err(|_| {
+        CliError::usage(format!(
+            "{flag} expects an unsigned 32-bit integer, got `{raw}`"
+        ))
+    })
 }
 
-fn parse_u64(raw: &str, flag: &str) -> Result<u64, String> {
-    raw.parse::<u64>()
-        .map_err(|_| format!("{flag} expects an unsigned 64-bit integer, got `{raw}`"))
+fn parse_u64(raw: &str, flag: &str) -> Result<u64, CliError> {
+    raw.parse::<u64>().map_err(|_| {
+        CliError::usage(format!(
+            "{flag} expects an unsigned 64-bit integer, got `{raw}`"
+        ))
+    })
 }
 
-fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), String> {
+fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
     if matches!(cmd, CommandSpec::Help) {
         print_help();
         return Ok(());
@@ -559,17 +751,21 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), String> {
         let mut client = if let Ok(c) = RpcClient::connect_endpoint(&endpoint) {
             c
         } else {
-            spawn_daemon_process(&paths).map_err(|e| e.to_string())?;
-            wait_for_daemon(&endpoint, Duration::from_secs(5)).map_err(|e| e.to_string())?
+            let (mut child, log_path) = spawn_daemon_process(&paths).map_err(CliError::from_rpc)?;
+            wait_for_daemon(
+                &endpoint,
+                auto_start_timeout(),
+                Some(&mut child),
+                Some(&log_path),
+            )
+            .map_err(CliError::from_rpc)?
         };
-        let hello = client
-            .call("system.hello", json!({}))
-            .map_err(|e| e.to_string())?;
+        let hello = client.verify_hello().map_err(CliError::from_rpc)?;
         emit_value(opts.output, &hello, "arbd started");
         return Ok(());
     }
 
-    let mut client = RpcClient::connect(&paths, opts.auto_start).map_err(|e| e.to_string())?;
+    let mut client = RpcClient::connect(&paths, opts.auto_start).map_err(CliError::from_rpc)?;
     dispatch_connected(&mut client, opts.output, cmd)
 }
 
@@ -577,7 +773,7 @@ fn dispatch_connected(
     client: &mut RpcClient,
     output: OutputFormat,
     cmd: CommandSpec,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     match cmd {
         CommandSpec::Help | CommandSpec::DaemonStart => Ok(()),
         CommandSpec::Status => dispatch_status(client, output),
@@ -586,25 +782,39 @@ fn dispatch_connected(
             execute_scrub_bench(client, output, &target, frame)
         }
         other => {
+            let check = if matches!(
+                other,
+                CommandSpec::Save { .. }
+                    | CommandSpec::JobsRetry { .. }
+                    | CommandSpec::JobsRetarget { .. }
+            ) {
+                OutcomeCheck::SaveJob
+            } else {
+                OutcomeCheck::Standard
+            };
             let (method, params, label) = command_to_rpc(other);
-            call_and_emit(client, output, method, params, label)
+            call_and_emit(client, output, method, params, label, check)
         }
     }
 }
 
-fn dispatch_status(client: &mut RpcClient, output: OutputFormat) -> Result<(), String> {
-    let hello = client
-        .call("system.hello", json!({}))
-        .map_err(|e| e.to_string())?;
+fn dispatch_status(client: &mut RpcClient, output: OutputFormat) -> Result<(), CliError> {
+    let hello = client.verify_hello().map_err(CliError::from_rpc)?;
     let status = client
         .call("system.status", json!({}))
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     emit_value(
         output,
         &json!({ "hello": hello, "status": status }),
         "arbd status",
     );
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeCheck {
+    Standard,
+    SaveJob,
 }
 
 fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
@@ -625,16 +835,10 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         } => (
             "capture.start",
             json!({
-                "serial": serial,
-                "companion_jar": companion_jar,
-                "scrcpy_jar": scrcpy_jar,
-                "max_size": max_size,
-                "max_fps": max_fps,
-                "video_bit_rate": video_bit_rate,
-                "audio_enabled": audio_enabled,
-                "logcat_enabled": logcat_enabled,
-                "input_enabled": input_enabled,
-                "heartbeat_ms": heartbeat_ms,
+                "serial": serial, "companion_jar": companion_jar, "scrcpy_jar": scrcpy_jar,
+                "max_size": max_size, "max_fps": max_fps, "video_bit_rate": video_bit_rate,
+                "audio_enabled": audio_enabled, "logcat_enabled": logcat_enabled,
+                "input_enabled": input_enabled, "heartbeat_ms": heartbeat_ms,
             }),
             "capture started",
         ),
@@ -661,10 +865,19 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             ("save.discard", json!({ "job_id": job_id }), "job discarded")
         }
         CommandSpec::BundlesList { state } => ("bundle.list", json!({ "state": state }), "bundles"),
-        CommandSpec::BundlesOpen { target } => (
+        CommandSpec::BundlesOpen { target, holder_pid } => (
             "bundle.open",
-            json!({ "bundle_id_or_path": target, "holder_kind": "cli", "holder_pid": std::process::id() }),
+            json!({
+                "bundle_id_or_path": target,
+                "holder_kind": "cli",
+                "holder_pid": holder_pid.unwrap_or_else(std::process::id),
+            }),
             "bundle opened",
+        ),
+        CommandSpec::BundlesClose { lease_id } => (
+            "bundle.close",
+            json!({ "lease_id": lease_id }),
+            "bundle lease closed",
         ),
         CommandSpec::BundlesTrash { bundle_id } => (
             "bundle.trash",
@@ -685,11 +898,8 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         } => (
             "export.trim",
             json!({
-                "bundle_id_or_path": target,
-                "in_frame_index": in_frame,
-                "out_frame_index": out_frame,
-                "dest_dir": dest,
-                "holder_pid": std::process::id(),
+                "bundle_id_or_path": target, "in_frame_index": in_frame,
+                "out_frame_index": out_frame, "dest_dir": dest, "holder_pid": std::process::id(),
             }),
             "trim result",
         ),
@@ -706,15 +916,25 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
     }
 }
 
+/// Checks whether a `save.trigger` / `save.retry` / `save.retarget` response indicates a
+/// failed-retryable outcome (`bundle_id == null`, R3 S17).
+fn save_outcome_failed(resp: &Value) -> bool {
+    resp.get("bundle_id").is_none_or(Value::is_null)
+}
+
 fn call_and_emit(
     client: &mut RpcClient,
     output: OutputFormat,
     method: &str,
     params: Value,
     label: &str,
-) -> Result<(), String> {
-    let resp = client.call(method, params).map_err(|e| e.to_string())?;
+    check: OutcomeCheck,
+) -> Result<(), CliError> {
+    let resp = client.call(method, params).map_err(CliError::from_rpc)?;
     emit_value(output, &resp, label);
+    if check == OutcomeCheck::SaveJob && save_outcome_failed(&resp) {
+        return Err(CliError::save_failed_already_emitted());
+    }
     Ok(())
 }
 
@@ -722,7 +942,7 @@ fn execute_inspect(
     client: &mut RpcClient,
     output: OutputFormat,
     target: &str,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let opened = client
         .call(
             "bundle.open",
@@ -732,7 +952,7 @@ fn execute_inspect(
                 "holder_pid": std::process::id(),
             }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
 
     let lease_id = opened
         .get("lease_id")
@@ -748,13 +968,13 @@ fn execute_inspect(
             "timeline.summary",
             json!({ "bundle_id_or_path": resolved_id }),
         )
-        .map_err(|e| e.to_string());
+        .map_err(CliError::from_rpc);
     let discontinuities = client
         .call(
             "timeline.discontinuities",
             json!({ "bundle_id_or_path": resolved_id }),
         )
-        .map_err(|e| e.to_string());
+        .map_err(CliError::from_rpc);
 
     if let Some(lease) = lease_id {
         let _ = client.call("bundle.close", json!({ "lease_id": lease }));
@@ -779,22 +999,22 @@ fn execute_scrub_bench(
     output: OutputFormat,
     target: &str,
     requested_frame: Option<u64>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let vp = client
         .call(
             "media.open_viewport",
             json!({ "bundle_id_or_path": target }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let viewport_id = vp
         .get("viewport_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| "missing viewport_id from media.open_viewport".to_owned())?
+        .ok_or_else(|| CliError::general("missing viewport_id from media.open_viewport"))?
         .to_owned();
     let shm_path = vp
         .get("shm_path")
         .and_then(Value::as_str)
-        .ok_or_else(|| "missing shm_path from media.open_viewport".to_owned())?
+        .ok_or_else(|| CliError::general("missing shm_path from media.open_viewport"))?
         .to_owned();
     let frame_count = vp.get("frame_count").and_then(Value::as_u64).unwrap_or(0);
     if frame_count == 0 {
@@ -802,7 +1022,7 @@ fn execute_scrub_bench(
             "media.close_viewport",
             json!({ "viewport_id": viewport_id }),
         );
-        return Err("bundle video track contains 0 frames".to_owned());
+        return Err(CliError::general("bundle video track contains 0 frames"));
     }
 
     let target_frame = requested_frame.unwrap_or_else(|| (frame_count / 2).min(frame_count - 1));
@@ -823,14 +1043,15 @@ fn run_scrub_bench_inner(
     shm_path: &str,
     frame_count: u64,
     target_frame: u64,
-) -> Result<Value, String> {
-    let shm_reader = ShmFrameRingReader::open(shm_path).map_err(|e| e.to_string())?;
+) -> Result<Value, CliError> {
+    let shm_reader =
+        ShmFrameRingReader::open(shm_path).map_err(|e| CliError::general(e.to_string()))?;
     let mut pixel_buf = Vec::new();
 
     let t_fs = Instant::now();
     let fs_resp = client
         .call("media.filmstrip", json!({ "viewport_id": viewport_id }))
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let filmstrip_ms = t_fs.elapsed().as_secs_f64() * 1000.0;
 
     let t_scrub = Instant::now();
@@ -839,11 +1060,11 @@ fn run_scrub_bench_inner(
             "media.scrub",
             json!({ "viewport_id": viewport_id, "frame_index": target_frame }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let scrub_meta = shm_reader
         .read_latest(&mut pixel_buf)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "SHM ring had no frame after media.scrub".to_owned())?;
+        .map_err(|e| CliError::general(e.to_string()))?
+        .ok_or_else(|| CliError::general("SHM ring had no frame after media.scrub"))?;
     let scrub_ms = t_scrub.elapsed().as_secs_f64() * 1000.0;
 
     let t_seek = Instant::now();
@@ -852,11 +1073,11 @@ fn run_scrub_bench_inner(
             "media.seek_frame",
             json!({ "viewport_id": viewport_id, "frame_index": target_frame }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let seek_meta = shm_reader
         .read_latest(&mut pixel_buf)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "SHM ring had no frame after media.seek_frame".to_owned())?;
+        .map_err(|e| CliError::general(e.to_string()))?
+        .ok_or_else(|| CliError::general("SHM ring had no frame after media.seek_frame"))?;
     let seek_ms = t_seek.elapsed().as_secs_f64() * 1000.0;
 
     let next_frame = (target_frame + 1).min(frame_count - 1);
@@ -866,10 +1087,10 @@ fn run_scrub_bench_inner(
             "media.seek_frame",
             json!({ "viewport_id": viewport_id, "frame_index": next_frame }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let _ = shm_reader
         .read_latest(&mut pixel_buf)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CliError::general(e.to_string()))?;
     let step_fwd_ms = t_step_fwd.elapsed().as_secs_f64() * 1000.0;
 
     let prev_frame = target_frame.saturating_sub(1);
@@ -879,10 +1100,10 @@ fn run_scrub_bench_inner(
             "media.seek_frame",
             json!({ "viewport_id": viewport_id, "frame_index": prev_frame }),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(CliError::from_rpc)?;
     let _ = shm_reader
         .read_latest(&mut pixel_buf)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CliError::general(e.to_string()))?;
     let step_back_ms = t_step_back.elapsed().as_secs_f64() * 1000.0;
 
     Ok(json!({
@@ -953,21 +1174,31 @@ GLOBAL OPTIONS:\n  \
   --data-dir <DIR>       Override ARB_DATA_DIR\n  \
   --cache-dir <DIR>      Override ARB_CACHE_DIR\n  \
   --runtime-dir <DIR>    Override ARB_RUNTIME_DIR\n  \
-  --json                 Emit machine-readable JSON\n  \
-  --auto-start           Auto-spawn sibling arbd if not running\n\n\
+  --json                 Emit machine-readable JSON (structured JSON errors on stderr)\n  \
+  --auto-start           Auto-spawn detached sibling arbd if not running (timeout: ARB_AUTO_START_TIMEOUT_MS)\n\n\
 COMMANDS:\n  \
   status\n  \
   daemon start | stop\n  \
   devices\n  \
-  capture start [--serial <S>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
+  capture start [--serial <S>] [--companion-jar <JAR>] [--scrcpy-jar <JAR>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
   capture stop\n  \
   save [--seconds <30>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
-  bundles list [--state active|trashed] | open <TARGET> | trash <ID> | restore <ID> | gc\n  \
+  bundles list [--state active|trashed]\n  \
+  bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
+  bundles close <LEASE_ID>\n  \
+  bundles trash <ID> | restore <ID> | gc\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
-  scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]",
+  scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n\n\
+EXIT CODES:\n  \
+  0  Success\n  \
+  1  General / transport / internal error\n  \
+  2  CLI usage or invalid parameters\n  \
+  3  Save / retry / retarget ended in failed_retryable (pins preserved)\n  \
+  4  Resource not found\n  \
+  5  State conflict",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -976,8 +1207,14 @@ COMMANDS:\n  \
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CommandSpec, OutputFormat, parse_args};
-    use crate::rpc::AutoStartMode;
+    use serde_json::{Value, json};
+
+    use super::{
+        CliError, CommandSpec, EXIT_CONFLICT, EXIT_GENERAL_ERROR, EXIT_NOT_FOUND,
+        EXIT_SAVE_FAILED_RETRYABLE, EXIT_USAGE_ERROR, OutputFormat, RPC_ERR_CONFLICT,
+        RPC_ERR_INVALID_PARAMS, RPC_ERR_NOT_FOUND, format_error, parse_args, save_outcome_failed,
+    };
+    use crate::rpc::{AutoStartMode, RpcClientError};
 
     fn vec_str(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
@@ -1060,5 +1297,176 @@ mod tests {
             },
             "png command must match"
         );
+    }
+
+    #[test]
+    fn r3_m8_absolutizes_relative_cli_paths_and_keeps_bundle_ids() {
+        let cwd = std::env::current_dir().expect("cwd");
+
+        let (_, save_cmd) =
+            parse_args(&vec_str(&["save", "--dest", "rel/out"])).expect("save parses");
+        assert_eq!(
+            save_cmd,
+            CommandSpec::Save {
+                seconds: 30,
+                dest: Some(cwd.join("rel/out")),
+                drain_timeout_ms: None,
+            },
+            "relative --dest must be absolutized against CLI cwd"
+        );
+
+        let (_, png_cmd) = parse_args(&vec_str(&[
+            "png",
+            "./my-bundle",
+            "--frame",
+            "3",
+            "--out",
+            "f3.png",
+        ]))
+        .expect("png parses");
+        match png_cmd {
+            CommandSpec::Png { target, frame, out } => {
+                assert!(
+                    PathBuf::from(&target).is_absolute(),
+                    "relative bundle path must be absolutized: {target}"
+                );
+                assert_eq!(frame, 3, "frame index mismatch");
+                assert_eq!(
+                    out,
+                    cwd.join("f3.png"),
+                    "relative --out must be absolutized"
+                );
+            }
+            other => panic!("unexpected cmd: {other:?}"),
+        }
+
+        let (_, cap_cmd) = parse_args(&vec_str(&[
+            "capture",
+            "start",
+            "--companion-jar",
+            "jars/comp.jar",
+            "--scrcpy-jar",
+            "jars/scrcpy.jar",
+        ]))
+        .expect("capture start parses");
+        match cap_cmd {
+            CommandSpec::CaptureStart {
+                companion_jar,
+                scrcpy_jar,
+                ..
+            } => {
+                assert_eq!(
+                    companion_jar,
+                    Some(cwd.join("jars/comp.jar")),
+                    "companion_jar must be absolutized"
+                );
+                assert_eq!(
+                    scrcpy_jar,
+                    Some(cwd.join("jars/scrcpy.jar")),
+                    "scrcpy_jar must be absolutized"
+                );
+            }
+            other => panic!("unexpected cmd: {other:?}"),
+        }
+
+        let (_, inspect_id) =
+            parse_args(&vec_str(&["inspect", "bundle-abc-123"])).expect("inspect parses");
+        assert_eq!(
+            inspect_id,
+            CommandSpec::Inspect {
+                target: "bundle-abc-123".to_owned(),
+            },
+            "plain catalog bundle ID must not be turned into a path"
+        );
+    }
+
+    #[test]
+    fn r3_s6_parses_bundles_close_and_open_holder_pid() {
+        let (_, open_cmd) = parse_args(&vec_str(&[
+            "bundles",
+            "open",
+            "bundle-1",
+            "--holder-pid",
+            "12345",
+        ]))
+        .expect("bundles open parses");
+        assert_eq!(
+            open_cmd,
+            CommandSpec::BundlesOpen {
+                target: "bundle-1".to_owned(),
+                holder_pid: Some(12_345),
+            },
+            "bundles open must parse --holder-pid"
+        );
+
+        let (_, close_cmd) =
+            parse_args(&vec_str(&["bundles", "close", "lease-99"])).expect("bundles close parses");
+        assert_eq!(
+            close_cmd,
+            CommandSpec::BundlesClose {
+                lease_id: "lease-99".to_owned(),
+            },
+            "bundles close must parse lease_id"
+        );
+    }
+
+    #[test]
+    fn r3_s17_maps_rpc_errors_and_failed_save_to_distinct_exit_codes_and_json_errors() {
+        let not_found = CliError::from_rpc(RpcClientError::Rpc {
+            code: RPC_ERR_NOT_FOUND,
+            message: "missing".to_owned(),
+        });
+        assert_eq!(not_found.exit_code, EXIT_NOT_FOUND, "not found exit code");
+
+        let conflict = CliError::from_rpc(RpcClientError::Rpc {
+            code: RPC_ERR_CONFLICT,
+            message: "busy".to_owned(),
+        });
+        assert_eq!(conflict.exit_code, EXIT_CONFLICT, "conflict exit code");
+
+        let invalid = CliError::from_rpc(RpcClientError::Rpc {
+            code: RPC_ERR_INVALID_PARAMS,
+            message: "bad path".to_owned(),
+        });
+        assert_eq!(
+            invalid.exit_code, EXIT_USAGE_ERROR,
+            "invalid params exit code"
+        );
+
+        let other = CliError::general("socket down");
+        assert_eq!(
+            other.exit_code, EXIT_GENERAL_ERROR,
+            "general error exit code"
+        );
+
+        let save_err = CliError::save_failed_already_emitted();
+        assert_eq!(
+            save_err.exit_code, EXIT_SAVE_FAILED_RETRYABLE,
+            "failed_retryable save must exit 3"
+        );
+        assert!(
+            save_outcome_failed(
+                &json!({ "bundle_id": null, "job": { "state": "failed_retryable" } })
+            ),
+            "null bundle_id must be detected as failed save"
+        );
+        assert!(
+            !save_outcome_failed(
+                &json!({ "bundle_id": "bundle-1", "job": { "state": "completed" } })
+            ),
+            "non-null bundle_id must succeed"
+        );
+
+        let formatted = format_error(OutputFormat::Json, &not_found);
+        let parsed: Value = serde_json::from_str(&formatted).expect("JSON error must parse");
+        assert_eq!(
+            parsed["error"]["code"], RPC_ERR_NOT_FOUND,
+            "JSON error code"
+        );
+        assert_eq!(
+            parsed["error"]["exit_code"], EXIT_NOT_FOUND,
+            "JSON error exit_code"
+        );
+        assert_eq!(parsed["error"]["message"], "missing", "JSON error message");
     }
 }

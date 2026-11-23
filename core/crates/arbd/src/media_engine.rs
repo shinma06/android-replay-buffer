@@ -10,7 +10,7 @@ use arb_core::bundle::{
     StreamsSummary, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_for_trim_with_truncated};
-use arb_core::time::{DiscontinuityEvent, TimeAlignment, TimestampSemantics};
+use arb_core::time::{DiscontinuityEvent, TimeAlignment, TimestampSemantics, UncertaintyReason};
 use arb_media::codec::{PixelFormat as MediaPixelFormat, VideoCodecBackend, default_codec_backend};
 use arb_media::mp4::Mp4VideoTrack;
 use arb_media::playback::{
@@ -23,10 +23,11 @@ use arb_storage::bundle_io::{
 };
 use arb_storage::catalog::{Catalog, CatalogFormatVersion, LeaseHolderKind, NewBundleEntry};
 
+use crate::capture::FaultInjection;
 use crate::error::DaemonError;
 use crate::protocol::{
     ExportPngParams, ExportPngResponse, ExportTrimParams, ExportTrimResponse, FilmstripEntryMeta,
-    MediaFilmstripParams, MediaFilmstripResponse, MediaFrameRequestParams,
+    MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse, MediaFrameRequestParams,
     MediaOpenViewportResponse, MediaScrubResponse, MediaSeekFrameResponse,
 };
 use crate::time_util::{next_id, utc_now_iso8601};
@@ -81,16 +82,43 @@ impl MediaEngine {
         self.viewports.len()
     }
 
+    /// Removes stale `*.shm` viewport files left in `shm_dir` by a crashed daemon (R3 M7).
+    ///
+    /// Must only run while the single-instance lock is held (no other daemon can own them).
+    /// Returns the number of files removed.
+    pub fn sweep_stale_shm_files(shm_dir: &Path) -> usize {
+        let Ok(entries) = fs::read_dir(shm_dir) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "shm")
+                && path.is_file()
+                && fs::remove_file(&path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Opens a triple-buffered SHM viewport for `bundle_dir` and returns its descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError::NotFound`] if the bundle has no video track, or OS/media errors.
+    /// Returns [`DaemonError::Conflict`] when [`MAX_VIEWPORTS`] viewports are already open
+    /// (R3 M7), [`DaemonError::NotFound`] if the bundle has no video track, or OS/media errors.
     pub fn open_viewport(
         &mut self,
         bundle_dir: &Path,
         bundle_id_override: Option<&str>,
     ) -> Result<MediaOpenViewportResponse, DaemonError> {
+        if self.viewports.len() >= MAX_VIEWPORTS {
+            return Err(DaemonError::Conflict(format!(
+                "too many open viewports (max {MAX_VIEWPORTS}); close one with media.close_viewport"
+            )));
+        }
         let reader = open_bundle(bundle_dir)?;
         let summary = reader.manifest_summary();
         let bundle_id = bundle_id_override.unwrap_or(&summary.bundle_id).to_owned();
@@ -348,180 +376,264 @@ impl MediaEngine {
     pub fn close_all(&mut self) {
         self.viewports.clear();
     }
+}
 
-    /// Exports an exact integer `frame_index` as a PNG with `arb:*` provenance `tEXt` chunks.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DaemonError`] if the bundle or video track cannot be opened, or PNG export fails.
-    pub fn export_png(
-        &self,
-        bundle_dir: &Path,
-        params: &ExportPngParams,
-    ) -> Result<ExportPngResponse, DaemonError> {
-        let reader = open_bundle(bundle_dir)?;
-        let summary = reader.manifest_summary();
-        let video_path = reader.video_path().ok_or_else(|| {
-            DaemonError::NotFound(format!(
-                "bundle `{}` has no video track for PNG export",
-                summary.bundle_id
-            ))
-        })?;
-        let frames = reader.frames().unwrap_or_default();
-        let boottime_ns = frames
-            .iter()
-            .find(|f| f.frame_index == params.frame_index)
-            .and_then(|f| match &f.alignment {
-                TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
-                TimeAlignment::Bounded {
-                    min_boottime_ns, ..
-                } => Some(*min_boottime_ns),
-                _ => None,
-            });
-        if let Some(parent) = params.output_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)?;
-        }
-        let meta = PngExportMetadata {
-            boottime_ns,
-            source_bundle_id: Some(summary.bundle_id.clone()),
-        };
-        let report = export_frame_png_with_metadata(
-            &video_path,
-            params.frame_index,
-            &params.output_path,
-            &meta,
-            self.backend.as_ref(),
-        )?;
-        Ok(ExportPngResponse {
-            output_path: params.output_path.clone(),
-            report,
-        })
+/// Shared inputs for the standalone exporters, which run **outside** the media mutex `M`
+/// so long exports never freeze live scrubbing in other viewports (R3 S9).
+#[derive(Debug)]
+pub struct ExportContext<'a> {
+    /// Catalog used for the temporary `ExportJob` lease and trimmed-bundle registration.
+    pub catalog: &'a Catalog,
+    /// Daemon data directory (`<data_dir>/tmp` holds temporary MP4s).
+    pub data_dir: &'a Path,
+    /// Per-export codec backend (never the viewport engine's shared backend).
+    pub backend: &'a dyn VideoCodecBackend,
+    /// Test-only fault injection switches.
+    pub faults: &'a FaultInjection,
+}
+
+/// Acquires a temporary `ExportJob` lease on a cataloged source bundle so `bundle.gc` cannot
+/// purge it mid-export; the lease is released on every return path.
+fn acquire_export_lease<'a>(
+    catalog: &'a Catalog,
+    source_catalog_id: Option<&str>,
+    holder_pid: u32,
+) -> Result<Option<LeaseDropGuard<'a>>, DaemonError> {
+    let Some(src_id) = source_catalog_id else {
+        return Ok(None);
+    };
+    let lease_id = catalog.acquire_lease(
+        src_id,
+        LeaseHolderKind::ExportJob,
+        holder_pid,
+        &utc_now_iso8601(),
+    )?;
+    Ok(Some(LeaseDropGuard { catalog, lease_id }))
+}
+
+/// Exports an exact integer `frame_index` as a PNG with `arb:*` provenance `tEXt` chunks.
+///
+/// Holds an `ExportJob` lease on the source bundle for the whole decode (R3 S7). The caller
+/// must already have validated `params.output_path` (absolute, outside every bundle and the
+/// daemon's private directories); the parent directory is only created afterwards.
+///
+/// # Errors
+///
+/// Returns [`DaemonError`] if the bundle or video track cannot be opened, or PNG export fails.
+pub fn export_png(
+    ctx: &ExportContext<'_>,
+    bundle_dir: &Path,
+    source_catalog_id: Option<&str>,
+    params: &ExportPngParams,
+) -> Result<ExportPngResponse, DaemonError> {
+    let _lease_guard = acquire_export_lease(ctx.catalog, source_catalog_id, std::process::id())?;
+    let reader = open_bundle(bundle_dir)?;
+    let summary = reader.manifest_summary();
+    let video_path = reader.video_path().ok_or_else(|| {
+        DaemonError::NotFound(format!(
+            "bundle `{}` has no video track for PNG export",
+            summary.bundle_id
+        ))
+    })?;
+    let frames = reader.frames().unwrap_or_default();
+    let boottime_ns = frames
+        .iter()
+        .find(|f| f.frame_index == params.frame_index)
+        .and_then(|f| match &f.alignment {
+            TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
+            TimeAlignment::Bounded {
+                min_boottime_ns, ..
+            } => Some(*min_boottime_ns),
+            _ => None,
+        });
+    if let Some(parent) = params.output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
+    let meta = PngExportMetadata {
+        boottime_ns,
+        source_bundle_id: Some(summary.bundle_id.clone()),
+    };
+    let report = export_frame_png_with_metadata(
+        &video_path,
+        params.frame_index,
+        &params.output_path,
+        &meta,
+        ctx.backend,
+    )?;
+    Ok(ExportPngResponse {
+        output_path: params.output_path.clone(),
+        report,
+    })
+}
 
-    /// Performs a non-destructive frame-accurate integer `[in_frame_index..=out_frame_index]`
-    /// trim while holding a temporary `ExportJob` lease on the source bundle.
-    ///
-    /// Source bundle files are NEVER modified. Output MP4 contains strictly zero `edts`/`elst`
-    /// boxes and carries forward `unanchored` records via [`select_for_trim_with_truncated`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DaemonError`] if the frame range is invalid, video trim fails, or atomic
-    /// v2 bundle write fails.
-    pub fn export_trim(
-        &self,
-        catalog: &Catalog,
-        data_dir: &Path,
-        source_bundle_dir: &Path,
-        source_catalog_id: Option<&str>,
-        params: &ExportTrimParams,
-    ) -> Result<ExportTrimResponse, DaemonError> {
-        let now_utc = utc_now_iso8601();
-        let holder_pid = params.holder_pid.unwrap_or_else(std::process::id);
+/// Performs a non-destructive frame-accurate integer `[in_frame_index..=out_frame_index]`
+/// trim while holding a temporary `ExportJob` lease on the source bundle.
+///
+/// Source bundle files are NEVER modified. Output MP4 contains strictly zero `edts`/`elst`
+/// boxes and carries forward `unanchored` records via [`select_for_trim_with_truncated`].
+/// A commit whose only failure is the parent-directory `fsync` is treated as published and
+/// registered idempotently (R3 M1 / S8a).
+///
+/// # Errors
+///
+/// Returns [`DaemonError`] if the frame range is invalid, video trim fails, or atomic
+/// v2 bundle write fails.
+pub fn export_trim(
+    ctx: &ExportContext<'_>,
+    source_bundle_dir: &Path,
+    source_catalog_id: Option<&str>,
+    dest_parent: &Path,
+    params: &ExportTrimParams,
+) -> Result<ExportTrimResponse, DaemonError> {
+    let now_utc = utc_now_iso8601();
+    let holder_pid = params.holder_pid.unwrap_or_else(std::process::id);
+    let catalog = ctx.catalog;
+    let _lease_guard = acquire_export_lease(catalog, source_catalog_id, holder_pid)?;
 
-        // Acquire a Job Lease on the source bundle when registered in the catalog.
-        let _lease_guard = if let Some(src_id) = source_catalog_id {
-            let lease_id =
-                catalog.acquire_lease(src_id, LeaseHolderKind::ExportJob, holder_pid, &now_utc)?;
-            Some(LeaseDropGuard { catalog, lease_id })
-        } else {
-            None
-        };
+    let reader = open_bundle(source_bundle_dir)?;
+    let summary = reader.manifest_summary();
+    let parent_bundle_id = source_catalog_id.unwrap_or(&summary.bundle_id).to_owned();
+    let video_path = reader.video_path().ok_or_else(|| {
+        DaemonError::NotFound(format!(
+            "source bundle `{parent_bundle_id}` has no video.mp4"
+        ))
+    })?;
 
-        let reader = open_bundle(source_bundle_dir)?;
-        let summary = reader.manifest_summary();
-        let parent_bundle_id = source_catalog_id.unwrap_or(&summary.bundle_id).to_owned();
-        let video_path = reader.video_path().ok_or_else(|| {
-            DaemonError::NotFound(format!(
-                "source bundle `{parent_bundle_id}` has no video.mp4"
-            ))
-        })?;
+    let source_frames = reader.frames()?;
+    let frame_window = WindowSpec::from_frame_indices(
+        &source_frames,
+        params.in_frame_index,
+        params.out_frame_index,
+    )?;
 
-        let source_frames = reader.frames()?;
-        let frame_window = WindowSpec::from_frame_indices(
-            &source_frames,
-            params.in_frame_index,
-            params.out_frame_index,
-        )?;
+    let trim_job_id = next_id("trim");
+    let new_bundle_id = next_id("bundle");
+    let tmp_dir = ctx.data_dir.join("tmp");
+    fs::create_dir_all(&tmp_dir)?;
+    let tmp_trimmed_mp4 = tmp_dir.join(format!("{trim_job_id}.mp4"));
+    let _tmp_guard = FileCleanupGuard(tmp_trimmed_mp4.clone());
 
-        let trim_job_id = next_id("trim");
-        let new_bundle_id = next_id("bundle");
-        let tmp_dir = data_dir.join("tmp");
-        fs::create_dir_all(&tmp_dir)?;
-        let tmp_trimmed_mp4 = tmp_dir.join(format!("{trim_job_id}.mp4"));
-        let _tmp_guard = FileCleanupGuard(tmp_trimmed_mp4.clone());
+    let trim_report = trim_video(
+        &video_path,
+        &tmp_trimmed_mp4,
+        params.in_frame_index,
+        params.out_frame_index,
+        ctx.backend,
+    )?;
 
-        let trim_report = trim_video(
-            &video_path,
-            &tmp_trimmed_mp4,
-            params.in_frame_index,
-            params.out_frame_index,
-            self.backend.as_ref(),
-        )?;
+    let trimmed_track = Mp4VideoTrack::open(&tmp_trimmed_mp4)?;
+    let trimmed_frames =
+        build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
 
-        let trimmed_track = Mp4VideoTrack::open(&tmp_trimmed_mp4)?;
-        let trimmed_frames =
-            build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
+    let policy = SelectionPolicy::default();
+    let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
+        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &policy)?;
+    let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) =
+        select_trimmed_taps(reader.as_ref(), &frame_window, &policy)?;
+    let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
-        let policy = SelectionPolicy::default();
-        let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
-            select_trimmed_logs(reader.as_ref(), summary, &frame_window, &policy)?;
-        let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) =
-            select_trimmed_taps(reader.as_ref(), &frame_window, &policy)?;
-        let trimmed_discs =
-            filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
+    let unanchored_summary = UnanchoredSummary {
+        included_count: u64::try_from(unanchored_log_count + unanchored_tap_count)
+            .unwrap_or(u64::MAX),
+        truncated_count: u64::try_from(log_truncated.saturating_add(tap_truncated))
+            .unwrap_or(u64::MAX),
+    };
 
-        let unanchored_summary = UnanchoredSummary {
-            included_count: u64::try_from(unanchored_log_count + unanchored_tap_count)
-                .unwrap_or(u64::MAX),
-            truncated_count: u64::try_from(log_truncated.saturating_add(tap_truncated))
-                .unwrap_or(u64::MAX),
-        };
+    let dest_bundle_dir = dest_parent.join(&new_bundle_id);
+    // R3 S8c: a trim that includes the source's last frame inherits its incomplete tail.
+    let last_source_frame = source_frames.iter().map(|f| f.frame_index).max();
+    let includes_source_tail = last_source_frame.is_some_and(|last| params.out_frame_index >= last);
+    let tail_may_be_incomplete = includes_source_tail
+        && summary
+            .streams
+            .video
+            .as_ref()
+            .is_some_and(|v| v.tail_may_be_incomplete);
 
-        let dest_parent = params
-            .dest_dir
-            .clone()
-            .unwrap_or_else(|| catalog.managed_bundles_root().to_path_buf());
-        let dest_bundle_dir = dest_parent.join(&new_bundle_id);
+    let draft = build_trimmed_bundle_draft(
+        &new_bundle_id,
+        &parent_bundle_id,
+        &now_utc,
+        summary,
+        &frame_window,
+        params,
+        TrimmedVideo {
+            output_frame_count: trim_report.output_frame_count,
+            tail_may_be_incomplete,
+            tmp_mp4: tmp_trimmed_mp4,
+            frames: trimmed_frames,
+        },
+        unanchored_summary,
+        trimmed_discs,
+        trimmed_logs,
+        trimmed_taps,
+    );
 
-        let draft = build_trimmed_bundle_draft(
-            &new_bundle_id,
-            &parent_bundle_id,
-            &now_utc,
-            summary,
-            &frame_window,
-            params,
-            trim_report.output_frame_count,
-            unanchored_summary,
-            tmp_trimmed_mp4,
-            trimmed_frames,
-            trimmed_discs,
-            trimmed_logs,
-            trimmed_taps,
-        );
-
-        let _manifest = V2BundleWriter::write(&dest_bundle_dir, &trim_job_id, &draft)?;
-        catalog.register_bundle(&NewBundleEntry {
+    let warning = commit_trimmed_bundle(
+        ctx,
+        &trim_job_id,
+        &draft,
+        &NewBundleEntry {
             bundle_id: new_bundle_id.clone(),
             path: dest_bundle_dir.clone(),
             format_version: CatalogFormatVersion::V2,
             parent_bundle_id: Some(parent_bundle_id),
             created_at_utc: now_utc,
-        })?;
+        },
+    )?;
 
-        Ok(ExportTrimResponse {
-            bundle_id: new_bundle_id,
-            bundle_path: dest_bundle_dir,
-            trim_report,
-            unanchored_summary,
-            main_log_count,
-            unanchored_log_count,
-            main_tap_count,
-            unanchored_tap_count,
-        })
-    }
+    Ok(ExportTrimResponse {
+        bundle_id: new_bundle_id,
+        bundle_path: dest_bundle_dir,
+        trim_report,
+        unanchored_summary,
+        main_log_count,
+        unanchored_log_count,
+        main_tap_count,
+        unanchored_tap_count,
+        warning,
+    })
+}
+
+/// Commits the trimmed bundle and registers it idempotently. A commit whose only failure
+/// is the parent-directory `fsync` is published: it is registered and reported as a warning
+/// instead of an error that would invite a second, duplicate trim (R3 M1 / S8a).
+fn commit_trimmed_bundle(
+    ctx: &ExportContext<'_>,
+    trim_job_id: &str,
+    draft: &V2BundleDraft,
+    entry: &NewBundleEntry,
+) -> Result<Option<String>, DaemonError> {
+    let written = V2BundleWriter::write(&entry.path, trim_job_id, draft)
+        .and_then(|_| ctx.faults.maybe_fail_parent_sync(&entry.path));
+    let warning = match written {
+        Ok(()) => None,
+        Err(err) if err.committed_bundle_path_on_parent_sync_error().is_some() => Some(format!(
+            "trimmed bundle committed but its parent directory could not be fsynced: {err}"
+        )),
+        Err(err) => return Err(err.into()),
+    };
+    ctx.catalog
+        .register_bundle_idempotent(entry)
+        .map_err(|err| {
+            DaemonError::Internal(format!(
+                "trimmed bundle `{}` is published at `{}` but could not be cataloged \
+             (open it with bundle.open to register it): {err}",
+                entry.bundle_id,
+                entry.path.display()
+            ))
+        })?;
+    Ok(warning)
+}
+
+/// Trimmed video payload and its per-frame records for [`build_trimmed_bundle_draft`].
+struct TrimmedVideo {
+    output_frame_count: u64,
+    tail_may_be_incomplete: bool,
+    tmp_mp4: PathBuf,
+    frames: Vec<FrameRecord>,
 }
 
 #[expect(
@@ -535,10 +647,8 @@ fn build_trimmed_bundle_draft(
     summary: &arb_storage::bundle_io::BundleManifestSummary,
     frame_window: &WindowSpec,
     params: &ExportTrimParams,
-    output_frame_count: u64,
+    video: TrimmedVideo,
     unanchored_summary: UnanchoredSummary,
-    tmp_trimmed_mp4: PathBuf,
-    trimmed_frames: Vec<FrameRecord>,
     trimmed_discs: Vec<DiscontinuityEvent>,
     trimmed_logs: Vec<arb_core::bundle::LogRecord>,
     trimmed_taps: Vec<arb_core::bundle::TapRecord>,
@@ -570,8 +680,8 @@ fn build_trimmed_bundle_draft(
         streams: StreamsSummary {
             video: Some(VideoStreamMeta {
                 status: StreamStatus::Present,
-                frame_count: output_frame_count,
-                tail_may_be_incomplete: false,
+                frame_count: video.output_frame_count,
+                tail_may_be_incomplete: video.tail_may_be_incomplete,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
             }),
             // The trimmed bundle carries no `audio.m4a` (audio is not cut), and
@@ -587,9 +697,9 @@ fn build_trimmed_bundle_draft(
             input: summary.streams.input.clone(),
         },
         unanchored_summary,
-        video_mp4: Some(MediaPayload::File(tmp_trimmed_mp4)),
+        video_mp4: Some(MediaPayload::File(video.tmp_mp4)),
         audio_m4a: None,
-        frames: trimmed_frames,
+        frames: video.frames,
         discontinuities: trimmed_discs,
         logs: trimmed_logs,
         taps: trimmed_taps,
@@ -626,16 +736,15 @@ fn build_trimmed_frame_records(
                 mp4_sample_offset: mp4_f.offset,
                 mp4_sample_size: mp4_f.size,
             },
+            // R3 S8b: never fabricate an exact anchor for a frame with no source record.
             None => FrameRecord {
                 frame_index,
                 boot_id: frame_window.boot_id().to_owned(),
                 pts_device_mono_ns: mp4_f.pts_ns,
                 pc_ingest_cont_ns: frame_window.ingest_start_cont_ns(),
-                alignment: TimeAlignment::Anchored {
-                    boot_id: frame_window.boot_id().to_owned(),
-                    boottime_ns: frame_window.start_boottime_ns(),
-                    half_width_ns: 0,
-                    semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                alignment: TimeAlignment::Unanchored {
+                    pc_ingest_cont_ns: frame_window.ingest_start_cont_ns(),
+                    reason: UncertaintyReason::NoClockAnchor,
                 },
                 is_keyframe: mp4_f.is_keyframe,
                 gop_id: mp4_f.gop_id,
@@ -840,4 +949,106 @@ pub fn build_timeline_summary(
         video_path: reader.video_path(),
         audio_path: reader.audio_path(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use arb_core::bundle::FrameRecord;
+    use arb_core::selection::WindowSpec;
+    use arb_core::time::{TimeAlignment, TimestampSemantics, UncertaintyReason};
+    use arb_media::codec::{DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat};
+    use arb_media::mp4::{Mp4VideoTrack, mux_raw_h264_to_mp4};
+    use tempfile::TempDir;
+
+    use super::build_trimmed_frame_records;
+    use crate::protocol::ExportTrimParams;
+
+    #[test]
+    fn r3_s8b_trimmed_unmatched_frame_uses_unanchored_never_fabricated_anchor() {
+        let tmp = TempDir::new().expect("tempdir");
+        let mp4_path = tmp.path().join("trimmed.mp4");
+        let frames: Vec<DecodedFrame> = (0..3_u64)
+            .map(|i| DecodedFrame {
+                frame_index: i,
+                width: 64,
+                height: 64,
+                format: PixelFormat::Yuv420p,
+                data: vec![u8::try_from(i * 40).expect("fits u8"); 64 * 64 * 3 / 2],
+            })
+            .collect();
+        let packets = OpenH264Backend::new()
+            .encode_yuv420p_sequence(&frames, 3, 33_333_333, EncodeParams::default())
+            .expect("encode must succeed");
+        mux_raw_h264_to_mp4(&mp4_path, 64, 64, 90_000, 3_000, &packets).expect("mux");
+        let track = Mp4VideoTrack::open(&mp4_path).expect("open mp4");
+        assert_eq!(track.frame_count(), 3, "track must have 3 frames");
+
+        // Provide only 2 source records for a 3-frame trimmed track so frame 2 has no match.
+        let source_frames = vec![
+            FrameRecord {
+                frame_index: 0,
+                boot_id: "boot-s8".to_owned(),
+                pts_device_mono_ns: 1_000,
+                pc_ingest_cont_ns: 10_000,
+                alignment: TimeAlignment::Anchored {
+                    boot_id: "boot-s8".to_owned(),
+                    boottime_ns: 50_000,
+                    half_width_ns: 500,
+                    semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                },
+                is_keyframe: true,
+                gop_id: 0,
+                mp4_sample_offset: 0,
+                mp4_sample_size: 100,
+            },
+            FrameRecord {
+                frame_index: 1,
+                boot_id: "boot-s8".to_owned(),
+                pts_device_mono_ns: 2_000,
+                pc_ingest_cont_ns: 20_000,
+                alignment: TimeAlignment::Anchored {
+                    boot_id: "boot-s8".to_owned(),
+                    boottime_ns: 60_000,
+                    half_width_ns: 500,
+                    semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                },
+                is_keyframe: false,
+                gop_id: 0,
+                mp4_sample_offset: 100,
+                mp4_sample_size: 100,
+            },
+        ];
+        let window = WindowSpec::from_frame_indices(&source_frames, 0, 1).expect("window");
+        let params = ExportTrimParams {
+            bundle_id_or_path: "b1".to_owned(),
+            in_frame_index: 0,
+            out_frame_index: 1,
+            dest_dir: None,
+            holder_pid: None,
+        };
+
+        let out = build_trimmed_frame_records(&track, &source_frames, &window, &params);
+        assert_eq!(out.len(), 3, "all 3 MP4 frames must be indexed");
+        assert!(
+            matches!(
+                out[0].alignment,
+                TimeAlignment::Anchored {
+                    boottime_ns: 50_000,
+                    ..
+                }
+            ),
+            "matched frame 0 keeps its original anchor"
+        );
+        assert!(
+            matches!(
+                out[2].alignment,
+                TimeAlignment::Unanchored {
+                    reason: UncertaintyReason::NoClockAnchor,
+                    ..
+                }
+            ),
+            "unmatched frame must be Unanchored, never fabricated Anchored: {:?}",
+            out[2].alignment
+        );
+    }
 }

@@ -15,9 +15,10 @@ pub mod protocol;
 pub mod time_util;
 
 use std::io::BufReader;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -27,7 +28,8 @@ use arb_core::BUNDLE_SCHEMA_VERSION;
 use arb_core::bundle::RecordBucket;
 use arb_core::selection::{DrainOutcome, SelectionPolicy, evaluate_stream_drain};
 use arb_core::state::RingBudgetPolicy;
-use arb_os::fs::SingleInstanceLock;
+use arb_media::codec::default_codec_backend;
+use arb_os::fs::{SingleInstanceLock, is_pid_alive};
 use arb_os::ipc::{
     DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, LocalIpcStream, read_frame_line, write_frame_line,
 };
@@ -42,18 +44,22 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::capture::{
-    CapturePipeline, SharedDiskSpaceProvider, TailCompleteness, save_job_to_view,
+    CapturePipeline, FaultInjection, SharedDiskSpaceProvider, TailCompleteness, phase2_materialize,
+    save_job_to_view,
 };
-use crate::error::{DaemonError, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE};
+use crate::error::{
+    DaemonError, RPC_ERR_INTERNAL, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE,
+    RPC_ERR_RESPONSE_TOO_LARGE,
+};
 use crate::live_adb::{LiveCaptureHandle, start_live_adb_capture};
-use crate::media_engine::{MediaEngine, build_timeline_summary};
+use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
 use crate::protocol::{
     BundleEntryView, BundleGcFailure, BundleGcParams, BundleGcResponse, BundleIdParams,
     BundleListParams, BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams,
-    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, DeviceListResponse,
-    EditGetSessionParams, EditSessionView, EditUpdateSessionParams, ExportPngParams,
-    ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams,
-    MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
+    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, DEFAULT_QUERY_LIMIT,
+    DeviceListResponse, EditGetSessionParams, EditSessionView, EditUpdateSessionParams,
+    ExportPngParams, ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams,
+    MAX_QUERY_LIMIT, MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
     MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
     SaveJobIdParams, SaveListJobsResponse, SaveRetargetParams, SaveTriggerParams,
     SystemHelloResponse, SystemStatusResponse, TimelineDiscontinuitiesResponse,
@@ -63,6 +69,31 @@ use crate::time_util::utc_now_iso8601;
 
 const DEFAULT_SAVE_DURATION_SEC: u64 = 30;
 const DRAIN_POLL_INTERVAL_MS: u64 = 20;
+/// Upper bound on how long shutdown waits for in-flight client requests to finish.
+const CLIENT_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Read timeout on client IPC streams (where the OS supports it) so idle client threads wake
+/// promptly on shutdown, release their SHM viewports, and join cleanly (R3 S11).
+const CLIENT_READ_POLL_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Cloneable handle allowing an external watcher (such as a signal handler in `arbd`'s
+/// `main.rs`) to request a graceful daemon shutdown (R3 S11).
+#[derive(Debug, Clone)]
+pub struct DaemonShutdownHandle {
+    state: Arc<DaemonState>,
+}
+
+impl DaemonShutdownHandle {
+    /// Signals the daemon to stop accepting requests and exit cleanly.
+    pub fn trigger(&self) {
+        self.state.trigger_shutdown();
+    }
+
+    /// Returns `true` once a shutdown has been requested.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.state.is_shutting_down()
+    }
+}
 
 /// Startup configuration for [`DaemonServer`].
 #[derive(Debug, Clone)]
@@ -73,6 +104,8 @@ pub struct DaemonConfig {
     pub ring_policy: RingBudgetPolicy,
     /// Injectable filesystem disk-space provider (defaults to host OS `statvfs` / Win32).
     pub disk_provider: SharedDiskSpaceProvider,
+    /// One-shot fault injection switches (all off by default; used by the E2E suite).
+    pub faults: Arc<FaultInjection>,
 }
 
 impl DaemonConfig {
@@ -83,7 +116,15 @@ impl DaemonConfig {
             paths,
             ring_policy: RingBudgetPolicy::default(),
             disk_provider: SharedDiskSpaceProvider::os_default(),
+            faults: Arc::new(FaultInjection::default()),
         }
+    }
+
+    /// Installs shared [`FaultInjection`] switches (deterministic crash/failure tests).
+    #[must_use]
+    pub fn with_fault_injection(mut self, faults: Arc<FaultInjection>) -> Self {
+        self.faults = faults;
+        self
     }
 
     /// Overrides the Zone-1 [`RingBudgetPolicy`].
@@ -110,8 +151,50 @@ struct DaemonState {
     capture: Arc<Mutex<CapturePipeline>>,
     live_capture: Mutex<Option<LiveCaptureHandle>>,
     media: Mutex<MediaEngine>,
+    faults: Arc<FaultInjection>,
     shutdown_flag: Arc<AtomicBool>,
     endpoint: PathBuf,
+}
+
+/// Locks `mutex`, mapping poisoning (a panic while it was held) to an error instead of a
+/// panic in every later request (R3 S15). The caller triggers shutdown.
+fn lock_or_poisoned<'a, T>(
+    mutex: &'a Mutex<T>,
+    what: &str,
+) -> Result<MutexGuard<'a, T>, DaemonError> {
+    mutex.lock().map_err(|_| {
+        DaemonError::Internal(format!(
+            "{what} lock was poisoned by an earlier panic; arbd is shutting down so a client can restart it"
+        ))
+    })
+}
+
+/// Canonicalizes the longest existing ancestor of `path` and re-appends the rest, so paths
+/// that do not exist yet can still be compared against canonical directories.
+fn canonicalize_lenient(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        if let Ok(canon) = std::fs::canonicalize(cursor) {
+            let mut out = canon;
+            for part in missing.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (cursor.parent(), cursor.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                cursor = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// `true` when `raw` is clearly meant as a filesystem path rather than a bundle ID.
+fn looks_like_path(raw: &str) -> bool {
+    raw.contains('/') || raw.contains('\\') || raw.starts_with('.') || Path::new(raw).is_absolute()
 }
 
 impl DaemonState {
@@ -122,22 +205,111 @@ impl DaemonState {
         }
     }
 
-    fn stop_active_capture(&self) -> CaptureStopResponse {
-        let mut live_guard = self
-            .live_capture
-            .lock()
-            .expect("live capture lock poisoned");
-        let was_running = live_guard.is_some();
-        if let Some(mut handle) = live_guard.take() {
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown_flag.load(Ordering::Acquire)
+    }
+
+    /// Locks `mutex`; on poisoning, starts a graceful shutdown and returns an error (S15).
+    fn lock<'a, T>(
+        &self,
+        mutex: &'a Mutex<T>,
+        what: &str,
+    ) -> Result<MutexGuard<'a, T>, DaemonError> {
+        lock_or_poisoned(mutex, what).inspect_err(|_| self.trigger_shutdown())
+    }
+
+    fn lock_capture(&self) -> Result<MutexGuard<'_, CapturePipeline>, DaemonError> {
+        self.lock(&self.capture, "capture pipeline")
+    }
+
+    fn lock_media(&self) -> Result<MutexGuard<'_, MediaEngine>, DaemonError> {
+        self.lock(&self.media, "media engine")
+    }
+
+    /// Stops the live capture session. The handle is taken out of `L` and `L` is released
+    /// **before** joining the supervisor thread (R3 S12), and only the session that was
+    /// current when the stop began is marked stopped.
+    fn stop_active_capture(&self) -> Result<CaptureStopResponse, DaemonError> {
+        let (handle, generation) = {
+            let mut live_guard = self.lock(&self.live_capture, "live capture")?;
+            let generation = self.lock_capture()?.session_generation();
+            (live_guard.take(), generation)
+        };
+        let was_running = handle.is_some();
+        if let Some(mut handle) = handle {
             handle.stop();
         }
-        let mut cap = self.capture.lock().expect("capture pipeline lock poisoned");
+        let mut cap = self.lock_capture()?;
         let was_active = was_running || cap.is_active();
-        cap.mark_stopped();
-        CaptureStopResponse {
+        cap.mark_stopped_if_current(generation);
+        Ok(CaptureStopResponse {
             stopped: was_active,
             capture: cap.status_view(),
+        })
+    }
+
+    /// Validates a client-supplied output location (R3 M8 / C3 / S7): it must be absolute
+    /// and must not lie inside arbd's private directories (ring, tmp, journals, cache,
+    /// runtime), inside any cataloged bundle, inside any directory holding a bundle
+    /// `manifest.json`, or inside `also_forbidden` (e.g. the export source bundle).
+    fn validate_output_location(
+        &self,
+        path: &Path,
+        what: &str,
+        also_forbidden: Option<&Path>,
+    ) -> Result<(), DaemonError> {
+        if !path.is_absolute() {
+            return Err(DaemonError::InvalidParams(format!(
+                "{what} must be an absolute path (got `{}`); arbd does not resolve paths against its own working directory",
+                path.display()
+            )));
         }
+        let canon = canonicalize_lenient(path);
+        let data_dir = &self.paths.data_dir;
+        let private_dirs = [
+            data_dir.join("ring"),
+            data_dir.join("tmp"),
+            data_dir.join("save_jobs"),
+            data_dir.join("save_job_params"),
+            self.paths.cache_dir.clone(),
+            self.paths.runtime_dir.clone(),
+        ];
+        for dir in &private_dirs {
+            if canon.starts_with(canonicalize_lenient(dir)) {
+                return Err(DaemonError::InvalidParams(format!(
+                    "{what} `{}` is inside arbd's private directory `{}`",
+                    path.display(),
+                    dir.display()
+                )));
+            }
+        }
+        let mut bundle_dirs: Vec<PathBuf> = self
+            .catalog
+            .list_bundles(None)?
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        bundle_dirs.extend(also_forbidden.map(Path::to_path_buf));
+        for dir in &bundle_dirs {
+            if canon.starts_with(canonicalize_lenient(dir)) {
+                return Err(DaemonError::InvalidParams(format!(
+                    "{what} `{}` is inside the immutable bundle `{}`",
+                    path.display(),
+                    dir.display()
+                )));
+            }
+        }
+        if let Some(bundle_root) = canon
+            .ancestors()
+            .find(|dir| dir.join("manifest.json").is_file())
+        {
+            return Err(DaemonError::InvalidParams(format!(
+                "{what} `{}` is inside the bundle directory `{}`",
+                path.display(),
+                bundle_root.display()
+            )));
+        }
+        Ok(())
     }
 
     fn resolve_bundle_path(
@@ -148,6 +320,16 @@ impl DaemonState {
             return Ok((entry.path.clone(), Some(entry)));
         }
         let path = PathBuf::from(bundle_id_or_path);
+        if !path.is_absolute() {
+            if looks_like_path(bundle_id_or_path) {
+                return Err(DaemonError::InvalidParams(format!(
+                    "bundle path `{bundle_id_or_path}` must be absolute; arbd does not resolve paths against its own working directory"
+                )));
+            }
+            return Err(DaemonError::NotFound(format!(
+                "bundle `{bundle_id_or_path}` not found in catalog"
+            )));
+        }
         if path.is_dir() {
             // Check if already cataloged under this path.
             let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -166,6 +348,13 @@ impl DaemonState {
     }
 
     fn dispatch(&self, method: &str, params: Value) -> Result<Value, DaemonError> {
+        // R3 S11: once shutdown started, only `system.*` is served, so no client can start a
+        // capture or open a viewport after the subsystems were cleaned up.
+        if self.is_shutting_down() && !method.starts_with("system.") {
+            return Err(DaemonError::Conflict(format!(
+                "arbd is shutting down; `{method}` rejected"
+            )));
+        }
         match method {
             "system.hello" => Ok(serde_json::to_value(SystemHelloResponse {
                 protocol_version: IPC_PROTOCOL_VERSION,
@@ -180,7 +369,7 @@ impl DaemonState {
             "system.shutdown" => Ok(json!({ "ok": true })),
             "device.list" => Self::handle_device_list(),
             "capture.start" => self.handle_capture_start(params),
-            "capture.stop" => Ok(serde_json::to_value(self.stop_active_capture())?),
+            "capture.stop" => Ok(serde_json::to_value(self.stop_active_capture()?)?),
             "save.trigger" => self.handle_save_trigger(params),
             "save.list_jobs" => self.handle_save_list_jobs(),
             "save.retry" => self.handle_save_retry(params),
@@ -212,15 +401,11 @@ impl DaemonState {
 
     fn handle_system_status(&self) -> Result<Value, DaemonError> {
         let (capture_view, ring_chunks, ring_bytes, ring_pinned) = {
-            let cap = self.capture.lock().expect("capture pipeline lock poisoned");
+            let cap = self.lock_capture()?;
             let (chunks, bytes, pinned) = cap.ring_stats()?;
             (cap.status_view(), chunks, bytes, pinned)
         };
-        let active_viewports = self
-            .media
-            .lock()
-            .expect("media engine lock poisoned")
-            .active_viewport_count();
+        let active_viewports = self.lock_media()?.active_viewport_count();
         let active_save_jobs = self
             .catalog
             .list_save_jobs()?
@@ -257,14 +442,32 @@ impl DaemonState {
 
     fn handle_capture_start(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: CaptureStartParams = parse_optional_params(params)?;
-        let mut live_guard = self
-            .live_capture
-            .lock()
-            .expect("live capture lock poisoned");
-        if live_guard.is_some() {
+        for (name, jar) in [
+            ("companion_jar", parsed.companion_jar.as_deref()),
+            ("scrcpy_jar", parsed.scrcpy_jar.as_deref()),
+        ] {
+            if let Some(path) = jar
+                && !path.is_absolute()
+            {
+                return Err(DaemonError::InvalidParams(format!(
+                    "{name} must be an absolute path (got `{}`)",
+                    path.display()
+                )));
+            }
+        }
+        let mut live_guard = self.lock(&self.live_capture, "live capture")?;
+        if self.is_shutting_down() {
+            return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+        }
+        // R3 S12: a supervisor that exited on its own (e.g. storage pressure) no longer blocks
+        // a new capture.start.
+        if live_guard.as_ref().is_some_and(|h| !h.is_finished()) {
             return Err(DaemonError::Conflict(
                 "capture session is already active; call capture.stop first".to_owned(),
             ));
+        }
+        if let Some(mut finished) = live_guard.take() {
+            finished.stop();
         }
         let (serial, handle) = start_live_adb_capture(&parsed, &self.capture)?;
         *live_guard = Some(handle);
@@ -277,65 +480,59 @@ impl DaemonState {
     fn handle_save_trigger(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveTriggerParams = parse_optional_params(params)?;
         let duration_sec = parsed.duration_sec.unwrap_or(DEFAULT_SAVE_DURATION_SEC);
-        let dest_dir = parsed
-            .dest_dir
-            .unwrap_or_else(|| self.catalog.managed_bundles_root().to_path_buf());
+        let dest_dir = match parsed.dest_dir {
+            Some(dest) => {
+                self.validate_output_location(&dest, "dest_dir", None)?;
+                dest
+            }
+            None => self.catalog.managed_bundles_root().to_path_buf(),
+        };
         let mut policy = parsed.selection_policy.unwrap_or_default();
         if let Some(drain_ms) = parsed.drain_timeout_ms {
             policy.drain_timeout_ms = drain_ms;
         }
 
-        // Bounded boundary drain grace window (`SPEC-02` §2):
-        // When live capture is actively connected, wait up to `drain_timeout_ms` for a
-        // post-trigger heartbeat so tail frames are cleanly bracketed.
-        let tail_completeness = self.wait_for_boundary_drain(&policy);
+        // Phase 1 (R3 S1): fix T_trigger and pin the window chunks immediately, under `C`.
+        let pending = self
+            .lock_capture()?
+            .phase1_pin(duration_sec, &dest_dir, policy)?;
 
-        // Phase 1: Durable chunk pin + catalog job row.
-        let pinned_job = {
-            let mut cap = self.capture.lock().expect("capture pipeline lock poisoned");
-            cap.phase1_pin_save(
-                &self.catalog,
-                duration_sec,
-                &dest_dir,
-                policy,
-                tail_completeness,
-            )?
+        // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
+        let tail = match pending.drain_trigger_boottime_ns() {
+            Some(trigger_bt) => self.wait_for_boundary_drain(&policy, trigger_bt)?,
+            None => pending.tail_without_drain(),
         };
 
-        // Phase 2: Materialize from pinned chunks only (releases lock during muxing if needed,
-        // here ring reads are read-only once pinned).
-        let cap = self.capture.lock().expect("capture pipeline lock poisoned");
-        let outcome = cap.phase2_materialize(&self.catalog, &pinned_job.job.job_id)?;
+        // Phase 1 commit: extend pins to tail chunks, persist params, create the catalog job.
+        let (job, plan) = self
+            .lock_capture()?
+            .phase1_commit(&self.catalog, pending, tail)?;
+
+        // Phase 2 without `C` (R3 M2): live readers, heartbeats and status never stall.
+        let outcome = phase2_materialize(&plan, &self.catalog, &job.job.job_id)?;
         Ok(serde_json::to_value(outcome)?)
     }
 
-    fn wait_for_boundary_drain(&self, policy: &SelectionPolicy) -> TailCompleteness {
-        let (should_wait, trigger_boottime_ns) = {
-            let cap = self.capture.lock().expect("capture pipeline lock poisoned");
-            let connected = cap.is_active() && cap.is_connected();
-            let trigger_bt = cap
-                .latest_heartbeat_boottime_ns()
-                .unwrap_or(0)
-                .saturating_add(1);
-            (connected, trigger_bt)
-        };
-        if !should_wait {
-            return TailCompleteness::Complete;
-        }
-
+    fn wait_for_boundary_drain(
+        &self,
+        policy: &SelectionPolicy,
+        trigger_boottime_ns: i64,
+    ) -> Result<TailCompleteness, DaemonError> {
         let start = Instant::now();
         loop {
             let latest_hb = {
-                let cap = self.capture.lock().expect("capture pipeline lock poisoned");
+                let cap = self.lock_capture()?;
                 if !cap.is_connected() {
-                    return TailCompleteness::MayBeIncomplete;
+                    return Ok(TailCompleteness::MayBeIncomplete);
                 }
                 cap.latest_heartbeat_boottime_ns()
             };
             let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             match evaluate_stream_drain(trigger_boottime_ns, latest_hb, elapsed_ms, policy) {
-                DrainOutcome::DrainedComplete => return TailCompleteness::Complete,
-                DrainOutcome::TimedOutTailIncomplete => return TailCompleteness::MayBeIncomplete,
+                DrainOutcome::DrainedComplete => return Ok(TailCompleteness::Complete),
+                DrainOutcome::TimedOutTailIncomplete => {
+                    return Ok(TailCompleteness::MayBeIncomplete);
+                }
                 DrainOutcome::Waiting | _ => {
                     thread::sleep(Duration::from_millis(DRAIN_POLL_INTERVAL_MS));
                 }
@@ -355,22 +552,30 @@ impl DaemonState {
 
     fn handle_save_retry(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveJobIdParams = parse_params(params)?;
-        let cap = self.capture.lock().expect("capture pipeline lock poisoned");
-        let outcome = cap.retry_save_job(&self.catalog, &parsed.job_id)?;
+        let plan = self
+            .lock_capture()?
+            .prepare_retry(&self.catalog, &parsed.job_id)?;
+        let outcome = phase2_materialize(&plan, &self.catalog, &parsed.job_id)?;
         Ok(serde_json::to_value(outcome)?)
     }
 
     fn handle_save_retarget(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveRetargetParams = parse_params(params)?;
-        let cap = self.capture.lock().expect("capture pipeline lock poisoned");
-        let outcome = cap.retarget_save_job(&self.catalog, &parsed.job_id, &parsed.dest_dir)?;
+        self.validate_output_location(&parsed.dest_dir, "dest_dir", None)?;
+        let plan = self.lock_capture()?.prepare_retarget(
+            &self.catalog,
+            &parsed.job_id,
+            &parsed.dest_dir,
+        )?;
+        let outcome = phase2_materialize(&plan, &self.catalog, &parsed.job_id)?;
         Ok(serde_json::to_value(outcome)?)
     }
 
     fn handle_save_discard(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveJobIdParams = parse_params(params)?;
-        let cap = self.capture.lock().expect("capture pipeline lock poisoned");
-        let view = cap.discard_save_job(&self.catalog, &parsed.job_id)?;
+        let view = self
+            .lock_capture()?
+            .discard_save_job(&self.catalog, &parsed.job_id)?;
         Ok(serde_json::to_value(view)?)
     }
 
@@ -432,7 +637,18 @@ impl DaemonState {
         };
 
         let holder_kind = parsed.holder_kind.unwrap_or(LeaseHolderKind::Cli);
-        let holder_pid = parsed.holder_pid.unwrap_or_else(std::process::id);
+        // R3 S6: a lease must belong to a live client process; defaulting to the always-alive
+        // daemon PID made a crashed client's lease unreapable.
+        let holder_pid = parsed.holder_pid.ok_or_else(|| {
+            DaemonError::InvalidParams(
+                "holder_pid is required: pass the client's own process ID so its lease is reaped if it crashes".to_owned(),
+            )
+        })?;
+        if !is_pid_alive(holder_pid) {
+            return Err(DaemonError::InvalidParams(format!(
+                "holder_pid {holder_pid} is not a running process"
+            )));
+        }
         let lease_id = self
             .catalog
             .acquire_lease(&bundle_id, holder_kind, holder_pid, &now_utc)?;
@@ -509,6 +725,7 @@ impl DaemonState {
             skipped_active_job_bundle_ids: report.skipped_active_job_bundle_ids,
             skipped_unmanaged_or_legacy_bundle_ids: report.skipped_unmanaged_or_legacy_bundle_ids,
             skipped_in_grace_bundle_ids: report.skipped_in_grace_bundle_ids,
+            reaped_lease_ids: report.reaped_lease_ids,
             failed: report
                 .failed
                 .into_iter()
@@ -541,7 +758,7 @@ impl DaemonState {
             start_ns: parsed.start_ns,
             end_ns: parsed.end_ns,
         };
-        let logs = reader.query_logs(bucket, range, parsed.limit)?;
+        let logs = reader.query_logs(bucket, range, Some(effective_query_limit(parsed.limit)))?;
         Ok(serde_json::to_value(TimelineLogsResponse { logs })?)
     }
 
@@ -558,7 +775,7 @@ impl DaemonState {
             start_ns: parsed.start_ns,
             end_ns: parsed.end_ns,
         };
-        let taps = reader.query_taps(bucket, range, parsed.limit)?;
+        let taps = reader.query_taps(bucket, range, Some(effective_query_limit(parsed.limit)))?;
         Ok(serde_json::to_value(TimelineTapsResponse { taps })?)
     }
 
@@ -618,23 +835,40 @@ impl DaemonState {
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        let dest_parent = match &parsed.dest_dir {
+            Some(dest) => {
+                self.validate_output_location(dest, "dest_dir", Some(&path))?;
+                dest.clone()
+            }
+            None => self.catalog.managed_bundles_root().to_path_buf(),
+        };
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
-        let media = self.media.lock().expect("media engine lock poisoned");
-        let resp = media.export_trim(
-            &self.catalog,
-            &self.paths.data_dir,
-            &path,
-            source_id,
-            &parsed,
-        )?;
+        // R3 S9: exports run outside the media mutex `M` with their own codec backend.
+        let backend = default_codec_backend();
+        let ctx = ExportContext {
+            catalog: &self.catalog,
+            data_dir: &self.paths.data_dir,
+            backend: backend.as_ref(),
+            faults: &self.faults,
+        };
+        let resp = media_engine::export_trim(&ctx, &path, source_id, &dest_parent, &parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_export_png(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportPngParams = parse_params(params)?;
-        let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
-        let media = self.media.lock().expect("media engine lock poisoned");
-        let resp = media.export_png(&path, &parsed)?;
+        let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        // R3 S7: validate before anything is created; never write into a WORM bundle.
+        self.validate_output_location(&parsed.output_path, "output_path", Some(&path))?;
+        let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        let backend = default_codec_backend();
+        let ctx = ExportContext {
+            catalog: &self.catalog,
+            data_dir: &self.paths.data_dir,
+            backend: backend.as_ref(),
+            faults: &self.faults,
+        };
+        let resp = media_engine::export_png(&ctx, &path, source_id, &parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
@@ -642,37 +876,63 @@ impl DaemonState {
         let parsed: MediaOpenViewportParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let id_override = existing.as_ref().map(|e| e.bundle_id.as_str());
-        let mut media = self.media.lock().expect("media engine lock poisoned");
+        let mut media = self.lock_media()?;
+        if self.is_shutting_down() {
+            return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+        }
         let resp = media.open_viewport(&path, id_override)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_filmstrip(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFilmstripParams = parse_params(params)?;
-        let mut media = self.media.lock().expect("media engine lock poisoned");
-        let resp = media.filmstrip(&parsed)?;
+        let resp = self.lock_media()?.filmstrip(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_scrub(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFrameRequestParams = parse_params(params)?;
-        let mut media = self.media.lock().expect("media engine lock poisoned");
-        let resp = media.scrub(&parsed)?;
+        let resp = self.lock_media()?.scrub(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_seek_frame(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFrameRequestParams = parse_params(params)?;
-        let mut media = self.media.lock().expect("media engine lock poisoned");
-        let resp = media.seek_frame(&parsed)?;
+        let resp = self.lock_media()?.seek_frame(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_close_viewport(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaCloseViewportParams = parse_params(params)?;
-        let mut media = self.media.lock().expect("media engine lock poisoned");
-        let closed = media.close_viewport(&parsed.viewport_id);
+        let closed = self.lock_media()?.close_viewport(&parsed.viewport_id);
         Ok(json!({ "closed": closed, "viewport_id": parsed.viewport_id }))
+    }
+
+    /// Closes viewports a client opened but never closed, once its connection ends (R3 M7).
+    fn close_client_viewports(&self, viewport_ids: &[String]) {
+        if viewport_ids.is_empty() {
+            return;
+        }
+        let mut media = self.media.lock().unwrap_or_else(PoisonError::into_inner);
+        for id in viewport_ids {
+            let _ = media.close_viewport(id);
+        }
+    }
+
+    /// Runs one request, converting a panic into a `-32603` error and a graceful shutdown
+    /// instead of a silently dropped connection and a zombie daemon (R3 S15).
+    fn dispatch_guarded(&self, method: &str, params: Value) -> Result<Value, (i32, String)> {
+        match catch_unwind(AssertUnwindSafe(|| self.dispatch(method, params))) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err((err.rpc_code(), err.to_string())),
+            Err(_) => {
+                self.trigger_shutdown();
+                Err((
+                    RPC_ERR_INTERNAL,
+                    format!("internal error: `{method}` panicked; arbd is shutting down"),
+                ))
+            }
+        }
     }
 }
 
@@ -687,9 +947,10 @@ pub struct DaemonServer {
 impl DaemonServer {
     /// Starts `arbd` with the given [`DaemonConfig`]:
     /// 1. Acquires [`SingleInstanceLock`] at `<runtime_dir>/arbd.lock`.
-    /// 2. Opens [`Catalog`] and runs [`Catalog::recover_on_startup_with_pins`].
-    /// 3. Opens Zone-1 [`CapturePipeline`] (`RingStore`) and [`MediaEngine`].
-    /// 4. Binds [`LocalIpcListener`] and spawns the concurrent accept loop.
+    /// 2. Removes stale `*.shm` viewport files left by a crashed daemon (R3 M7).
+    /// 3. Opens [`Catalog`] and runs [`Catalog::recover_on_startup_with_pins`].
+    /// 4. Opens Zone-1 [`CapturePipeline`] (`RingStore`) and [`MediaEngine`].
+    /// 5. Binds [`LocalIpcListener`] and spawns the concurrent accept loop.
     ///
     /// # Errors
     ///
@@ -701,6 +962,8 @@ impl DaemonServer {
         std::fs::create_dir_all(config.paths.shm_dir())?;
 
         let lock = SingleInstanceLock::try_acquire(config.paths.lock_file())?;
+        // Safe only now: the lock guarantees no other daemon owns these viewport files.
+        let _removed_shm = MediaEngine::sweep_stale_shm_files(&config.paths.shm_dir());
         let catalog_db = config.paths.data_dir.join("catalog.sqlite");
         let managed_bundles = config.paths.data_dir.join("bundles");
         let catalog = Catalog::open(&catalog_db, &managed_bundles)?;
@@ -711,11 +974,12 @@ impl DaemonServer {
         let (recovery, pin_reconcile) =
             catalog.recover_on_startup_with_pins(&utc_now_iso8601(), &pin_journal)?;
 
-        let capture = CapturePipeline::open(
+        let mut capture = CapturePipeline::open(
             &config.paths.data_dir,
             config.ring_policy,
             config.disk_provider,
         )?;
+        capture.set_fault_injection(Arc::clone(&config.faults));
         let media = MediaEngine::new(config.paths.cache_dir.clone(), config.paths.shm_dir());
 
         let endpoint = config.paths.ipc_endpoint();
@@ -731,6 +995,7 @@ impl DaemonServer {
             capture: Arc::new(Mutex::new(capture)),
             live_capture: Mutex::new(None),
             media: Mutex::new(media),
+            faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
             endpoint,
         });
@@ -767,26 +1032,35 @@ impl DaemonServer {
         &self.state.recovery
     }
 
+    /// Returns `true` once a shutdown was requested (`system.shutdown`, a poisoned lock, or
+    /// a panicking request).
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.state.is_shutting_down()
+    }
+
+    /// Returns a cloneable [`DaemonShutdownHandle`] for triggering graceful shutdown from a
+    /// signal watcher or test harness (R3 S11).
+    #[must_use]
+    pub fn shutdown_handle(&self) -> DaemonShutdownHandle {
+        DaemonShutdownHandle {
+            state: Arc::clone(&self.state),
+        }
+    }
+
     /// Drains all events from any [`DeviceEventSource`] (such as a deterministic
     /// [`arb_adb::mock::MockDeviceSource`]) directly into the live capture pipeline.
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError`] if reading from `source` or persisting ring chunks fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal capture pipeline mutex is poisoned.
+    /// Returns [`DaemonError`] if reading from `source` or persisting ring chunks fails, or
+    /// if the capture pipeline lock is poisoned.
     pub fn ingest_device_source(
         &self,
         source: &mut dyn DeviceEventSource,
     ) -> Result<usize, DaemonError> {
-        let mut cap = self
-            .state
-            .capture
-            .lock()
-            .expect("capture pipeline lock poisoned");
-        cap.begin_session(source.serial().to_owned());
+        let mut cap = self.state.lock_capture()?;
+        let _generation = cap.begin_session(source.serial().to_owned());
         let mut count = 0_usize;
         while let Some(event) = source.next_event()? {
             cap.ingest_event(event)?;
@@ -800,31 +1074,19 @@ impl DaemonServer {
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError::Storage`] on unexpected I/O failure.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal capture pipeline mutex is poisoned.
+    /// Returns [`DaemonError::Storage`] on unexpected I/O failure, or an internal error if
+    /// the capture pipeline lock is poisoned.
     pub fn flush_capture_ring(&self) -> Result<(), DaemonError> {
-        let mut cap = self
-            .state
-            .capture
-            .lock()
-            .expect("capture pipeline lock poisoned");
-        cap.flush_pending_chunk()
+        self.state.lock_capture()?.flush_pending_chunk()
     }
 
     /// Returns a snapshot of live capture discontinuities recorded so far.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal capture pipeline mutex is poisoned.
     #[must_use]
     pub fn live_discontinuities(&self) -> Vec<arb_core::time::DiscontinuityEvent> {
         self.state
             .capture
             .lock()
-            .expect("capture pipeline lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .discontinuities()
             .to_vec()
     }
@@ -846,12 +1108,27 @@ impl DaemonServer {
         self.cleanup_subsystems();
     }
 
+    /// Stops capture and closes every viewport. Tolerates poisoned locks so a daemon that
+    /// is shutting down because of a panic still releases its devices and SHM files.
     fn cleanup_subsystems(&self) {
-        let _ = self.state.stop_active_capture();
+        let handle = self
+            .state
+            .live_capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut handle) = handle {
+            handle.stop();
+        }
+        self.state
+            .capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .mark_stopped();
         self.state
             .media
             .lock()
-            .expect("media engine lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .close_all();
     }
 }
@@ -869,17 +1146,17 @@ impl Drop for DaemonServer {
 fn run_accept_loop(listener: &LocalIpcListener, state: &Arc<DaemonState>) {
     let mut client_threads: Vec<JoinHandle<()>> = Vec::new();
     loop {
-        if state.shutdown_flag.load(Ordering::Acquire) {
+        if state.is_shutting_down() {
             break;
         }
         let Ok(stream) = listener.accept() else {
-            if state.shutdown_flag.load(Ordering::Acquire) {
+            if state.is_shutting_down() {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
             continue;
         };
-        if state.shutdown_flag.load(Ordering::Acquire) {
+        if state.is_shutting_down() {
             break;
         }
         // Reap completed client threads periodically.
@@ -894,8 +1171,13 @@ fn run_accept_loop(listener: &LocalIpcListener, state: &Arc<DaemonState>) {
         }
     }
 
-    // Reap already-finished client threads cleanly; do not deadlock shutdown on
-    // idle long-lived client sockets that remain open until process teardown.
+    // R3 S11: give in-flight requests a bounded time to finish (new non-`system.*` requests
+    // are already rejected), join the threads that did, and leave only idle connections
+    // blocked in a read detached until process teardown.
+    let deadline = Instant::now() + CLIENT_JOIN_TIMEOUT;
+    while Instant::now() < deadline && client_threads.iter().any(|h| !h.is_finished()) {
+        thread::sleep(Duration::from_millis(20));
+    }
     for handle in client_threads {
         if handle.is_finished() {
             let _ = handle.join();
@@ -903,16 +1185,50 @@ fn run_accept_loop(listener: &LocalIpcListener, state: &Arc<DaemonState>) {
     }
 }
 
+/// Serializes `response`, replacing it with a structured error when it would exceed the
+/// IPC frame limit instead of dropping the connection (R3 S10).
+fn encode_response(response: &RpcResponse) -> Option<String> {
+    let text = serde_json::to_string(response).ok()?;
+    if text.len() <= DEFAULT_MAX_IPC_LINE_BYTES {
+        return Some(text);
+    }
+    let too_large = RpcResponse::err(
+        response.id.clone(),
+        RPC_ERR_RESPONSE_TOO_LARGE,
+        format!(
+            "response of {} bytes exceeds the {DEFAULT_MAX_IPC_LINE_BYTES}-byte IPC frame limit; narrow the request (limit / start_ns / end_ns)",
+            text.len()
+        ),
+    );
+    serde_json::to_string(&too_large).ok()
+}
+
 fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
+    // Best-effort read timeout (supported on Unix; `Unsupported` on Windows Named Pipes is
+    // harmlessly ignored) so idle client threads wake and exit promptly during shutdown (S11).
+    let _ = stream.set_read_timeout(Some(CLIENT_READ_POLL_TIMEOUT));
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
     let mut reader = BufReader::new(stream);
+    // R3 M7: viewports opened over this connection are closed when it ends.
+    let mut owned_viewports: Vec<String> = Vec::new();
 
     loop {
+        if state.is_shutting_down() {
+            break;
+        }
         let line = match read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES) {
             Ok(Some(l)) => l,
             Ok(None) => break,
+            Err(arb_os::OsError::Io { source, .. })
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
             Err(err) => {
                 let resp = RpcResponse::err(Value::Null, RPC_ERR_INVALID_REQUEST, err.to_string());
                 if let Ok(text) = serde_json::to_string(&resp) {
@@ -939,10 +1255,29 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
         };
 
         let is_shutdown = request.method == "system.shutdown";
+        let closed_viewport = (request.method == "media.close_viewport")
+            .then(|| {
+                request
+                    .params
+                    .get("viewport_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten();
         let response = if request.jsonrpc == JSONRPC_VERSION {
-            match state.dispatch(&request.method, request.params) {
-                Ok(result) => RpcResponse::ok(request.id, result),
-                Err(err) => RpcResponse::err(request.id, err.rpc_code(), err.to_string()),
+            match state.dispatch_guarded(&request.method, request.params) {
+                Ok(result) => {
+                    if request.method == "media.open_viewport"
+                        && let Some(id) = result.get("viewport_id").and_then(Value::as_str)
+                    {
+                        owned_viewports.push(id.to_owned());
+                    }
+                    if let Some(id) = &closed_viewport {
+                        owned_viewports.retain(|v| v != id);
+                    }
+                    RpcResponse::ok(request.id, result)
+                }
+                Err((code, message)) => RpcResponse::err(request.id, code, message),
             }
         } else {
             RpcResponse::err(
@@ -952,7 +1287,7 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
             )
         };
 
-        if let Ok(text) = serde_json::to_string(&response) {
+        if let Some(text) = encode_response(&response) {
             if write_frame_line(&mut writer, &text, DEFAULT_MAX_IPC_LINE_BYTES).is_err() {
                 break;
             }
@@ -964,6 +1299,15 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
             break;
         }
     }
+
+    state.close_client_viewports(&owned_viewports);
+}
+
+/// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
+fn effective_query_limit(requested: Option<usize>) -> usize {
+    requested
+        .unwrap_or(DEFAULT_QUERY_LIMIT)
+        .min(MAX_QUERY_LIMIT)
 }
 
 fn parse_params<T: DeserializeOwned>(value: Value) -> Result<T, DaemonError> {

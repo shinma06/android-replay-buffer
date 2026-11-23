@@ -111,3 +111,34 @@ verifies:
 - `CapturePipeline` が `RingStore::take_discontinuities()` を書き込みごとに排出（メモリ有界化）し、`StoragePressureStop` をライブ表示と以降の保存バンドルの discontinuities に統合（S18）。シナリオ 12 で検証。
 - R2 の `verify_integrity`（S15）は音声 `Present` に `audio.m4a` を要求する。`arbd` は AAC を `audio.m4a` へ多重化していないため、音声ストリームは `Present` ではなく `Partial` と誠実に報告する（トリム時も同様）。
 
+## 6. R3 独立レビュー指摘修正（M1–M9 / S1–S18）検証結果
+
+`r3-phase4-review.md` の全 Must fix（M1–M9）および全 Should fix（S1–S18）を `arb-storage::catalog`・`arbd`・`arb-cli`・`core/scripts/e2e_emulator.sh` へ反映し、各指摘に対する決定論的回帰テストを追加した。
+
+| 項目 | 主な修正内容 | 回帰テスト / 検証 |
+| --- | --- | --- |
+| **M1 / S8a** | `Catalog::register_bundle_idempotent` 追加。`phase2_materialize` / `export_trim` で `CommittedParentSyncFailed` を公開済み（`warning` 付）として扱い破棄・孤立を防止。コミット後のカタログ登録／完了エラーも `?` で `Materializing` に残留させず `FailedRetryable` へ遷移し冪等リトライ可能化。 | `r3_m1_register_bundle_idempotent_tolerates_retry_and_rejects_path_mismatch`, `r3_m1_parent_sync_failure_publishes_and_catalogs_with_warning`, `r3_m1_crash_and_catalog_error_after_register_retry_idempotently` |
+| **M2** | 保存ウィンドウ重複チャンク＋直近先行キーフレーム／設定／ハートビートのみを選択的ピン留め。リングチャンクをバイナリ連結形式（`ARBRC02\n`＋生ペイロード、旧 JSON 後方互換）へ圧縮。Phase-2 読取・多重化・書込をキャプチャロック `C` 解放後に実行。 | `r3_m2_compact_ring_chunk_is_binary_and_round_trips`, `r3_m2_legacy_json_ring_chunks_still_decode`, `r3_m2_selective_window_pinning_leaves_older_chunks_evictable` |
+| **M3** | `mux_selected_video` の `Partial` フォールバックを `MediaError::InvalidContainer(_)`（SPS/PPS 無しスタブ）に限定し、`MediaError::Io` 等の障害は伝播してピン保持 `FailedRetryable` に遷移。`TempFileGuard` で一時 MP4 を確実に削除。 | `r3_m3_mux_io_error_propagates_instead_of_partial_without_video`, `r3_m3_stub_stream_without_parameter_sets_falls_back_to_partial` |
+| **M4 / S12** | `companion_child` を `wait_for_companion_ready` 呼出前に `SessionCleanupGuard` へ格納し、`stop_flag` をポーリング。`capture.start` は終了済みハンドルを不在扱いとし、`capture.stop` は `L` ロック解放後にスレッドを `join`。 | `r3_m4_companion_child_owned_by_guard_before_handshake_wait`, `r3_s12_companion_ready_wait_honours_stop_flag` |
+| **M5 / M6 / S13 / S14** | `live_adb.rs` の死活・再接続判定を `SessionSupervisor`（`LiveTracker`）へ統一：映像接続失敗・EOF 時は `StreamGap`（無音消失や `StaticHold` 誤分類を禁止）、静止画のみ `StaticHold`、ビーコンタイムアウトで切断再接続、`DeviceReboot` / `ContinuityUnverified` の重複・誤断定抑止。`PingState` に 2 秒タイムアウト追加、連続再接続失敗の `ConnectionLost` 集約および `last_discontinuities` 上限化。 | `r3_m5_live_video_loss_emits_stream_gap_never_static_hold`, `r3_m5_silent_but_alive_video_emits_one_static_hold_and_beacon_timeout_detected`, `r3_m6_continuity_unverified_never_emits_device_reboot`, `r3_m6_real_reboot_reported_exactly_once`, `r3_s13_expired_pending_ping_recovers_sync_probes`, `r3_s14_repeated_reconnect_failures_coalesce_into_one_connection_lost` |
+| **M7** | クライアント接続単位で SHM ビューポート ID を追跡し EOF／エラー時に自動クローズ。全体上限 `MAX_VIEWPORTS = 8`（超過時 `Conflict`）。起動時 `SingleInstanceLock` 取得後に残存 `*.shm` を一掃。 | `r3_m7_client_disconnect_closes_viewports_cap_and_startup_shm_sweep` |
+| **M8 / C3 / S7** | `arb-cli` で全パス引数およびパス形式の `bundle-id-or-path` を CLI カレントディレクトリ基準で絶対化（`std::path::absolute`）。`arbd` 側で相対パスおよび `ring/`・`cache_dir`・既存 WORM バンドル内への書込を `create_dir_all` 前に `InvalidParams` 拒否。`export.png` に `ExportJob` リース取得を追加。 | `r3_m8_absolutizes_relative_cli_paths_and_keeps_bundle_ids`, `r3_m8_s7_daemon_rejects_relative_and_forbidden_paths_and_bundle_png_mutation` |
+| **M9 / S18** | `core/scripts/e2e_emulator.sh` のプレフライト異常終了時に `CLEANED_UP=1` で既存エミュレータ保護、通常クリーンアップもスクリプト起動 `EMU_SERIAL`/`EMU_PID` のみ停止。`arbd.lock` PID 抽出を `tr -dc '0-9'` へ修正、`INT`/`TERM`/`EXIT` トラップ分離で終了コード保持、失敗時に `emulator.log`/`arbd.log` を保全。 | `bash -n core/scripts/e2e_emulator.sh` PASS（実エミュレータ起動は未実施） |
+| **S1 / S2 / S3 / S4 / S5** | `T_trigger` 確定と Phase-1 ピンをドレイン待機前に実行し、アクティブ切断時は `tail_may_be_incomplete=true` を返却（S1）。未アンカー映像フレームを映像 `StreamGap` と `unanchored_summary.truncated_count` に記録（S2）。`PinRollbackGuard` と原子的 `write_job_params`（tmp+fsync+rename+dir fsync）（S3）。`save.retarget` のカタログ状態検証をピンジャーナル変更前に実施（S4）。リング書込 I/O エラー時に `StreamGap` 記録および `ring_write_errors` 計上（S5）。 | `r3_s1_s2_disconnected_save_tail_flag_and_unanchored_video_recorded`, `r3_s3_pending_save_drop_rolls_back_pin_journal`, `r3_s4_retarget_non_retryable_job_leaves_pin_journal_untouched`, `r3_s5_ring_write_io_error_records_stream_gap_instead_of_silent_loss` |
+| **S6 / S8b / S8c / S9 / S10 / S11 / S15** | `Catalog::gc_trashed_bundles` で死んだ PID リースを回収、`bundle.open` は `holder_pid` 必須＋生存確認、`arb-cli bundles close <LEASE_ID>` 追加（S6）。トリム未一致フレームに偽装 `Anchored` を使わず `Unanchored` を設定（S8b）し、末尾フレーム包含時は `tail_may_be_incomplete` を伝播（S8c）。`export.trim`/`export.png` をメディアロック `M` 外で実行（S9）。4 MiB 超過応答を接続切断せず `-32010` 構造化エラー返却＋`timeline.query_*` デフォルト上限適用（S10）。`arbd` シグナルハンドラ（SIGINT/SIGTERM/SIGHUP・Win32 Console）とシャットダウン後の非 `system.*` 拒否・待機クライアント速やか終了（S11）。ロック毒化時の安全なシャットダウン遷移（S15）。 | `r3_s6_gc_reaps_dead_pid_leases_and_purges_unblocked_bundle`, `r3_s6_parses_bundles_close_and_open_holder_pid`, `r3_s8b_trimmed_unmatched_frame_uses_unanchored_never_fabricated_anchor`, `r3_s6_s8c_s10_s11_leases_trim_tail_oversized_response_and_shutdown_gate` |
+| **S16 / S17** | `--auto-start` 起動 `arbd` を独立プロセスグループ化（Unix `process_group(0)` / Windows `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP`）、`stderr` を `<runtime_dir>/arbd.log` へ出力、`try_wait()` で早期終了をログ末尾付き即時報告、`ARB_AUTO_START_TIMEOUT_MS` 対応、`system.hello` で `protocol_version == 1` 検証（S16）。`save` / `jobs retry` / `jobs retarget` の `bundle_id == null` を終了コード `3` とし、`--json` 時は構造化 JSON エラーおよび識別可能な終了コード（1/2/3/4/5）を返却（S17）。 | `r3_s16_auto_start_timeout_parses_env_override_and_defaults`, `r3_s16_verify_hello_rejects_protocol_version_mismatch`, `r3_s16_wait_for_daemon_reports_early_exit_with_log_tail`, `r3_s17_maps_rpc_errors_and_failed_save_to_distinct_exit_codes_and_json_errors` |
+
+### R3-Fix 品質ゲート実行結果
+
+- `./core/scripts/verify.sh`: 全 6 ゲート PASS（終了コード 0）
+  1. `cargo fmt --all --check`: PASS
+  2. `cargo clippy --workspace --all-targets -- -D warnings`: PASS（警告 0 件）
+  3. `cargo test --workspace`: PASS（**196 passed**, 0 failed, 1 ignored ヘルパープロセス: `arb-adb` 41 / `arb-cli` 8 / `arb-core` 35 / `arb-media` 22 / `arb-os` 25 / `arb-storage` 26 / `arb-tray` 1 / `arbd` ユニット 18 + E2E 20）
+  4. `python3 core/scripts/check-licenses.py`: PASS（116 packages checked, 0 GPL/AGPL violations、`Cargo.toml`/`Cargo.lock` 変更なし）
+  5. `sara check --strict`: PASS（26 items / 89 relationships）
+  6. REQ → SPEC 被覆検査: OK（14/14 REQ items satisfied）
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`: PASS（警告 0 件）
+- `bash -n core/scripts/e2e_emulator.sh`: PASS
+- 未検証（本 R3-Fix 実行範囲外）: 実ヘッドレスエミュレータ再実行、Windows/Linux ネイティブ実行、実機 USB 接続。
+

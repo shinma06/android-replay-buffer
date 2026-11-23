@@ -18,6 +18,15 @@ use serde_json::Value;
 /// Control-plane JSON-RPC 2.0 protocol version exposed by `system.hello`.
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
+/// Default `limit` applied to `timeline.query_logs` / `timeline.query_taps` when omitted.
+pub const DEFAULT_QUERY_LIMIT: usize = 10_000;
+
+/// Maximum accepted `limit` for `timeline.query_logs` / `timeline.query_taps`.
+pub const MAX_QUERY_LIMIT: usize = 100_000;
+
+/// Maximum number of concurrently open SHM viewports across all clients.
+pub const MAX_VIEWPORTS: usize = 8;
+
 /// JSON-RPC 2.0 version literal.
 pub const JSONRPC_VERSION: &str = "2.0";
 
@@ -137,6 +146,10 @@ pub struct CaptureStatusView {
     pub discontinuities: usize,
     /// Count of `StaticHold` detections in the live session.
     pub static_hold_events: usize,
+    /// Count of Zone-1 ring chunk writes that failed with an I/O error (each recorded as a
+    /// `stream_gap` discontinuity).
+    #[serde(default)]
+    pub ring_write_errors: usize,
 }
 
 /// Startup recovery summary inside [`SystemStatusResponse`].
@@ -280,6 +293,10 @@ pub struct SaveOutcomeResponse {
     pub tail_may_be_incomplete: bool,
     /// Summary of quarantined `unanchored` records when completed.
     pub unanchored_summary: Option<UnanchoredSummary>,
+    /// Non-fatal warning, e.g. the bundle was committed but its parent directory `fsync`
+    /// failed (`CommittedParentSyncFailed`): the bundle is published and cataloged anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// Response payload for `save.list_jobs`.
@@ -349,7 +366,8 @@ pub struct BundleOpenParams {
     pub bundle_id_or_path: String,
     /// Lease holder category (default `cli`).
     pub holder_kind: Option<LeaseHolderKind>,
-    /// Lease holder PID (defaults to daemon PID if omitted).
+    /// Lease holder PID. Required: it must be the live client process (never the daemon),
+    /// so a crashed client's lease is reaped by `bundle.gc` / startup recovery.
     pub holder_pid: Option<u32>,
 }
 
@@ -417,6 +435,9 @@ pub struct BundleGcResponse {
     /// They stay `purging` and are retried by the next `bundle.gc`.
     #[serde(default)]
     pub failed: Vec<BundleGcFailure>,
+    /// Leases reaped by this GC run because their holder process was dead.
+    #[serde(default)]
+    pub reaped_lease_ids: Vec<String>,
 }
 
 // ---------------- Timeline ----------------
@@ -452,7 +473,8 @@ pub struct TimelineQueryParams {
     pub start_ns: Option<i64>,
     /// Optional inclusive end timestamp in nanoseconds.
     pub end_ns: Option<i64>,
-    /// Optional maximum row count.
+    /// Optional maximum row count (default [`DEFAULT_QUERY_LIMIT`], capped at
+    /// [`MAX_QUERY_LIMIT`]).
     pub limit: Option<usize>,
 }
 
@@ -601,6 +623,9 @@ pub struct ExportTrimResponse {
     pub main_tap_count: usize,
     /// Quarantined `unanchored` taps carried into the trimmed bundle.
     pub unanchored_tap_count: usize,
+    /// Non-fatal warning (e.g. bundle committed but parent directory `fsync` failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// Request parameters for `export.png`.

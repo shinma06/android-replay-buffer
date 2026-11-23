@@ -237,6 +237,8 @@ pub struct GcReport {
     /// Bundles whose purge failed this run (e.g. a Windows sharing violation from an AV
     /// scanner). They stay `Purging` and are retried by the next GC run.
     pub failed: Vec<GcFailure>,
+    /// Lease IDs reaped at the start of this GC run because their `holder_pid` was dead.
+    pub reaped_lease_ids: Vec<String>,
 }
 
 /// One bundle whose physical purge failed during [`Catalog::gc_trashed_bundles`].
@@ -379,6 +381,72 @@ impl Catalog {
             parent_bundle_id: entry.parent_bundle_id.clone(),
             created_at_utc: entry.created_at_utc.clone(),
         })
+    }
+
+    /// Idempotently registers a bundle (R3 M1): `INSERT … ON CONFLICT(bundle_id) DO NOTHING`
+    /// followed by a check that any pre-existing row points at the same `path`.
+    ///
+    /// A save job that crashed (or failed) between publishing its bundle, registering it and
+    /// completing the job is retried with the same `bundle_id` and destination. A plain
+    /// [`Self::register_bundle`] would then fail forever on the primary key; this variant
+    /// returns the existing row instead, so the retry can complete the job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidArgument`] for an empty `bundle_id`/`path` or when
+    /// `bundle_id` is already registered at a different path, or [`StorageError::Sqlite`]
+    /// on database failures (including a `UNIQUE(path)` clash with another `bundle_id`).
+    pub fn register_bundle_idempotent(
+        &self,
+        entry: &NewBundleEntry,
+    ) -> Result<BundleEntry, StorageError> {
+        if entry.bundle_id.trim().is_empty() {
+            return Err(StorageError::InvalidArgument {
+                name: "bundle_id",
+                reason: "bundle_id must not be empty".to_owned(),
+            });
+        }
+        if entry.path.as_os_str().is_empty() {
+            return Err(StorageError::InvalidArgument {
+                name: "path",
+                reason: "bundle path must not be empty".to_owned(),
+            });
+        }
+        let path_str = entry.path.to_string_lossy().into_owned();
+        let conn = self.lock_conn();
+        conn.execute(
+            "INSERT INTO bundles (
+                bundle_id, path, format_version, state, trashed_at_utc,
+                parent_bundle_id, created_at_utc
+            ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+            ON CONFLICT(bundle_id) DO NOTHING",
+            params![
+                entry.bundle_id,
+                path_str,
+                entry.format_version.as_str(),
+                bundle_state_to_str(BundleLifecycleState::Active),
+                entry.parent_bundle_id,
+                entry.created_at_utc,
+            ],
+        )
+        .map_err(|source| StorageError::sqlite("register_bundle_idempotent", source))?;
+        let existing =
+            fetch_bundle(&conn, &entry.bundle_id)?.ok_or_else(|| StorageError::NotFound {
+                entity: "bundle",
+                id: entry.bundle_id.clone(),
+            })?;
+        if existing.path != entry.path {
+            return Err(StorageError::InvalidArgument {
+                name: "bundle_id",
+                reason: format!(
+                    "bundle `{}` is already registered at `{}`, not `{}`",
+                    entry.bundle_id,
+                    existing.path.display(),
+                    entry.path.display()
+                ),
+            });
+        }
+        Ok(existing)
     }
 
     /// Fetches a single bundle entry by `bundle_id`.
@@ -615,7 +683,11 @@ impl Catalog {
                 name: "now_utc",
                 reason: format!("`{now_utc}` is not an ISO-8601 UTC timestamp"),
             })?;
-        let mut report = GcReport::default();
+        let mut report = GcReport {
+            // R3 S6: a crashed viewer must not block GC until the next daemon restart.
+            reaped_lease_ids: self.reap_dead_leases()?,
+            ..GcReport::default()
+        };
 
         for bundle in self.list_bundles(Some(BundleLifecycleState::Purging))? {
             if !self.is_purgeable_location(&bundle) {
@@ -669,6 +741,31 @@ impl Catalog {
         }
 
         Ok(report)
+    }
+
+    /// Deletes every lease whose `holder_pid` is no longer alive and returns their IDs.
+    ///
+    /// Run at the start of [`Self::gc_trashed_bundles`] (and therefore on every `bundle.gc`)
+    /// in addition to startup recovery, so a lease left behind by a crashed IDE window or
+    /// CLI never pins a trashed bundle for the daemon's whole lifetime (R3 S6).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Sqlite`] or [`StorageError::CorruptData`].
+    pub fn reap_dead_leases(&self) -> Result<Vec<String>, StorageError> {
+        let conn = self.lock_conn();
+        let mut reaped = Vec::new();
+        for lease in fetch_all_leases(&conn)? {
+            if !is_pid_alive(lease.holder_pid) {
+                conn.execute(
+                    "DELETE FROM leases WHERE lease_id = ?1",
+                    params![lease.lease_id],
+                )
+                .map_err(|source| StorageError::sqlite("reap_dead_lease", source))?;
+                reaped.push(lease.lease_id);
+            }
+        }
+        Ok(reaped)
     }
 
     fn is_purgeable_location(&self, bundle: &BundleEntry) -> bool {
@@ -1795,5 +1892,113 @@ mod tests {
             .list_bundles(Some(BundleLifecycleState::Active))
             .expect("list_bundles must succeed");
         assert_eq!(list.len(), 1, "one active bundle expected");
+    }
+
+    fn entry(bundle_id: &str, path: std::path::PathBuf) -> NewBundleEntry {
+        NewBundleEntry {
+            bundle_id: bundle_id.to_owned(),
+            path,
+            format_version: CatalogFormatVersion::V2,
+            parent_bundle_id: None,
+            created_at_utc: "2026-11-22T10:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn r3_m1_register_bundle_idempotent_tolerates_retry_and_rejects_path_mismatch() {
+        let tmp = TempDir::new().expect("temp dir must be created");
+        let managed_root = tmp.path().join("bundles");
+        let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed_root)
+            .expect("catalog open must succeed");
+        let path = managed_root.join("b-idem");
+
+        let first = catalog
+            .register_bundle_idempotent(&entry("b-idem", path.clone()))
+            .expect("first registration must succeed");
+        // A plain INSERT would fail on the primary key here (the pre-R3 retry-forever bug).
+        assert!(
+            catalog
+                .register_bundle(&entry("b-idem", path.clone()))
+                .is_err(),
+            "plain register_bundle must still reject duplicates"
+        );
+        let second = catalog
+            .register_bundle_idempotent(&entry("b-idem", path))
+            .expect("idempotent re-registration with the same path must succeed");
+        assert_eq!(first, second, "retry must return the existing row");
+        assert_eq!(
+            catalog.list_bundles(None).expect("list").len(),
+            1,
+            "idempotent retry must not duplicate the bundle row"
+        );
+        assert!(
+            catalog
+                .register_bundle_idempotent(&entry("b-idem", managed_root.join("elsewhere")))
+                .is_err(),
+            "same bundle_id at a different path must be rejected"
+        );
+    }
+
+    #[test]
+    fn r3_s6_gc_reaps_dead_pid_leases_and_purges_unblocked_bundle() {
+        let tmp = TempDir::new().expect("temp dir must be created");
+        let managed_root = tmp.path().join("bundles");
+        let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed_root)
+            .expect("catalog open must succeed");
+        let path = managed_root.join("b-gc");
+        std::fs::create_dir_all(&path).expect("bundle dir must be created");
+        catalog
+            .register_bundle(&entry("b-gc", path.clone()))
+            .expect("register must succeed");
+
+        // A PID that cannot be alive (beyond every OS PID range) stands in for a crashed IDE.
+        let dead_pid = u32::MAX - 7;
+        let dead_lease = catalog
+            .acquire_lease(
+                "b-gc",
+                LeaseHolderKind::IdeViewer,
+                dead_pid,
+                "2026-11-22T10:00:00Z",
+            )
+            .expect("acquire dead lease");
+        let live_lease = catalog
+            .acquire_lease(
+                "b-gc",
+                LeaseHolderKind::Cli,
+                std::process::id(),
+                "2026-11-22T10:00:00Z",
+            )
+            .expect("acquire live lease");
+        catalog
+            .trash_bundle("b-gc", "2026-11-22T10:00:00Z")
+            .expect("trash must succeed");
+
+        let blocked = catalog
+            .gc_trashed_bundles("2099-01-01T00:00:00Z")
+            .expect("gc must run");
+        assert_eq!(
+            blocked.reaped_lease_ids,
+            vec![dead_lease],
+            "GC must reap the dead-PID lease without a daemon restart"
+        );
+        assert_eq!(
+            blocked.skipped_leased_bundle_ids,
+            vec!["b-gc".to_owned()],
+            "the live lease must still protect the bundle"
+        );
+        assert!(path.is_dir(), "leased bundle must stay on disk");
+
+        assert!(
+            catalog.release_lease(&live_lease).expect("release"),
+            "release live lease"
+        );
+        let purged = catalog
+            .gc_trashed_bundles("2099-01-01T00:00:00Z")
+            .expect("gc must run");
+        assert_eq!(
+            purged.purged_bundle_ids,
+            vec!["b-gc".to_owned()],
+            "bundle must be purged once no live lease remains"
+        );
     }
 }

@@ -60,7 +60,7 @@ run_cli() {
 }
 
 cleanup() {
-    local exit_code=$?
+    local exit_code="${1:-$?}"
     if [[ "${CLEANED_UP}" -eq 1 ]]; then
         return
     fi
@@ -68,7 +68,7 @@ cleanup() {
     set +e
 
     echo ""
-    echo "==> [Cleanup] Stopping arbd, shutting down emulator, removing temp files..."
+    echo "==> [Cleanup] Stopping arbd, shutting down script-launched emulator, cleaning temp files..."
 
     if [[ -x "${ARB_CLI_BIN}" ]]; then
         run_cli capture stop >/dev/null 2>&1 || true
@@ -76,30 +76,37 @@ cleanup() {
     fi
 
     # Wait briefly for arbd to exit cleanly, then ensure no orphan remains for our runtime_dir.
+    # R3 S18: SingleInstanceLock writes "<pid>\n", not JSON; parse digits and escalate to SIGKILL.
     sleep 1
     if [[ -f "${RUNTIME_DIR}/arbd.lock" ]]; then
         local lock_pid
-        lock_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' "${RUNTIME_DIR}/arbd.lock" 2>/dev/null || true)"
+        lock_pid="$(tr -dc '0-9' < "${RUNTIME_DIR}/arbd.lock" 2>/dev/null || true)"
         if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null; then
             kill "${lock_pid}" 2>/dev/null || true
-            sleep 1
+            for _ in $(seq 1 10); do
+                if ! kill -0 "${lock_pid}" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.2
+            done
+            if kill -0 "${lock_pid}" 2>/dev/null; then
+                kill -9 "${lock_pid}" 2>/dev/null || true
+            fi
         fi
     fi
 
+    # R3 M9: NEVER kill arbitrary pre-existing emulators — only act on the specific
+    # EMU_SERIAL and EMU_PID started by this script.
     if [[ -n "${EMU_SERIAL}" ]]; then
         "${ADB}" -s "${EMU_SERIAL}" shell 'rm -f /data/local/tmp/arb-* /data/local/tmp/replay-scrcpy-*' >/dev/null 2>&1 || true
         "${ADB}" -s "${EMU_SERIAL}" forward --remove-all >/dev/null 2>&1 || true
         "${ADB}" -s "${EMU_SERIAL}" emu kill >/dev/null 2>&1 || true
     fi
 
-    # Also kill any attached emulator-* instances if EMU_SERIAL was not yet captured.
-    while IFS= read -r serial; do
-        if [[ "${serial}" == emulator-* ]]; then
-            "${ADB}" -s "${serial}" emu kill >/dev/null 2>&1 || true
-        fi
-    done < <("${ADB}" devices | awk 'NR>1 && $1 ~ /^emulator-/ {print $1}')
-
     if [[ -n "${EMU_PID}" ]]; then
+        if [[ -z "${EMU_SERIAL}" ]] && kill -0 "${EMU_PID}" 2>/dev/null; then
+            kill "${EMU_PID}" 2>/dev/null || true
+        fi
         for _ in $(seq 1 30); do
             if ! kill -0 "${EMU_PID}" 2>/dev/null; then
                 break
@@ -112,33 +119,48 @@ cleanup() {
         wait "${EMU_PID}" 2>/dev/null || true
     fi
 
-    # Wait until `adb devices` reports zero attached devices.
-    for _ in $(seq 1 20); do
-        local remaining
-        remaining="$("${ADB}" devices | awk 'NR>1 && NF>=2 {print $1}')"
-        if [[ -z "${remaining}" ]]; then
-            break
-        fi
-        sleep 1
-    done
+    # Wait until our specific EMU_SERIAL (if launched) disappears from `adb devices`.
+    if [[ -n "${EMU_SERIAL}" ]]; then
+        for _ in $(seq 1 20); do
+            local still_attached
+            still_attached="$("${ADB}" devices | awk -v target="${EMU_SERIAL}" 'NR>1 && $1 == target {print $1}')"
+            if [[ -z "${still_attached}" ]]; then
+                break
+            fi
+            sleep 1
+        done
 
-    local final_devices
-    final_devices="$("${ADB}" devices | awk 'NR>1 && NF>=2 {print $0}')"
-    if [[ -n "${final_devices}" ]]; then
-        echo "WARN: adb devices still non-empty after cleanup:" >&2
-        echo "${final_devices}" >&2
-        if [[ "${exit_code}" -eq 0 ]]; then
-            exit_code=1
+        local final_target
+        final_target="$("${ADB}" devices | awk -v target="${EMU_SERIAL}" 'NR>1 && $1 == target {print $0}')"
+        if [[ -n "${final_target}" ]]; then
+            echo "WARN: script-launched emulator ${EMU_SERIAL} still attached after cleanup:" >&2
+            echo "${final_target}" >&2
+            if [[ "${exit_code}" -eq 0 ]]; then
+                exit_code=1
+            fi
+        else
+            echo "==> [Cleanup] Verified: ${EMU_SERIAL} is detached."
         fi
-    else
-        echo "==> [Cleanup] Verified: adb devices is empty."
     fi
 
-    rm -rf "${WORK_DIR}"
+    # R3 S18: preserve emulator.log and arbd.log on failure so diagnostics are not lost.
+    if [[ "${exit_code}" -eq 0 ]]; then
+        rm -rf "${WORK_DIR}"
+    else
+        echo "WARN: E2E failed (exit=${exit_code}); preserving logs under ${WORK_DIR}" >&2
+        if [[ -f "${EMU_LOG}" ]]; then
+            echo "      emulator log: ${EMU_LOG}" >&2
+        fi
+        if [[ -f "${RUNTIME_DIR}/arbd.log" ]]; then
+            echo "      arbd log:     ${RUNTIME_DIR}/arbd.log" >&2
+        fi
+    fi
     exit "${exit_code}"
 }
 
-trap cleanup EXIT INT TERM
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+trap 'cleanup' EXIT
 
 echo "==> [1/9] Building device-agent (arb-companion + scrcpy-audio)..."
 (cd "${REPO_ROOT}" && ./device-agent/build.sh --with-scrcpy-audio)
@@ -154,6 +176,9 @@ echo "==> [3/9] Booting headless Android Emulator (${AVD_NAME})..."
 EXISTING_DEVICES="$("${ADB}" devices | awk 'NR>1 && NF>=2 {print $1}')"
 if [[ -n "${EXISTING_DEVICES}" ]]; then
     echo "ERROR: adb already has attached devices before E2E start: ${EXISTING_DEVICES}" >&2
+    # R3 M9: skip cleanup kills so pre-existing developer emulators/devices are untouched.
+    CLEANED_UP=1
+    rm -rf "${WORK_DIR}"
     exit 1
 fi
 
