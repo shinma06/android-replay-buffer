@@ -576,11 +576,11 @@ class ArbdRealIntegrationTest {
                     )
                     // Returns null on pre-T-2B daemon (-32601) or a valid response once T-2B lands.
                     if (shareFallback != null) {
-                        assertTrue(shareFallback.outputPath.isNotBlank())
+                        assertTrue(shareFallback.shareMp4Path.isNotBlank())
                     }
                     val audioFallback = rpc.mediaDecodeAudioPcmOrNull(opened.bundleId)
                     if (audioFallback != null) {
-                        assertTrue(audioFallback.wavPath.isNotBlank())
+                        assertTrue(!audioFallback.available || !audioFallback.wavPath.isNullOrBlank())
                     }
                 } finally {
                     assertTrue(rpc.bundleClose(opened.leaseId).released)

@@ -315,7 +315,8 @@ class ArbBundleFileEditor(
         val decoded = runCatching {
             daemonService.withClient { it.mediaDecodeAudioPcmOrNull(bundleId) }
         }.getOrNull() ?: return null
-        val wavPath = Path.of(decoded.wavPath)
+        if (!decoded.available) return null
+        val wavPath = Path.of(decoded.wavPath ?: return null)
         if (!Files.isRegularFile(wavPath)) return null
         return runCatching {
             AudioSyncPlayer(

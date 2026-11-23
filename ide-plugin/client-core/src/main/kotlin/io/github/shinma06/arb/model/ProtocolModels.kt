@@ -809,13 +809,15 @@ data class ExportShareMp4Params(
 )
 
 data class ExportShareMp4Response(
-    val outputPath: String,
-    val frameCount: Long = 0L,
-    val hasAudio: Boolean = false,
+    val shareMp4Path: String,
+    val trimmedBundleId: String? = null,
+    val trimmedBundlePath: String? = null,
+    val audioIncluded: Boolean = false,
+    val videoFrameCount: Long = 0L,
     val edtsBoxCount: Int = 0,
     val elstBoxCount: Int = 0,
     val outputBytes: Long = 0L,
-    val warning: String? = null,
+    val originalTrashed: Boolean = false,
 )
 
 data class MediaDecodeAudioPcmParams(
@@ -824,11 +826,14 @@ data class MediaDecodeAudioPcmParams(
 )
 
 data class MediaDecodeAudioPcmResponse(
-    val wavPath: String,
-    val sampleRateHz: Int = 48_000,
-    val channels: Int = 2,
-    val durationMs: Long = 0L,
+    val available: Boolean = false,
+    val wavPath: String? = null,
+    val sampleRateHz: Int = 0,
+    val channels: Int = 0,
     val durationNs: Long = 0L,
+    val avOffsetMs: Long = 0L,
+    val audioLeadInOffsetNs: Long = 0L,
+    val cached: Boolean = false,
 )
 
 data class ExportPngParams(
