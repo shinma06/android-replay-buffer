@@ -23,6 +23,10 @@ name = "arb-cli"
 version = "0.1.0"
 dependencies = [
  "arb-core",
+ "arb-os",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -88,6 +92,11 @@ dependencies = [
  "arb-media",
  "arb-os",
  "arb-storage",
+ "png",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
