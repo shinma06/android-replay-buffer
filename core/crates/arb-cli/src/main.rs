@@ -145,12 +145,34 @@ impl GlobalOptions {
 /// Resolves a relative path against the CLI's current working directory without requiring the
 /// target to exist yet (R3 M8).
 fn absolutize_path(path: &Path) -> Result<PathBuf, CliError> {
-    std::path::absolute(path).map_err(|err| {
+    let absolute = std::path::absolute(path).map_err(|err| {
         CliError::usage(format!(
             "cannot resolve path `{}` against current directory: {err}",
             path.display()
         ))
-    })
+    })?;
+    Ok(lexically_normalize(&absolute))
+}
+
+/// Resolves `.` and `..` segments textually on every OS. `std::path::absolute` keeps `..` on
+/// POSIX but resolves it on Windows; arbd rejects `..` outright, so the CLI normalizes first to
+/// behave identically on Linux, macOS and Windows.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // Never pop past the root / prefix.
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Absolutizes a `bundle-id-or-path` argument when it looks like a filesystem path (contains a
@@ -1542,6 +1564,29 @@ mod tests {
                 out: abs("/tmp/f23.png"),
             },
             "png command must match"
+        );
+    }
+
+    #[test]
+    fn review_cli_paths_with_dotdot_are_normalized_identically_on_every_os() {
+        use super::absolutize_path;
+        let cwd = std::env::current_dir().expect("cwd");
+        let resolved = absolutize_path(Path::new("a/../b/./c")).expect("absolutize");
+        assert_eq!(
+            resolved,
+            cwd.join("b").join("c"),
+            "`..`/`.` resolved textually"
+        );
+        assert!(
+            !resolved
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "no `..` may reach arbd"
+        );
+        let up = absolutize_path(Path::new("../x")).expect("absolutize");
+        assert!(
+            up.is_absolute() && !up.to_string_lossy().contains(".."),
+            "{up:?}"
         );
     }
 

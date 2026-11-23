@@ -660,6 +660,33 @@ impl DaemonState {
         mode: SaveMode,
         trigger_kind: SaveTriggerKind,
     ) -> Result<SaveOutcomeResponse, DaemonError> {
+        self.execute_save_tracked(
+            duration_sec,
+            dest_dir,
+            drain_timeout_ms,
+            selection_policy,
+            mode,
+            trigger_kind,
+            &std::cell::Cell::new(false),
+        )
+    }
+
+    /// Like [`Self::execute_save`], additionally setting `pinned` as soon as Phase 1 has pinned
+    /// ring chunks, so callers can tell an error *before* any pin from one that left pins behind.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors execute_save plus the pin-tracking cell"
+    )]
+    fn execute_save_tracked(
+        &self,
+        duration_sec: Option<u64>,
+        dest_dir: Option<PathBuf>,
+        drain_timeout_ms: Option<u64>,
+        selection_policy: Option<SelectionPolicy>,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+        pinned: &std::cell::Cell<bool>,
+    ) -> Result<SaveOutcomeResponse, DaemonError> {
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let duration_sec = duration_sec.unwrap_or_else(|| u64::from(user_cfg.save_window_secs));
         let window_range = u64::from(MIN_SAVE_WINDOW_SECS)..=u64::from(MAX_SAVE_WINDOW_SECS);
@@ -694,6 +721,7 @@ impl DaemonState {
             mode,
             trigger_kind,
         )?;
+        pinned.set(true);
 
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
@@ -1474,6 +1502,21 @@ fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Optio
             )),
             true,
         ),
+        // Parse failure of a file that claims a newer schema (unknown enum value / fields):
+        // same treatment as `UnsupportedVersion`, not corruption.
+        Err(err @ StorageError::Json { .. })
+            if config_store
+                .stored_config_version()
+                .is_some_and(|v| v > arb_core::config::CONFIG_SCHEMA_VERSION) =>
+        {
+            (
+                ArbConfig::default(),
+                Some(format!(
+                    "config.json was written by a newer arbd version ({err}); defaults are in use and the file was left untouched"
+                )),
+                true,
+            )
+        }
         Err(err @ (StorageError::Json { .. } | StorageError::ConfigValidation(_))) => {
             let warning = match config_store.quarantine_invalid(&utc_now_iso8601()) {
                 Ok(path) => format!(
@@ -1584,13 +1627,15 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         status.in_flight = false;
         return;
     }
-    let save_res = state.execute_save(
+    let pinned = std::cell::Cell::new(false);
+    let save_res = state.execute_save_tracked(
         Some(u64::from(cfg.save_window_secs)),
         None,
         None,
         None,
         SaveMode::Full,
         SaveTriggerKind::CrashAutoSave,
+        &pinned,
     );
 
     let mut status = state
@@ -1598,10 +1643,10 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     status.in_flight = false;
-    // Roll the debounce back only when the save failed before pinning anything (`Err`). A job
-    // that ended `FailedRetryable` keeps its ring pins, so its cooldown must stay or a failing
+    // Roll the debounce back only when the save failed before pinning anything. Any failure
+    // after Phase 1 (an `Err` from later phases, or a job that ended `FailedRetryable`) keeps its ring pins, so its cooldown must stay or a failing
     // destination plus a crash loop would pin a fresh window on every crash.
-    let pre_pin_failure = save_res.is_err();
+    let pre_pin_failure = save_res.is_err() && !pinned.get();
     match save_res {
         Ok(outcome) => {
             status.last_job_id = Some(outcome.job.job_id);

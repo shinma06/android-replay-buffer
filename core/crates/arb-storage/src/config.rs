@@ -74,6 +74,15 @@ impl ConfigStore {
         Ok(config)
     }
 
+    /// Best-effort read of the stored `config_version` without full deserialization, so a file
+    /// written by a *newer* build (unknown enum values, fields) is never mistaken for corruption.
+    #[must_use]
+    pub fn stored_config_version(&self) -> Option<u32> {
+        let bytes = fs::read(self.path()).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        u32::try_from(value.get("config_version")?.as_u64()?).ok()
+    }
+
     /// Moves an unreadable / invalid `config.json` aside to
     /// `config.json.invalid-<stamp>` (never deleting it) and returns the new path.
     ///

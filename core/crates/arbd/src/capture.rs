@@ -2607,11 +2607,21 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
 
 fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
     let (tag, message) = decode_log_tag_and_message_raw(payload);
-    // The `am_crash` event tag is only authentic from system_server (uid 1000). An app that
-    // writes its own `am_crash` text or `EventLog` record must not be stored under that tag,
-    // or `timeline.crashes` would show forged crashes that live detection refuses.
-    if matches!(tag.as_str(), "am_crash" | "30039")
-        && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
+    // System event tags (`am_crash`, `wm_*`, `ActivityTaskManager`, ...) are only authentic from
+    // system_server (uid 1000). An app that writes its own text or `EventLog` record under one
+    // of them must not be stored under that tag, or `timeline.crashes` / `timeline.screens`
+    // would show forged entries.
+    if matches!(
+        tag.as_str(),
+        "am_crash"
+            | "30039"
+            | "wm_on_resume_called"
+            | "30022"
+            | "wm_resumed_activity"
+            | "30043"
+            | "ActivityTaskManager"
+            | "ActivityManager"
+    ) && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
     {
         return (format!("app:{tag}"), message);
     }

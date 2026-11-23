@@ -209,7 +209,18 @@ fn text_log_event(
             pid,
             tid: pid,
             lid: 0,
-            uid: 10_000,
+            // System event tags are only stored under their real name for uid 1000 (system_server).
+            uid: if matches!(
+                tag,
+                "wm_on_resume_called"
+                    | "wm_resumed_activity"
+                    | "ActivityTaskManager"
+                    | "ActivityManager"
+            ) {
+                1000
+            } else {
+                10_000
+            },
             hdr_size: 28,
             priority: 4,
             record_flags: 0,
@@ -1227,6 +1238,32 @@ fn t1_review_newer_version_config_json_is_preserved_and_blocks_updates() {
         newer,
         "a newer arbd's config.json must survive untouched"
     );
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_newer_schema_with_unknown_enum_value_is_not_quarantined() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    fs::create_dir_all(&paths.data_dir).expect("data dir");
+    let newer = br#"{"config_version": 2, "ide_default_save_action": "brand_new_action"}"#;
+    fs::write(paths.data_dir.join("config.json"), newer).expect("write newer config");
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    let (code, _) = client.call_err("config.update", &json!({ "save_window_secs": 60 }));
+    assert_eq!(code, -32_002, "update refused");
+    assert_eq!(
+        fs::read(paths.data_dir.join("config.json")).expect("config.json"),
+        newer,
+        "newer-schema file untouched"
+    );
+    let moved = fs::read_dir(&paths.data_dir)
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().contains(".invalid-"))
+        .count();
+    assert_eq!(moved, 0, "must not be quarantined");
     drop(client);
     server.shutdown();
 }

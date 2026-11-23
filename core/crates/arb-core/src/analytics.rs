@@ -175,6 +175,10 @@ pub fn parse_am_crash_binary(raw: &[u8]) -> Option<ParsedAmCrash> {
     }
     let flags = read_binary_int(raw, &mut cursor)?;
     let exception_class = read_binary_string(raw, &mut cursor)?;
+    // Same rule as `parse_am_crash_text`, so live detection and stored markers agree.
+    if exception_class.trim().is_empty() {
+        return None;
+    }
     let message = read_binary_string(raw, &mut cursor)?;
     let file = read_binary_string(raw, &mut cursor)?;
     let line = read_binary_int(raw, &mut cursor)?;
@@ -1622,5 +1626,21 @@ mod tests {
         };
         assert!(!super::is_same_crash(&marker(i64::MIN), &marker(i64::MAX)));
         assert!(super::is_same_crash(&marker(SEC), &marker(2 * SEC)));
+    }
+
+    #[test]
+    fn binary_am_crash_with_empty_exception_class_is_rejected_like_text() {
+        let raw = encode_binary_am_crash(&BinaryAmCrashFixture {
+            user: 0,
+            pid: 5,
+            process: "com.example.app",
+            flags: 0,
+            exception: "",
+            message: "m",
+            file: "A.kt",
+            line: 1,
+            recoverable: None,
+        });
+        assert!(parse_am_crash_binary(&raw).is_none());
     }
 }
