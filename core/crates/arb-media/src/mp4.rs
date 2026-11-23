@@ -17,13 +17,19 @@ use crate::error::MediaError;
 use crate::output::{Publish, write_atomically};
 
 /// Nanoseconds per second used for tick-to-nanosecond conversion.
-const NANOS_PER_SEC: i128 = 1_000_000_000;
+pub(crate) const NANOS_PER_SEC: i128 = 1_000_000_000;
 
 /// Fixed byte length of the `VisualSampleEntry` header inside `avc1`/`avc3`.
 const VISUAL_SAMPLE_ENTRY_HEADER_LEN: usize = 78;
 
+/// Fixed byte length of a version-0 `AudioSampleEntry` header inside `mp4a`.
+pub(crate) const AUDIO_SAMPLE_ENTRY_HEADER_LEN: usize = 28;
+
+/// Fixed byte length of a version-1 `QuickTime` `AudioSampleEntry` header inside `mp4a`.
+pub(crate) const AUDIO_SAMPLE_ENTRY_V1_HEADER_LEN: usize = 44;
+
 /// Maximum MP4 `moov` box size accepted into memory (256 MiB safety cap).
-const MAX_MOOV_BOX_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_MOOV_BOX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Sanity cap on the number of samples in one track (10 M ≈ 92 h at 30 fps).
 ///
@@ -34,7 +40,7 @@ pub const MAX_TRACK_SAMPLES: usize = 10_000_000;
 
 /// Validates that a full box declaring `count` entries of `entry_size` bytes after a
 /// `header_len`-byte prefix actually contains them, before anything is allocated.
-fn checked_entry_count(
+pub(crate) fn checked_entry_count(
     body: &[u8],
     count: u32,
     header_len: usize,
@@ -133,55 +139,7 @@ impl Mp4VideoTrack {
         let mut file = File::open(&path)?;
         let file_len = file.metadata()?.len();
 
-        let mut moov_data: Option<Vec<u8>> = None;
-        let mut pos = 0u64;
-        while pos.saturating_add(8) <= file_len {
-            let mut hdr = [0u8; 8];
-            file.seek(SeekFrom::Start(pos))?;
-            file.read_exact(&mut hdr)?;
-            let size32 = u64::from(u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]));
-            let fourcc = [hdr[4], hdr[5], hdr[6], hdr[7]];
-            let (box_size, header_len) = if size32 == 1 {
-                if pos.saturating_add(16) > file_len {
-                    return Err(MediaError::InvalidContainer(
-                        "truncated 64-bit top-level box header".to_owned(),
-                    ));
-                }
-                let mut ext = [0u8; 8];
-                file.read_exact(&mut ext)?;
-                (u64::from_be_bytes(ext), 16u64)
-            } else if size32 == 0 {
-                (file_len - pos, 8u64)
-            } else {
-                (size32, 8u64)
-            };
-
-            if box_size < header_len || pos.checked_add(box_size).is_none_or(|end| end > file_len) {
-                return Err(MediaError::InvalidContainer(
-                    "top-level MP4 box size exceeds file bounds".to_owned(),
-                ));
-            }
-
-            if &fourcc == b"moov" {
-                let payload_len = box_size - header_len;
-                if payload_len > MAX_MOOV_BOX_BYTES {
-                    return Err(MediaError::InvalidContainer(
-                        "moov box exceeds safety size limit".to_owned(),
-                    ));
-                }
-                let payload_usize = usize::try_from(payload_len).map_err(|_| {
-                    MediaError::InvalidContainer("moov payload exceeds address space".to_owned())
-                })?;
-                let mut buf = vec![0u8; payload_usize];
-                file.read_exact(&mut buf)?;
-                moov_data = Some(buf);
-                break;
-            }
-            pos += box_size;
-        }
-
-        let moov =
-            moov_data.ok_or_else(|| MediaError::InvalidContainer("missing moov box".to_owned()))?;
+        let moov = read_moov_box(&mut file, file_len)?;
         let parsed = parse_moov(&moov, file_len)?;
 
         Ok(Self {
@@ -382,8 +340,58 @@ impl Mp4VideoTrack {
     }
 }
 
+/// Scans top-level ISO-BMFF boxes and reads the bounded `moov` payload into memory.
+pub(crate) fn read_moov_box(file: &mut File, file_len: u64) -> Result<Vec<u8>, MediaError> {
+    let mut pos = 0u64;
+    while pos.saturating_add(8) <= file_len {
+        let mut hdr = [0u8; 8];
+        file.seek(SeekFrom::Start(pos))?;
+        file.read_exact(&mut hdr)?;
+        let size32 = u64::from(u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]));
+        let fourcc = [hdr[4], hdr[5], hdr[6], hdr[7]];
+        let (box_size, header_len) = if size32 == 1 {
+            if pos.saturating_add(16) > file_len {
+                return Err(MediaError::InvalidContainer(
+                    "truncated 64-bit top-level box header".to_owned(),
+                ));
+            }
+            let mut ext = [0u8; 8];
+            file.read_exact(&mut ext)?;
+            (u64::from_be_bytes(ext), 16u64)
+        } else if size32 == 0 {
+            (file_len - pos, 8u64)
+        } else {
+            (size32, 8u64)
+        };
+
+        if box_size < header_len || pos.checked_add(box_size).is_none_or(|end| end > file_len) {
+            return Err(MediaError::InvalidContainer(
+                "top-level MP4 box size exceeds file bounds".to_owned(),
+            ));
+        }
+
+        if &fourcc == b"moov" {
+            let payload_len = box_size - header_len;
+            if payload_len > MAX_MOOV_BOX_BYTES {
+                return Err(MediaError::InvalidContainer(
+                    "moov box exceeds safety size limit".to_owned(),
+                ));
+            }
+            let payload_usize = usize::try_from(payload_len).map_err(|_| {
+                MediaError::InvalidContainer("moov payload exceeds address space".to_owned())
+            })?;
+            let mut buf = vec![0u8; payload_usize];
+            file.read_exact(&mut buf)?;
+            return Ok(buf);
+        }
+        pos += box_size;
+    }
+
+    Err(MediaError::InvalidContainer("missing moov box".to_owned()))
+}
+
 /// Cross-platform positional exact file read (`pread` on Unix, `seek_read` loop on Windows).
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt as _;
@@ -423,7 +431,7 @@ struct ParsedTrack {
     has_b_frames: bool,
 }
 
-fn read_u16_be(data: &[u8], offset: usize) -> Result<u16, MediaError> {
+pub(crate) fn read_u16_be(data: &[u8], offset: usize) -> Result<u16, MediaError> {
     let end = offset
         .checked_add(2)
         .ok_or_else(|| MediaError::InvalidContainer("u16 read offset overflow".to_owned()))?;
@@ -435,7 +443,7 @@ fn read_u16_be(data: &[u8], offset: usize) -> Result<u16, MediaError> {
     Ok(u16::from_be_bytes(bytes))
 }
 
-fn read_u32_be(data: &[u8], offset: usize) -> Result<u32, MediaError> {
+pub(crate) fn read_u32_be(data: &[u8], offset: usize) -> Result<u32, MediaError> {
     let end = offset
         .checked_add(4)
         .ok_or_else(|| MediaError::InvalidContainer("u32 read offset overflow".to_owned()))?;
@@ -459,7 +467,7 @@ fn read_i32_be(data: &[u8], offset: usize) -> Result<i32, MediaError> {
     Ok(i32::from_be_bytes(bytes))
 }
 
-fn read_u64_be(data: &[u8], offset: usize) -> Result<u64, MediaError> {
+pub(crate) fn read_u64_be(data: &[u8], offset: usize) -> Result<u64, MediaError> {
     let end = offset
         .checked_add(8)
         .ok_or_else(|| MediaError::InvalidContainer("u64 read offset overflow".to_owned()))?;
@@ -471,9 +479,9 @@ fn read_u64_be(data: &[u8], offset: usize) -> Result<u64, MediaError> {
     Ok(u64::from_be_bytes(bytes))
 }
 
-type Mp4BoxSlice<'a> = ([u8; 4], &'a [u8]);
+pub(crate) type Mp4BoxSlice<'a> = ([u8; 4], &'a [u8]);
 
-fn iter_boxes(data: &[u8]) -> Result<Vec<Mp4BoxSlice<'_>>, MediaError> {
+pub(crate) fn iter_boxes(data: &[u8]) -> Result<Vec<Mp4BoxSlice<'_>>, MediaError> {
     let mut out = Vec::new();
     let mut pos = 0usize;
     while pos + 8 <= data.len() {
@@ -506,7 +514,7 @@ fn iter_boxes(data: &[u8]) -> Result<Vec<Mp4BoxSlice<'_>>, MediaError> {
     Ok(out)
 }
 
-fn find_box(data: &[u8], target: [u8; 4]) -> Result<Option<&[u8]>, MediaError> {
+pub(crate) fn find_box(data: &[u8], target: [u8; 4]) -> Result<Option<&[u8]>, MediaError> {
     for (cc, body) in iter_boxes(data)? {
         if cc == target {
             return Ok(Some(body));
@@ -528,7 +536,7 @@ fn parse_moov(moov: &[u8], file_len: u64) -> Result<ParsedTrack, MediaError> {
     ))
 }
 
-fn parse_mdhd(mdhd: &[u8]) -> Result<(u32, u64), MediaError> {
+pub(crate) fn parse_mdhd(mdhd: &[u8]) -> Result<(u32, u64), MediaError> {
     let version = *mdhd
         .first()
         .ok_or_else(|| MediaError::InvalidContainer("empty mdhd box".to_owned()))?;
@@ -550,7 +558,7 @@ fn parse_mdhd(mdhd: &[u8]) -> Result<(u32, u64), MediaError> {
 }
 
 /// Parses `stts`, expanding at most `max_samples` per-sample durations (the `stsz` count).
-fn parse_stts(stts: &[u8], max_samples: usize) -> Result<Vec<u32>, MediaError> {
+pub(crate) fn parse_stts(stts: &[u8], max_samples: usize) -> Result<Vec<u32>, MediaError> {
     let entry_count = checked_entry_count(stts, read_u32_be(stts, 4)?, 8, 8, "stts")?;
     let mut durations = Vec::with_capacity(max_samples.min(entry_count.max(1)));
     for i in 0..entry_count {
@@ -592,7 +600,7 @@ fn parse_ctts(ctts_box: &[u8], max_samples: usize) -> Result<Vec<i64>, MediaErro
     Ok(offsets)
 }
 
-fn parse_stsz(stsz: &[u8], file_len: u64) -> Result<Vec<u32>, MediaError> {
+pub(crate) fn parse_stsz(stsz: &[u8], file_len: u64) -> Result<Vec<u32>, MediaError> {
     let default_size = read_u32_be(stsz, 4)?;
     let raw_count = read_u32_be(stsz, 8)?;
     let sample_count = if default_size == 0 {
@@ -622,7 +630,7 @@ fn parse_stsz(stsz: &[u8], file_len: u64) -> Result<Vec<u32>, MediaError> {
     Ok(sizes)
 }
 
-fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError> {
+pub(crate) fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError> {
     let count = checked_entry_count(stsc, read_u32_be(stsc, 4)?, 8, 12, "stsc")?;
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
@@ -642,7 +650,7 @@ fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError> {
     Ok(entries)
 }
 
-fn parse_chunk_offsets(stbl: &[u8]) -> Result<Vec<u64>, MediaError> {
+pub(crate) fn parse_chunk_offsets(stbl: &[u8]) -> Result<Vec<u64>, MediaError> {
     if let Some(stco) = find_box(stbl, *b"stco")? {
         let count = checked_entry_count(stco, read_u32_be(stco, 4)?, 8, 4, "stco")?;
         let mut offsets = Vec::with_capacity(count);
@@ -695,12 +703,12 @@ fn parse_sync_samples(
     Ok((is_key, keyframes))
 }
 
-fn ticks_to_ns_signed(ticks: i64, timescale: u32) -> i64 {
+pub(crate) fn ticks_to_ns_signed(ticks: i64, timescale: u32) -> i64 {
     let scaled = i128::from(ticks) * NANOS_PER_SEC / i128::from(timescale);
     i64::try_from(scaled).unwrap_or(if scaled < 0 { i64::MIN } else { i64::MAX })
 }
 
-fn ticks_to_ns_unsigned(ticks: u64, timescale: u32) -> u64 {
+pub(crate) fn ticks_to_ns_unsigned(ticks: u64, timescale: u32) -> u64 {
     let scaled = u128::from(ticks) * 1_000_000_000u128 / u128::from(timescale);
     u64::try_from(scaled).unwrap_or(u64::MAX)
 }
@@ -818,7 +826,7 @@ fn parse_trak(trak: &[u8], file_len: u64) -> Result<Option<ParsedTrack>, MediaEr
     }))
 }
 
-fn map_sample_offsets(
+pub(crate) fn map_sample_offsets(
     chunk_offsets: &[u64],
     stsc_entries: &[(usize, usize)],
     sizes: &[u32],
@@ -1615,12 +1623,12 @@ pub(crate) struct Avc1TrackHeader<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum ChunkOffsetMode {
+pub(crate) enum ChunkOffsetMode {
     Stco32,
     Co64,
 }
 
-fn box_wrap(fourcc: [u8; 4], payload: &[u8]) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn box_wrap(fourcc: [u8; 4], payload: &[u8]) -> Result<Vec<u8>, MediaError> {
     let total = u32::try_from(payload.len().saturating_add(8))
         .map_err(|_| MediaError::InvalidContainer("MP4 box exceeds 32-bit size".to_owned()))?;
     let mut out = Vec::with_capacity(payload.len() + 8);
@@ -1630,7 +1638,7 @@ fn box_wrap(fourcc: [u8; 4], payload: &[u8]) -> Result<Vec<u8>, MediaError> {
     Ok(out)
 }
 
-fn full_box_wrap(
+pub(crate) fn full_box_wrap(
     fourcc: [u8; 4],
     version: u8,
     flags: u32,
@@ -1668,7 +1676,7 @@ fn build_avc1_entry(width: u16, height: u16, avcc_payload: &[u8]) -> Result<Vec<
     box_wrap(*b"avc1", &body)
 }
 
-fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
     let mut payload = Vec::with_capacity(112);
     let version = if let Ok(dur32) = u32::try_from(total_duration) {
         payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
@@ -1724,7 +1732,7 @@ fn build_tkhd(width: u16, height: u16, total_duration: u64) -> Result<Vec<u8>, M
     full_box_wrap(*b"tkhd", version, 3, &payload)
 }
 
-fn build_mdhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn build_mdhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
     let mut payload = Vec::with_capacity(32);
     let version = if let Ok(dur32) = u32::try_from(total_duration) {
         payload.extend_from_slice(&0u32.to_be_bytes());
@@ -2115,39 +2123,61 @@ fn walk_atoms(
 
         let body = &slice[pos + hdr_len..pos + box_size];
         let body_base = abs_offset.saturating_add(u64::try_from(hdr_len).unwrap_or(0));
-        match &cc {
-            b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"dinf" | b"edts" => {
-                walk_atoms(body, body_base, depth + 1, report, moov_offset, mdat_offset)?;
-            }
-            b"stsd" if body.len() > 8 => {
-                let entry_count = read_u32_be(body, 4)?;
-                if report.stsd_entry_count == 0 {
-                    report.stsd_entry_count = entry_count;
-                }
-                walk_atoms(
-                    &body[8..],
-                    body_base.saturating_add(8),
-                    depth + 1,
-                    report,
-                    moov_offset,
-                    mdat_offset,
-                )?;
-            }
-            b"avc1" | b"avc3" if body.len() > VISUAL_SAMPLE_ENTRY_HEADER_LEN => {
-                walk_atoms(
-                    &body[VISUAL_SAMPLE_ENTRY_HEADER_LEN..],
-                    body_base
-                        .saturating_add(u64::try_from(VISUAL_SAMPLE_ENTRY_HEADER_LEN).unwrap_or(0)),
-                    depth + 1,
-                    report,
-                    moov_offset,
-                    mdat_offset,
-                )?;
-            }
-            _ => {}
-        }
+        walk_atom_children(
+            cc,
+            body,
+            body_base,
+            depth + 1,
+            report,
+            moov_offset,
+            mdat_offset,
+        )?;
 
         pos += box_size;
+    }
+    Ok(())
+}
+
+fn walk_atom_children(
+    cc: [u8; 4],
+    body: &[u8],
+    body_base: u64,
+    child_depth: usize,
+    report: &mut Mp4AtomReport,
+    moov_offset: &mut Option<u64>,
+    mdat_offset: &mut Option<u64>,
+) -> Result<(), MediaError> {
+    let skip = match &cc {
+        b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"dinf" | b"edts" => Some(0usize),
+        b"stsd" if body.len() > 8 => {
+            let entry_count = read_u32_be(body, 4)?;
+            if report.stsd_entry_count == 0 {
+                report.stsd_entry_count = entry_count;
+            }
+            Some(8)
+        }
+        b"avc1" | b"avc3" if body.len() > VISUAL_SAMPLE_ENTRY_HEADER_LEN => {
+            Some(VISUAL_SAMPLE_ENTRY_HEADER_LEN)
+        }
+        b"mp4a" if body.len() > AUDIO_SAMPLE_ENTRY_HEADER_LEN => {
+            let hdr_len = if read_u16_be(body, 8)? == 1 {
+                AUDIO_SAMPLE_ENTRY_V1_HEADER_LEN
+            } else {
+                AUDIO_SAMPLE_ENTRY_HEADER_LEN
+            };
+            (body.len() > hdr_len).then_some(hdr_len)
+        }
+        _ => None,
+    };
+    if let Some(offset) = skip {
+        walk_atoms(
+            &body[offset..],
+            body_base.saturating_add(u64::try_from(offset).unwrap_or(0)),
+            child_depth,
+            report,
+            moov_offset,
+            mdat_offset,
+        )?;
     }
     Ok(())
 }
