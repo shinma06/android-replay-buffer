@@ -614,14 +614,13 @@ mod tests {
             }),
             "newly inserted job must get its own stable id"
         );
+        let b1_path = PathBuf::from("/bundles").join("b-1");
         let b1_reveal = event_menu_id(&TrayMenuEvent::RevealBundle {
-            path: PathBuf::from("/bundles/b-1"),
+            path: b1_path.clone(),
         });
         assert_eq!(
             map_b.get(&b1_reveal),
-            Some(&TrayMenuEvent::RevealBundle {
-                path: PathBuf::from("/bundles/b-1"),
-            }),
+            Some(&TrayMenuEvent::RevealBundle { path: b1_path }),
             "bundle reveal id must not shift when siblings are inserted"
         );
     }
