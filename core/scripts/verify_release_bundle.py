@@ -163,30 +163,42 @@ def elf_max_symbol_versions(data: bytes) -> dict[str, tuple[int, ...]]:
         raise ValueError("not an ELF64 little-endian file")
     shoff, = struct.unpack_from("<Q", data, 0x28)
     shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
-    if shentsize < 64 or shoff == 0 or shoff + shentsize * shnum > len(data):
+    if shnum == 0 or shentsize < 64 or shoff == 0 or shoff + shentsize * shnum > len(data):
         raise ValueError("truncated ELF section header table")
 
     def section(index: int) -> tuple[int, int, int, int, int]:
         _, sh_type, _, _, offset, size, link, info, *_ = struct.unpack_from("<IIQQQQIIQQ", data, shoff + index * shentsize)
         return sh_type, offset, size, link, info
 
-    def cstring(table: int, offset: int) -> str:
-        end = data.index(b"\0", table + offset)
-        return data[table + offset:end].decode("ascii", "replace")
-
     found: dict[str, tuple[int, ...]] = {}
     for index in range(shnum):
         sh_type, offset, size, link, count = section(index)
         if sh_type != SHT_GNU_VERNEED:
             continue
-        strtab = section(link)[1]
+        if link >= shnum or offset + size > len(data):
+            raise ValueError("invalid version requirements section")
+        table_type, strtab, strsize, _, _ = section(link)
+        if table_type != 3 or strtab + strsize > len(data):
+            raise ValueError("invalid version requirements string table")
         entry = offset
-        for _ in range(count):
+        for i in range(count):
+            if entry + 16 > offset + size:
+                raise ValueError("truncated version requirement")
             _, aux_count, _, aux_offset, next_entry = struct.unpack_from("<HHIII", data, entry)
+            if i + 1 < count and next_entry < 16:
+                raise ValueError("invalid version requirement chain")
+            end = entry + next_entry if next_entry else offset + size
+            if end > offset + size or (aux_count and aux_offset < 16):
+                raise ValueError("invalid version requirement offsets")
             aux = entry + aux_offset
-            for _ in range(aux_count):
+            for j in range(aux_count):
+                if aux + 16 > end:
+                    raise ValueError("truncated auxiliary version requirement")
                 _, _, _, name_offset, next_aux = struct.unpack_from("<IHHII", data, aux)
-                name = cstring(strtab, name_offset)
+                if j + 1 < aux_count and next_aux < 16:
+                    raise ValueError("invalid auxiliary version requirement chain")
+                start = strtab + name_offset
+                name = data[start:data.index(b"\0", start, strtab + strsize)].decode("ascii")
                 family, _, number = name.rpartition("_")
                 if family and re.fullmatch(r"\d+(\.\d+)*", number):
                     version = tuple(int(part) for part in number.split("."))
@@ -1930,11 +1942,16 @@ def self_test() -> int:
         require("GLIBC_2.36 is rejected and 2.9 is not newer than 2.35", elf_compat_problems(build_stub_elf({"libc.so.6": ["GLIBC_2.36"]}))[1] != [] and elf_compat_problems(build_stub_elf({"libc.so.6": ["GLIBC_2.9"]}))[1] == [])
         require("GLIBCXX_3.4.31 is rejected", elf_compat_problems(build_stub_elf({"libstdc++.so.6": ["GLIBCXX_3.4.31"]}))[1] == ["GLIBCXX_3.4.31 > GLIBCXX_3.4.30"])
         require("a binary without version needs passes", elf_compat_problems(build_stub_elf({}))[1] == [] and elf_max_symbol_versions(build_stub_elf({})) == {})
-        for junk in (b"stub-arbd-linux", b"\x7fELF\x01\x01\x01" + bytes(80), at_limit[:100]):
+        invalid_link = bytearray(at_limit)
+        shoff, = struct.unpack_from("<Q", invalid_link, 0x28)
+        struct.pack_into("<I", invalid_link, shoff + 64 + 40, 99)
+        empty_headers = bytearray(at_limit)
+        struct.pack_into("<H", empty_headers, 0x3c, 0)
+        for junk in (invalid_link, empty_headers, b"stub-arbd-linux", b"\x7fELF\x01\x01\x01" + bytes(80), at_limit[:100]):
             try:
                 elf_max_symbol_versions(junk)
                 require("non-ELF / truncated input raises", False)
-            except (ValueError, struct.error):
+            except ValueError:
                 pass
         elf_dir = tmp / "elf-cli"
         elf_dir.mkdir()
@@ -1955,6 +1972,17 @@ def self_test() -> int:
         require("bundle-integrity flags a binary that needs GLIBC_2.43", any(not c["pass"] and "GLIBC_2.43" in str(c["detail"]) for c in glibc_checks), glibc_checks)
         require("bundle-integrity passes the baseline for stub Linux bundles", all(c["pass"] for c in [c for s in run_static(tmp, bundle, universal_plugin, "universal", "x86_64").sections for c in s.checks if "Ubuntu 22.04" in c["name"]]))
         # previous release identical to the candidate: strict by default, opt-in keeps a real hot-swap
+        probe = tmp / "arb-linux-x86_64.zip"
+        for version, tag, matches in (
+            ("2.0.0-dev.abcdef0", "early", True),
+            ("2.0.0-dev.abcdef1", "early", False),
+            ("2.0.0", "v2.0.0", True),
+            ("2.0.1", "v2.0.0", False),
+        ):
+            with zipfile.ZipFile(probe, "w") as archive:
+                archive.writestr(f"{probe.stem}/arb-ide-plugin-{version}.zip", b"")
+            require(f"release provenance {version} / {tag}",
+                    bundle_matches_release(probe, tag, "abcdef0" + "0" * 33) == matches)
         cand_zip = build_stub_bundle(tmp, "linux", "x86_64", universal_plugin)
         prev_dir = tmp / "prev-same"
         prev_dir.mkdir()
@@ -2023,6 +2051,8 @@ def self_test() -> int:
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true", help="run the helper / static-verification self-test and exit")
+    ap.add_argument("--same-core-previous-bundle", nargs=3, metavar=("ZIP", "TAG", "CANDIDATE"),
+                    help="print whether a downloaded release bundle matches the tag and candidate core tree")
     ap.add_argument("--check-elf-compat", nargs="+", type=Path, metavar="BINARY", help="print the highest GLIBC / GLIBCXX each Linux binary requires and exit non-zero above the Ubuntu 22.04 baseline (glibc 2.35, GLIBCXX 3.4.30)")
     ap.add_argument("--bundle-zip", type=Path, help="arb-<os>-<arch>.zip to verify")
     ap.add_argument("--plugin-zip", type=Path, help="universal arb-ide-plugin-*.zip (also checked against the bundle-embedded copy)")
@@ -2109,6 +2139,36 @@ def distinct_old_release(sec: Section, old_root: Path, work_dir: Path, bundle_os
     return distinct if signed and after != before else None
 
 
+def bundle_matches_release(bundle: Path, tag: str, commit: str) -> bool:
+    # early uploads assets before moving its tag. Check the version inside the actual
+    # OS archive so a concurrent refresh cannot supply a different previous build.
+    prefix = f"{bundle.stem}/arb-ide-plugin-"
+    with zipfile.ZipFile(bundle) as archive:
+        versions = [name[len(prefix):-4] for name in archive.namelist()
+                    if name.startswith(prefix) and name.endswith(".zip") and "/" not in name[len(prefix):]]
+    if len(versions) != 1:
+        return False
+    if tag == "early":
+        return versions[0].endswith(f"-dev.{commit[:7]}")
+    return tag == f"v{versions[0]}"
+
+
+def same_core_previous_bundle(bundle: Path, tag: str, candidate: str) -> bool:
+    # Resolve the exact tag (including annotated tags) remotely. The checkout only
+    # needs the candidate commit, so a depth-one checkout is sufficient.
+    repo = os.environ["GH_REPO"]
+    commit = json.loads(subprocess.check_output([
+        "gh", "api", "-X", "GET", f"repos/{repo}/commits", "-f", f"sha=refs/tags/{tag}", "-F", "per_page=1",
+    ]))[0]
+    if not bundle_matches_release(bundle, tag, commit["sha"]):
+        return False
+    root = commit["commit"]["tree"]["sha"]
+    tree = json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/git/trees/{root}"]))
+    candidate_core = subprocess.check_output(["git", "rev-parse", f"{candidate}:core"], text=True).strip()
+    return any(entry["path"] == "core" and entry["type"] == "tree" and entry["sha"] == candidate_core
+               for entry in tree["tree"])
+
+
 def check_elf_compat_cli(binaries: Sequence[Path]) -> int:
     failed = False
     for path in binaries:
@@ -2132,6 +2192,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.same_core_previous_bundle:
+        bundle, tag, candidate = args.same_core_previous_bundle
+        print("true" if same_core_previous_bundle(Path(bundle), tag, candidate) else "false")
+        return 0
     if args.check_elf_compat:
         return check_elf_compat_cli(args.check_elf_compat)
     if args.bundle_zip is None:

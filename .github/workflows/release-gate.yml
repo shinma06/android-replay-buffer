@@ -317,22 +317,8 @@ jobs:
           if gh release download --pattern arb-linux-x86_64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-linux-x86_64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-linux-x86_64.zip) downloaded: $(sha256sum previous/arb-linux-x86_64.zip)"
-            # U5 の同一バイナリ判定: early の公開コミットと候補で core/ のツリーが同一のときだけ、
-            # 再現ビルドで arbd が同一になることを許す。core/ が変わっていれば厳格なまま（同一は失敗）。
-            same_core=false
-            prev_sha7="$(gh release view "$tag" --json assets -q '.assets[].name' | sed -n 's/^arb-ide-plugin-.*-dev\.\([0-9a-f]\{7\}\)\.zip$/\1/p' | head -n 1)"
-            if [ -n "$prev_sha7" ]; then
-              prev_full="$(gh api "repos/$GH_REPO/commits/$prev_sha7" -q .sha 2>/dev/null || true)"
-              if [[ "$prev_full" =~ ^[0-9a-f]{40}$ ]]; then
-                prev_root="$(gh api "repos/$GH_REPO/commits/$prev_full" -q .commit.tree.sha)"
-                prev_core="$(gh api "repos/$GH_REPO/git/trees/$prev_root" -q '.tree[] | select(.path == "core" and .type == "tree") | .sha')"
-                cand_core="$(git rev-parse "${CANDIDATE_SHA}:core")"
-                if [ -n "$prev_core" ] && [ "$prev_core" = "$cand_core" ]; then
-                  same_core=true
-                fi
-                echo "Previous release commit ${prev_full}: core/ tree ${prev_core:-unknown} vs candidate ${cand_core} -> same_core=${same_core}"
-              fi
-            fi
+            same_core="$(python3 core/scripts/verify_release_bundle.py --same-core-previous-bundle \
+              previous/arb-linux-x86_64.zip "$tag" "$CANDIDATE_SHA")"
             echo "same_core=${same_core}" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
             echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
@@ -397,22 +383,8 @@ jobs:
           if gh release download --pattern arb-macos-arm64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-macos-arm64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-macos-arm64.zip) downloaded: $(shasum -a 256 previous/arb-macos-arm64.zip)"
-            # U5 の同一バイナリ判定: early の公開コミットと候補で core/ のツリーが同一のときだけ、
-            # 再現ビルドで arbd が同一になることを許す。core/ が変わっていれば厳格なまま（同一は失敗）。
-            same_core=false
-            prev_sha7="$(gh release view "$tag" --json assets -q '.assets[].name' | sed -n 's/^arb-ide-plugin-.*-dev\.\([0-9a-f]\{7\}\)\.zip$/\1/p' | head -n 1)"
-            if [ -n "$prev_sha7" ]; then
-              prev_full="$(gh api "repos/$GH_REPO/commits/$prev_sha7" -q .sha 2>/dev/null || true)"
-              if [[ "$prev_full" =~ ^[0-9a-f]{40}$ ]]; then
-                prev_root="$(gh api "repos/$GH_REPO/commits/$prev_full" -q .commit.tree.sha)"
-                prev_core="$(gh api "repos/$GH_REPO/git/trees/$prev_root" -q '.tree[] | select(.path == "core" and .type == "tree") | .sha')"
-                cand_core="$(git rev-parse "${CANDIDATE_SHA}:core")"
-                if [ -n "$prev_core" ] && [ "$prev_core" = "$cand_core" ]; then
-                  same_core=true
-                fi
-                echo "Previous release commit ${prev_full}: core/ tree ${prev_core:-unknown} vs candidate ${cand_core} -> same_core=${same_core}"
-              fi
-            fi
+            same_core="$(python3 core/scripts/verify_release_bundle.py --same-core-previous-bundle \
+              previous/arb-macos-arm64.zip "$tag" "$CANDIDATE_SHA")"
             echo "same_core=${same_core}" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
             echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
@@ -537,22 +509,8 @@ jobs:
           if gh release download --pattern arb-windows-x86_64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-windows-x86_64.zip) downloaded: $(sha256sum previous/arb-windows-x86_64.zip)"
-            # U5 の同一バイナリ判定: early の公開コミットと候補で core/ のツリーが同一のときだけ、
-            # 再現ビルドで arbd が同一になることを許す。core/ が変わっていれば厳格なまま（同一は失敗）。
-            same_core=false
-            prev_sha7="$(gh release view "$tag" --json assets -q '.assets[].name' | sed -n 's/^arb-ide-plugin-.*-dev\.\([0-9a-f]\{7\}\)\.zip$/\1/p' | head -n 1)"
-            if [ -n "$prev_sha7" ]; then
-              prev_full="$(gh api "repos/$GH_REPO/commits/$prev_sha7" -q .sha 2>/dev/null || true)"
-              if [[ "$prev_full" =~ ^[0-9a-f]{40}$ ]]; then
-                prev_root="$(gh api "repos/$GH_REPO/commits/$prev_full" -q .commit.tree.sha)"
-                prev_core="$(gh api "repos/$GH_REPO/git/trees/$prev_root" -q '.tree[] | select(.path == "core" and .type == "tree") | .sha')"
-                cand_core="$(git rev-parse "${CANDIDATE_SHA}:core")"
-                if [ -n "$prev_core" ] && [ "$prev_core" = "$cand_core" ]; then
-                  same_core=true
-                fi
-                echo "Previous release commit ${prev_full}: core/ tree ${prev_core:-unknown} vs candidate ${cand_core} -> same_core=${same_core}"
-              fi
-            fi
+            same_core="$(python3 core/scripts/verify_release_bundle.py --same-core-previous-bundle \
+              previous/arb-windows-x86_64.zip "$tag" "$CANDIDATE_SHA")"
             echo "same_core=${same_core}" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
             echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
