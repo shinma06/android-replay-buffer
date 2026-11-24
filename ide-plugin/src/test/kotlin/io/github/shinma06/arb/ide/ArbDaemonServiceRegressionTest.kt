@@ -321,6 +321,8 @@ class ArbDaemonServiceRegressionTest {
         val processManager = ArbdProcessManager(
             paths = hermeticPaths(tmp),
             searchRoot = repoRoot(),
+            // CI exports ARB_DAEMON_BIN, which (correctly) outranks the Settings path.
+            env = { key -> if (key.startsWith("ARB_DAEMON_")) null else System.getenv(key) },
             customBinaryProvider = { customSetting.get() },
             parentBound = true,
         )
