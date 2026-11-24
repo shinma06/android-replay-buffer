@@ -318,13 +318,29 @@ def trim_via_cli(args, outdir: Path):
     if rc2 != 0:
         raise RuntimeError(f"arb-cli trim failed: {err2[-400:]}")
     j = json.loads(out2)
-    mp4 = j.get("trim_report", {}).get("output_path") or j.get("output_path")
-    if not mp4:
-        cands = sorted(outdir.glob("*.mp4"))
-        if not cands:
-            raise RuntimeError("trim produced no mp4: " + out2[:400])
-        mp4 = cands[-1]
-    return Path(mp4), scrub, rc == 0
+    mp4 = find_trimmed_mp4(j, outdir)
+    if mp4 is None:
+        raise RuntimeError("trim produced no mp4: " + out2[:400])
+    return mp4, scrub, rc == 0
+
+
+def find_trimmed_mp4(trim_json, outdir: Path):
+    """Locates the trimmed `video.mp4` of a `trim` response.
+
+    Current CLIs return `bundle_path` (a complete bundle folder holding `video.mp4`); older ones put
+    an `output_path` in `trim_report`. As a last resort search `outdir` recursively."""
+    candidates = []
+    bundle_path = trim_json.get("bundle_path")
+    if bundle_path:
+        candidates.append(Path(bundle_path) / "video.mp4")
+    legacy = trim_json.get("trim_report", {}).get("output_path") or trim_json.get("output_path")
+    if legacy:
+        candidates.append(Path(legacy))
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    found = sorted(outdir.rglob("video.mp4"))
+    return found[-1] if found else None
 
 
 # ---- self-test -------------------------------------------------------------------
@@ -371,6 +387,14 @@ def self_test():
     require("safe_float", safe_float("N/A") == 0.0 and safe_float(None, -1) == -1 and safe_float("2.5") == 2.5)
     cmd = cli_command("arb-cli", ["--data-dir=/d", "--runtime-dir=/r"], "trim", "B")
     require("global --cli-arg before trim", cmd.index("--data-dir=/d") < cmd.index("trim") and cmd.index("--runtime-dir=/r") < cmd.index("trim") and cmd.index("--json") < cmd.index("trim"), cmd)
+    with tempfile.TemporaryDirectory() as td_str:
+        td_path = Path(td_str)
+        bundle = td_path / "bundle-x"
+        bundle.mkdir()
+        (bundle / "video.mp4").write_bytes(b"x")
+        require("trim json bundle_path", find_trimmed_mp4({"bundle_path": str(bundle)}, td_path) == bundle / "video.mp4")
+        require("trim json rglob fallback", find_trimmed_mp4({}, td_path) == bundle / "video.mp4")
+        require("trim json missing", find_trimmed_mp4({"bundle_path": str(td_path / "nope")}, td_path / "empty") is None)
     require("fps_mode fallback args", fps_mode_args() in (["-fps_mode", "vfr"], ["-vsync", "0"]), fps_mode_args())
     r = {"host": "h", "input": "i", "pass": True, "checks": [check("a", True, "d")], "players": [{"player": "p", "status": "ok"}]}
     require("md report", "PASS" in md_report(r))

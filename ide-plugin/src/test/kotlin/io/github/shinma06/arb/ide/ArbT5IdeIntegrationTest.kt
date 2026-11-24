@@ -359,7 +359,9 @@ class ArbT5IdeIntegrationTest {
     fun pluginXmlEnablesComposeKeepsRunningDevicesAndRemovesLogcatActionsWithZeroEmoji() {
         val pluginXmlPath = repoRoot().resolve("ide-plugin/src/main/resources/META-INF/plugin.xml")
         assertTrue(Files.isRegularFile(pluginXmlPath))
-        val xml = Files.readString(pluginXmlPath)
+        // plugin.xml plus the optional Android descriptor (Running Devices group, `arb-android.xml`).
+        val xml = Files.readString(pluginXmlPath) + "\n" +
+            Files.readString(pluginXmlPath.resolveSibling("arb-android.xml"))
 
         assertFalse(ArbFormatters.containsEmoji(xml), "plugin.xml must contain zero emoji")
         assertTrue(xml.contains("<depends>com.intellij.modules.compose</depends>"), "compose dependency required")

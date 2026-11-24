@@ -1,0 +1,25 @@
+<idea-plugin>
+    <!-- Loaded only when org.jetbrains.android (Android Studio) is present: StreamingToolbarSecondary is
+         rendered on both the Embedded Emulator and the Physical Device Mirroring panels. -->
+    <actions>
+        <group id="io.github.shinma06.arb.RunningDevices">
+            <separator/>
+            <action id="io.github.shinma06.arb.RunningDevices.ToggleCapture"
+                    class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
+                    icon="AllIcons.Actions.Restart"
+                    text="ARB: キャプチャ開始 / 停止"
+                    description="arbd のライブキャプチャを開始または停止します"/>
+            <action id="io.github.shinma06.arb.RunningDevices.Save"
+                    class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
+                    icon="AllIcons.Actions.MenuSaveall"
+                    text="ARB: 直前の記録を保存"
+                    description="設定された秒数と既定アクションに従って直前の記録を保存します"/>
+            <action id="io.github.shinma06.arb.RunningDevices.Screenshot"
+                    class="io.github.shinma06.arb.ide.ArbScreenshotAction"
+                    icon="AllIcons.FileTypes.Image"
+                    text="ARB: スクリーンショットを保存"
+                    description="対象端末の現在画面を PNG として即時保存します"/>
+            <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
+        </group>
+    </actions>
+</idea-plugin>

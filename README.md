@@ -62,3 +62,13 @@ cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-
 CI（`.github/workflows/ci.yml`）は `test`（Linux の全検証）と `os-parity (macos-latest)` / `os-parity (windows-latest)`（Rust ワークスペースと ide-plugin の OS 同等性）を実行します。`develop` への push で `early` を更新し、`main` 上のタグ `vX.Y.Z` で正式版を公開します（`release.yml`）。
 
 テストが通ることは、実機・IDE での受入済みを意味しません。未検証の項目は検証記録（`docs/verifications/`）に理由付きで残します。進め方は [AGENTS.md](AGENTS.md) を参照してください。
+
+## ライセンス
+
+Android Replay Buffer は **`MIT OR Apache-2.0`** のデュアルライセンスです。どちらか好きな方の条件で利用できます。
+
+- [`LICENSE-MIT`](LICENSE-MIT)
+- [`LICENSE-APACHE`](LICENSE-APACHE)
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): 同梱する scrcpy-server（Apache-2.0）、OpenH264（BSD-2-Clause）、`rusty_aac`（Apache-2.0）、SQLite などの第三者ソフトウェアと帰属表示
+
+この 3 つのファイルは、各 `arb-<OS>-<arch>.zip` と `arb-ide-plugin-<version>.zip`（`licenses/`）にも同梱されます。

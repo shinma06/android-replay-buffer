@@ -198,6 +198,7 @@ fn absolutize_bundle_target(target: &str) -> Result<String, CliError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandSpec {
     Help,
+    Version,
     Status,
     DaemonStart,
     DaemonStop,
@@ -376,6 +377,9 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
 
     if rest.is_empty() || matches!(rest[0].as_str(), "-h" | "--help" | "help") {
         return Ok((opts, CommandSpec::Help));
+    }
+    if matches!(rest[0].as_str(), "-V" | "--version") {
+        return Ok((opts, CommandSpec::Version));
     }
 
     let cmd = match rest[0].as_str() {
@@ -1133,6 +1137,10 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
         print_help();
         return Ok(());
     }
+    if matches!(cmd, CommandSpec::Version) {
+        println!("arb-cli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     let paths = opts.resolve_paths()?;
 
@@ -1169,7 +1177,9 @@ fn dispatch_connected(
     cmd: CommandSpec,
 ) -> Result<(), CliError> {
     match cmd {
-        CommandSpec::Help | CommandSpec::DaemonStart | CommandSpec::Mcp => Ok(()),
+        CommandSpec::Help | CommandSpec::Version | CommandSpec::DaemonStart | CommandSpec::Mcp => {
+            Ok(())
+        }
         CommandSpec::Status => dispatch_status(client, output),
         CommandSpec::Inspect { target } => execute_inspect(client, output, &target),
         CommandSpec::ScrubBench { target, frame } => {
@@ -1319,6 +1329,7 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "png export",
         ),
         CommandSpec::Help
+        | CommandSpec::Version
         | CommandSpec::DaemonStart
         | CommandSpec::Mcp
         | CommandSpec::Status
@@ -1667,7 +1678,8 @@ COMMANDS:\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
-  mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n\n\
+  mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n  \
+  -V, --version          Print the arb-cli version\n\n\
 EXIT CODES:\n  \
   0  Success\n  \
   1  General / transport / internal error\n  \
@@ -1704,6 +1716,14 @@ mod tests {
 
     fn abs_string(raw: &str) -> String {
         abs(raw).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn version_flag_parses_without_a_daemon() {
+        for flag in ["--version", "-V"] {
+            let (_opts, cmd) = parse_args(&vec_str(&[flag])).expect("version must parse");
+            assert!(matches!(cmd, CommandSpec::Version), "{flag}");
+        }
     }
 
     #[test]

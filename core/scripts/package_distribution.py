@@ -9,6 +9,8 @@ Packages `arb-<os>-<arch>.zip` containing:
   - Platform launcher (`start-arb.sh` + `start-arb-tray.command` on macOS,
     `start-arb.sh` on Linux, `start-arb.ps1` on Windows)
   - `README-TRIAL.md` (with `docs/first-run-os-permissions.md` & MCP setup guide)
+  - `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD_PARTY_NOTICES.md` (dual license + third-party attribution;
+    also placed under `licenses/` of the universal IDE plugin ZIP)
   - `SHA256SUMS.txt` (SHA-256 checksums for every packaged file)
 
 Also classifies release tags for `.github/workflows/release.yml` (`--classify-tag`): only
@@ -32,6 +34,9 @@ from typing import Sequence
 
 BINARIES = ("arbd", "arb-cli", "arb-tray")
 DEVICE_AGENT_JARS = ("arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar")
+# Repository-root legal files shipped in every bundle and in the IDE plugin (`<plugin>/licenses/`).
+LICENSE_FILES = ("LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md")
+PLUGIN_LICENSE_DIR = "licenses"
 ZIP_TIMESTAMP = (2026, 11, 23, 0, 0, 0)
 REQUIRED_RELEASE_OSES = ("linux", "macos", "windows")
 BUNDLE_ZIP_RE = re.compile(r"^arb-(linux|macos|windows)-([a-z0-9_]+)\.zip$")
@@ -116,17 +121,49 @@ def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def read_workspace_version(cargo_toml: Path) -> str | None:
+    """Returns `[workspace.package] version` of a Cargo manifest (None when absent)."""
+    if not cargo_toml.is_file():
+        return None
+    in_section = False
+    for line in cargo_toml.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_section = stripped == "[workspace.package]"
+            continue
+        if in_section and stripped.startswith("version") and "=" in stripped:
+            _, rhs = stripped.split("=", 1)
+            ver = rhs.split("#", 1)[0].strip().strip('"').strip("'")
+            if ver:
+                return ver
+    return None
+
+
 def detect_version(repo_root: Path) -> str:
-    cargo_toml = repo_root / "core" / "Cargo.toml"
-    if cargo_toml.is_file():
-        for line in cargo_toml.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("version") and "=" in stripped:
-                _, rhs = stripped.split("=", 1)
-                ver = rhs.strip().strip('"').strip("'")
-                if ver:
-                    return ver
-    return "2.0.0-dev"
+    return read_workspace_version(repo_root / "core" / "Cargo.toml") or "2.0.0-dev"
+
+
+def check_core_version(repo_root: Path, expected: str) -> str | None:
+    """Returns an error message unless `core/Cargo.toml` carries exactly `expected`, so a tagged
+    release can never ship binaries whose `--version` disagrees with the tag."""
+    actual = read_workspace_version(repo_root / "core" / "Cargo.toml")
+    if actual != expected:
+        return (
+            f"core/Cargo.toml [workspace.package] version is {actual!r} but the release is {expected!r}; "
+            "bump core/Cargo.toml (and core/Cargo.lock) before tagging"
+        )
+    return None
+
+
+def read_license_files(license_dir: Path) -> list[tuple[str, bytes]]:
+    """Reads LICENSE-MIT / LICENSE-APACHE / THIRD_PARTY_NOTICES.md from `license_dir` (repo root)."""
+    out: list[tuple[str, bytes]] = []
+    for name in LICENSE_FILES:
+        path = license_dir / name
+        if not path.is_file():
+            raise FileNotFoundError(f"missing legal file for distribution: {path}")
+        out.append((name, path.read_bytes()))
+    return out
 
 
 def binary_filename(name: str, target_os: str) -> str:
@@ -303,7 +340,8 @@ def render_readme_trial(
 
 - 対象プラットフォーム: `{target_os}-{arch}`
 - バージョン: `{version}`
-- ライセンス方針: MIT / Apache-2.0 / BSD-2-Clause / Unlicense のみ（**GPL / AGPL 依存 0 件**）
+- ライセンス: `MIT OR Apache-2.0`（`LICENSE-MIT` / `LICENSE-APACHE`）。第三者ソフトウェアは `THIRD_PARTY_NOTICES.md` を参照
+- 依存ライセンス方針: MIT / Apache-2.0 / BSD-2-Clause / Unlicense のみ（**GPL / AGPL 依存 0 件**）
 
 ## 同梱構成
 
@@ -311,6 +349,7 @@ def render_readme_trial(
 {plugin_line}
 {agent_line}
 - `docs/first-run-os-permissions.md`: macOS Gatekeeper / Windows SmartScreen 初回起動許可手順
+- `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD_PARTY_NOTICES.md`: ライセンス全文と第三者ソフトウェアの帰属表示
 - `SHA256SUMS.txt`: 同梱ファイルの SHA-256 チェックサム一覧
 
 ## 1. クイックスタート（トレイ＆デーモン）
@@ -395,6 +434,7 @@ def build_distribution_zip(
     out_dir: Path,
     allow_missing_ide_plugin: bool = False,
     allow_missing_device_agent: bool = False,
+    license_dir: Path | None = None,
 ) -> Path:
     target_os = normalize_os(target_os)
     arch = normalize_arch(arch)
@@ -430,6 +470,7 @@ def build_distribution_zip(
     if not permissions_doc_path.is_file():
         raise FileNotFoundError(f"missing permissions doc: {permissions_doc_path}")
     permissions_text = permissions_doc_path.read_text(encoding="utf-8")
+    license_blobs = read_license_files(license_dir or repo_root_from_script())
 
     readme_text = render_readme_trial(
         target_os=target_os,
@@ -513,6 +554,15 @@ def build_distribution_zip(
                     executable=False,
                 )
             )
+            for license_name, license_data in license_blobs:
+                checksums.append(
+                    write_zip_entry(
+                        zf,
+                        f"{package_stem}/{license_name}",
+                        license_data,
+                        executable=False,
+                    )
+                )
             checksums.append(
                 write_zip_entry(
                     zf,
@@ -544,6 +594,7 @@ def assemble_universal_release(
     out_dir: Path,
     version: str,
     permissions_doc_path: Path,
+    license_dir: Path | None = None,
 ) -> list[Path]:
     """Assemble a universal 3-OS zero-zsh plugin ZIP and symmetric 3-OS bundles.
 
@@ -555,6 +606,7 @@ def assemble_universal_release(
     """
     if not input_dir.is_dir():
         raise FileNotFoundError(f"missing release input directory: {input_dir}")
+    license_blobs = read_license_files(license_dir or repo_root_from_script())
 
     base_plugins: list[Path] = []
     os_bundles: dict[tuple[str, str], Path] = {}
@@ -629,7 +681,11 @@ def assemble_universal_release(
 
             # Build universal 3-OS zero-zsh plugin ZIP atomically.
             tmp_plugin = out_dir / f".arb-ide-plugin-{version}.zip.tmp.{os.getpid()}"
-            skip_prefixes = (f"{plugin_root}/native/", f"{plugin_root}/device-agent/")
+            skip_prefixes = (
+                f"{plugin_root}/native/",
+                f"{plugin_root}/device-agent/",
+                f"{plugin_root}/{PLUGIN_LICENSE_DIR}/",
+            )
             seen_entries: set[str] = set()
             try:
                 with zipfile.ZipFile(tmp_plugin, mode="w", compression=zipfile.ZIP_DEFLATED) as dst:
@@ -650,6 +706,14 @@ def assemble_universal_release(
                             dst,
                             f"{plugin_root}/device-agent/{jar_name}",
                             (agent_dir / jar_name).read_bytes(),
+                            executable=False,
+                        )
+
+                    for license_name, license_data in license_blobs:
+                        write_zip_entry(
+                            dst,
+                            f"{plugin_root}/{PLUGIN_LICENSE_DIR}/{license_name}",
+                            license_data,
                             executable=False,
                         )
 
@@ -683,6 +747,7 @@ def assemble_universal_release(
                 out_dir=out_dir,
                 allow_missing_ide_plugin=False,
                 allow_missing_device_agent=False,
+                license_dir=license_dir,
             )
             outputs.append(archive)
 
@@ -773,8 +838,10 @@ def run_self_test(repo_root: Path) -> int:
                 perm = zf.read(f"{stem}/docs/first-run-os-permissions.md").decode("utf-8")
                 assert "Gatekeeper" in perm and "SmartScreen" in perm
 
+                assert_license_files_in_bundle(zf, stem, repo_root)
+
                 sums = zf.read(f"{stem}/SHA256SUMS.txt").decode("utf-8").splitlines()
-                assert len(sums) >= 8, f"expected >= 8 checksum lines, got {len(sums)}"
+                assert len(sums) >= 11, f"expected >= 11 checksum lines, got {len(sums)}"
                 for line in sums:
                     digest, rel = line.split("  ", 1)
                     assert sha256_bytes(zf.read(rel)) == digest, f"checksum mismatch for {rel}"
@@ -860,6 +927,10 @@ def run_self_test(repo_root: Path) -> int:
             assert "arb-ide-plugin/lib/plugin.jar" in unames
             for jar in DEVICE_AGENT_JARS:
                 assert f"arb-ide-plugin/device-agent/{jar}" in unames
+            for lic in LICENSE_FILES:
+                rel = f"arb-ide-plugin/{PLUGIN_LICENSE_DIR}/{lic}"
+                assert rel in unames, f"missing {rel} in universal plugin ZIP"
+                assert uzf.read(rel) == (repo_root / lic).read_bytes(), f"{rel} differs from repository {lic}"
             for target_os, arch, _ in matrix:
                 for name in BINARIES:
                     rel = f"arb-ide-plugin/native/{target_os}-{arch}/{binary_filename(name, target_os)}"
@@ -879,19 +950,54 @@ def run_self_test(repo_root: Path) -> int:
                     assert f"{stem}/device-agent/{jar}" in bnames, f"missing {jar} in {bzip}"
                 readme = bzf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
                 assert "2.0.0-dev.abcdef0" in readme
+                assert_license_files_in_bundle(bzf, stem, repo_root)
+                sum_names = {
+                    line.split("  ", 1)[1] for line in bzf.read(f"{stem}/SHA256SUMS.txt").decode("utf-8").splitlines()
+                }
+                for lic in LICENSE_FILES:
+                    assert f"{stem}/{lic}" in sum_names, f"{lic} missing from SHA256SUMS.txt of {bzip}"
                 for line in bzf.read(f"{stem}/SHA256SUMS.txt").decode("utf-8").splitlines():
                     digest, rel = line.split("  ", 1)
                     assert sha256_bytes(bzf.read(rel)) == digest, f"checksum mismatch for {rel} in {bzip}"
 
         run_binary_identity_self_test(tmp)
         run_release_tag_self_test(tmp)
+        run_core_version_self_test(tmp, repo_root)
 
         print(
             "package_distribution.py --self-test: OK "
             "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, universal 3-OS plugin assembly, POSIX modes, UTF-8 docs, SHA256SUMS, "
-            "same-size build digest identity, release tag classification)"
+            "same-size build digest identity, license files + SHA256SUMS + no retired version label, release tag classification)"
         )
     return 0
+
+
+def assert_license_files_in_bundle(zf: zipfile.ZipFile, stem: str, repo_root: Path) -> None:
+    """G-M1: every OS bundle carries the dual license + third-party notices, listed in SHA256SUMS.txt,
+    byte-identical to the repository root files, without the retired product-version label."""
+    names = set(zf.namelist())
+    sums = {
+        line.split("  ", 1)[1]: line.split("  ", 1)[0]
+        for line in zf.read(f"{stem}/SHA256SUMS.txt").decode("utf-8").splitlines()
+    }
+    legacy_label = "v" + "2"
+    for lic in LICENSE_FILES:
+        rel = f"{stem}/{lic}"
+        assert rel in names, f"missing {rel}"
+        data = zf.read(rel)
+        assert data == (repo_root / lic).read_bytes(), f"{rel} differs from repository {lic}"
+        assert sums.get(rel) == sha256_bytes(data), f"{rel} missing or stale in SHA256SUMS.txt"
+        text = data.decode("utf-8")
+        assert not re.search(rf"\b{legacy_label}\b", text, re.IGNORECASE), f"{rel} contains the retired '{legacy_label}' label"
+    mit = zf.read(f"{stem}/LICENSE-MIT").decode("utf-8")
+    assert "MIT License" in mit and "Copyright (c) 2026 shinma06" in mit
+    apache = zf.read(f"{stem}/LICENSE-APACHE").decode("utf-8")
+    assert "Apache License" in apache and "Version 2.0, January 2004" in apache
+    notices = zf.read(f"{stem}/THIRD_PARTY_NOTICES.md").decode("utf-8")
+    for needle in ("scrcpy-server", "v5.0.1", "openh264", "BSD-2-Clause", "rusty_aac", "rusqlite", "check-licenses.py"):
+        assert needle.lower() in notices.lower(), f"THIRD_PARTY_NOTICES.md must mention {needle}"
+    readme = zf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
+    assert "MIT OR Apache-2.0" in readme and "THIRD_PARTY_NOTICES.md" in readme
 
 
 def run_binary_identity_self_test(tmp: Path) -> None:
@@ -910,6 +1016,22 @@ def run_binary_identity_self_test(tmp: Path) -> None:
     assert old_size == new_size, "fixture builds must have identical size"
     assert old_time == new_time == ZIP_TIMESTAMP, "reproducible ZIP entries share a fixed timestamp"
     assert old_digest != new_digest, "content digest must distinguish same-size, same-mtime builds"
+
+
+def run_core_version_self_test(tmp: Path, repo_root: Path) -> None:
+    """Tagged releases must match `core/Cargo.toml` so `arbd --version` never misreports the release."""
+    fake = tmp / "fake-repo"
+    (fake / "core").mkdir(parents=True)
+    (fake / "core" / "Cargo.toml").write_text(
+        '[workspace]\nresolver = "2"\n\n[workspace.package]\nversion = "2.0.0-dev"  # dev\nedition = "2024"\n\n'
+        '[workspace.dependencies]\nserde = { version = "1.0.0" }\n',
+        encoding="utf-8",
+    )
+    assert read_workspace_version(fake / "core" / "Cargo.toml") == "2.0.0-dev"
+    assert check_core_version(fake, "2.0.0-dev") is None
+    assert check_core_version(fake, "2.0.0") is not None, "v2.0.0 must be rejected while Cargo.toml says 2.0.0-dev"
+    real = read_workspace_version(repo_root / "core" / "Cargo.toml")
+    assert real is not None and not real.startswith("0."), f"core/Cargo.toml version looks stale: {real}"
 
 
 def run_release_tag_self_test(tmp: Path) -> None:
@@ -966,6 +1088,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Classify a release tag (vX.Y.Z stable vs vX.Y.Z-{alpha,beta,rc}.N prerelease) and print gh flags.",
     )
     parser.add_argument(
+        "--check-core-version",
+        default=None,
+        metavar="VERSION",
+        help="Fail unless core/Cargo.toml [workspace.package] version equals VERSION (release tag consistency).",
+    )
+    parser.add_argument(
         "--github-output",
         type=Path,
         default=None,
@@ -993,6 +1121,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo_root = repo_root_from_script()
     if args.self_test:
         return run_self_test(repo_root)
+    if args.check_core_version is not None:
+        error = check_core_version(repo_root, args.check_core_version)
+        if error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+        print(f"core/Cargo.toml version matches {args.check_core_version}")
+        return 0
     if args.classify_tag is not None:
         try:
             classification = classify_release_tag(args.classify_tag)
