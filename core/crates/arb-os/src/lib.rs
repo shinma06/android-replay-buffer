@@ -10,6 +10,7 @@
 //! - [`shm`]: triple-buffered shared-memory frame ring for high-FPS video delivery,
 //! - [`paths`]: standard OS data, cache, and runtime directory resolution.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 pub mod clock;
 pub mod error;
 pub mod fs;

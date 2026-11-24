@@ -6,6 +6,10 @@
 //! guards so early returns never leak memory or pixel-buffer locks.
 
 #![cfg(target_os = "macos")]
+#![allow(
+    unsafe_code,
+    reason = "audited VideoToolbox/CoreMedia C FFI boundary (RS-3 unsafe budget)"
+)]
 
 use std::ffi::c_void;
 use std::ptr::{NonNull, null, null_mut};

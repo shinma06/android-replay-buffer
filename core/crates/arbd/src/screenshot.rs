@@ -272,7 +272,7 @@ pub fn write_screenshot_atomic(
 
         match overwrite {
             ScreenshotOverwrite::Replace => {
-                fs::rename(&tmp_path, dest_path)?;
+                arb_os::fs::replace_file(&tmp_path, dest_path)?;
             }
             ScreenshotOverwrite::NoReplace => {
                 publish_no_replace(&tmp_path, dest_path)?;
@@ -320,7 +320,7 @@ fn publish_no_replace(tmp_path: &Path, dest_path: &Path) -> Result<(), DaemonErr
                 }
                 Err(err) => return Err(err.into()),
             }
-            if let Err(err) = fs::rename(tmp_path, dest_path) {
+            if let Err(err) = arb_os::fs::replace_file(tmp_path, dest_path) {
                 let _ = fs::remove_file(dest_path);
                 return Err(err.into());
             }

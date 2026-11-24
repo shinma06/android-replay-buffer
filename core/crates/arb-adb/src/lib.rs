@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![forbid(unsafe_code)]
 
 //! ADB transport, device-agent binary wire protocol, scrcpy-server stream parsing,

@@ -1,4 +1,8 @@
 #![allow(
+    unsafe_code,
+    reason = "native tray OS FFI boundary (RS-3 unsafe budget)"
+)]
+#![allow(
     clippy::print_stderr,
     reason = "the native tray has no GUI window to surface background poll/dispatch failures, \
               so it logs them to stderr (the console the tray was launched from)"

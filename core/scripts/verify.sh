@@ -14,22 +14,25 @@ else
     exit 1
 fi
 
-echo "==> [1/6] cargo fmt --check"
+echo "==> [1/7] cargo fmt --check"
 cargo fmt --manifest-path "${CORE_DIR}/Cargo.toml" --all --check
 
-echo "==> [2/6] cargo clippy --all-targets -- -D warnings"
+echo "==> [2/7] cargo clippy --all-targets -- -D warnings"
 cargo clippy --manifest-path "${CORE_DIR}/Cargo.toml" --workspace --all-targets -- -D warnings
 
-echo "==> [3/6] cargo test"
+echo "==> [3/7] cargo test"
 cargo test --manifest-path "${CORE_DIR}/Cargo.toml" --workspace
 
-echo "==> [4/6] license check (GPL/AGPL-free guard)"
+echo "==> [4/7] license check (GPL/AGPL-free guard)"
 python3 "${CORE_DIR}/scripts/check-licenses.py" --manifest-path "${CORE_DIR}/Cargo.toml"
 
-echo "==> [5/6] sara check --strict"
+echo "==> [5/7] architecture structural guards (RS-1..RS-5)"
+python3 "${CORE_DIR}/scripts/check-architecture.py"
+
+echo "==> [6/7] sara check --strict"
 (cd "${REPO_ROOT}" && "${SARA_BIN}" check --strict -c docs/sara.toml)
 
-echo "==> [6/6] REQ -> downstream SPEC coverage check"
+echo "==> [7/7] REQ -> downstream SPEC coverage check"
 (cd "${REPO_ROOT}" && "${SARA_BIN}" report matrix --format json -c docs/sara.toml) | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
