@@ -47,8 +47,8 @@ internal object Win32NamedPipes : WindowsPipeOpener {
     /** Lazily bound Win32 entry points (only ever initialized on Windows). */
     private class Api {
         val linker: Linker = Linker.nativeLinker()
-        private val kernel32: SymbolLookup = SymbolLookup.libraryLookup("kernel32", Arena.global())
-        private val advapi32: SymbolLookup = SymbolLookup.libraryLookup("advapi32", Arena.global())
+        private val kernel32: SymbolLookup = SymbolLookup.libraryLookup("kernel32.dll", Arena.global())
+        private val advapi32: SymbolLookup = SymbolLookup.libraryLookup("advapi32.dll", Arena.global())
         val captureLayout = Linker.Option.captureStateLayout()
         val lastErrorOffset: Long = captureLayout.byteOffset(MemoryLayout.PathElement.groupElement("GetLastError"))
         private val capture = Linker.Option.captureCallState("GetLastError")
