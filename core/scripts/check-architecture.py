@@ -83,7 +83,8 @@ def production_sources():
 
 def grep(src: str, pattern: re.Pattern[str]):
     for n, line in enumerate(src.split("\n"), 1):
-        if pattern.search(line):
+        # String literals (e.g. `feature = "windows"`) are not OS conditions or calls.
+        if pattern.search(re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)):
             yield n, line.strip()
 
 
