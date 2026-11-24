@@ -48,7 +48,7 @@ use crate::mp4::{
     prepend_param_sets_4byte_into, prepended_param_sets_4byte_len,
     require_supported_nal_length_size, sample_size_u32, ticks_to_ns_unsigned,
 };
-use crate::output::{Publish, ensure_output_is_not_input, write_atomically};
+use crate::output::{Publish, ensure_output_is_not_input, write_verified};
 
 /// Target interleave span (in each track's own timescale ticks per second) of one `mdat` chunk.
 const CHUNK_SPAN_SECONDS: u64 = 1;
@@ -967,60 +967,78 @@ fn write_share_file(
     let (moov, _, _) = layout_share_moov(ftyp_len, mdat_header_len, total_payload, vplan, aplan)?;
 
     let cfg = video.avcc();
-    write_atomically(path, Publish::NoReplace, |writer| {
-        writer.write_all(&ftyp)?;
-        writer.write_all(&moov)?;
-        if use_large_mdat {
-            let mdat_total = total_payload.checked_add(16).ok_or_else(|| {
-                MediaError::InvalidContainer("mdat 64-bit size overflow".to_owned())
-            })?;
-            writer.write_all(&1u32.to_be_bytes())?;
-            writer.write_all(b"mdat")?;
-            writer.write_all(&mdat_total.to_be_bytes())?;
-        } else {
-            let mdat_total = total_payload
-                .checked_add(8)
-                .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| {
-                    MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
+    write_verified(
+        path,
+        Publish::NoReplace,
+        |writer| {
+            writer.write_all(&ftyp)?;
+            writer.write_all(&moov)?;
+            if use_large_mdat {
+                let mdat_total = total_payload.checked_add(16).ok_or_else(|| {
+                    MediaError::InvalidContainer("mdat 64-bit size overflow".to_owned())
                 })?;
-            writer.write_all(&mdat_total.to_be_bytes())?;
-            writer.write_all(b"mdat")?;
-        }
+                writer.write_all(&1u32.to_be_bytes())?;
+                writer.write_all(b"mdat")?;
+                writer.write_all(&mdat_total.to_be_bytes())?;
+            } else {
+                let mdat_total = total_payload
+                    .checked_add(8)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| {
+                        MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
+                    })?;
+                writer.write_all(&mdat_total.to_be_bytes())?;
+                writer.write_all(b"mdat")?;
+            }
 
-        let mut raw = Vec::new();
-        let mut rendered = Vec::new();
-        let mut written = 0u64;
-        for chunk in schedule {
-            for sample in chunk.first..chunk.first + chunk.count {
-                if let (TrackKind::Audio, Some((track, plan))) = (chunk.kind, audio) {
-                    let index = u64::try_from(plan.first_packet + sample).unwrap_or(u64::MAX);
-                    track.read_packet_into(index, &mut raw)?;
-                    write_checked(writer, &raw, plan.table.sizes[sample], "audio", sample)?;
-                    written += u64::from(plan.table.sizes[sample]);
-                } else {
-                    let info = video.frames()[sample];
-                    video.read_sample_into(info.frame_index, &mut raw)?;
-                    let mode = RenderMode::for_sample(sample, &info);
-                    let out: &[u8] = if video_sample_needs_render(cfg, mode) {
-                        render_video_sample(cfg, &raw, mode, &mut rendered)?;
-                        &rendered
+            let mut raw = Vec::new();
+            let mut rendered = Vec::new();
+            let mut written = 0u64;
+            for chunk in schedule {
+                for sample in chunk.first..chunk.first + chunk.count {
+                    if let (TrackKind::Audio, Some((track, plan))) = (chunk.kind, audio) {
+                        let index = u64::try_from(plan.first_packet + sample).unwrap_or(u64::MAX);
+                        track.read_packet_into(index, &mut raw)?;
+                        write_checked(writer, &raw, plan.table.sizes[sample], "audio", sample)?;
+                        written += u64::from(plan.table.sizes[sample]);
                     } else {
-                        &raw
-                    };
-                    write_checked(writer, out, vplan.table.sizes[sample], "video", sample)?;
-                    written += u64::from(vplan.table.sizes[sample]);
+                        let info = video.frames()[sample];
+                        video.read_sample_into(info.frame_index, &mut raw)?;
+                        let mode = RenderMode::for_sample(sample, &info);
+                        let out: &[u8] = if video_sample_needs_render(cfg, mode) {
+                            render_video_sample(cfg, &raw, mode, &mut rendered)?;
+                            &rendered
+                        } else {
+                            &raw
+                        };
+                        write_checked(writer, out, vplan.table.sizes[sample], "video", sample)?;
+                        written += u64::from(vplan.table.sizes[sample]);
+                    }
                 }
             }
-        }
-        if written != total_payload {
-            return Err(MediaError::InvalidContainer(format!(
-                "mdat payload wrote {written} bytes but {total_payload} were indexed"
-            )));
-        }
-        writer.flush()?;
-        Ok(())
-    })
+            if written != total_payload {
+                return Err(MediaError::InvalidContainer(format!(
+                    "mdat payload wrote {written} bytes but {total_payload} were indexed"
+                )));
+            }
+            writer.flush()?;
+            Ok(())
+        },
+        |tmp| {
+            let atoms = crate::mp4::inspect_mp4_atoms(tmp)?;
+            let verified = Mp4VideoTrack::open(tmp)?;
+            if !atoms.faststart
+                || atoms.edts_count != 0
+                || atoms.elst_count != 0
+                || verified.frames().len() != vplan.table.sizes.len()
+            {
+                return Err(MediaError::InvalidContainer(
+                    "share.mp4 verification failed".into(),
+                ));
+            }
+            Ok(())
+        },
+    )
 }
 
 fn write_checked(

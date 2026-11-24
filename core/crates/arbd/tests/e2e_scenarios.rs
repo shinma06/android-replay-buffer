@@ -565,6 +565,17 @@ fn verify_shm_scrub_and_seek(client: &mut TestIpcClient, bundle_id: &str, cache_
         "media.open_viewport",
         &json!({ "bundle_id_or_path": bundle_id }),
     );
+    let pts = vp["frame_pts_ns"].as_array().expect("per-frame PTS");
+    assert_eq!(
+        u64::try_from(pts.len()).expect("length fits u64"),
+        vp["frame_count"].as_u64().expect("frame count"),
+        "each opened frame needs its presentation timestamp"
+    );
+    assert_eq!(pts[0], 0, "timestamps are relative to the first frame");
+    assert!(
+        pts.windows(2).all(|w| w[0].as_i64() < w[1].as_i64()),
+        "fixture presentation timestamps are increasing"
+    );
     let vp_id = vp["viewport_id"].as_str().expect("viewport_id");
     let shm_path = PathBuf::from(vp["shm_path"].as_str().expect("shm_path"));
     let shm_reader = ShmFrameRingReader::open(&shm_path).expect("open SHM reader");
@@ -1461,7 +1472,7 @@ fn scenario_12_pressure_stop_merged_into_later_bundle_and_startup_pin_leak_recov
 
     // S18: pressure stop must be drained from the ring and merged into later saved bundles.
     free_bytes.store(1024 * 1024 * 1024, Ordering::Release);
-    let mut source2 = MockDeviceSource::from_scenario(FaultScenario::NormalFhd30);
+    let mut source2 = build_barcode_mock_source("boot-s12", 2, WallClockMode::Steady);
     server
         .ingest_device_source(&mut source2)
         .expect("pressure must halt cleanly");

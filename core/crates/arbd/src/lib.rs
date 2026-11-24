@@ -7,6 +7,7 @@
 //! - [`live_adb`] live Android device-agent deployment & reconnect supervision
 //! - [`media_engine::MediaEngine`] SHM triple-buffered viewport & frame-accurate trim/PNG export
 
+mod adb_resources;
 pub mod capture;
 pub mod error;
 pub mod inspect_export;
@@ -56,14 +57,14 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::capture::{
-    CapturePipeline, CrashAutoSaveNotice, FaultInjection, SharedDiskSpaceProvider,
+    CapturePipeline, CrashAutoSaveNotice, FaultInjection, PendingSave, SharedDiskSpaceProvider,
     TailCompleteness, phase2_materialize, save_job_to_view,
 };
 use crate::error::{
     DaemonError, RPC_ERR_INTERNAL, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE,
     RPC_ERR_RESPONSE_TOO_LARGE,
 };
-use crate::live_adb::{LiveCaptureHandle, start_live_adb_capture};
+use crate::live_adb::{LiveCaptureHandle, select_live_target, start_selected_capture};
 use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
 use crate::protocol::{
     BundleEntryView, BundleGcFailure, BundleGcParams, BundleGcResponse, BundleIdParams,
@@ -172,6 +173,18 @@ impl DaemonConfig {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureIntent {
+    Armed,
+    Stopped,
+}
+
+struct LiveCapture {
+    handle: Option<LiveCaptureHandle>,
+    reservation: Option<Arc<()>>,
+    request: CaptureStartParams,
+}
+
 struct DaemonState {
     paths: ArbPaths,
     started_at: Instant,
@@ -191,11 +204,13 @@ struct DaemonState {
     disk_provider: SharedDiskSpaceProvider,
     catalog: Catalog,
     capture: Arc<Mutex<CapturePipeline>>,
-    live_capture: Mutex<Option<LiveCaptureHandle>>,
-    media: Mutex<MediaEngine>,
+    live_capture: Mutex<LiveCapture>,
+    media: MediaEngine,
     screenshot_provider: SharedScreenshotProvider,
     crash_autosave_status: Mutex<CrashAutoSaveStatusView>,
     crash_autosave_gate: Mutex<CrashAutoSaveGate>,
+    crash_jobs: std::sync::atomic::AtomicUsize,
+    crash_tx: Mutex<Option<mpsc::Sender<PendingSave>>>,
     faults: Arc<FaultInjection>,
     shutdown_flag: Arc<AtomicBool>,
     endpoint: PathBuf,
@@ -206,24 +221,24 @@ struct DaemonState {
 /// Computes an optional `(build_id, binary_mtime_secs)` fingerprint of the currently running
 /// `arbd` executable so clients can detect same-path in-place daemon upgrades.
 fn compute_daemon_binary_identity() -> (Option<String>, Option<u64>) {
-    let Ok(exe) = std::env::current_exe() else {
-        return (Some(env!("CARGO_PKG_VERSION").to_owned()), None);
-    };
-    let Ok(meta) = std::fs::metadata(&exe) else {
-        return (Some(env!("CARGO_PKG_VERSION").to_owned()), None);
-    };
-    let mtime_secs = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
-    let build_id = Some(format!(
-        "{}-{}-{}",
-        env!("CARGO_PKG_VERSION"),
-        meta.len(),
-        mtime_secs.unwrap_or(0)
-    ));
-    (build_id, mtime_secs)
+    static IDENTITY: std::sync::OnceLock<(Option<String>, Option<u64>)> =
+        std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            let Ok(exe) = std::env::current_exe() else {
+                return (None, None);
+            };
+            let mtime_secs = std::fs::metadata(&exe)
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            let build_id = arb_storage::bundle_io::stream_hash_file(&exe)
+                .ok()
+                .map(|(_, digest)| format!("{}:sha256:{digest}", env!("CARGO_PKG_VERSION")));
+            (build_id, mtime_secs)
+        })
+        .clone()
 }
 
 /// Locks `mutex`, mapping poisoning (a panic while it was held) to an error instead of a
@@ -262,6 +277,22 @@ fn canonicalize_lenient(path: &Path) -> PathBuf {
     }
 }
 
+fn is_bundle_directory(dir: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct LegacyHeader {
+        schema: u32,
+    }
+    dir.join("manifest.json").is_file()
+        || [("session.json", 3), ("replay.json", 4)]
+            .into_iter()
+            .any(|(name, version)| {
+                std::fs::File::open(dir.join(name)).is_ok_and(|file| {
+                    serde_json::from_reader::<_, LegacyHeader>(std::io::BufReader::new(file))
+                        .is_ok_and(|h| h.schema == version)
+                })
+            })
+}
+
 /// `true` when `raw` is clearly meant as a filesystem path rather than a bundle ID.
 fn looks_like_path(raw: &str) -> bool {
     raw.contains('/') || raw.contains('\\') || raw.starts_with('.') || Path::new(raw).is_absolute()
@@ -292,10 +323,6 @@ impl DaemonState {
         self.lock(&self.capture, "capture pipeline")
     }
 
-    fn lock_media(&self) -> Result<MutexGuard<'_, MediaEngine>, DaemonError> {
-        self.lock(&self.media, "media engine")
-    }
-
     /// Stops the live capture session. The handle is taken out of `L` and `L` is released
     /// **before** joining the supervisor thread (R3 S12), and only the session that was
     /// current when the stop began is marked stopped.
@@ -303,7 +330,9 @@ impl DaemonState {
         let (handle, generation) = {
             let mut live_guard = self.lock(&self.live_capture, "live capture")?;
             let generation = self.lock_capture()?.session_generation();
-            (live_guard.take(), generation)
+            live_guard.reservation = None;
+            live_guard.request = CaptureStartParams::default();
+            (live_guard.handle.take(), generation)
         };
         let was_running = handle.is_some();
         if let Some(mut handle) = handle {
@@ -386,6 +415,7 @@ impl DaemonState {
         let data_dir = &self.paths.data_dir;
         let private_dirs = [
             data_dir.join("ring"),
+            data_dir.join("adb-sessions"),
             data_dir.join("tmp"),
             data_dir.join("save_jobs"),
             data_dir.join("save_job_params"),
@@ -417,10 +447,7 @@ impl DaemonState {
                 )));
             }
         }
-        if let Some(bundle_root) = canon
-            .ancestors()
-            .find(|dir| dir.join("manifest.json").is_file())
-        {
+        if let Some(bundle_root) = canon.ancestors().find(|dir| is_bundle_directory(dir)) {
             return Err(DaemonError::InvalidParams(format!(
                 "{what} `{}` is inside the bundle directory `{}`",
                 path.display(),
@@ -491,7 +518,11 @@ impl DaemonState {
             "config.update" => self.handle_config_update(params),
             "device.list" => Self::handle_device_list(),
             "capture.start" => self.handle_capture_start(params),
-            "capture.stop" => Ok(serde_json::to_value(self.stop_active_capture()?)?),
+            "capture.stop" => {
+                let _guard = self.lock(&self.config_update_lock, "config update")?;
+                self.persist_capture_enabled(CaptureIntent::Stopped)?;
+                Ok(serde_json::to_value(self.stop_active_capture()?)?)
+            }
             "save.trigger" => self.handle_save_trigger(params),
             "save.logs" => self.handle_save_logs(params),
             "save.screenshot" => self.handle_save_screenshot(params),
@@ -541,7 +572,7 @@ impl DaemonState {
                 cap.buffered_secs(),
             )
         };
-        let active_viewports = self.lock_media()?.active_viewport_count();
+        let active_viewports = self.media.active_viewport_count();
         let active_save_jobs = self
             .catalog
             .list_save_jobs()?
@@ -557,6 +588,7 @@ impl DaemonState {
         crash_autosave.cooldown_secs = cfg.crash_autosave_cooldown_secs;
 
         Ok(serde_json::to_value(SystemStatusResponse {
+            capture_enabled: cfg.capture_enabled,
             pid: std::process::id(),
             uptime_ms,
             capture: capture_view,
@@ -614,8 +646,18 @@ impl DaemonState {
             let mut guard = self.lock(&self.user_config, "user config")?;
             *guard = candidate.clone();
         }
-        self.lock_capture()?
-            .set_ring_policy(candidate.to_ring_budget_policy());
+        {
+            let mut cap = self.lock_capture()?;
+            cap.set_ring_policy(candidate.to_ring_budget_policy());
+            if patch.capture_enabled == Some(true) {
+                cap.clear_storage_pressure_stop();
+            }
+        }
+        if patch.capture_enabled == Some(false)
+            || patch.device_serial != arb_core::config::DeviceSerialPatch::Unchanged
+        {
+            self.stop_active_capture()?;
+        }
         Ok(serde_json::to_value(ConfigResponse {
             config: candidate,
             config_path: self.config_store.path(),
@@ -629,7 +671,50 @@ impl DaemonState {
     }
 
     fn handle_capture_start(&self, params: Value) -> Result<Value, DaemonError> {
-        let mut parsed: CaptureStartParams = parse_optional_params(params)?;
+        let request: CaptureStartParams = parse_optional_params(params)?;
+        let (reservation, parsed) = {
+            let _guard = self.lock(&self.config_update_lock, "config update")?;
+            if self.is_shutting_down() {
+                return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+            }
+            let mut live = self.lock(&self.live_capture, "live capture")?;
+            if live.handle.as_ref().is_some_and(|h| !h.is_finished()) {
+                return Err(DaemonError::Conflict(
+                    "capture session is already active".into(),
+                ));
+            }
+            let parsed = self.capture_options(request.clone())?;
+            self.persist_capture_enabled(CaptureIntent::Armed)?;
+            self.lock_capture()?.clear_storage_pressure_stop();
+            live.request = request;
+            let ticket = Arc::new(());
+            live.reservation = Some(Arc::clone(&ticket));
+            (ticket, parsed)
+        };
+        self.attach_reserved(&reservation, &parsed)
+    }
+
+    fn persist_capture_enabled(&self, intent: CaptureIntent) -> Result<(), DaemonError> {
+        let enabled = intent == CaptureIntent::Armed;
+        let mut cfg = self.lock(&self.user_config, "user config")?;
+        if cfg.capture_enabled != enabled {
+            if self.config_unreadable {
+                return Err(DaemonError::Conflict(
+                    "config.json could not be read".into(),
+                ));
+            }
+            let mut candidate = cfg.clone();
+            candidate.capture_enabled = enabled;
+            self.config_store.save_atomic(&candidate)?;
+            *cfg = candidate;
+        }
+        Ok(())
+    }
+
+    fn capture_options(
+        &self,
+        mut parsed: CaptureStartParams,
+    ) -> Result<CaptureStartParams, DaemonError> {
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let effective_mode = parsed.capture_mode.unwrap_or(user_cfg.capture_mode);
         parsed.capture_mode = Some(effective_mode);
@@ -668,27 +753,71 @@ impl DaemonState {
                 )));
             }
         }
-        let mut live_guard = self.lock(&self.live_capture, "live capture")?;
-        if self.is_shutting_down() {
-            return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+        Ok(parsed)
+    }
+
+    fn attach_reserved(
+        &self,
+        ticket: &Arc<()>,
+        parsed: &CaptureStartParams,
+    ) -> Result<Value, DaemonError> {
+        let discovery = AdbClient::discover()
+            .map_err(DaemonError::from)
+            .and_then(|adb| {
+                let outcome = select_live_target(&adb, parsed.serial.as_deref())?;
+                Ok((adb, outcome))
+            });
+        let mut live = self.lock(&self.live_capture, "live capture")?;
+        if self.is_shutting_down()
+            || !live
+                .reservation
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, ticket))
+        {
+            return Err(DaemonError::Conflict("capture start was cancelled".into()));
         }
-        // R3 S12: a supervisor that exited on its own (e.g. storage pressure) no longer blocks
-        // a new capture.start.
-        if live_guard.as_ref().is_some_and(|h| !h.is_finished()) {
-            return Err(DaemonError::Conflict(
-                "capture session is already active; call capture.stop first".to_owned(),
-            ));
+        live.reservation = None;
+        let capture_mode = parsed.capture_mode.unwrap_or_default();
+        let (adb, selection) = discovery?;
+        if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
+            let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
+            live.handle = Some(handle);
+            return Ok(serde_json::to_value(CaptureStartResponse {
+                serial,
+                started: true,
+                capture_mode,
+            })?);
         }
-        if let Some(mut finished) = live_guard.take() {
-            finished.stop();
-        }
-        let (serial, handle) = start_live_adb_capture(&parsed, &self.capture)?;
-        *live_guard = Some(handle);
-        Ok(serde_json::to_value(CaptureStartResponse {
-            serial,
-            started: true,
-            capture_mode: effective_mode,
-        })?)
+        Ok(
+            json!({"serial":parsed.serial.as_deref().unwrap_or_default(),"started":false,"capture_mode":capture_mode,"selection":selection}),
+        )
+    }
+
+    fn auto_attach(&self) -> Result<(), DaemonError> {
+        let (ticket, parsed) = {
+            let _guard = self.lock(&self.config_update_lock, "config update")?;
+            if !self.lock(&self.user_config, "user config")?.capture_enabled
+                || self.is_shutting_down()
+            {
+                return Ok(());
+            }
+            if self.lock_capture()?.is_storage_pressure_stopped() {
+                self.persist_capture_enabled(CaptureIntent::Stopped)?;
+                self.stop_active_capture()?;
+                return Ok(());
+            }
+            let mut live = self.lock(&self.live_capture, "live capture")?;
+            if live.reservation.is_some() || live.handle.as_ref().is_some_and(|h| !h.is_finished())
+            {
+                return Ok(());
+            }
+            let parsed = self.capture_options(live.request.clone())?;
+            let ticket = Arc::new(());
+            live.reservation = Some(Arc::clone(&ticket));
+            (ticket, parsed)
+        };
+        self.attach_reserved(&ticket, &parsed)?;
+        Ok(())
     }
 
     fn handle_save_trigger(&self, params: Value) -> Result<Value, DaemonError> {
@@ -725,33 +854,6 @@ impl DaemonState {
         selection_policy: Option<SelectionPolicy>,
         mode: SaveMode,
         trigger_kind: SaveTriggerKind,
-    ) -> Result<SaveOutcomeResponse, DaemonError> {
-        self.execute_save_tracked(
-            duration_sec,
-            dest_dir,
-            drain_timeout_ms,
-            selection_policy,
-            mode,
-            trigger_kind,
-            &std::cell::Cell::new(false),
-        )
-    }
-
-    /// Like [`Self::execute_save`], additionally setting `pinned` as soon as Phase 1 has pinned
-    /// ring chunks, so callers can tell an error *before* any pin from one that left pins behind.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "mirrors execute_save plus the pin-tracking cell"
-    )]
-    fn execute_save_tracked(
-        &self,
-        duration_sec: Option<u64>,
-        dest_dir: Option<PathBuf>,
-        drain_timeout_ms: Option<u64>,
-        selection_policy: Option<SelectionPolicy>,
-        mode: SaveMode,
-        trigger_kind: SaveTriggerKind,
-        pinned: &std::cell::Cell<bool>,
     ) -> Result<SaveOutcomeResponse, DaemonError> {
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let duration_sec = duration_sec.unwrap_or_else(|| u64::from(user_cfg.save_window_secs));
@@ -800,6 +902,15 @@ impl DaemonState {
             )?
         };
 
+        self.finish_pinned_save(pending, policy, trigger_kind)
+    }
+
+    fn finish_pinned_save(
+        &self,
+        pending: PendingSave,
+        policy: SelectionPolicy,
+        trigger_kind: SaveTriggerKind,
+    ) -> Result<SaveOutcomeResponse, DaemonError> {
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
             Some(trigger_bt) => self.wait_for_boundary_drain(&policy, trigger_bt)?,
@@ -811,7 +922,7 @@ impl DaemonState {
             .lock_capture()?
             .phase1_commit(&self.catalog, pending, tail)?;
         // From here the catalog job owns the ring pins; earlier failures roll the pins back.
-        pinned.set(true);
+
         if trigger_kind == SaveTriggerKind::CrashAutoSave && self.is_shutting_down() {
             // Do not start a long bundle write that would outlive this daemon instance; the
             // journaled job is re-materialised by startup recovery of the next arbd.
@@ -1384,35 +1495,34 @@ impl DaemonState {
         let parsed: MediaOpenViewportParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let id_override = existing.as_ref().map(|e| e.bundle_id.as_str());
-        let mut media = self.lock_media()?;
         if self.is_shutting_down() {
             return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
         }
-        let resp = media.open_viewport(&path, id_override)?;
+        let resp = self.media.open_viewport(&path, id_override)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_filmstrip(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFilmstripParams = parse_params(params)?;
-        let resp = self.lock_media()?.filmstrip(&parsed)?;
+        let resp = self.media.filmstrip(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_scrub(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFrameRequestParams = parse_params(params)?;
-        let resp = self.lock_media()?.scrub(&parsed)?;
+        let resp = self.media.scrub(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_seek_frame(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaFrameRequestParams = parse_params(params)?;
-        let resp = self.lock_media()?.seek_frame(&parsed)?;
+        let resp = self.media.seek_frame(&parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 
     fn handle_media_close_viewport(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: MediaCloseViewportParams = parse_params(params)?;
-        let closed = self.lock_media()?.close_viewport(&parsed.viewport_id);
+        let closed = self.media.close_viewport(&parsed.viewport_id);
         Ok(json!({ "closed": closed, "viewport_id": parsed.viewport_id }))
     }
 
@@ -1421,9 +1531,8 @@ impl DaemonState {
         if viewport_ids.is_empty() {
             return;
         }
-        let mut media = self.media.lock().unwrap_or_else(PoisonError::into_inner);
         for id in viewport_ids {
-            let _ = media.close_viewport(id);
+            let _ = self.media.close_viewport(id);
         }
     }
 
@@ -1450,6 +1559,7 @@ pub struct DaemonServer {
     state: Arc<DaemonState>,
     _lock: SingleInstanceLock,
     accept_thread: Option<JoinHandle<()>>,
+    attach_thread: Option<JoinHandle<()>>,
     crash_worker_thread: Option<JoinHandle<()>>,
 }
 
@@ -1502,7 +1612,7 @@ impl DaemonServer {
             config.disk_provider,
         )?;
         capture.set_fault_injection(Arc::clone(&config.faults));
-        capture.set_crash_notifier(Some(crash_tx));
+
         let media = MediaEngine::new(config.paths.cache_dir.clone(), config.paths.shm_dir());
 
         let endpoint = config.paths.ipc_endpoint();
@@ -1529,11 +1639,17 @@ impl DaemonServer {
             disk_provider,
             catalog,
             capture: Arc::new(Mutex::new(capture)),
-            live_capture: Mutex::new(None),
-            media: Mutex::new(media),
+            live_capture: Mutex::new(LiveCapture {
+                handle: None,
+                reservation: None,
+                request: CaptureStartParams::default(),
+            }),
+            media,
             screenshot_provider: config.screenshot_provider,
             crash_autosave_status: Mutex::new(initial_crash_status),
             crash_autosave_gate: Mutex::new(CrashAutoSaveGate::new()),
+            crash_jobs: std::sync::atomic::AtomicUsize::new(0),
+            crash_tx: Mutex::new(Some(crash_tx)),
             faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
             endpoint,
@@ -1541,6 +1657,17 @@ impl DaemonServer {
             binary_mtime_secs,
         });
 
+        state.lock_capture()?.crash_daemon = Arc::downgrade(&state);
+        let attach_state = Arc::clone(&state);
+        let attach_thread = thread::Builder::new()
+            .name("arbd-auto-attach".into())
+            .spawn(move || {
+                while !attach_state.is_shutting_down() {
+                    adb_resources::reap(&attach_state.paths.data_dir.join("adb-sessions"));
+                    let _ = attach_state.auto_attach();
+                    thread::park_timeout(Duration::from_secs(2));
+                }
+            })?;
         let accept_state = Arc::clone(&state);
         let accept_thread = thread::Builder::new()
             .name("arbd-ipc-accept".to_owned())
@@ -1559,6 +1686,7 @@ impl DaemonServer {
             state,
             _lock: lock,
             accept_thread: Some(accept_thread),
+            attach_thread: Some(attach_thread),
             crash_worker_thread: Some(crash_worker_thread),
         })
     }
@@ -1689,11 +1817,22 @@ impl DaemonServer {
     /// Stops capture and closes every viewport. Tolerates poisoned locks so a daemon that
     /// is shutting down because of a panic still releases its devices and SHM files.
     fn cleanup_subsystems(&mut self) {
+        if let Some(attach) = self.attach_thread.take() {
+            attach.thread().unpark();
+            let deadline = Instant::now() + CRASH_WORKER_JOIN_TIMEOUT;
+            while !attach.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if attach.is_finished() {
+                let _ = attach.join();
+            }
+        }
         let handle = self
             .state
             .live_capture
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .handle
             .take();
         if let Some(mut handle) = handle {
             handle.stop();
@@ -1704,7 +1843,12 @@ impl DaemonServer {
                 .capture
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            cap.set_crash_notifier(None);
+            cap.crash_daemon = std::sync::Weak::new();
+            self.state
+                .crash_tx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
             cap.mark_stopped();
         }
         if let Some(worker) = self.crash_worker_thread.take() {
@@ -1718,11 +1862,7 @@ impl DaemonServer {
                 let _ = worker.join();
             }
         }
-        self.state
-            .media
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .close_all();
+        self.state.media.close_all();
     }
 }
 
@@ -1793,27 +1933,37 @@ fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Optio
     }
 }
 
-fn run_crash_autosave_worker(state: &Arc<DaemonState>, rx: &Receiver<CrashAutoSaveNotice>) {
-    while let Ok(notice) = rx.recv() {
-        if state.is_shutting_down() {
-            break;
-        }
-        // A panic in one auto-save must not silently kill the worker for the daemon's life.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_crash_autosave_notice(state, notice);
-        }));
-        if outcome.is_err() {
-            let mut status = state
-                .crash_autosave_status
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            status.in_flight = false;
-            status.last_error = Some("crash auto-save worker panicked; continuing".to_owned());
+fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
+    while let Ok(pending) = rx.recv() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.finish_pinned_save(
+                pending,
+                SelectionPolicy::default(),
+                SaveTriggerKind::CrashAutoSave,
+            )
+        }))
+        .unwrap_or_else(|_| {
+            Err(DaemonError::Internal(
+                "crash auto-save worker panicked".into(),
+            ))
+        });
+        let mut status = state
+            .crash_autosave_status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
+        match result {
+            Ok(outcome) => {
+                status.last_job_id = Some(outcome.job.job_id);
+                status.last_bundle_id = outcome.bundle_id;
+                status.last_error = outcome.job.last_error;
+            }
+            Err(e) => status.last_error = Some(e.to_string()),
         }
     }
 }
 
-fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveNotice) {
+fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &CrashAutoSaveNotice) {
     let cfg = state
         .user_config
         .lock()
@@ -1823,14 +1973,8 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .output_dir_override
         .clone()
         .unwrap_or_else(|| state.catalog.managed_bundles_root().to_path_buf());
-    let (pipeline_pressure, floor_bytes) = {
-        let cap = state.capture.lock().unwrap_or_else(PoisonError::into_inner);
-        (cap.is_storage_pressure_stopped(), cap.min_free_disk_bytes())
-    };
     let storage_pressure_active = notice.storage_pressure_stopped
-        || pipeline_pressure
-        || state.host_free_below_floor(&save_target, floor_bytes);
-
+        || state.host_free_below_floor(&save_target, cap.min_free_disk_bytes());
     let decision = {
         let mut gate = state
             .crash_autosave_gate
@@ -1852,11 +1996,12 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         status.enabled = cfg.crash_autosave_enabled;
         status.cooldown_secs = cfg.crash_autosave_cooldown_secs;
         status.detected_crashes = status.detected_crashes.saturating_add(1);
-        status.last_crash_process = Some(notice.process_name);
-        status.last_crash_exception = Some(notice.exception_class);
+        status.last_crash_process = Some(notice.process_name.clone());
+        status.last_crash_exception = Some(notice.exception_class.clone());
         match decision {
             CrashAutoSaveDecision::Trigger => {
                 status.triggered_saves = status.triggered_saves.saturating_add(1);
+                state.crash_jobs.fetch_add(1, Ordering::AcqRel);
                 status.in_flight = true;
                 status.last_error = None;
             }
@@ -1873,52 +2018,30 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         }
     }
 
-    if state.is_shutting_down() {
-        let mut status = state
-            .crash_autosave_status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        status.in_flight = false;
-        return;
-    }
-    let pinned = std::cell::Cell::new(false);
-    let save_res = state.execute_save_tracked(
-        Some(u64::from(cfg.save_window_secs)),
-        None,
-        None,
-        None,
-        SaveMode::Full,
-        SaveTriggerKind::CrashAutoSave,
-        &pinned,
-    );
-
-    let mut status = state
-        .crash_autosave_status
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    status.in_flight = false;
-    // Roll the debounce back only when the save failed before pinning anything. Any failure
-    // after Phase 1 (an `Err` from later phases, or a job that ended `FailedRetryable`) keeps its ring pins, so its cooldown must stay or a failing
-    // destination plus a crash loop would pin a fresh window on every crash.
-    let pre_pin_failure = save_res.is_err() && !pinned.get();
-    match save_res {
-        Ok(outcome) => {
-            status.last_job_id = Some(outcome.job.job_id);
-            status.last_bundle_id = outcome.bundle_id;
-            status.last_error = outcome.job.last_error;
+    let result = (|| {
+        if cfg.output_dir_override.is_some() {
+            state.validate_output_location(&save_target, "dest_dir", None)?;
         }
-        Err(err) => {
-            status.last_error = Some(err.to_string());
-        }
-    }
-    drop(status);
-    if pre_pin_failure {
-        // Nothing was pinned or saved: do not let this failed attempt debounce the next crash.
+        let pending = cap.pin_crash(notice, u64::from(cfg.save_window_secs), &save_target)?;
+        state
+            .lock(&state.crash_tx, "crash queue")?
+            .as_ref()
+            .ok_or_else(|| DaemonError::Conflict("daemon is shutting down".into()))?
+            .send(pending)
+            .map_err(|_| DaemonError::Internal("crash worker unavailable".into()))
+    })();
+    if let Err(err) = result {
         state
             .crash_autosave_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .abort_last_trigger();
+        let mut status = state
+            .crash_autosave_status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
+        status.last_error = Some(err.to_string());
     }
 }
 
@@ -2113,5 +2236,159 @@ impl std::fmt::Debug for DaemonState {
             .field("endpoint", &self.endpoint)
             .field("data_dir", &self.paths.data_dir)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod supervisor_hardening_tests {
+    use super::*;
+    use arb_os::error::OsError;
+    use arb_os::fs::DiskSpaceInfo;
+    use arb_os::paths::ArbPaths;
+    use arb_storage::ring::DiskSpaceProvider;
+    use std::sync::atomic::AtomicU64;
+
+    #[derive(Debug)]
+    struct ConfigurableDisk(Arc<AtomicU64>);
+    impl DiskSpaceProvider for ConfigurableDisk {
+        fn disk_space(&self, _path: &Path) -> Result<DiskSpaceInfo, OsError> {
+            let free = self.0.load(Ordering::Acquire);
+            Ok(DiskSpaceInfo {
+                available_bytes: free,
+                total_bytes: free.max(10_000_000_000),
+            })
+        }
+    }
+
+    fn test_paths(tmp: &tempfile::TempDir) -> ArbPaths {
+        ArbPaths {
+            data_dir: tmp.path().join("d"),
+            cache_dir: tmp.path().join("c"),
+            runtime_dir: tmp.path().join("r"),
+        }
+    }
+
+    #[test]
+    fn rearming_after_storage_pressure_stop_survives_auto_attach() {
+        let tmp = tempfile::tempdir().unwrap();
+        let free = Arc::new(AtomicU64::new(1024));
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp)).with_disk_provider(
+            SharedDiskSpaceProvider::new(Arc::new(ConfigurableDisk(Arc::clone(&free)))),
+        ))
+        .unwrap();
+
+        server
+            .state
+            .dispatch(
+                "config.update",
+                json!({ "capture_enabled": true, "device_serial": "absent-test-device" }),
+            )
+            .unwrap();
+        {
+            let mut cap = server.state.lock_capture().unwrap();
+            cap.begin_session("A");
+            let mut source = arb_adb::mock::MockDeviceSource::from_scenario(
+                arb_adb::mock::FaultScenario::NormalFhd30,
+            );
+            while let Some(ev) = source.next_event().unwrap() {
+                cap.ingest_event(ev).unwrap();
+                if cap.is_storage_pressure_stopped() {
+                    break;
+                }
+            }
+            assert!(cap.is_storage_pressure_stopped());
+        }
+
+        // auto_attach must disarm capture_enabled when storage pressure stops capture.
+        let _ = server.state.auto_attach();
+        assert_eq!(
+            server.state.dispatch("system.status", json!({})).unwrap()["capture_enabled"],
+            false
+        );
+
+        // User frees disk space and explicitly re-arms while target device is absent.
+        free.store(10 * 1024 * 1024 * 1024, Ordering::Release);
+        server
+            .state
+            .dispatch("config.update", json!({ "capture_enabled": true }))
+            .unwrap();
+
+        // Subsequent auto_attach ticks must NOT silently disarm capture_enabled back to false.
+        let _ = server.state.auto_attach();
+        let status = server.state.dispatch("system.status", json!({})).unwrap();
+        assert_eq!(
+            status["capture_enabled"], true,
+            "re-armed capture_enabled must survive auto_attach after pressure clears"
+        );
+        assert_eq!(status["capture"]["storage_pressure_stopped"], false);
+
+        // Also verify explicit capture.start re-arms cleanly after a second storage-pressure stop.
+        free.store(1024, Ordering::Release);
+        {
+            let mut cap = server.state.lock_capture().unwrap();
+            cap.begin_session("A");
+            let mut source = arb_adb::mock::MockDeviceSource::from_scenario(
+                arb_adb::mock::FaultScenario::NormalFhd30,
+            );
+            while let Some(ev) = source.next_event().unwrap() {
+                cap.ingest_event(ev).unwrap();
+                if cap.is_storage_pressure_stopped() {
+                    break;
+                }
+            }
+            assert!(cap.is_storage_pressure_stopped());
+        }
+        let _ = server.state.auto_attach();
+        assert_eq!(
+            server.state.dispatch("system.status", json!({})).unwrap()["capture_enabled"],
+            false
+        );
+
+        free.store(10 * 1024 * 1024 * 1024, Ordering::Release);
+        let _ = server
+            .state
+            .handle_capture_start(json!({ "serial": "absent-test-device" }));
+        let _ = server.state.auto_attach();
+        let status = server.state.dispatch("system.status", json!({})).unwrap();
+        assert_eq!(
+            status["capture_enabled"], true,
+            "capture.start re-arm must survive auto_attach after pressure clears"
+        );
+        assert_eq!(status["capture"]["storage_pressure_stopped"], false);
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn capture_start_during_shutdown_does_not_persist_capture_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let state = Arc::clone(&server.state);
+        state.trigger_shutdown();
+        let err = state
+            .handle_capture_start(json!({ "serial": "absent-test-device" }))
+            .expect_err("capture.start during shutdown must fail");
+        assert!(err.to_string().contains("shutting down"), "{err}");
+        let cfg = state.config_store.load_or_default().unwrap();
+        assert!(
+            !cfg.capture_enabled,
+            "failed capture.start during shutdown must not persist capture_enabled"
+        );
+        drop(state);
+        server.shutdown();
+    }
+
+    #[test]
+    fn shutdown_joins_auto_attach_thread_without_leaking_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let weak = Arc::downgrade(&server.state);
+        // Wait briefly so arbd-auto-attach enters park_timeout.
+        thread::sleep(Duration::from_millis(50));
+        server.shutdown();
+        assert!(
+            weak.upgrade().is_none(),
+            "arbd-auto-attach thread must be joined before shutdown returns"
+        );
     }
 }

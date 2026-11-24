@@ -648,8 +648,9 @@ impl V2BundleReader {
     /// is missing, [`StorageError::ManifestValidation`] if the manifest violates schema
     /// invariants, or [`StorageError::Sqlite`] if `timeline.sqlite` cannot be opened read-only.
     pub fn open(bundle_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let root_dir = bundle_dir.as_ref().to_path_buf();
-        let manifest_path = root_dir.join(MANIFEST_V2_FILE);
+        let root_dir = fs::canonicalize(bundle_dir.as_ref())
+            .map_err(|e| StorageError::io("canonicalize_bundle", bundle_dir.as_ref(), e))?;
+        let manifest_path = confined_path(&root_dir, MANIFEST_V2_FILE)?;
         if !manifest_path.is_file() {
             return Err(StorageError::InvalidBundle {
                 path: root_dir,
@@ -662,7 +663,14 @@ impl V2BundleReader {
             .map_err(|source| StorageError::json("parse_manifest_v2", source))?;
         manifest.validate()?;
 
-        let timeline_path = root_dir.join(TIMELINE_DB_FILE);
+        for name in manifest.files.iter().map(|f| f.path.as_str()).chain([
+            VIDEO_MP4_FILE,
+            AUDIO_M4A_FILE,
+            "app-logs",
+        ]) {
+            confined_path(&root_dir, name)?;
+        }
+        let timeline_path = confined_path(&root_dir, TIMELINE_DB_FILE)?;
         if !timeline_path.is_file() {
             return Err(StorageError::InvalidBundle {
                 path: root_dir,
@@ -755,7 +763,7 @@ impl V2BundleReader {
         }
 
         for entry in &self.manifest.files {
-            let file_path = self.root_dir.join(&entry.path);
+            let file_path = confined_path(&self.root_dir, &entry.path)?;
             if !file_path.is_file() {
                 return Err(StorageError::IntegrityMismatch {
                     path: entry.path.clone(),
@@ -830,7 +838,7 @@ impl V2BundleReader {
     }
 
     fn open_timeline_ro(&self) -> Result<Connection, StorageError> {
-        open_readonly_sqlite(&self.root_dir.join(TIMELINE_DB_FILE))
+        open_readonly_sqlite(&confined_path(&self.root_dir, TIMELINE_DB_FILE)?)
     }
 }
 
@@ -1097,7 +1105,7 @@ impl BundleReader for V2BundleReader {
         if !self.manifest_lists(VIDEO_MP4_FILE) {
             return None;
         }
-        let path = self.root_dir.join(VIDEO_MP4_FILE);
+        let path = confined_path(&self.root_dir, VIDEO_MP4_FILE).ok()?;
         path.is_file().then_some(path)
     }
 
@@ -1105,7 +1113,7 @@ impl BundleReader for V2BundleReader {
         if !self.manifest_lists(AUDIO_M4A_FILE) {
             return None;
         }
-        let path = self.root_dir.join(AUDIO_M4A_FILE);
+        let path = confined_path(&self.root_dir, AUDIO_M4A_FILE).ok()?;
         path.is_file().then_some(path)
     }
 
@@ -1751,7 +1759,12 @@ fn hash_and_sync_file(path: &Path, rel_name: &str) -> Result<FileDigest, Storage
     })
 }
 
-fn stream_hash_file(path: &Path) -> Result<(u64, String), StorageError> {
+/// Returns the file's byte count and lowercase SHA-256 using bounded memory.
+///
+/// # Errors
+///
+/// Returns an I/O error if the file cannot be read.
+pub fn stream_hash_file(path: &Path) -> Result<(u64, String), StorageError> {
     let mut file =
         File::open(path).map_err(|source| StorageError::io("open_for_hash", path, source))?;
     let mut hasher = Sha256::new();
@@ -2515,6 +2528,34 @@ fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
 // ---------------------------------------------------------------------------
 // Legacy Read-Only Projection Helpers
 // ---------------------------------------------------------------------------
+
+fn confined_path(root: &Path, name: &str) -> Result<PathBuf, StorageError> {
+    let mut target = root.to_owned();
+    for component in Path::new(name).components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(StorageError::InvalidBundle {
+                path: root.into(),
+                reason: format!("{name} outside bundle"),
+            });
+        };
+        target.push(part);
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                target = fs::canonicalize(&target)
+                    .map_err(|e| StorageError::io("resolve_bundle_file", &target, e))?;
+                if !target.starts_with(root) {
+                    return Err(StorageError::InvalidBundle {
+                        path: root.into(),
+                        reason: format!("{name} resolves outside bundle"),
+                    });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StorageError::io("stat_bundle_file", &target, e)),
+        }
+    }
+    Ok(target)
+}
 
 /// Lexical rule for every file name taken from an untrusted legacy manifest (R2 S16):
 /// a single non-empty path segment inside the bundle folder (legacy layouts are flat), so

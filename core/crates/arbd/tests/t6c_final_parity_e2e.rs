@@ -198,6 +198,12 @@ fn t6c_logs_only_capture_foreground_app_logs_and_hello_build_id() {
     let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
     let mut rpc = RpcClient::connect(server.endpoint());
 
+    let digest = sha256_hex(&fs::read(std::env::current_exe().unwrap()).unwrap());
+    assert_eq!(
+        rpc.call("system.hello", &json!({}))["build_id"],
+        format!("{}:sha256:{digest}", env!("CARGO_PKG_VERSION"))
+    );
+
     // 1. system.hello exposes build_id + binary_mtime_secs for same-path upgrade checks.
     let hello = rpc.call("system.hello", &json!({}));
     assert!(
@@ -515,4 +521,255 @@ fn t6c_screenshot_dir_override_output_dir_and_config_wifi_serial() {
     assert_eq!(code, i64::from(RPC_ERR_INVALID_PARAMS));
 
     server.shutdown();
+}
+
+#[test]
+fn invalid_shutdown_keeps_connection_alive() {
+    let tmp = TempDir::new().unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let invalid = json!({"jsonrpc":"1.0","method":"system.shutdown","id":0,"params":{}});
+    write_frame_line(
+        &mut client.writer,
+        &invalid.to_string(),
+        DEFAULT_MAX_IPC_LINE_BYTES,
+    )
+    .unwrap();
+    let line = read_frame_line(&mut client.reader, DEFAULT_MAX_IPC_LINE_BYTES)
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::from_str::<Value>(&line).unwrap()["error"].is_object());
+    assert!(client.call("system.hello", &json!({})).is_object());
+    client.call("system.shutdown", &json!({}));
+    assert!(server.is_shutting_down());
+}
+
+#[test]
+fn shutdown_flag_precedes_client_read_of_final_reply() {
+    let tmp = TempDir::new().unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let shutdown = json!({"jsonrpc":"2.0","method":"system.shutdown","id":1,"params":{}});
+    write_frame_line(
+        &mut client.writer,
+        &shutdown.to_string(),
+        DEFAULT_MAX_IPC_LINE_BYTES,
+    )
+    .unwrap();
+    // In particular, Windows FlushFileBuffers can wait for this client to consume its reply.
+    await_condition(|| server.is_shutting_down());
+    let line = read_frame_line(&mut client.reader, DEFAULT_MAX_IPC_LINE_BYTES)
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
+}
+
+#[test]
+fn legacy_ancestors_protect_screenshot_destinations() {
+    let tmp = TempDir::new().unwrap();
+    let legacy = tmp.path().join("external");
+    fs::create_dir(&legacy).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface");
+    for entry in fs::read_dir(fixture).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), legacy.join(entry.file_name())).unwrap();
+    }
+    let hashes = |dir: &Path| {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name(),
+                    sha256_hex(&fs::read(entry.path()).unwrap()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let schema3 = tmp.path().join("schema3");
+    fs::create_dir(&schema3).unwrap();
+    fs::write(
+        schema3.join("session.json"),
+        json!({"schema":3,"save_id":"test","parts":[]}).to_string(),
+    )
+    .unwrap();
+    let server = DaemonServer::start(
+        DaemonConfig::new(isolated_paths(&tmp)).with_screenshot_provider(
+            SharedScreenshotProvider::new(Arc::new(StubScreenshotProvider {
+                png: valid_1x1_png(),
+            })),
+        ),
+    )
+    .unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    for (dir, manifest) in [(&legacy, "replay.json"), (&schema3, "session.json")] {
+        let before = hashes(dir);
+        for params in [
+            json!({"output_dir":dir}),
+            json!({"output_path":dir.join(manifest),"overwrite":true}),
+        ] {
+            assert_eq!(
+                rpc.call_err("save.screenshot", &params).0,
+                i64::from(RPC_ERR_INVALID_PARAMS)
+            );
+        }
+        assert_eq!(before, hashes(dir));
+    }
+}
+
+#[test]
+fn armed_capture_survives_restart_and_explicit_stop() {
+    let tmp = TempDir::new().unwrap();
+    {
+        let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+        let mut rpc = RpcClient::connect(server.endpoint());
+        let cfg = rpc.call(
+            "config.update",
+            &json!({"capture_enabled":true,"device_serial":"absent-test-device"}),
+        );
+        assert_eq!(cfg["config"]["capture_enabled"], true);
+        server.shutdown();
+    }
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture_enabled"],
+        true
+    );
+    rpc.call("capture.stop", &json!({}));
+    assert_eq!(
+        rpc.call("config.get", &json!({}))["config"]["capture_enabled"],
+        false
+    );
+}
+
+struct ChildDaemon(std::process::Child);
+impl Drop for ChildDaemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn await_condition(mut condition: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(12);
+    while !condition() {
+        assert!(Instant::now() < end, "timed out waiting for daemon");
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
+    use std::process::{Command, Stdio};
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = tmp
+        .path()
+        .join(format!("fake-adb{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        Command::new("rustc")
+            .args(["--edition", "2024"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_adb.rs"))
+            .arg("-o")
+            .arg(&fake)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let dir = tmp.path();
+    let devices = dir.join("devices");
+    let ledger = paths.data_dir.join("adb-sessions");
+    fs::create_dir_all(&ledger).unwrap();
+    let write_ledger = |pid| {
+        let token = format!("s-100-{pid}-1");
+        let record = json!({"pid":pid,"serial":"A","deployed":{"session_token":token,
+            "companion_jar":format!("/data/local/tmp/arb-{token}-companion.dex.jar"),"scrcpy_jar":null},
+            "forwards":[[4321,format!("arb-companion-{token}")],[4322,format!("arb-companion-{token}")]]});
+        let path = ledger.join(format!("{token}.json"));
+        fs::write(&path, record.to_string()).unwrap();
+        (token, path)
+    };
+    let (token, stale) = write_ledger(2_000_000_001);
+    let (_, live) = write_ledger(std::process::id());
+    fs::write(
+        dir.join("forwards"),
+        format!(
+            "A tcp:4321 localabstract:arb-companion-{token}\nA tcp:4322 localabstract:other-tool\n"
+        ),
+    )
+    .unwrap();
+    let mut daemon = ChildDaemon(
+        Command::new(env!("CARGO_BIN_EXE_arbd"))
+            .env("ARB_ADB_PATH", &fake)
+            .env("ARB_COMPANION_JAR", &fake)
+            .env("FAKE_DEVICE_STATE", dir)
+            .env("ARB_DATA_DIR", &paths.data_dir)
+            .env("ARB_CACHE_DIR", &paths.cache_dir)
+            .env("ARB_RUNTIME_DIR", &paths.runtime_dir)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let endpoint = paths.ipc_endpoint();
+    let mut rpc = RpcClient::connect(&endpoint);
+    await_condition(|| !stale.exists());
+    assert!(live.exists());
+    let cleaned = fs::read_to_string(dir.join("reaped")).unwrap();
+    assert!(cleaned.contains("forward --remove tcp:4321"));
+    assert!(cleaned.contains(&format!("arb-{token}-companion.dex.jar")));
+    assert!(!cleaned.contains("4322"));
+    let armed = rpc.call("capture.start", &json!({"mode":"logs_only"}));
+    assert_eq!(armed["started"], false);
+    assert_eq!(armed["selection"]["status"], "no_online_devices");
+    fs::write(&devices, "A device\nB device\n").unwrap();
+    let multiple = rpc.call("capture.start", &json!({"mode":"logs_only"}));
+    assert_eq!(
+        multiple["selection"]["status"],
+        "multiple_devices_need_selection"
+    );
+    rpc.call("config.update", &json!({"device_serial":"A"}));
+    fs::write(&devices, "B device\n").unwrap();
+    let waiting = rpc.call("capture.start", &json!({"mode":"logs_only"}));
+    assert_eq!(waiting["started"], false);
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture_enabled"],
+        true
+    );
+    fs::write(&devices, "A device\nB device\n").unwrap();
+    await_condition(|| rpc.call("system.status", &json!({}))["capture"]["active"] == true);
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture"]["serial"],
+        "A"
+    );
+    fs::write(&devices, []).unwrap();
+    await_condition(|| rpc.call("system.status", &json!({}))["capture"]["active"] == false);
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture_enabled"],
+        true
+    );
+    fs::write(&devices, "A device\n").unwrap();
+    await_condition(|| rpc.call("system.status", &json!({}))["capture"]["active"] == true);
+    rpc.call("capture.stop", &json!({}));
+    fs::write(dir.join("block"), []).unwrap();
+    let other_endpoint = endpoint.clone();
+    let start = thread::spawn(move || {
+        RpcClient::connect(&other_endpoint).send_raw("capture.start", &json!({}))
+    });
+    await_condition(|| dir.join("discovery-entered").exists());
+    let (done, result) = std::sync::mpsc::channel();
+    let stop = thread::spawn(move || {
+        done.send(RpcClient::connect(&endpoint).call("capture.stop", &json!({})))
+            .unwrap();
+    });
+    let stopped = result.recv_timeout(Duration::from_secs(2));
+    fs::remove_file(dir.join("block")).unwrap();
+    assert!(stopped.is_ok(), "stop waited for ADB discovery");
+    stop.join().unwrap();
+    assert!(start.join().unwrap()["error"].is_object());
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["active"], false);
+    assert_eq!(status["capture_enabled"], false);
+    rpc.call("system.shutdown", &json!({}));
+    assert!(daemon.0.wait().unwrap().success());
 }

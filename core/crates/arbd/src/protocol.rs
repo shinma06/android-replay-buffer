@@ -248,6 +248,9 @@ pub struct CrashAutoSaveStatusView {
 /// Response payload for `system.status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemStatusResponse {
+    /// Whether capture should resume when an eligible device appears.
+    #[serde(default)]
+    pub capture_enabled: bool,
     /// Daemon host OS process ID.
     pub pid: u32,
     /// Daemon uptime in milliseconds.
@@ -909,6 +912,9 @@ pub struct MediaOpenViewportParams {
 /// Response payload for `media.open_viewport`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaOpenViewportResponse {
+    /// Nanosecond presentation timestamps relative to frame zero, in sample order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_pts_ns: Vec<i64>,
     /// Unique viewport handle identifier.
     pub viewport_id: String,
     /// Resolved bundle identifier.

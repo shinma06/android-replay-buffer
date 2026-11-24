@@ -33,8 +33,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use arb_adb::adb::{
-    AdbClient, AdbDeviceState, DeployedAgentPaths, ReconnectClassification, SessionSupervisor,
-    StreamEnable, SupervisorConfig, VideoLivenessStatus,
+    AdbClient, AdbDeviceState, ReconnectClassification, SessionSupervisor, StreamEnable,
+    SupervisorConfig, VideoLivenessStatus,
 };
 use arb_adb::mock::CaptureEvent;
 use arb_adb::scrcpy::{
@@ -57,7 +57,6 @@ use arb_os::clock::{HostClockSample, sample_host_clock};
 use crate::capture::CapturePipeline;
 use crate::error::DaemonError;
 use crate::protocol::{AudioCaptureState, CaptureStartParams};
-use crate::time_util::current_unix_millis;
 
 /// A `Ping` without its `Pong` after this long is abandoned so sync probes resume (R3 S13).
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -250,7 +249,20 @@ pub fn start_live_adb_capture(
     pipeline: &Arc<Mutex<CapturePipeline>>,
 ) -> Result<(String, LiveCaptureHandle), DaemonError> {
     let adb = AdbClient::discover()?;
-    let serial = resolve_target_serial(&adb, params.serial.as_deref())?;
+    let DeviceSelectionOutcome::Selected { serial } =
+        select_live_target(&adb, params.serial.as_deref())?
+    else {
+        return Err(DaemonError::NotFound("no eligible device".into()));
+    };
+    start_selected_capture(params, pipeline, adb, serial)
+}
+
+pub(crate) fn start_selected_capture(
+    params: &CaptureStartParams,
+    pipeline: &Arc<Mutex<CapturePipeline>>,
+    adb: AdbClient,
+    serial: String,
+) -> Result<(String, LiveCaptureHandle), DaemonError> {
     let capture_mode = params.capture_mode.unwrap_or(CaptureMode::VideoAndLogs);
     let companion_jar = resolve_agent_jar(
         params.companion_jar.as_deref(),
@@ -271,7 +283,12 @@ pub fn start_live_adb_capture(
 
     let is_video_mode = capture_mode == CaptureMode::VideoAndLogs;
     let cfg = LiveCaptureConfig {
+        resource_dir: pipeline
+            .lock()
+            .map_err(|_| DaemonError::Internal("capture lock poisoned".into()))?
+            .adb_resource_dir(),
         serial: serial.clone(),
+        preferred_serial: params.serial.clone(),
         capture_mode,
         companion_jar,
         scrcpy_jar,
@@ -317,6 +334,8 @@ pub fn start_live_adb_capture(
 
 #[derive(Debug, Clone)]
 struct LiveCaptureConfig {
+    resource_dir: PathBuf,
+    preferred_serial: Option<String>,
     serial: String,
     capture_mode: CaptureMode,
     companion_jar: PathBuf,
@@ -330,37 +349,17 @@ struct LiveCaptureConfig {
     heartbeat_ms: u32,
 }
 
-fn resolve_target_serial(adb: &AdbClient, requested: Option<&str>) -> Result<String, DaemonError> {
-    if let Some(serial) = requested.map(str::trim).filter(|s| !s.is_empty()) {
-        validate_adb_serial(serial).map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
-        // Strict no-auto-switch rule: once a target serial is bound, stay bound to it even if
-        // another device is online so capture waits for reconnection instead of switching.
-        return Ok(serial.to_owned());
-    }
-    let devices = adb.devices()?;
-    let online: Vec<String> = devices
+pub(crate) fn select_live_target(
+    adb: &AdbClient,
+    preferred: Option<&str>,
+) -> Result<DeviceSelectionOutcome, DaemonError> {
+    let online = adb
+        .devices()?
         .into_iter()
-        .filter(|d| d.state == AdbDeviceState::Device)
+        .filter(|d| d.state == AdbDeviceState::Device && validate_adb_serial(&d.serial).is_ok())
         .map(|d| d.serial)
-        .collect();
-    match DeviceSelectionPolicy::evaluate(None, &online) {
-        DeviceSelectionOutcome::Selected { serial, .. } => Ok(serial),
-        DeviceSelectionOutcome::NoOnlineDevices => Err(DaemonError::NotFound(
-            "no online ADB devices found".to_owned(),
-        )),
-        DeviceSelectionOutcome::MultipleDevicesNeedSelection { online_serials } => {
-            Err(DaemonError::Conflict(format!(
-                "MultipleDevicesNeedSelection: multiple online ADB devices found ({}); select a target device explicitly",
-                online_serials.join(", ")
-            )))
-        }
-        DeviceSelectionOutcome::WaitingForPreferredDevice {
-            preferred_serial, ..
-        } => Ok(preferred_serial),
-        _ => Err(DaemonError::Internal(
-            "unexpected device selection outcome".to_owned(),
-        )),
-    }
+        .collect::<Vec<_>>();
+    Ok(DeviceSelectionPolicy::evaluate(preferred, &online))
 }
 
 fn resolve_agent_jar(
@@ -807,6 +806,10 @@ fn run_supervised_adb_loop(
             sink.push(disc);
         }
 
+        if !matches!(select_live_target(adb,cfg.preferred_serial.as_deref()), Ok(DeviceSelectionOutcome::Selected {serial}) if serial == cfg.serial)
+        {
+            break;
+        }
         // Sleep in small increments so capture.stop wakes up quickly.
         let deadline = Instant::now() + backoff;
         while Instant::now() < deadline && !stop_flag.load(Ordering::Acquire) {
@@ -817,9 +820,8 @@ fn run_supervised_adb_loop(
 
 struct SessionCleanupGuard<'a> {
     adb: &'a AdbClient,
-    serial: &'a str,
-    deployed: DeployedAgentPaths,
-    forwarded_ports: Vec<u16>,
+    resources: crate::adb_resources::SessionResources,
+    resource_dir: &'a Path,
     companion_child: Option<Child>,
     scrcpy_child: Option<Child>,
 }
@@ -828,9 +830,7 @@ impl Drop for SessionCleanupGuard<'_> {
     fn drop(&mut self) {
         kill_child(self.companion_child.take());
         kill_child(self.scrcpy_child.take());
-        let _ = self
-            .adb
-            .cleanup_session(self.serial, &self.deployed, &self.forwarded_ports);
+        let _ = self.resources.cleanup(self.resource_dir, self.adb);
     }
 }
 
@@ -853,28 +853,18 @@ fn run_single_adb_session(
     if cached_sdk.is_none() {
         *cached_sdk = adb.query_sdk_version(&cfg.serial);
     }
-    let token_raw = current_unix_millis() % 1_000_000;
-    let session_token = format!("s{}-{token_raw:06}", std::process::id());
-    let scrcpy_jar_for_deploy = if cfg.capture_mode == CaptureMode::LogsOnly {
-        None
-    } else {
-        cfg.scrcpy_jar.as_deref()
-    };
-    let deployed = adb.deploy_session_agents(
-        &cfg.serial,
-        &session_token,
-        &cfg.companion_jar,
-        scrcpy_jar_for_deploy,
-    )?;
-
+    let scrcpy = cfg.scrcpy_jar.as_deref();
+    let resources = crate::adb_resources::SessionResources::new(&cfg.serial, scrcpy);
+    let session_token = resources.deployed.session_token.clone();
+    resources.persist(&cfg.resource_dir)?;
     let mut guard = SessionCleanupGuard {
         adb,
-        serial: &cfg.serial,
-        deployed,
-        forwarded_ports: Vec::new(),
+        resource_dir: &cfg.resource_dir,
+        resources,
         companion_child: None,
         scrcpy_child: None,
     };
+    adb.deploy_session_agents(&cfg.serial, &session_token, &cfg.companion_jar, scrcpy)?;
 
     // 1. Forward and launch arb-companion and complete initial Hello handshake.
     let (mut companion_reader, mut companion_writer, hello) =
@@ -1004,8 +994,9 @@ fn launch_and_handshake_companion(
     stop_flag: &Arc<AtomicBool>,
 ) -> Result<(TcpStream, TcpStream, HelloPayload), DaemonError> {
     let companion_socket = format!("arb-companion-{session_token}");
-    let companion_port = adb.forward_tcp_to_abstract(&cfg.serial, &companion_socket)?;
-    guard.forwarded_ports.push(companion_port);
+    let companion_port = guard
+        .resources
+        .forward(guard.resource_dir, adb, &companion_socket)?;
 
     let logcat_en = if cfg.logcat_enabled {
         StreamEnable::Enabled
@@ -1018,7 +1009,7 @@ fn launch_and_handshake_companion(
         StreamEnable::Disabled
     };
     let companion_cmd = AdbClient::<arb_adb::adb::SystemAdbRunner>::companion_launch_command(
-        &guard.deployed.companion_jar,
+        &guard.resources.deployed.companion_jar,
         &companion_socket,
         cfg.heartbeat_ms,
         logcat_en,
@@ -1146,7 +1137,7 @@ fn launch_scrcpy_streams(
     ctx: &MediaThreadCtx,
     scrcpy_stderr: &Arc<Mutex<String>>,
 ) -> Result<(Vec<JoinHandle<()>>, Vec<TcpStream>), DaemonError> {
-    let Some(remote_scrcpy) = guard.deployed.scrcpy_jar.clone() else {
+    let Some(remote_scrcpy) = guard.resources.deployed.scrcpy_jar.clone() else {
         return Err(DaemonError::NotFound(
             "replay-scrcpy-audio.dex.jar was not deployed".to_owned(),
         ));
@@ -1290,7 +1281,7 @@ fn launch_scrcpy_with_audio_fallback(
 ///
 /// `scrcpy-server` parses `scid` with Java `Integer.parseInt(hex)` and rejects values above
 /// `0x7FFF_FFFF`, so bit 31 is always cleared before the `0x1000_0000` marker is applied.
-fn scrcpy_scid_hex(unix_millis: u64, salt: u32) -> String {
+pub(super) fn scrcpy_scid_hex(unix_millis: u64, salt: u32) -> String {
     let low = u32::try_from(unix_millis & 0xFFFF_FFFF)
         .unwrap_or(0)
         .wrapping_add(salt);
@@ -1333,10 +1324,11 @@ fn launch_scrcpy_attempt(
     let mut media_threads: Vec<JoinHandle<()>> = Vec::new();
     let mut media_sockets: Vec<TcpStream> = Vec::new();
 
-    let scid = scrcpy_scid_hex(current_unix_millis(), scid_salt);
+    let scid = guard.resources.scid(scid_salt);
     let scrcpy_abstract = format!("scrcpy_{scid}");
-    let scrcpy_port = adb.forward_tcp_to_abstract(&cfg.serial, &scrcpy_abstract)?;
-    guard.forwarded_ports.push(scrcpy_port);
+    let scrcpy_port = guard
+        .resources
+        .forward(guard.resource_dir, adb, &scrcpy_abstract)?;
 
     let scrcpy_opts = ScrcpyLaunchOptions {
         scid,
@@ -1383,14 +1375,7 @@ fn launch_scrcpy_attempt(
     ) {
         Ok(tunnels) => tunnels,
         Err(err) => {
-            if let Some(pos) = guard
-                .forwarded_ports
-                .iter()
-                .rposition(|&p| p == scrcpy_port)
-            {
-                let port = guard.forwarded_ports.remove(pos);
-                let _ = adb.remove_forward(&cfg.serial, port);
-            }
+            let _ = adb.remove_owned_forwards(&cfg.serial, &[(scrcpy_port, scrcpy_abstract)]);
             return Err(err);
         }
     };

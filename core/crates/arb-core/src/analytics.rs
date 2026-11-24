@@ -908,6 +908,27 @@ pub fn normalize_activity_component(raw: &str) -> Option<ParsedActivityComponent
 /// are collapsed into a single contiguous span starting at the earliest timestamp.
 #[must_use]
 pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<ScreenSpan> {
+    let mut epochs = BTreeMap::new();
+    for log in logs {
+        if let Some(id) = log_boot_id_hint(log) {
+            epochs.entry(id).or_insert_with(Vec::new).push(log);
+        }
+    }
+    let mut groups: Vec<_> = epochs.into_iter().collect();
+    groups.sort_by_key(|(_, logs)| logs.iter().map(|log| log.pc_ingest_cont_ns).min());
+    groups
+        .into_iter()
+        .flat_map(|(id, logs)| {
+            let epoch_frames = frames
+                .iter()
+                .filter(|f| f.boot_id == id)
+                .collect::<Vec<_>>();
+            screen_spans_for_epoch(&logs, &epoch_frames)
+        })
+        .collect()
+}
+
+fn screen_spans_for_epoch(logs: &[&LogRecord], frames: &[&FrameRecord]) -> Vec<ScreenSpan> {
     let mut transitions: Vec<(i64, u64, ParsedActivityComponent)> = Vec::new();
     let mut latest_log_bt: Option<i64> = None;
 
@@ -956,7 +977,7 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
         }
     }
 
-    let last_frame_bt = frames.iter().filter_map(frame_boottime_hint).max();
+    let last_frame_bt = frames.iter().filter_map(|f| frame_boottime_hint(f)).max();
     let timeline_end_ns = match (last_frame_bt, latest_log_bt) {
         (Some(f), Some(l)) => f.max(l),
         (Some(f), None) => f,
@@ -973,7 +994,8 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
             timeline_end_ns.max(start_ns)
         };
 
-        let (start_frame_index, end_frame_index) = frame_span_for_range(frames, start_ns, end_ns);
+        let (start_frame_index, end_frame_index) =
+            frame_span_for_range(frames.iter().copied(), start_ns, end_ns);
         spans.push(ScreenSpan {
             start_ns,
             end_ns,
@@ -1470,13 +1492,13 @@ fn nearest_frame_index_for_boot(
         .map(|(_, idx)| idx)
 }
 
-fn frame_span_for_range(
-    frames: &[FrameRecord],
+fn frame_span_for_range<'a>(
+    frames: impl IntoIterator<Item = &'a FrameRecord>,
     start_ns: i64,
     end_ns: i64,
 ) -> (Option<u64>, Option<u64>) {
     let anchored: Vec<(i64, u64)> = frames
-        .iter()
+        .into_iter()
         .filter_map(|f| Some((frame_boottime_hint(f)?, f.frame_index)))
         .collect();
     if anchored.is_empty() {
@@ -1810,6 +1832,25 @@ mod tests {
             }),
             CrashAutoSaveDecision::SuppressedStoragePressure,
             "storage pressure must always suppress"
+        );
+    }
+
+    #[test]
+    fn screen_spans_preserve_boot_order_and_epoch_frame_bounds() {
+        let a = make_log(0, 100, "wm_resumed_activity", 1000, "[0,1,com.test/.First]");
+        let mut b = make_log(1, 5, "wm_resumed_activity", 1000, "[0,1,com.test/.Second]");
+        b.boot_id = Some("boot-2".into());
+        b.pc_ingest_cont_ns = 120;
+        let mut frame = make_frame(1, 10);
+        frame.boot_id = "boot-2".into();
+        let spans = extract_screen_spans(&[a, b], &[make_frame(0, 110), frame]);
+        let bounds: Vec<_> = spans
+            .iter()
+            .map(|s| (s.start_ns, s.end_ns, s.start_frame_index, s.end_frame_index))
+            .collect();
+        assert_eq!(
+            bounds,
+            [(100, 110, Some(0), Some(0)), (5, 10, Some(1), Some(1))]
         );
     }
 
