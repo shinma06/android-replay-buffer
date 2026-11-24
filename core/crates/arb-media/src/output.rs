@@ -81,6 +81,15 @@ pub(crate) fn write_atomically(
     mode: Publish,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<(), MediaError>,
 ) -> Result<u64, MediaError> {
+    write_verified(final_path, mode, write, |_| Ok(()))
+}
+
+pub(crate) fn write_verified(
+    final_path: &Path,
+    mode: Publish,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<(), MediaError>,
+    verify: impl FnOnce(&Path) -> Result<(), MediaError>,
+) -> Result<u64, MediaError> {
     if mode == Publish::NoReplace && final_path.exists() {
         return Err(MediaError::Io(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -98,6 +107,7 @@ pub(crate) fn write_atomically(
         file.sync_all()?;
         let len = file.metadata()?.len();
         drop(file);
+        verify(&tmp)?;
         publish(&tmp, final_path, mode)?;
         Ok(len)
     })();
@@ -137,4 +147,23 @@ fn publish(tmp: &Path, final_path: &Path, mode: Publish) -> Result<(), MediaErro
         },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_verification_allows_retry_at_same_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("share.mp4");
+        let rejected = write_verified(
+            &path,
+            Publish::NoReplace,
+            |_| Ok(()),
+            |_| Err(MediaError::InvalidContainer("invalid".into())),
+        );
+        assert!(rejected.is_err());
+        assert!(!path.exists());
+        write_verified(&path, Publish::NoReplace, |_| Ok(()), |_| Ok(())).unwrap();
+    }
 }

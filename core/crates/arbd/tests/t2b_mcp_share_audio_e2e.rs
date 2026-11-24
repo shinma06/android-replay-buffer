@@ -505,6 +505,11 @@ fn t2b_decode_audio_pcm_decodes_real_aac_caches_and_handles_no_audio_cleanly() {
         "WAV must be cached under <cache_dir>/audio-pcm/: {}",
         wav_path.display()
     );
+    let digest = arb_storage::sha256_hex(&fs::read(with_audio_dir.join("audio.m4a")).unwrap());
+    assert_eq!(
+        wav_path.file_stem().unwrap().to_str(),
+        Some(digest.as_str())
+    );
     let hdr = inspect_wav_header(&wav_path).expect("WAV header must be valid RIFF/PCM");
     assert_eq!(hdr.sample_rate_hz, 48_000, "WAV header sample rate");
     assert_eq!(hdr.channels, 2, "WAV header channels");
@@ -517,6 +522,32 @@ fn t2b_decode_audio_pcm_decodes_real_aac_caches_and_handles_no_audio_cleanly() {
     assert_eq!(dec2["available"], true, "cached audio available");
     assert_eq!(dec2["cached"], true, "second call must be a cache hit");
     assert_eq!(dec2["wav_path"], dec1["wav_path"], "same wav_path returned");
+
+    // A restored external recording can keep the original ID while containing different audio.
+    let external = tmp.path().join("external");
+    fs::create_dir(&external).unwrap();
+    let copy = seed_rich_v2_bundle(&external, &external, "b-audio", false);
+    build_real_audio_m4a(&copy.join("audio.m4a"), 48_000, 2, 24_000);
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(with_audio_dir.join("manifest.json")).unwrap()).unwrap();
+    let audio = fs::read(copy.join("audio.m4a")).unwrap();
+    let entry = manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|e| e["path"] == "audio.m4a")
+        .unwrap();
+    entry["sha256"] = json!(arb_storage::sha256_hex(&audio));
+    entry["bytes"] = json!(audio.len());
+    fs::write(
+        copy.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let changed = rpc.call("media.decode_audio_pcm", &json!({"bundle_id":copy}));
+    assert_eq!(changed["cached"], false);
+    assert_ne!(changed["wav_path"], dec1["wav_path"]);
+    assert!(changed["duration_ns"].as_u64().unwrap() < dec1["duration_ns"].as_u64().unwrap());
 
     // Bundle without audio returns `{ available: false }` cleanly without error.
     let dec_none = rpc.call(

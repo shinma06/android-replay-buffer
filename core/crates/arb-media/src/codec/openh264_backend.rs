@@ -148,7 +148,12 @@ fn make_encoder(params: EncodeParams) -> Result<Encoder, MediaError> {
         .map_err(|err| MediaError::Codec(format!("openh264 encoder init failed: {err:?}")))
 }
 
+#[cfg(test)]
+thread_local! { static PACKED_OUTPUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn pack_decoded_yuv420p(yuv: &DecodedYUV<'_>) -> Result<(u32, u32, Vec<u8>), MediaError> {
+    #[cfg(test)]
+    PACKED_OUTPUTS.with(|count| count.set(count.get() + 1));
     let (w, h) = yuv.dimensions();
     let (ys, us, vs) = yuv.strides();
     let y_src = yuv.y();
@@ -188,7 +193,7 @@ fn decode_range_yuv420p(
     end_inclusive: u64,
 ) -> Result<Vec<DecodedYuvFrame>, MediaError> {
     let mut frames = Vec::new();
-    visit_range_yuv420p(track, gop_start, end_inclusive, |frame| {
+    visit_range_yuv420p(track, gop_start, end_inclusive, gop_start, |frame| {
         frames.push(frame);
         Ok(())
     })?;
@@ -199,6 +204,7 @@ fn visit_range_yuv420p(
     track: &Mp4VideoTrack,
     gop_start: u64,
     end_inclusive: u64,
+    first_output: u64,
     mut visit: impl FnMut(DecodedYuvFrame) -> Result<(), MediaError>,
 ) -> Result<(), MediaError> {
     let mut dec = make_decoder(Flush::NoFlush)?;
@@ -221,13 +227,15 @@ fn visit_range_yuv420p(
             )
             .map_err(|err| MediaError::Codec(format!("openh264 decode frame {idx}: {err:?}")))?;
         if let Some(yuv) = decoded {
-            let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
-            visit(DecodedYuvFrame {
-                frame_index: emitted_idx,
-                width,
-                height,
-                yuv420p,
-            })?;
+            if emitted_idx >= first_output {
+                let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
+                visit(DecodedYuvFrame {
+                    frame_index: emitted_idx,
+                    width,
+                    height,
+                    yuv420p,
+                })?;
+            }
             emitted_idx += 1;
         }
     }
@@ -237,13 +245,15 @@ fn visit_range_yuv420p(
         .flush_remaining()
         .map_err(|err| MediaError::Codec(format!("openh264 flush_remaining: {err:?}")))?;
     for yuv in remaining {
-        let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
-        visit(DecodedYuvFrame {
-            frame_index: emitted_idx,
-            width,
-            height,
-            yuv420p,
-        })?;
+        if emitted_idx >= first_output {
+            let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
+            visit(DecodedYuvFrame {
+                frame_index: emitted_idx,
+                width,
+                height,
+                yuv420p,
+            })?;
+        }
         emitted_idx += 1;
     }
 
@@ -335,15 +345,18 @@ impl VideoCodecBackend for OpenH264Backend {
         output_format: PixelFormat,
     ) -> Result<DecodedFrame, MediaError> {
         let gop_start = track.decodable_gop_start(frame_index)?;
-        let frames = decode_range_yuv420p(track, gop_start, frame_index)?;
-        let target = frames
-            .into_iter()
-            .find(|f| f.frame_index == frame_index)
-            .ok_or_else(|| {
-                MediaError::Codec(format!(
-                    "openh264 did not emit target frame {frame_index} from GOP start {gop_start}"
-                ))
-            })?;
+        let mut target = None;
+        visit_range_yuv420p(track, gop_start, frame_index, frame_index, |frame| {
+            if frame.frame_index == frame_index {
+                target = Some(frame);
+            }
+            Ok(())
+        })?;
+        let target = target.ok_or_else(|| {
+            MediaError::Codec(format!(
+                "openh264 did not emit target frame {frame_index} from GOP start {gop_start}"
+            ))
+        })?;
         convert_from_yuv420p(
             frame_index,
             target.width,
@@ -492,7 +505,7 @@ impl VideoCodecBackend for OpenH264Backend {
         let mut decoded_frames = 0u64;
 
         let gop_start = track.decodable_gop_start(start_frame)?;
-        visit_range_yuv420p(track, gop_start, end_inclusive, |mut frame| {
+        visit_range_yuv420p(track, gop_start, end_inclusive, gop_start, |mut frame| {
             decoded_frames += 1;
             let frame_idx = frame.frame_index;
             if frame_idx < start_frame {
@@ -588,5 +601,41 @@ impl VideoCodecBackend for OpenH264Backend {
             decoded_frames,
             samples,
         })
+    }
+}
+
+#[cfg(test)]
+mod seek_tests {
+    use super::*;
+    #[test]
+    fn sparse_seek_only_materializes_target_yuv() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("long.mp4");
+        let frames = (0..60)
+            .map(|i| DecodedFrame {
+                width: 64,
+                height: 64,
+                frame_index: i,
+                format: PixelFormat::Yuv420p,
+                data: vec![u8::try_from(32 + i * 2).unwrap(); 6144],
+            })
+            .collect::<Vec<_>>();
+        let codec = OpenH264Backend::new();
+        let packets = codec
+            .encode_yuv420p_sequence(&frames, 120, 33_333_333, EncodeParams::default())
+            .unwrap();
+        crate::mp4::mux_raw_h264_to_mp4(&path, 64, 64, 90_000, 3000, &packets).unwrap();
+        let track = Mp4VideoTrack::open(path).unwrap();
+        let expected = codec
+            .decode_gop(&track, 0, PixelFormat::Yuv420p)
+            .unwrap()
+            .pop()
+            .unwrap();
+        PACKED_OUTPUTS.set(0);
+        let frame = codec
+            .decode_frame(&track, 59, PixelFormat::Yuv420p)
+            .unwrap();
+        assert_eq!(frame.data, expected.data);
+        assert_eq!(PACKED_OUTPUTS.get(), 1);
     }
 }

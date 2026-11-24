@@ -720,7 +720,22 @@ fn t1_crash_autosave_debounce_and_timeline_crashes_screens() {
         &json!({ "save_window_secs": 60, "crash_autosave_enabled": true, "crash_autosave_cooldown_secs": 15 }),
     );
 
-    let mut source = VecEventSource::new("emu-crash", build_crash_and_screen_events());
+    let mut events = build_crash_and_screen_events();
+    let mut unknown = binary_am_crash_event(
+        "boot-crash",
+        31 * SEC_NS,
+        121 * SEC_NS,
+        4204,
+        "unknown",
+        "UnknownException",
+        "compat",
+    );
+    if let CaptureEvent::LogRecord { payload, .. } = &mut unknown {
+        payload.uid = arb_adb::wire::UNKNOWN_U32;
+    }
+    events.push(unknown);
+    events.push(heartbeat_event("boot-crash", 200 * SEC_NS, 290 * SEC_NS));
+    let mut source = VecEventSource::new("emu-crash", events);
     server
         .ingest_device_source(&mut source)
         .expect("ingest crash scenario");

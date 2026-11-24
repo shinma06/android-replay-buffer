@@ -278,6 +278,12 @@ fn decode_ring_chunk(bytes: &[u8]) -> Result<Vec<CaptureEvent>, DaemonError> {
 /// Notification emitted by [`CapturePipeline::ingest_event`] when a live fatal `am_crash` arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashAutoSaveNotice {
+    /// Capture generation that owns this crash.
+    pub generation: u64,
+    /// Device boot epoch of the triggering log.
+    pub boot_id: String,
+    /// Trigger timestamp in the device boottime domain.
+    pub boottime_ns: i64,
     /// Host continuous monotonic timestamp associated with the crash event.
     pub pc_cont_ns: i64,
     /// Crashing Android process name.
@@ -322,7 +328,7 @@ struct SaveJobMaterializeParams {
 /// What a closed ring chunk contains, used to pick the nearest preceding anchor chunks.
 #[derive(Debug, Default, Clone, Copy)]
 struct ChunkContent {
-    keyframe: bool,
+    picture: Option<VideoPacketKind>,
     video_config: bool,
     heartbeat: bool,
 }
@@ -336,7 +342,10 @@ impl ChunkContent {
                     content.video_config = true;
                 }
                 CaptureEvent::VideoFrame { packet, .. } if packet.is_keyframe() => {
-                    content.keyframe = true;
+                    content.picture = Some(VideoPacketKind::Keyframe);
+                }
+                CaptureEvent::VideoFrame { .. } => {
+                    content.picture.get_or_insert(VideoPacketKind::DeltaFrame);
                 }
                 CaptureEvent::Heartbeat { .. } | CaptureEvent::Hello { .. } => {
                     content.heartbeat = true;
@@ -394,14 +403,10 @@ impl Drop for PinRollbackGuard {
 #[derive(Debug)]
 pub struct PendingSave {
     guard: PinRollbackGuard,
-    bundle_id: String,
+    generation: u64,
+    params: SaveJobMaterializeParams,
     dest_bundle_dir: PathBuf,
-    mode: SaveMode,
     trigger_kind: SaveTriggerKind,
-    duration_sec: u64,
-    trigger_utc: String,
-    window: WindowSpec,
-    policy: SelectionPolicy,
     pinned_chunk_ids: Vec<String>,
     drain_trigger_boottime_ns: i64,
     drain_decision: TailCompleteness,
@@ -562,7 +567,6 @@ pub struct CapturePipeline {
     display_width: Option<u32>,
     display_height: Option<u32>,
     uid_packages: BTreeMap<u32, String>,
-    latest_video_config: Option<Vec<u8>>,
     timeline: ClockTimeline,
     pending_events: Vec<CaptureEvent>,
     pending_bytes: usize,
@@ -582,6 +586,7 @@ pub struct CapturePipeline {
     pressure_discontinuities: Vec<DiscontinuityEvent>,
     chunk_contents: BTreeMap<String, ChunkContent>,
     crash_notifier: Option<Sender<CrashAutoSaveNotice>>,
+    pub(super) crash_daemon: std::sync::Weak<super::DaemonState>,
 }
 
 impl CapturePipeline {
@@ -624,7 +629,6 @@ impl CapturePipeline {
             display_width: None,
             display_height: None,
             uid_packages: BTreeMap::new(),
-            latest_video_config: None,
             timeline: ClockTimeline::new(ClockTimelineConfig::new()),
             pending_events: Vec::new(),
             pending_bytes: 0,
@@ -644,6 +648,7 @@ impl CapturePipeline {
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
             crash_notifier: None,
+            crash_daemon: std::sync::Weak::new(),
         })
     }
 
@@ -794,6 +799,21 @@ impl CapturePipeline {
         clock_domain: ClockDomain,
         capture_mode: CaptureMode,
     ) -> u64 {
+        if self.serial.as_deref() != Some(&serial) {
+            let _ = self.flush_pending_chunk();
+            self.chunk_contents.clear();
+            self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
+            self.latest_heartbeat_boottime_ns = None;
+            self.latest_heartbeat_pc_cont_ns = None;
+            self.latest_pc_cont_ns = None;
+            self.last_discontinuities.clear();
+            self.pressure_discontinuities.clear();
+            self.video_width = 1920;
+            self.video_height = 1080;
+            self.device.model = "unknown".into();
+            self.device.api_level = 0;
+            self.device.is_emulator = false;
+        }
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active = true;
         self.connected = false;
@@ -815,6 +835,10 @@ impl CapturePipeline {
         self.uid_packages.clear();
         self.session_first_event_cont_ns = None;
         self.session_generation
+    }
+
+    pub(super) fn adb_resource_dir(&self) -> PathBuf {
+        self.data_dir.join("adb-sessions")
     }
 
     /// Returns the generation of the most recently started capture session.
@@ -1071,7 +1095,6 @@ impl CapturePipeline {
             }
             CaptureEvent::VideoFrame { packet, .. } => {
                 if packet.is_config() {
-                    self.latest_video_config = Some(packet.data.clone());
                     should_flush = true;
                 } else {
                     self.video_frames_seen += 1;
@@ -1118,15 +1141,61 @@ impl CapturePipeline {
         should_flush
     }
 
-    fn notify_detected_crash(&self, detected_crash: Option<(i64, ParsedAmCrash)>) {
-        if let (Some(tx), Some((pc_cont_ns, crash))) = (&self.crash_notifier, detected_crash) {
-            let _ = tx.send(CrashAutoSaveNotice {
-                pc_cont_ns,
-                process_name: crash.process_name,
-                exception_class: crash.exception_class,
-                storage_pressure_stopped: self.storage_pressure_stopped,
-            });
+    fn notify_detected_crash(&mut self, detected: Option<(i64, String, i64, ParsedAmCrash)>) {
+        let Some((pc_cont_ns, boot_id, boottime_ns, crash)) = detected else {
+            return;
+        };
+        let notice = CrashAutoSaveNotice {
+            generation: self.session_generation,
+            boot_id,
+            boottime_ns,
+            pc_cont_ns,
+            process_name: crash.process_name,
+            exception_class: crash.exception_class,
+            storage_pressure_stopped: self.storage_pressure_stopped,
+        };
+        if let Some(tx) = &self.crash_notifier {
+            let _ = tx.send(notice.clone());
         }
+        if let Some(state) = self.crash_daemon.upgrade() {
+            super::pin_crash_notice(&state, self, &notice);
+        }
+    }
+
+    pub(super) fn pin_crash(
+        &mut self,
+        notice: &CrashAutoSaveNotice,
+        secs: u64,
+        dest: &Path,
+    ) -> Result<PendingSave, DaemonError> {
+        if notice.generation != self.session_generation {
+            return Err(DaemonError::Conflict(
+                "crash belongs to an earlier capture session".into(),
+            ));
+        }
+        let mut window = self.build_save_window(
+            secs,
+            TriggerPoint {
+                pc_cont_ns: notice.pc_cont_ns,
+                boottime_ns: notice.boottime_ns,
+            },
+        );
+        if let WindowSpec::RealElapsed { boot_id, .. } = &mut window {
+            boot_id.clone_from(&notice.boot_id);
+        }
+        let mode = if self.capture_mode == CaptureMode::LogsOnly {
+            SaveMode::LogsOnly
+        } else {
+            SaveMode::Full
+        };
+        self.pin_window(
+            secs,
+            dest,
+            SelectionPolicy::default(),
+            mode,
+            SaveTriggerKind::CrashAutoSave,
+            window,
+        )
     }
 
     fn push_live_discontinuity(&mut self, event: DiscontinuityEvent) {
@@ -1330,12 +1399,27 @@ impl CapturePipeline {
         mode: SaveMode,
         trigger_kind: SaveTriggerKind,
     ) -> Result<PendingSave, DaemonError> {
-        // Flush buffered events into closed immutable chunks first. A failed flush is already
-        // recorded as a discontinuity; the chunks written so far can still be saved.
-        let _ = self.flush_pending_chunk();
+        let window = self.build_save_window(duration_sec, self.trigger_point());
+        self.pin_window(
+            duration_sec,
+            dest_parent_dir,
+            policy,
+            mode,
+            trigger_kind,
+            window,
+        )
+    }
 
-        let trigger = self.trigger_point();
-        let window = self.build_save_window(duration_sec, trigger);
+    fn pin_window(
+        &mut self,
+        duration_sec: u64,
+        dest_parent_dir: &Path,
+        policy: SelectionPolicy,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+        window: WindowSpec,
+    ) -> Result<PendingSave, DaemonError> {
+        let _ = self.flush_pending_chunk();
         let chunk_ids = self.select_window_chunks(&window, &policy);
         if chunk_ids.is_empty() {
             return Err(DaemonError::Conflict(
@@ -1365,16 +1449,30 @@ impl CapturePipeline {
             _ => (false, TailCompleteness::Complete),
         };
 
-        Ok(PendingSave {
-            guard,
+        let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
+        let params = SaveJobMaterializeParams {
             bundle_id,
-            dest_bundle_dir,
             mode,
-            trigger_kind,
             duration_sec,
             trigger_utc: now_utc,
             window,
             policy,
+            tail_may_be_incomplete: false,
+            device: self.device.clone(),
+            video_width: self.video_width,
+            video_height: self.video_height,
+            display_width: self.display_width,
+            display_height: self.display_height,
+            fallback_video_config: None,
+            extra_discontinuities,
+            uid_packages: self.uid_packages.clone(),
+        };
+        Ok(PendingSave {
+            guard,
+            generation: self.session_generation,
+            params,
+            dest_bundle_dir,
+            trigger_kind,
             pinned_chunk_ids: chunk_ids,
             drain_trigger_boottime_ns: self
                 .latest_heartbeat_boottime_ns
@@ -1398,11 +1496,13 @@ impl CapturePipeline {
         mut pending: PendingSave,
         tail: TailCompleteness,
     ) -> Result<(CatalogSaveJob, Phase2Plan), DaemonError> {
-        let _ = self.flush_pending_chunk();
         let mut chunk_ids = pending.pinned_chunk_ids.clone();
-        for id in self.select_window_chunks(&pending.window, &pending.policy) {
-            if !chunk_ids.contains(&id) {
-                chunk_ids.push(id);
+        if pending.generation == self.session_generation {
+            let _ = self.flush_pending_chunk();
+            for id in self.select_window_chunks(&pending.params.window, &pending.params.policy) {
+                if !chunk_ids.contains(&id) {
+                    chunk_ids.push(id);
+                }
             }
         }
         let job_id = pending.guard.job_id.clone();
@@ -1411,35 +1511,19 @@ impl CapturePipeline {
                 &job_id,
                 &pending.dest_bundle_dir,
                 chunk_ids.clone(),
-                &pending.trigger_utc,
+                &pending.params.trigger_utc,
             )?;
         }
 
-        let params = SaveJobMaterializeParams {
-            bundle_id: pending.bundle_id.clone(),
-            mode: pending.mode,
-            duration_sec: pending.duration_sec,
-            trigger_utc: pending.trigger_utc.clone(),
-            window: pending.window.clone(),
-            policy: pending.policy,
-            tail_may_be_incomplete: tail.may_be_incomplete(),
-            device: self.device.clone(),
-            video_width: self.video_width,
-            video_height: self.video_height,
-            display_width: self.display_width,
-            display_height: self.display_height,
-            fallback_video_config: self.latest_video_config.clone(),
-            extra_discontinuities: self
-                .carried_discontinuities_for(&pending.window, &pending.policy),
-            uid_packages: self.uid_packages.clone(),
-        };
-        write_job_params(&self.data_dir, &job_id, &params)?;
+        pending.params.tail_may_be_incomplete =
+            tail.may_be_incomplete() || self.session_generation != pending.generation;
+        write_job_params(&self.data_dir, &job_id, &pending.params)?;
 
         let created = catalog.create_pinned_job_with_trigger(
             &job_id,
             &pending.dest_bundle_dir,
             &chunk_ids,
-            &pending.trigger_utc,
+            &pending.params.trigger_utc,
             pending.trigger_kind,
         )?;
         let plan = self.phase2_plan(&created.job.pinned_chunk_ids)?;
@@ -1618,7 +1702,7 @@ impl CapturePipeline {
             let end = c
                 .created_cont_ns
                 .saturating_add(i64::try_from(c.duration_ns).unwrap_or(i64::MAX));
-            c.created_cont_ns <= hi && end >= lo
+            self.chunk_contents.contains_key(&c.chunk_id) && c.created_cont_ns <= hi && end >= lo
         };
         let Some(first_idx) = chunks.iter().position(overlaps) else {
             return Vec::new();
@@ -1638,12 +1722,14 @@ impl CapturePipeline {
             let Some(content) = self.chunk_contents.get(&chunk.chunk_id) else {
                 continue;
             };
-            let wanted = (need_keyframe && content.keyframe)
+            let wanted = (need_keyframe && content.picture.is_some())
                 || (need_config && content.video_config)
                 || (need_heartbeat && content.heartbeat);
             if wanted {
-                need_keyframe &= !content.keyframe;
-                need_config &= !content.video_config;
+                need_keyframe &= content.picture != Some(VideoPacketKind::Keyframe);
+                if !need_keyframe {
+                    need_config &= !content.video_config;
+                }
                 need_heartbeat &= !content.heartbeat;
                 selected.insert(0, chunk.chunk_id.clone());
             }
@@ -1878,6 +1964,7 @@ struct ReplayCollector {
 }
 
 struct RawCapturedVideo {
+    dimensions: (u16, u16),
     boot_id: String,
     pts_mono_ns: i64,
     pc_ingest_cont_ns: i64,
@@ -2017,6 +2104,7 @@ const fn gesture_kind_action_label(kind: GestureKind) -> &'static str {
 
 /// Video frames selected for the main timeline plus the uncertain frames left out (R3 S2).
 struct SelectedVideo {
+    preroll: Vec<RawH264Packet>,
     main: Vec<AlignedVideoItem>,
     unanchored_excluded: usize,
 }
@@ -2107,12 +2195,32 @@ impl ReplayCollector {
                 } else {
                     let pts_mono_ns = packet.pts_monotonic_ns().unwrap_or(0);
                     let is_keyframe = packet.is_keyframe();
+                    let mut annex_b = packet.data;
+                    if is_keyframe {
+                        // Parameter sets embedded in this IDR take effect immediately. Cache
+                        // them for later IDRs on devices that omit periodic configuration.
+                        let mut embedded = Vec::new();
+                        for nal in arb_media::mp4::split_annexb_nals(&annex_b) {
+                            if nal.first().is_some_and(|b| matches!(b & 31, 7 | 8)) {
+                                embedded.extend_from_slice(&[0, 0, 0, 1]);
+                                embedded.extend_from_slice(nal);
+                            }
+                        }
+                        if !embedded.is_empty() {
+                            self.video_config = Some(embedded);
+                        } else if let Some(config) = self.video_config.as_ref() {
+                            let mut combined = config.clone();
+                            combined.append(&mut annex_b);
+                            annex_b = combined;
+                        }
+                    }
                     self.raw_video.push(RawCapturedVideo {
+                        dimensions: (self.video_width, self.video_height),
                         boot_id,
                         pts_mono_ns,
                         pc_ingest_cont_ns: pc_cont_ns,
                         is_keyframe,
-                        annex_b: packet.data,
+                        annex_b,
                     });
                 }
             }
@@ -2304,7 +2412,7 @@ impl ReplayCollector {
         raw_video: Vec<RawCapturedVideo>,
         params: &SaveJobMaterializeParams,
     ) -> SelectedVideo {
-        let aligned: Vec<AlignedVideoItem> = raw_video
+        let mut aligned: Vec<AlignedVideoItem> = raw_video
             .into_iter()
             .enumerate()
             .map(|(idx, raw)| {
@@ -2315,6 +2423,7 @@ impl ReplayCollector {
                     raw.pc_ingest_cont_ns,
                 );
                 AlignedVideoItem {
+                    dimensions: raw.dimensions,
                     record: FrameRecord {
                         frame_index: u64::try_from(idx).unwrap_or(0),
                         boot_id: raw.boot_id,
@@ -2330,6 +2439,23 @@ impl ReplayCollector {
                 }
             })
             .collect();
+        let mut preroll = Vec::new();
+        if let Some(first) = aligned.iter().position(|v| {
+            arb_core::selection::classify_record(v, &params.window)
+                == arb_core::selection::Membership::InRange
+        }) && !aligned[first].record.is_keyframe
+            && let Some(start) = aligned[..first].iter().rposition(|v| v.record.is_keyframe)
+            && aligned[start..first].iter().all(|v| {
+                v.record.boot_id == aligned[first].record.boot_id
+                    && v.dimensions == aligned[first].dimensions
+            })
+        {
+            preroll.extend(aligned[start..first].iter_mut().map(|v| RawH264Packet {
+                pts_ns: v.record.pts_device_mono_ns,
+                is_keyframe: v.record.is_keyframe,
+                annex_b: std::mem::take(&mut v.annex_b),
+            }));
+        }
         let part = select_records(aligned, &params.window, &params.policy);
         // R3 S2: frames with uncertain time cannot be muxed into the frame-indexed main track,
         // but they are counted (including those dropped by the quarantine caps), never lost
@@ -2338,13 +2464,9 @@ impl ReplayCollector {
             .unanchored
             .len()
             .saturating_add(part.unanchored_truncated_count);
-        let main = if let Some(first_kf) = part.main.iter().position(|v| v.record.is_keyframe) {
-            part.main.into_iter().skip(first_kf).collect()
-        } else {
-            part.main
-        };
         SelectedVideo {
-            main,
+            main: part.main,
+            preroll,
             unanchored_excluded,
         }
     }
@@ -2534,7 +2656,6 @@ impl ReplayCollector {
                 data_dir,
                 self.video_width,
                 self.video_height,
-                self.video_config.as_deref(),
                 self.audio_config.as_deref(),
                 audio_continuity,
                 self.raw_video,
@@ -2662,7 +2783,6 @@ fn build_full_media_tracks(
     data_dir: &Path,
     video_width: u16,
     video_height: u16,
-    video_config: Option<&[u8]>,
     audio_config: Option<&[u8]>,
     audio_continuity: AudioContinuity,
     raw_video: Vec<RawCapturedVideo>,
@@ -2694,7 +2814,7 @@ fn build_full_media_tracks(
         data_dir,
         video_width,
         video_height,
-        video_config,
+        selected_video.preroll,
         selected_video.main,
     )?;
     let (audio_m4a, audio_status) = mux_selected_audio(
@@ -2805,6 +2925,7 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
 }
 
 struct AlignedVideoItem {
+    dimensions: (u16, u16),
     record: FrameRecord,
     annex_b: Vec<u8>,
 }
@@ -2857,44 +2978,65 @@ fn mux_selected_video(
     data_dir: &Path,
     width: u16,
     height: u16,
-    video_config: Option<&[u8]>,
-    selected: Vec<AlignedVideoItem>,
+    mut packets: Vec<RawH264Packet>,
+    mut selected: Vec<AlignedVideoItem>,
 ) -> Result<(Option<MediaPayload>, Vec<FrameRecord>, StreamStatus), DaemonError> {
     if selected.is_empty() {
         return Ok((None, Vec::new(), StreamStatus::Absent));
     }
 
-    let mut packets: Vec<RawH264Packet> = Vec::with_capacity(selected.len());
-    for (idx, item) in selected.iter().enumerate() {
-        let mut annex_b = Vec::new();
-        if idx == 0
-            && let Some(cfg) = video_config
-        {
-            annex_b.extend_from_slice(cfg);
-        }
-        annex_b.extend_from_slice(&item.annex_b);
-        packets.push(RawH264Packet {
-            annex_b,
-            pts_ns: item.record.pts_device_mono_ns,
-            is_keyframe: item.record.is_keyframe,
-        });
-    }
+    let trim_start = u64::try_from(packets.len()).unwrap_or(u64::MAX);
+    let (width, height) = selected
+        .iter()
+        .map(|v| v.dimensions)
+        .max_by_key(|&(w, h)| u32::from(w) * u32::from(h))
+        .unwrap_or((width, height));
+    packets.extend(selected.iter_mut().map(|item| RawH264Packet {
+        annex_b: std::mem::take(&mut item.annex_b),
+        pts_ns: item.record.pts_device_mono_ns,
+        is_keyframe: item.record.is_keyframe,
+    }));
 
     let tmp_dir = data_dir.join("tmp");
     fs::create_dir_all(&tmp_dir)?;
     let tmp_mp4 = tmp_dir.join(format!("mux-{job_id}.mp4"));
     let _tmp_guard = TempFileGuard(tmp_mp4.clone());
 
-    match mux_raw_h264_to_mp4(
-        &tmp_mp4,
-        width.max(16),
-        height.max(16),
-        MP4_TIMESCALE,
-        MP4_DEFAULT_FRAME_DURATION_TICKS,
-        &packets,
-    ) {
-        Ok(_report) => {
-            let track = Mp4VideoTrack::open(&tmp_mp4)?;
+    let trimmed = tmp_dir.join(format!("head-{job_id}.mp4"));
+    let _trim_guard = TempFileGuard(trimmed.clone());
+    let decodable_head = packets.first().is_some_and(|p| {
+        arb_media::mp4::split_annexb_nals(&p.annex_b)
+            .iter()
+            .any(|n| n.first().is_some_and(|b| b & 31 == 5))
+    });
+    let muxed = if decodable_head {
+        mux_raw_h264_to_mp4(
+            &tmp_mp4,
+            width.max(16),
+            height.max(16),
+            MP4_TIMESCALE,
+            MP4_DEFAULT_FRAME_DURATION_TICKS,
+            &packets,
+        )
+        .and_then(|report| {
+            if trim_start == 0 {
+                return Ok(&tmp_mp4);
+            }
+            arb_media::trim::trim_video(
+                &tmp_mp4,
+                &trimmed,
+                trim_start,
+                report.frame_count - 1,
+                &arb_media::codec::OpenH264Backend::new(),
+            )?;
+            Ok(&trimmed)
+        })
+    } else {
+        Err(MediaError::InvalidContainer("missing initial IDR".into()))
+    };
+    match muxed {
+        Ok(path) => {
+            let track = Mp4VideoTrack::open(path)?;
             let indexed = track.frames();
             let mut frames = Vec::with_capacity(selected.len());
             for (idx, item) in selected.into_iter().enumerate() {
@@ -2908,7 +3050,7 @@ fn mux_selected_video(
                 }
                 frames.push(rec);
             }
-            let mp4_bytes = fs::read(&tmp_mp4)?;
+            let mp4_bytes = fs::read(path)?;
             Ok((
                 Some(MediaPayload::Bytes(mp4_bytes)),
                 frames,
@@ -2918,7 +3060,7 @@ fn mux_selected_video(
         // Only an elementary stream without parameter sets / slices (synthetic stub streams)
         // falls back to timeline-only `Partial` video. Every I/O or unexpected mux failure is
         // propagated so Phase 2 ends in `FailedRetryable` with the pins kept (R3 M3).
-        Err(MediaError::InvalidContainer(_)) => {
+        Err(MediaError::InvalidContainer(_) | MediaError::Codec(_)) => {
             let mut gop_id = 0_u64;
             let mut frames = Vec::with_capacity(selected.len());
             for (idx, item) in selected.into_iter().enumerate() {
@@ -3109,9 +3251,7 @@ fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
         trimmed,
         "wm_on_resume_called" | "am_on_resume_called" | "30022"
     ) && !payload.is_binary_event();
-    if (is_system_only_tag || is_spoofed_text_resume)
-        && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
-    {
+    if (is_system_only_tag || is_spoofed_text_resume) && payload.uid != 1000 {
         return (format!("app:{tag}"), message);
     }
     (tag, message)
@@ -3132,22 +3272,30 @@ fn decode_log_tag_and_message_raw(payload: &LogRecordPayload) -> (String, String
     )
 }
 
-fn detect_crash_from_event(event: &CaptureEvent) -> Option<(i64, ParsedAmCrash)> {
+fn detect_crash_from_event(event: &CaptureEvent) -> Option<(i64, String, i64, ParsedAmCrash)> {
     let CaptureEvent::LogRecord {
         pc_cont_ns,
         payload,
+        boot_id,
         ..
     } = event
     else {
         return None;
     };
-    detect_live_fatal_am_crash(payload).map(|parsed| (*pc_cont_ns, parsed))
+    detect_live_fatal_am_crash(payload).map(|parsed| {
+        (
+            *pc_cont_ns,
+            boot_id.clone(),
+            payload.device_read_boottime_ns,
+            parsed,
+        )
+    })
 }
 
 fn detect_live_fatal_am_crash(payload: &LogRecordPayload) -> Option<ParsedAmCrash> {
     // Real `am_crash` events are binary records of the events buffer written by system_server
     // (uid 1000). An app's text `Log.e("am_crash", ...)` line must never trigger a save.
-    if !payload.is_binary_event() || !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32) {
+    if !payload.is_binary_event() || payload.uid != 1000 {
         return None;
     }
     let parsed = parse_am_crash_binary(&payload.payload)?;
@@ -3351,6 +3499,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(idx, pkt)| AlignedVideoItem {
+                dimensions: (64, 64),
                 record: FrameRecord {
                     frame_index: u64::try_from(idx).expect("idx fits u64"),
                     boot_id: "boot-t".to_owned(),
@@ -3425,6 +3574,132 @@ mod tests {
         );
     }
 
+    fn saved_video_for_window(
+        runs: &[(u32, u32, u8, usize)],
+        lo: i64,
+        hi: i64,
+    ) -> (TempDir, arb_media::mp4::Mp4VideoTrack) {
+        let tmp = TempDir::new().unwrap();
+        let mut params = t6h_gesture_params(None, None);
+        params.window = WindowSpec::RealElapsed {
+            boot_id: "boot-t".into(),
+            start_boottime_ns: lo,
+            end_boottime_ns: hi,
+            ingest_start_cont_ns: lo,
+            ingest_end_cont_ns: hi,
+        };
+        let mut collector = ReplayCollector::new(&params);
+        for t in [0, 1_000_000_000] {
+            collector.timeline.ingest_device_triple(
+                super::DeviceClockTriple {
+                    boot_id: "boot-t".into(),
+                    boottime_ns: t,
+                    monotonic_ns: t,
+                    realtime_ns: t,
+                },
+                t,
+            );
+        }
+        let mut t = 0;
+        for &(width, height, initial, count) in runs {
+            collector.video_width = u16::try_from(width).unwrap();
+            collector.video_height = u16::try_from(height).unwrap();
+            let frames = (0..count)
+                .map(|i| DecodedFrame {
+                    width,
+                    height,
+                    frame_index: u64::try_from(i).unwrap(),
+                    format: PixelFormat::Yuv420p,
+                    data: {
+                        let mut data =
+                            vec![initial; usize::try_from(width * height * 3 / 2).unwrap()];
+                        for row in 0..8 {
+                            let start = row * usize::try_from(width).unwrap();
+                            data[start..start + 8].fill(initial + u8::try_from(i * 10).unwrap());
+                        }
+                        data
+                    },
+                })
+                .collect::<Vec<_>>();
+            let packets = OpenH264Backend::new()
+                .encode_yuv420p_sequence(&frames, 5, 40_000_000, EncodeParams::default())
+                .unwrap();
+            if count > 2 {
+                assert!(!packets[2].is_keyframe && !packets[3].is_keyframe);
+            }
+            for pkt in packets {
+                let mut config = Vec::new();
+                let mut picture = Vec::new();
+                for nal in arb_media::mp4::split_annexb_nals(&pkt.annex_b) {
+                    let out = if matches!(nal[0] & 31, 7 | 8) {
+                        &mut config
+                    } else {
+                        &mut picture
+                    };
+                    out.extend_from_slice(&[0, 0, 0, 1]);
+                    out.extend_from_slice(nal);
+                }
+                let mut push = |kind, data| {
+                    collector.ingest_one(CaptureEvent::VideoFrame {
+                        pc_cont_ns: t,
+                        boot_id: "boot-t".into(),
+                        packet: VideoPacket {
+                            kind,
+                            data,
+                            pts_us: u64::try_from(t / 1000).unwrap(),
+                        },
+                    });
+                };
+                if !config.is_empty() {
+                    push(VideoPacketKind::Config, config);
+                }
+                push(
+                    if pkt.is_keyframe {
+                        VideoPacketKind::Keyframe
+                    } else {
+                        VideoPacketKind::DeltaFrame
+                    },
+                    picture,
+                );
+                t += 40_000_000;
+            }
+        }
+        let draft = collector.build_draft("test", &params, tmp.path()).unwrap();
+        let Some(super::MediaPayload::Bytes(bytes)) = draft.video_mp4 else {
+            panic!("expected a saved track")
+        };
+        let path = tmp.path().join("saved.mp4");
+        std::fs::write(&path, bytes).unwrap();
+        (tmp, arb_media::mp4::Mp4VideoTrack::open(path).unwrap())
+    }
+
+    #[test]
+    fn save_between_idrs_decodes_window_endpoints() {
+        use arb_media::codec::VideoCodecBackend as _;
+        let (_dir, track) = saved_video_for_window(&[(64, 64, 30, 7)], 79_000_000, 121_000_000);
+        assert_eq!(track.frame_count(), 2);
+        for (index, y) in [(0, 50u8), (1, 60)] {
+            let frame = OpenH264Backend::new()
+                .decode_frame(&track, index, PixelFormat::Yuv420p)
+                .unwrap();
+            assert!(frame.data[0].abs_diff(y) <= 4, "luma {}", frame.data[0]);
+        }
+    }
+
+    #[test]
+    fn save_separate_configs_decodes_both_dimensions() {
+        use arb_media::codec::VideoCodecBackend as _;
+        let (_dir, track) =
+            saved_video_for_window(&[(64, 96, 40, 1), (96, 64, 180, 1)], 0, 100_000_000);
+        for (idx, w, h, y) in [(0, 64, 96, 40u8), (1, 96, 64, 180)] {
+            let frame = OpenH264Backend::new()
+                .decode_frame(&track, idx, PixelFormat::Yuv420p)
+                .unwrap();
+            assert_eq!((frame.width, frame.height), (w, h));
+            assert!(frame.data[0].abs_diff(y) <= 2);
+        }
+    }
+
     #[test]
     fn r3_m3_mux_io_error_propagates_instead_of_partial_without_video() {
         let tmp = TempDir::new().expect("tempdir");
@@ -3432,7 +3707,7 @@ mod tests {
         // I/O error, which must fail the save (FailedRetryable), never become "no video".
         std::fs::create_dir_all(tmp.path().join("tmp").join("mux-job-m3.mp4"))
             .expect("create blocking dir");
-        let err = mux_selected_video("job-m3", tmp.path(), 64, 64, None, real_h264_items())
+        let err = mux_selected_video("job-m3", tmp.path(), 64, 64, Vec::new(), real_h264_items())
             .expect_err("I/O mux failure must propagate");
         assert!(
             matches!(err, DaemonError::Media(MediaError::Io(_))),
@@ -3448,8 +3723,9 @@ mod tests {
             pts_ns: 1,
             is_keyframe: true,
         }]);
-        let (mp4, frames, status) = mux_selected_video("job-stub", tmp.path(), 64, 64, None, stub)
-            .expect("stub stream must fall back cleanly");
+        let (mp4, frames, status) =
+            mux_selected_video("job-stub", tmp.path(), 64, 64, Vec::new(), stub)
+                .expect("stub stream must fall back cleanly");
         assert!(mp4.is_none(), "stub stream must not produce an MP4");
         assert_eq!(frames.len(), 1, "timeline metadata must be kept");
         assert_eq!(status, StreamStatus::Partial, "stub video must be Partial");
@@ -3504,6 +3780,38 @@ mod tests {
             pipeline.is_active(),
             "a ring write error must not halt capture"
         );
+    }
+
+    #[test]
+    fn pending_save_keeps_original_device_across_switch() {
+        let tmp = TempDir::new().unwrap();
+        let mut cap = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .unwrap();
+        let out = tmp.path().join("out");
+        let catalog = arb_storage::catalog::Catalog::open(tmp.path().join("cat"), &out).unwrap();
+        cap.begin_session("A");
+        cap.set_display_size(123, 456);
+        cap.ingest_event(video_event(1000, vec![1])).unwrap();
+        let pending = cap
+            .phase1_pin(30, &out, SelectionPolicy::default())
+            .unwrap();
+        cap.begin_session("B");
+        assert!(
+            cap.phase1_pin(30, &out, SelectionPolicy::default())
+                .is_err()
+        );
+        cap.ingest_event(video_event(2000, vec![2])).unwrap();
+        let (job, _) = cap
+            .phase1_commit(&catalog, pending, super::TailCompleteness::MayBeIncomplete)
+            .unwrap();
+        let params = super::read_job_params(tmp.path(), &job.job.job_id).unwrap();
+        assert_eq!(params.device.serial, "A");
+        assert_eq!(params.display_width, Some(123));
+        assert_eq!(job.job.pinned_chunk_ids.len(), 1);
     }
 
     #[test]

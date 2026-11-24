@@ -21,7 +21,7 @@ use arb_media::contact_sheet::{
     render_contact_sheet_png, render_single_frame_png, render_tap_crop_png,
     select_contact_sheet_indices,
 };
-use arb_media::mp4::{Mp4VideoTrack, inspect_mp4_atoms};
+use arb_media::mp4::Mp4VideoTrack;
 use arb_media::mux_av::AvMuxReport;
 use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::GopLruCache;
@@ -131,8 +131,7 @@ pub fn decode_audio_pcm(
 
     let cache_root = cache_dir.join("audio-pcm");
     fs::create_dir_all(&cache_root)?;
-    let resolved_id = source_catalog_id.unwrap_or(&summary.bundle_id);
-    let safe_key = sanitize_cache_key(resolved_id);
+    let (_, safe_key) = arb_storage::bundle_io::stream_hash_file(&audio_m4a)?;
     let cache_wav = cache_root.join(format!("{safe_key}.wav"));
 
     // Fast path: reuse existing validated cached WAV.
@@ -511,39 +510,13 @@ fn mux_and_verify_share_mp4(
         prepared.lead_in_offset_ns,
         share_mp4_path,
     )
-    .map_err(DaemonError::from)
-    .and_then(|report| {
-        // Verify committed share.mp4 structure before any non-destructive trash of the source.
-        verify_committed_share_mp4(share_mp4_path, report.video_frame_count)?;
-        Ok(report)
-    });
+    .map_err(DaemonError::from);
     if committed.is_err()
         && let Some(trimmed_id) = prepared.trimmed_bundle_id.as_deref()
     {
         let _ = ctx.catalog.trash_bundle(trimmed_id, &utc_now_iso8601());
     }
     committed
-}
-
-fn verify_committed_share_mp4(
-    share_mp4_path: &Path,
-    expected_frames: u64,
-) -> Result<(), DaemonError> {
-    let atoms = inspect_mp4_atoms(share_mp4_path)?;
-    if atoms.edts_count != 0 || atoms.elst_count != 0 {
-        return Err(DaemonError::Internal(format!(
-            "verified share.mp4 unexpectedly contained edts={} elst={}",
-            atoms.edts_count, atoms.elst_count
-        )));
-    }
-    let verified_track = Mp4VideoTrack::open(share_mp4_path)?;
-    if verified_track.frame_count() != expected_frames {
-        return Err(DaemonError::Internal(format!(
-            "verified share.mp4 frame count {} disagreed with mux report {expected_frames}",
-            verified_track.frame_count(),
-        )));
-    }
-    Ok(())
 }
 
 /// Builds a compact one-shot [`TimelineOverviewResponse`] for AI triage.

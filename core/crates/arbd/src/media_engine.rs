@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use arb_core::bundle::{
@@ -41,12 +42,23 @@ const DEFAULT_GOP_CACHE_GOPS: usize = 4;
 const DEFAULT_GOP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MIN_SHM_SLOT_CAPACITY: usize = 4096;
 
+/// The maximum JSON representation of 100,000 signed 64-bit timestamps is under 2.2 MiB.
+fn viewport_timestamps(mut pts: impl ExactSizeIterator<Item = i64>) -> Vec<i64> {
+    if pts.len() > 100_000 {
+        return Vec::new();
+    }
+    let Some(origin) = pts.next() else {
+        return Vec::new();
+    };
+    std::iter::once(0)
+        .chain(pts.map(|t| t.saturating_sub(origin)))
+        .collect()
+}
+
 #[derive(Debug)]
 struct OpenViewport {
     bundle_id: String,
     shm_path: PathBuf,
-    width: u32,
-    height: u32,
     track: Mp4VideoTrack,
     frame_boottimes: Vec<i64>,
     scrub: ScrubController,
@@ -65,7 +77,7 @@ pub struct MediaEngine {
     cache_dir: PathBuf,
     shm_dir: PathBuf,
     backend: Box<dyn VideoCodecBackend>,
-    viewports: BTreeMap<String, OpenViewport>,
+    viewports: Mutex<BTreeMap<String, Arc<Mutex<OpenViewport>>>>,
 }
 
 impl MediaEngine {
@@ -77,14 +89,17 @@ impl MediaEngine {
             cache_dir,
             shm_dir,
             backend: default_codec_backend(),
-            viewports: BTreeMap::new(),
+            viewports: Mutex::default(),
         }
     }
 
     /// Returns the number of currently open viewports.
     #[must_use]
     pub fn active_viewport_count(&self) -> usize {
-        self.viewports.len()
+        self.viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Removes stale `*.shm` viewport files left in `shm_dir` by a crashed daemon (R3 M7).
@@ -115,11 +130,11 @@ impl MediaEngine {
     /// Returns [`DaemonError::Conflict`] when [`MAX_VIEWPORTS`] viewports are already open
     /// (R3 M7), [`DaemonError::NotFound`] if the bundle has no video track, or OS/media errors.
     pub fn open_viewport(
-        &mut self,
+        &self,
         bundle_dir: &Path,
         bundle_id_override: Option<&str>,
     ) -> Result<MediaOpenViewportResponse, DaemonError> {
-        if self.viewports.len() >= MAX_VIEWPORTS {
+        if self.active_viewport_count() >= MAX_VIEWPORTS {
             return Err(DaemonError::Conflict(format!(
                 "too many open viewports (max {MAX_VIEWPORTS}); close one with media.close_viewport"
             )));
@@ -160,26 +175,33 @@ impl MediaEngine {
 
         let frame_count = track.frame_count();
         let keyframe_count = track.keyframes().len();
+        let frame_pts_ns = viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
         let scrub = ScrubController::new(
             GopLruCache::new(DEFAULT_GOP_CACHE_GOPS, DEFAULT_GOP_CACHE_BYTES),
             None,
         );
 
-        self.viewports.insert(
-            viewport_id.clone(),
-            OpenViewport {
-                bundle_id: bundle_id.clone(),
-                shm_path: shm_path.clone(),
-                width,
-                height,
-                track,
-                frame_boottimes,
-                scrub,
-                shm_writer,
-            },
-        );
+        let viewport = Arc::new(Mutex::new(OpenViewport {
+            bundle_id: bundle_id.clone(),
+            shm_path: shm_path.clone(),
+            track,
+            frame_boottimes,
+            scrub,
+            shm_writer,
+        }));
+        let mut registry = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if registry.len() >= MAX_VIEWPORTS {
+            return Err(DaemonError::Conflict(format!(
+                "too many open viewports (max {MAX_VIEWPORTS}); close one with media.close_viewport"
+            )));
+        }
+        registry.insert(viewport_id.clone(), viewport);
 
         Ok(MediaOpenViewportResponse {
+            frame_pts_ns,
             viewport_id,
             bundle_id,
             shm_path,
@@ -200,13 +222,34 @@ impl MediaEngine {
     ///
     /// Returns [`DaemonError::NotFound`] if `viewport_id` is unknown, or media errors.
     pub fn filmstrip(
-        &mut self,
+        &self,
         params: &MediaFilmstripParams,
     ) -> Result<MediaFilmstripResponse, DaemonError> {
+        self.filmstrip_with(params, |vp, cfg| {
+            FilmstripCache::load_or_generate(
+                &self.cache_dir,
+                &vp.bundle_id,
+                &vp.track,
+                cfg,
+                self.backend.as_ref(),
+            )
+        })
+    }
+
+    fn filmstrip_with(
+        &self,
+        params: &MediaFilmstripParams,
+        load: impl FnOnce(
+            &OpenViewport,
+            FilmstripConfig,
+        ) -> Result<arb_media::playback::FilmstripLoadResult, MediaError>,
+    ) -> Result<MediaFilmstripResponse, DaemonError> {
         let start = Instant::now();
-        let vp = self.viewports.get_mut(&params.viewport_id).ok_or_else(|| {
-            DaemonError::NotFound(format!("viewport `{}` not found", params.viewport_id))
-        })?;
+        let viewport = self.viewport(&params.viewport_id)?;
+        let mut viewport_guard = viewport
+            .lock()
+            .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+        let vp = &mut *viewport_guard;
 
         let mut cfg = FilmstripConfig::default();
         if let Some(mw) = params.max_width {
@@ -216,13 +259,7 @@ impl MediaEngine {
             cfg.max_height = mh;
         }
 
-        let loaded = FilmstripCache::load_or_generate(
-            &self.cache_dir,
-            &vp.bundle_id,
-            &vp.track,
-            cfg,
-            self.backend.as_ref(),
-        )?;
+        let loaded = load(vp, cfg)?;
 
         let entries: Vec<FilmstripEntryMeta> = loaded
             .cache
@@ -261,13 +298,15 @@ impl MediaEngine {
     ///
     /// Returns [`DaemonError::NotFound`] if `viewport_id` is unknown, or media/SHM errors.
     pub fn scrub(
-        &mut self,
+        &self,
         params: &MediaFrameRequestParams,
     ) -> Result<MediaScrubResponse, DaemonError> {
         let start = Instant::now();
-        let vp = self.viewports.get_mut(&params.viewport_id).ok_or_else(|| {
-            DaemonError::NotFound(format!("viewport `{}` not found", params.viewport_id))
-        })?;
+        let viewport = self.viewport(&params.viewport_id)?;
+        let mut viewport_guard = viewport
+            .lock()
+            .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+        let vp = &mut *viewport_guard;
 
         let mut preview = vp.scrub.preview_scrub(&vp.track, params.frame_index)?;
         if preview.is_none() {
@@ -325,13 +364,15 @@ impl MediaEngine {
     ///
     /// Returns [`DaemonError::NotFound`] if `viewport_id` is unknown, or media/SHM errors.
     pub fn seek_frame(
-        &mut self,
+        &self,
         params: &MediaFrameRequestParams,
     ) -> Result<MediaSeekFrameResponse, DaemonError> {
         let start = Instant::now();
-        let vp = self.viewports.get_mut(&params.viewport_id).ok_or_else(|| {
-            DaemonError::NotFound(format!("viewport `{}` not found", params.viewport_id))
-        })?;
+        let viewport = self.viewport(&params.viewport_id)?;
+        let mut viewport_guard = viewport
+            .lock()
+            .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+        let vp = &mut *viewport_guard;
 
         let settled = vp.scrub.settle_exact(
             &vp.track,
@@ -364,22 +405,42 @@ impl MediaEngine {
             generation,
             frame_index: settled.displayed_frame_index,
             is_approximate: false,
-            width: vp.width,
-            height: vp.height,
+            width: settled.width,
+            height: settled.height,
             cache_hits: stats.cache_hits,
             cache_misses: stats.cache_misses,
             elapsed_ms,
         })
     }
 
+    fn viewport(&self, id: &str) -> Result<Arc<Mutex<OpenViewport>>, DaemonError> {
+        self.viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DaemonError::NotFound(format!("viewport {id} not found")))
+    }
+
     /// Closes an open viewport and cleans up its SHM backing file.
-    pub fn close_viewport(&mut self, viewport_id: &str) -> bool {
-        self.viewports.remove(viewport_id).is_some()
+    pub fn close_viewport(&self, viewport_id: &str) -> bool {
+        let removed = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(viewport_id);
+        removed.is_some()
     }
 
     /// Closes all active viewports during daemon shutdown.
-    pub fn close_all(&mut self) {
-        self.viewports.clear();
+    pub fn close_all(&self) {
+        let removed = std::mem::take(
+            &mut *self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        drop(removed);
     }
 }
 
@@ -1353,6 +1414,22 @@ mod tests {
     use crate::protocol::ExportTrimParams;
 
     #[test]
+    fn viewport_timestamps_preserve_static_holds_and_bound_wire_size() {
+        assert_eq!(
+            super::viewport_timestamps([40, 50, 5_000_000_050].into_iter()),
+            [0, 10, 5_000_000_010]
+        );
+        assert_eq!(
+            super::viewport_timestamps((0..18_000).map(i64::from)).len(),
+            18_000
+        );
+        assert_eq!(
+            super::viewport_timestamps((0..100_001).map(i64::from)).len(),
+            0
+        );
+    }
+
+    #[test]
     fn host_only_gaps_are_trimmed_on_the_ingest_clock() {
         let window = WindowSpec::RealElapsed {
             boot_id: "boot".into(),
@@ -1511,5 +1588,68 @@ mod tests {
         assert_eq!(ranges[1].end_frame_index, 4);
         assert_eq!(ranges[1].start_boottime_ns, 5_000_000_000);
         assert_eq!(ranges[1].end_boottime_ns, 6_000_000_000);
+    }
+}
+
+#[cfg(test)]
+mod concurrent_viewport_tests {
+    use super::*;
+    use arb_os::paths::ArbPaths;
+    use serde_json::json;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn stalled_thumbnail_decode_allows_status_and_another_viewport_seek() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = crate::DaemonServer::start(crate::DaemonConfig::new(ArbPaths {
+            data_dir: tmp.path().join("d"),
+            cache_dir: tmp.path().join("c"),
+            runtime_dir: tmp.path().join("r"),
+        }))
+        .unwrap();
+        let state = &server.state;
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/legacy-schema4/replay-trim-parity")
+            .join("replay-20240101-000000-manual-feedface");
+        let first = state.media.open_viewport(&fixture, None).unwrap();
+        let second = state.media.open_viewport(&fixture, None).unwrap();
+        let (ready, entered) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let response = state.media.filmstrip_with(
+                    &MediaFilmstripParams {
+                        viewport_id: first.viewport_id,
+                        max_width: None,
+                        max_height: None,
+                    },
+                    |_, _| {
+                        ready.send(()).unwrap();
+                        wait.recv_timeout(Duration::from_secs(10)).unwrap();
+                        Err(MediaError::Codec("delayed test codec".into()))
+                    },
+                );
+                assert!(response.is_err());
+            });
+            entered.recv_timeout(Duration::from_secs(5)).unwrap();
+            scope.spawn(move || {
+                assert_eq!(
+                    state.dispatch("system.status", json!({})).unwrap()["active_viewports"],
+                    2
+                );
+                let frame = state
+                    .dispatch(
+                        "media.seek_frame",
+                        json!({"viewport_id":second.viewport_id,"frame_index":0}),
+                    )
+                    .unwrap();
+                done.send(frame["frame_index"].clone()).unwrap();
+            });
+            let frame = result.recv_timeout(Duration::from_secs(2));
+            release.send(()).unwrap();
+            assert_eq!(frame.unwrap(), 0);
+        });
     }
 }
