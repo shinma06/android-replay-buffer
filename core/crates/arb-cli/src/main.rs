@@ -116,6 +116,7 @@ struct GlobalOptions {
     runtime_dir: Option<PathBuf>,
     output: OutputFormat,
     auto_start: AutoStartMode,
+    upgrade_if_needed: bool,
 }
 
 impl Default for GlobalOptions {
@@ -126,6 +127,7 @@ impl Default for GlobalOptions {
             runtime_dir: None,
             output: OutputFormat::Human,
             auto_start: AutoStartMode::Disabled,
+            upgrade_if_needed: false,
         }
     }
 }
@@ -366,6 +368,10 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
             }
             "--json" => {
                 opts.output = OutputFormat::Json;
+                i += 1;
+            }
+            "--upgrade-if-needed" => {
+                opts.upgrade_if_needed = true;
                 i += 1;
             }
             "--auto-start" => {
@@ -1160,6 +1166,9 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
     if let CommandSpec::PrepareUpgrade { start } = cmd {
         return upgrade::prepare(&paths, start);
     }
+    if opts.upgrade_if_needed && !matches!(cmd, CommandSpec::DaemonStop) {
+        upgrade::prepare(&paths, AutoStartMode::Enabled)?;
+    }
     if matches!(cmd, CommandSpec::Mcp) {
         return mcp::run_mcp_stdio(&paths);
     }
@@ -1673,6 +1682,7 @@ GLOBAL OPTIONS:\n  \
   --cache-dir <DIR>      Override ARB_CACHE_DIR\n  \
   --runtime-dir <DIR>    Override ARB_RUNTIME_DIR\n  \
   --json                 Emit machine-readable JSON (structured JSON errors on stderr)\n  \
+  --upgrade-if-needed    Upgrade an older daemon at the selected runtime before connecting\n\
   --auto-start           Auto-spawn detached sibling arbd if not running (timeout: ARB_AUTO_START_TIMEOUT_MS)\n\n\
 COMMANDS:\n  \
   status\n  \

@@ -1437,6 +1437,14 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             sec.check("old arbd restarts on that state and serves it", old.start_arbd(), "")
             old_hello = status_hello(old)
             old_pid = old_hello.get("pid")
+            other = Isolated(new_root, work / "separate-instance", host_os)
+            try:
+                probe = run_new_launcher(ctx, new, "cli", "--json", "--runtime-dir", str(other.runtime),
+                                         "--data-dir", str(other.data), "--cache-dir", str(other.cache), "status")
+                sec.check("explicit CLI directories select a separate daemon", probe.rc == 0 and status_hello(other).get("pid") != old_pid)
+                sec.check("launching in a separate runtime preserves the original daemon", status_hello(old).get("pid") == old_pid)
+            finally:
+                other.cleanup()
             before_states = bundle_states(old)
             sec.check("old arbd lists active and trashed bundles", "trashed" in before_states.values() and len(before_states) >= 4, before_states)
             sec.check("old arbd build_id is the old binary's", str(old_hello.get("build_id", "")).endswith(f":sha256:{old_sha}") or not old_hello.get("build_id"), old_hello.get("build_id"))

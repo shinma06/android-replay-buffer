@@ -193,7 +193,7 @@ def render_unix_launcher(target_os: str) -> str:
         'export ARB_DAEMON_BIN="${BIN_DIR}/arbd"\n'
         'MODE="${1:-tray}"\n'
         'case "${MODE}" in\n'
-        '    tray|cli|mcp) "${BIN_DIR}/arb-cli" daemon prepare-upgrade --start ;;\n'
+        '    tray) "${BIN_DIR}/arb-cli" daemon prepare-upgrade --start ;;\n'
         '    daemon) "${BIN_DIR}/arb-cli" daemon prepare-upgrade ;;\n'
         'esac\n'
         'case "${MODE}" in\n'
@@ -205,11 +205,11 @@ def render_unix_launcher(target_os: str) -> str:
         "        ;;\n"
         "    mcp)\n"
         "        shift || true\n"
-        '        exec "${BIN_DIR}/arb-cli" mcp "$@"\n'
+        '        exec "${BIN_DIR}/arb-cli" --upgrade-if-needed mcp "$@"\n'
         "        ;;\n"
         "    cli)\n"
         "        shift || true\n"
-        '        exec "${BIN_DIR}/arb-cli" --auto-start "$@"\n'
+        '        exec "${BIN_DIR}/arb-cli" --upgrade-if-needed --auto-start "$@"\n'
         "        ;;\n"
         "    *)\n"
         '        echo "Usage: $0 [tray|daemon|mcp|cli ...]" >&2\n'
@@ -256,13 +256,13 @@ def render_windows_launcher() -> str:
         "\n"
         "$env:ARB_DAEMON_BIN = $ExpectedArbd\n"
         'if ($Mode -eq "daemon") { & $CliExe daemon prepare-upgrade }\n'
-        'else { & $CliExe daemon prepare-upgrade --start }\n'
-        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+        'elseif ($Mode -eq "tray") { & $CliExe daemon prepare-upgrade --start }\n'
+        'if (($Mode -in "tray", "daemon") -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n'
         "switch ($Mode) {\n"
         '    "tray"   { & (Join-Path $BinDir "arb-tray.exe") --auto-start }\n'
         '    "daemon" { & $ExpectedArbd }\n'
-        '    "mcp"    { & $CliExe mcp @ExtraArgs }\n'
-        '    "cli"    { & $CliExe --auto-start @ExtraArgs }\n'
+        '    "mcp"    { & $CliExe --upgrade-if-needed mcp @ExtraArgs }\n'
+        '    "cli"    { & $CliExe --upgrade-if-needed --auto-start @ExtraArgs }\n'
         "}\n"
         "exit $LASTEXITCODE\n"
     )
