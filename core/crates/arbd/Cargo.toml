@@ -23,5 +23,9 @@ png = "0.17"
 rusty_aac = { version = "2", default-features = false }
 tempfile = "3"
 
+[features]
+# PDD Layer 1: also run the Kani harnesses that do not finish within the CI timebox.
+kani-extended = []
+
 [lints]
 workspace = true

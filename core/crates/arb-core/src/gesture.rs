@@ -298,4 +298,19 @@ mod tests {
         assert_eq!(result.kind, GestureKind::Swipe);
         assert_eq!(result.path.len(), 2);
     }
+
+    /// Complements Kani K7 (finite samples only): non-finite coordinates never panic and
+    /// always classify as a tap, for single-sample and multi-sample strokes alike.
+    #[test]
+    fn non_finite_samples_classify_as_taps_without_panicking() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let single = classify_stroke(&[pt(bad, bad, 7)], 10.0);
+            assert_eq!(single.kind, GestureKind::Tap);
+            assert!(single.path.is_empty());
+            assert_eq!(single.end_t_offset_ns, 7);
+            let multi = classify_stroke(&[pt(0.0, 0.0, 0), pt(500.0, bad, 9)], 10.0);
+            assert_eq!(multi.kind, GestureKind::Tap, "non-finite sample => tap");
+            assert!(multi.path.is_empty());
+        }
+    }
 }
