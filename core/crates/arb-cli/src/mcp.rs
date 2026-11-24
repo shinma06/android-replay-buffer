@@ -482,61 +482,62 @@ impl McpServer {
 
         match format {
             "share_mp4" => {
-                let mut params = Map::new();
-                params.insert("bundle_id".to_owned(), Value::String(bundle_id));
-                if let Some(v) = args.get("in_frame_index") {
-                    params.insert("in_frame_index".to_owned(), v.clone());
-                }
-                if let Some(v) = args.get("out_frame_index") {
-                    params.insert("out_frame_index".to_owned(), v.clone());
-                }
-                if let Some(out) = optional_abs_path(args, "output_path")? {
-                    params.insert("output_path".to_owned(), json!(out));
-                }
-                if let Some(dest) = optional_abs_path(args, "dest_dir")? {
-                    params.insert("dest_dir".to_owned(), json!(dest));
-                }
-                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
-                params.insert("trash_original".to_owned(), Value::Bool(trash_original));
-                params.insert("holder_pid".to_owned(), json!(std::process::id()));
-                let resp = self.call_daemon("export.share_mp4", &Value::Object(params))?;
+                let (in_f, out_f) = match (args.get("in_frame_index"), args.get("out_frame_index"))
+                {
+                    (Some(first), Some(last)) => (
+                        Some(
+                            first
+                                .as_u64()
+                                .ok_or("in_frame_index は非負の整数で指定してください")?,
+                        ),
+                        Some(
+                            last.as_u64()
+                                .ok_or("out_frame_index は非負の整数で指定してください")?,
+                        ),
+                    ),
+                    (None, None) => (None, None),
+                    _ => return Err("開始と終了のフレーム番号を両方指定してください".into()),
+                };
+                let resp = self.call_daemon(
+                    "export.share_mp4",
+                    &json!({
+                        "bundle_id": bundle_id,
+                        "in_frame_index": in_f,
+                        "out_frame_index": out_f,
+                        "output_path": optional_abs_path(args, "output_path")?,
+                        "dest_dir": optional_abs_path(args, "dest_dir")?,
+                        "burn_taps": burn_taps,
+                        "trash_original": trash_original,
+                        "holder_pid": std::process::id(),
+                    }),
+                )?;
                 Ok(vec![text_block(&resp)])
             }
             "bundle" => {
-                let in_f = args
+                let first = args
                     .get("in_frame_index")
                     .and_then(Value::as_u64)
-                    .ok_or_else(|| {
-                        "format=\"bundle\" requires integer `in_frame_index`".to_owned()
-                    })?;
-                let out_f = args
+                    .ok_or("in_frame_index は非負の整数で指定してください")?;
+                let last = args
                     .get("out_frame_index")
                     .and_then(Value::as_u64)
-                    .ok_or_else(|| {
-                        "format=\"bundle\" requires integer `out_frame_index`".to_owned()
-                    })?;
-
-                let mut params = Map::new();
-                params.insert("bundle_id_or_path".to_owned(), Value::String(bundle_id));
-                params.insert("in_frame_index".to_owned(), json!(in_f));
-                params.insert("out_frame_index".to_owned(), json!(out_f));
-                if let Some(dest) = optional_abs_path(args, "dest_dir")? {
-                    params.insert("dest_dir".to_owned(), json!(dest));
-                }
-                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
-                params.insert(
-                    "include_share_mp4".to_owned(),
-                    Value::Bool(include_share_mp4),
-                );
-                params.insert("holder_pid".to_owned(), json!(std::process::id()));
-
-                params.insert("trash_original".to_owned(), Value::Bool(trash_original));
-                let resp = self.call_daemon("export.trim", &Value::Object(params))?;
+                    .ok_or("out_frame_index は非負の整数で指定してください")?;
+                let resp = self.call_daemon(
+                    "export.trim",
+                    &json!({
+                        "bundle_id_or_path": bundle_id,
+                        "in_frame_index": first,
+                        "out_frame_index": last,
+                        "include_share_mp4": include_share_mp4,
+                        "burn_taps": burn_taps,
+                        "dest_dir": optional_abs_path(args, "dest_dir")?,
+                        "trash_original": trash_original,
+                        "holder_pid": std::process::id(),
+                    }),
+                )?;
                 Ok(vec![text_block(&resp)])
             }
-            other => Err(format!(
-                "unsupported format `{other}`; expected \"share_mp4\" or \"bundle\""
-            )),
+            other => Err(format!("未対応の出力形式: {other}")),
         }
     }
 
@@ -736,29 +737,7 @@ fn absolutize_optional_path_field(
 }
 
 /// Pure-Rust RFC 4648 standard Base64 encoder (zero dependencies).
-fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = usize::from(chunk[0]);
-        let b1 = chunk.get(1).copied().map_or(0, usize::from);
-        let b2 = chunk.get(2).copied().map_or(0, usize::from);
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(char::from(TABLE[(n >> 18) & 0x3F]));
-        out.push(char::from(TABLE[(n >> 12) & 0x3F]));
-        if chunk.len() > 1 {
-            out.push(char::from(TABLE[(n >> 6) & 0x3F]));
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(char::from(TABLE[n & 0x3F]));
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
+use arb_core::base64_encode;
 
 const KNOWN_TOOLS: &[&str] = &[
     "arb_status",

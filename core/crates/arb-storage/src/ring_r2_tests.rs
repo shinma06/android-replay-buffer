@@ -1,7 +1,7 @@
 //! Regression tests for the R2 review fixes S17 (partial-write poisoning, deferred handle
 //! release, orphan recovery) and S18 (`StoragePressureStop` deduplication).
 
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,7 @@ use arb_os::OsError;
 use arb_os::fs::DiskSpaceInfo;
 use tempfile::TempDir;
 
-use super::{DiskSpaceProvider, OpenChunkHandle, RingChunkKind, RingStore, sha256_bytes};
+use super::{DiskSpaceProvider, RingChunkKind, RingStore, sha256_bytes};
 use crate::error::StorageError;
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -41,104 +41,12 @@ fn open_store(dir: &Path, disk: &Disk) -> RingStore<Disk> {
 }
 
 #[test]
-fn failed_append_seals_the_chunk_instead_of_leaving_a_zombie() {
-    let tmp = TempDir::new().expect("tmp");
-    let disk = Disk::new(50 * GIB);
-    let mut ring = open_store(tmp.path(), &disk);
-    ring.open_chunk("c1", RingChunkKind::Logcat, 10)
-        .expect("open chunk");
-    ring.append_to_chunk("c1", b"good-bytes", 1, 11)
-        .expect("first append");
-
-    // Swap in a read-only handle so the next write fails at the OS level.
-    let path = ring.chunk_path("c1").expect("chunk path");
-    let entry = ring.chunks.get_mut("c1").expect("entry");
-    let hasher = entry.open.take().expect("open handle").hasher;
-    entry.open = Some(OpenChunkHandle {
-        file: File::open(&path).expect("read-only handle"),
-        hasher,
-    });
-
-    let err = ring
-        .append_to_chunk("c1", b"never-lands", 1, 12)
-        .expect_err("write through a read-only handle must fail");
-    assert!(matches!(err, StorageError::Io { .. }), "I/O error surfaced");
-
-    let desc = ring
-        .chunks()
-        .into_iter()
-        .find(|d| d.chunk_id == "c1")
-        .expect("c1 still tracked");
-    assert_eq!(
-        desc.status,
-        RingChunkStatus::Closed,
-        "failed chunk is sealed (evictable), never a zombie Open entry"
-    );
-    assert_eq!(
-        desc.bytes, 10,
-        "descriptor keeps the last known-good length"
-    );
-    assert_eq!(
-        fs::read(&path).expect("read chunk"),
-        b"good-bytes",
-        "no partial bytes beyond the known-good length"
-    );
-    assert!(
-        matches!(
-            ring.append_to_chunk("c1", b"x", 1, 13),
-            Err(StorageError::InvalidArgument { .. })
-        ),
-        "a sealed chunk is immutable"
-    );
-    assert!(
-        matches!(
-            ring.close_chunk("c1"),
-            Err(StorageError::InvalidArgument { .. })
-        ),
-        "a sealed chunk is already closed"
-    );
-}
-
-#[test]
-fn close_chunk_keeps_the_handle_until_metadata_is_durable() {
-    let tmp = TempDir::new().expect("tmp");
-    let disk = Disk::new(50 * GIB);
-    let mut ring = open_store(tmp.path(), &disk);
-    ring.open_chunk("c2", RingChunkKind::Video, 10)
-        .expect("open chunk");
-    ring.append_to_chunk("c2", b"part-1;", 1, 11)
-        .expect("append");
-
-    // A non-empty directory where the sidecar must land makes the metadata commit fail
-    // (rename onto a non-empty directory fails on every OS).
-    let blocker = ring.ring_dir().join("c2.meta.json");
-    fs::create_dir_all(blocker.join("x")).expect("blocker dir");
-    assert!(ring.close_chunk("c2").is_err(), "metadata commit must fail");
-
-    // Still open: appendable and closable once the obstruction is gone.
-    ring.append_to_chunk("c2", b"part-2", 1, 12)
-        .expect("chunk stays appendable after a failed close");
-    fs::remove_dir_all(&blocker).expect("remove blocker");
-    let desc = ring.close_chunk("c2").expect("close succeeds on retry");
-    assert_eq!(desc.status, RingChunkStatus::Closed, "closed");
-    assert_eq!(
-        desc.sha256.as_deref(),
-        Some(sha256_bytes(b"part-1;part-2").as_str()),
-        "digest covers every appended byte"
-    );
-}
-
-#[test]
 fn reopen_finalizes_orphan_chunks_and_drops_orphan_metadata() {
     let tmp = TempDir::new().expect("tmp");
     let disk = Disk::new(50 * GIB);
     {
         let mut ring = open_store(tmp.path(), &disk);
-        // Crash while a chunk is open (never closed, no sidecar).
-        ring.open_chunk("live", RingChunkKind::Video, 10)
-            .expect("open");
-        ring.append_to_chunk("live", b"crash-tail", 1, 11)
-            .expect("append");
+        fs::write(ring.ring_dir().join("video-live.chunk"), b"crash-tail").unwrap();
         ring.write_closed_chunk("kept", RingChunkKind::Logcat, 5, 1, b"kept")
             .expect("closed chunk");
     }

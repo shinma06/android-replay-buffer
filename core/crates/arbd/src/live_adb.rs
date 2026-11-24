@@ -453,6 +453,7 @@ struct LiveTracker {
     last_beacon_pc: Option<i64>,
     last_video_pc: Option<i64>,
     last_liveness: Option<LivenessKind>,
+    early_video_retries: u8,
     video_lost: bool,
     disconnect_reported: bool,
 }
@@ -467,6 +468,7 @@ impl LiveTracker {
             last_beacon_pc: None,
             last_video_pc: None,
             last_liveness: None,
+            early_video_retries: 0,
             video_lost: false,
             disconnect_reported: false,
         }
@@ -535,6 +537,7 @@ impl LiveTracker {
             realtime_ns: hb.realtime_ns,
         };
         let discs = self.timeline.ingest_device_triple(triple, pc_cont_ns);
+        self.timeline.bound_live_history();
         let mut events = vec![CaptureEvent::Heartbeat {
             pc_cont_ns,
             boot_id: self.boot_id.clone(),
@@ -553,12 +556,26 @@ impl LiveTracker {
     }
 
     fn on_video_frame(&mut self, supervisor: &mut SessionSupervisor, pc_cont_ns: i64) {
+        self.early_video_retries = 0;
         supervisor.on_video_frame(pc_cont_ns);
         self.last_video_pc = Some(pc_cont_ns);
         if self.video_lost {
             self.video_lost = false;
             self.last_liveness = None;
         }
+    }
+
+    fn retry_video_transport(&mut self, stream: StreamId, reason: &str) -> bool {
+        if stream != StreamId::Video
+            || !(reason == "scrcpy_video_eof" || reason.starts_with("scrcpy_video_error:"))
+        {
+            return false;
+        }
+        if self.last_video_pc.is_some() {
+            return true;
+        }
+        self.early_video_retries = self.early_video_retries.saturating_add(1);
+        self.early_video_retries <= 3
     }
 
     /// Host-side media transport loss (connect failure, EOF or error) → `StreamGap`.
@@ -1490,7 +1507,11 @@ fn run_companion_event_loop(
             Err(err) => return Err(DaemonError::CaptureSource(err.into())),
         }
 
-        drain_media_signals(media_rx, sink, supervisor, tracker, scrcpy_stderr);
+        if drain_media_signals(media_rx, sink, supervisor, tracker, scrcpy_stderr) {
+            return Err(DaemonError::Internal(
+                "映像接続が切断されたため再接続します".into(),
+            ));
+        }
 
         let now_pc = sample_cont_ns();
         if Instant::now() >= next_liveness_tick {
@@ -1514,7 +1535,8 @@ fn drain_media_signals(
     supervisor: &mut SessionSupervisor,
     tracker: &mut LiveTracker,
     scrcpy_stderr: &Arc<Mutex<String>>,
-) {
+) -> bool {
+    let mut reconnect = false;
     loop {
         match media_rx.try_recv() {
             Ok(MediaSignal::VideoFrame(pc)) => tracker.on_video_frame(supervisor, pc),
@@ -1523,6 +1545,7 @@ fn drain_media_signals(
                 pc_cont_ns,
                 reason,
             }) => {
+                reconnect |= tracker.retry_video_transport(stream, &reason);
                 let effective_reason = if stream == StreamId::Video {
                     let stderr_snapshot = scrcpy_stderr
                         .lock()
@@ -1542,7 +1565,7 @@ fn drain_media_signals(
                     sink.push(event);
                 }
             }
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => return reconnect,
         }
     }
 }
@@ -1573,6 +1596,7 @@ fn dispatch_companion_frame(
                     pc_recv_active_ns: recv_sample.active_mono_ns,
                 };
                 let discs = tracker.timeline.ingest_pc_sync_probe(probe.clone());
+                tracker.timeline.bound_live_history();
                 sink.push(CaptureEvent::SyncProbe {
                     pc_cont_ns: recv_sample.continuous_mono_ns,
                     probe,
@@ -2047,6 +2071,19 @@ mod tests {
 
     fn supervisor() -> SessionSupervisor {
         SessionSupervisor::new("emulator-5554", SupervisorConfig::new())
+    }
+
+    #[test]
+    fn only_recoverable_video_transport_loss_restarts_the_session() {
+        let mut tracker = super::LiveTracker::new();
+        assert!(!tracker.retry_video_transport(StreamId::Audio, "scrcpy_audio_eof"));
+        assert!(!tracker.retry_video_transport(StreamId::Video, "codec unavailable"));
+        for _ in 0..3 {
+            assert!(tracker.retry_video_transport(StreamId::Video, "scrcpy_video_eof"));
+        }
+        assert!(!tracker.retry_video_transport(StreamId::Video, "scrcpy_video_eof"));
+        tracker.last_video_pc = Some(1);
+        assert!(tracker.retry_video_transport(StreamId::Video, "scrcpy_video_eof"));
     }
 
     #[test]

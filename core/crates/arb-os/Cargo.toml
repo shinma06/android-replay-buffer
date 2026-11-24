@@ -7,6 +7,8 @@ description = "Cross-platform OS abstraction layer for Android Replay Buffer (AR
 
 [dependencies]
 arb-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 memmap2 = "0.9"
 thiserror = "2"
 

@@ -1359,13 +1359,44 @@ def mutate_config_for_upgrade(config_path: Path, output_dir: Path, *, variant: s
     return cfg
 
 
-def insert_retry_pending_job(catalog: Path, job_id: str, destination: Path) -> None:
+def seed_interrupted_pinned_job(catalog: Path, job_id: str, destination: Path) -> None:
+    """Seed the old JSON chunk + pin journal + materialization parameters as a stopped daemon."""
+    data = catalog.parent
+    chunk_id = f"chunk-{job_id}"
+    boot_id = f"boot-{job_id}"
+    timestamp = "2026-11-24T00:00:00Z"
+    ring = data / "ring"
+    ring.mkdir(exist_ok=True)
+    file_name = f"clock_metadata-{chunk_id}.chunk"
+    heartbeat = {"boottime_ns": 100, "monotonic_ns": 100, "realtime_ns": 100, "streams": []}
+    chunk = json.dumps({"events": [{"Heartbeat": {"pc_cont_ns": 100, "boot_id": boot_id, "payload": heartbeat}}]}).encode()
+    (ring / file_name).write_bytes(chunk)
+    (ring / f"{chunk_id}.meta.json").write_text(json.dumps({
+        "chunk_id": chunk_id, "kind": "clock_metadata", "file_name": file_name,
+        "created_cont_ns": 100, "duration_ns": 0, "bytes": len(chunk), "status": "closed",
+        "sha256": hashlib.sha256(chunk).hexdigest(),
+    }), encoding="utf-8")
+    for name in ("save_jobs", "save_job_params"):
+        (data / name).mkdir(exist_ok=True)
+    (data / "save_jobs" / f"{job_id}.json").write_text(json.dumps({
+        "job_id": job_id, "destination_path": str(destination),
+        "pinned_chunk_ids": [chunk_id], "created_at_utc": timestamp,
+    }), encoding="utf-8")
+    (data / "save_job_params" / f"{job_id}.params.json").write_text(json.dumps({
+        "bundle_id": f"bundle-{job_id}", "mode": "logs_only", "duration_sec": 30,
+        "trigger_utc": timestamp, "tail_may_be_incomplete": True, "video_width": 0, "video_height": 0,
+        "device": {"serial": "synthetic", "model": "upgrade fixture", "api_level": 33, "is_emulator": True},
+        "window": {"kind": "real_elapsed", "boot_id": boot_id, "start_boottime_ns": 0,
+                   "end_boottime_ns": 100, "ingest_start_cont_ns": 0, "ingest_end_cont_ns": 100},
+        "policy": {"unanchored_ingest_margin_ns": 0, "max_unanchored_records": 64,
+                   "max_unanchored_bytes": 8192, "drain_timeout_ms": 0},
+    }), encoding="utf-8")
     con = sqlite3.connect(catalog)
     try:
         con.execute(
             "INSERT INTO save_jobs (job_id, state, destination_path, pinned_chunks_json, error_message, created_at_utc, updated_at_utc, trigger_kind) "
-            "VALUES (?, 'failed_retryable', ?, '[]', 'synthetic upgrade-gate failure', '2026-11-24T00:00:00Z', '2026-11-24T00:00:00Z', 'manual')",
-            (job_id, str(destination)),
+            "VALUES (?, 'pinned', ?, ?, NULL, '2026-11-24T00:00:00Z', '2026-11-24T00:00:00Z', 'manual')",
+            (job_id, str(destination), json.dumps([chunk_id])),
         )
         con.commit()
     finally:
@@ -1450,7 +1481,9 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             sec.check("old arbd stops cleanly", old.stop_arbd(), "")
             # ---- state only an older build could have left behind -------------------------------
             catalog = old.data / "catalog.sqlite"
-            insert_retry_pending_job(catalog, UPGRADE_JOB_ID, work / "retry-destination")
+            seed_interrupted_pinned_job(catalog, UPGRADE_JOB_ID, work / "retry-destination")
+            retarget_id = f"{UPGRADE_JOB_ID}-retarget"
+            seed_interrupted_pinned_job(catalog, retarget_id, work / "old-destination")
             config_path = old.data / "config.json"
             if not config_path.exists():
                 old.start_arbd()
@@ -1463,6 +1496,22 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             before_rows = catalog_rows(catalog)
             sec.check("catalog.sqlite holds saved, trimmed, trashed and five-column bundles", {"trashed"} <= set(before_rows.values()) and len(before_rows) >= 4, before_rows)
             sec.check("old arbd restarts on that state and serves it", old.start_arbd(), "")
+            # Make the old writer attempt publication. A directory occupied by an unrelated
+            # file fails on every host, including elevated Windows and Unix test runners.
+            for job_id, dest in ((UPGRADE_JOB_ID, work / "retry-destination"),
+                                 (retarget_id, work / "old-destination")):
+                dest.mkdir()
+                sentinel = dest / "keep.txt"
+                sentinel.write_text("occupied", encoding="utf-8")
+                failed = old.cli("jobs", "retry", job_id)
+                job = (failed.data or {}).get("job", {})
+                sec.check("old writer persists a failed job with its real ring pin",
+                          job.get("state") == "failed_retryable"
+                          and job.get("pinned_chunk_ids") == [f"chunk-{job_id}"]
+                          and bool(job.get("last_error")) and sentinel.is_file(), job_id)
+                if job_id == UPGRADE_JOB_ID:
+                    sentinel.unlink()
+                    dest.rmdir()
             old_hello = status_hello(old)
             old_pid = old_hello.get("pid")
             other = Isolated(new_root, work / "separate-instance", host_os)
@@ -1499,10 +1548,10 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
                 time.sleep(1)
                 leftovers = list_processes_under(old_root)
                 sec.check("U3: 0 old arbd processes remain", not [ln for ln in leftovers if "arbd" in ln and str(old_root) in ln], leftovers[:3])
-                sec.check("U3: the launcher announced the replacement", "Replacing the running arbd" in launched.err, launched.err.strip()[:200])
+                sec.check("U3: the launcher announced the replacement", "稼働中の arbd を更新します。" in launched.err, launched.err.strip()[:200])
             else:
                 sec.check("same build: the running arbd was left untouched (non-destructive coexistence)", hello.get("pid") == old_pid, f"{old_pid} -> {hello.get('pid')}")
-                sec.check("same build: the launcher did not announce a replacement", "Replacing the running arbd" not in launched.err, launched.err.strip()[:200])
+                sec.check("same build: the launcher did not announce a replacement", "稼働中の arbd を更新します。" not in launched.err, launched.err.strip()[:200])
             # ---- U3: state survives -----------------------------------------------------------
             cfg = (new.cli("config", "get").data or {}).get("config", {})
             sec.check("U3: config keeps save_window_secs=77, capture_enabled=true and the custom output dir", cfg.get("save_window_secs") == 77 and cfg.get("capture_enabled") is True and Path(str(cfg.get("output_dir_override", ""))) == output_dir, cfg)
@@ -1527,8 +1576,19 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
                 client.close()
             trimmed_inspect = new.cli("inspect", ids["trimmed"] or "missing")
             sec.check("U3: the trimmed bundle is intact (provenance trimmed)", trimmed_inspect.rc == 0 and "trimmed" in trimmed_inspect.out, trimmed_inspect.err.strip()[:150])
-            discarded = new.cli("jobs", "discard", UPGRADE_JOB_ID)
-            sec.check("U3: the retry-pending job can be discarded with the new CLI", discarded.rc == 0, f"rc={discarded.rc} {discarded.err.strip()[:150]}")
+            for job_id, action in ((UPGRADE_JOB_ID, ("retry", UPGRADE_JOB_ID)),
+                                   (retarget_id, ("retarget", retarget_id, "--dest", str(work / "retargeted")))):
+                journal = old.data / "save_jobs" / f"{job_id}.json"
+                sec.check(f"U3: {action[0]} retains its pin until retry", journal.is_file())
+                result = new.cli("jobs", *action)
+                saved = Path((result.data or {}).get("bundle_path") or "")
+                completed = result.rc == 0 and (saved / "timeline.sqlite").is_file()
+                sec.check(f"U3: {action[0]} completes after upgrade", completed, result.err.strip()[:160])
+                if completed:
+                    with sqlite3.connect(f"file:{(saved / 'timeline.sqlite').as_posix()}?mode=ro", uri=True) as db:
+                        anchors = db.execute("SELECT boot_id FROM clock_anchors").fetchall()
+                    sec.check(f"U3: {action[0]} replayed the pinned chunk", (f"boot-{job_id}",) in anchors)
+                    sec.check(f"U3: {action[0]} released its pin after commit", not journal.exists())
             # ---- config.json compatibility, variant b (unknown extras only) ---------------------------
             sec.check("new arbd stops cleanly before the config variant test", new.stop_arbd(), "")
             cfg_b = mutate_config_for_upgrade(config_path, output_dir, variant="b")
@@ -1620,8 +1680,7 @@ def build_stub_plugin(tmp: Path, slugs: Sequence[str], *, with_licenses: bool = 
 
 
 def run_static(tmp: Path, bundle_zip: Path, plugin_zip: Path | None, scope: str, arch: str) -> Report:
-    work = tmp / f"static-{bundle_zip.stem}-{time.monotonic_ns()}"
-    work.mkdir(parents=True)
+    work = Path(tempfile.mkdtemp(prefix=f"static-{bundle_zip.stem}-", dir=tmp))
     ctx = {"bundle_zip": bundle_zip, "plugin_zip": plugin_zip, "plugin_scope": scope, "bundle_arch": arch, "work_dir": work, "extract_dir": work / "extract"}
     report = Report({"platform": "selftest"}, quiet=True)
     section_bundle_integrity(report, ctx)

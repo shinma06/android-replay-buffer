@@ -569,7 +569,42 @@ mod imp {
         fallback_rename_no_replace(from, to)
     }
 
+    fn is_hard_link_unsupported(err: &io::Error) -> bool {
+        let raw = err.raw_os_error();
+        err.kind() == io::ErrorKind::Unsupported
+            || raw == Some(libc::EPERM)
+            || raw == Some(libc::ENOTSUP)
+            || raw == Some(libc::EOPNOTSUPP)
+            || raw == Some(libc::ENOSYS)
+            || raw == Some(libc::EMLINK)
+    }
+
     fn fallback_rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        fallback_rename_no_replace_with(from, to, |a, b| fs::hard_link(a, b))
+    }
+
+    pub(super) fn fallback_rename_no_replace_with<F>(
+        from: &Path,
+        to: &Path,
+        link_fn: F,
+    ) -> io::Result<()>
+    where
+        F: FnOnce(&Path, &Path) -> io::Result<()>,
+    {
+        // Hard-link creation is an exclusive publish even on file systems without renameat2.
+        if fs::symlink_metadata(from)?.is_file() {
+            match link_fn(from, to) {
+                Ok(()) => {
+                    let _ = fs::remove_file(from);
+                    return Ok(());
+                }
+                Err(err) if is_hard_link_unsupported(&err) => {
+                    // Filesystems without hard links (FAT32/exFAT): fall through to
+                    // check-then-rename.
+                }
+                Err(err) => return Err(err),
+            }
+        }
         match fs::symlink_metadata(to) {
             Ok(_) => {
                 return Err(io::Error::new(
@@ -818,6 +853,69 @@ mod imp {
         let _ = unsafe { CloseHandle(handle) };
         let still_active = u32::try_from(STILL_ACTIVE).unwrap_or(259);
         ok != 0 && exit_code == still_active
+    }
+}
+
+/// Publishes a sibling by atomic rename, replacing an existing file.
+///
+/// # Errors
+/// Returns the filesystem error after bounded retries for transient sharing violations.
+pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient_rename(
+        || fs::rename(from, to),
+        imp::is_transient_rename_error,
+        || false,
+        &RENAME_RETRY_DELAYS_MS,
+        thread::sleep,
+    )
+}
+
+/// Publishes a sibling without replacing an existing destination.
+///
+/// # Errors
+/// Returns an error if the destination exists or the filesystem cannot rename the source.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient_rename(
+        || imp::rename_no_replace(from, to),
+        imp::is_transient_rename_error,
+        || false,
+        &RENAME_RETRY_DELAYS_MS,
+        thread::sleep,
+    )
+}
+
+/// Cross-platform positional exact file read (`pread` on Unix, `seek_read` loop on Windows).
+///
+/// # Errors
+/// Returns the underlying read error if the requested bytes are unavailable.
+pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt as _;
+        file.read_exact_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt as _;
+        let mut remaining = buf;
+        let mut cur_offset = offset;
+        while !remaining.is_empty() {
+            let n = file.seek_read(remaining, cur_offset)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF during positional read",
+                ));
+            }
+            let n_u64 = u64::try_from(n).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "read length overflowed u64")
+            })?;
+            cur_offset = cur_offset.checked_add(n_u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow")
+            })?;
+            remaining = &mut remaining[n..];
+        }
+        Ok(())
     }
 }
 
@@ -1172,5 +1270,31 @@ mod tests {
             br#"{"schema_version":2}"#,
             "published bundle contents must remain intact after parent fsync error"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_rename_no_replace_falls_back_when_hard_link_is_unsupported() {
+        let tmp = TestTempDir::new("hardlink-unsupported");
+        let src = tmp.path.join("src.tmp");
+        let dst = tmp.path.join("dst.mp4");
+        fs::write(&src, b"payload").expect("write src");
+
+        super::imp::fallback_rename_no_replace_with(&src, &dst, |_, _| {
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        })
+        .expect("unsupported hard_link must fall through to check-then-rename");
+        assert!(!src.exists(), "source must be moved");
+        assert_eq!(fs::read(&dst).expect("read dst"), b"payload");
+
+        // Existing destination must still be rejected with AlreadyExists.
+        let src2 = tmp.path.join("src2.tmp");
+        fs::write(&src2, b"newer").expect("write src2");
+        let err = super::imp::fallback_rename_no_replace_with(&src2, &dst, |_, _| {
+            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+        })
+        .expect_err("existing destination must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&dst).expect("read dst"), b"payload");
     }
 }

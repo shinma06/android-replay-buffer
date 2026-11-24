@@ -460,7 +460,7 @@ pub struct ExportContext<'a> {
 
 /// Acquires a temporary `ExportJob` lease on a cataloged source bundle so `bundle.gc` cannot
 /// purge it mid-export; the lease is released on every return path.
-fn acquire_export_lease<'a>(
+pub(super) fn acquire_export_lease<'a>(
     catalog: &'a Catalog,
     source_catalog_id: Option<&str>,
     holder_pid: u32,
@@ -572,21 +572,7 @@ pub fn export_trim(
             .map(|id| catalog.bundle(id))
             .transpose()?
             .flatten();
-        if reader.is_legacy()
-            || entry
-                .as_ref()
-                .is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo)
-        {
-            return Err(DaemonError::Conflict(format!(
-                "refusing trash_original on read-only legacy bundle `{parent_bundle_id}`"
-            )));
-        }
-        if !entry.is_some_and(|e| e.state == arb_core::state::BundleLifecycleState::Active) {
-            return Err(DaemonError::Conflict(
-                "refusing trash_original on uncataloged or non-active bundle; open or register it first"
-                    .to_owned(),
-            ));
-        }
+        validate_trash_source(reader.as_ref(), entry.as_ref())?;
     }
 
     let video_path = reader.video_path().ok_or_else(|| {
@@ -626,10 +612,19 @@ pub fn export_trim(
         build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
 
     let policy = SelectionPolicy::default();
+    // Existing sidecars from either stream take precedence over newly uncertain rows.
+    let previous_taps =
+        reader.query_taps(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
+    let kept_taps = select_for_trim_with_truncated([], previous_taps, 0, &frame_window, &policy);
+    let log_budget = policy.after_quarantine(&kept_taps.unanchored);
     let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
-        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &policy)?;
-    let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) =
-        select_trimmed_taps(reader.as_ref(), &frame_window, &policy)?;
+        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &log_budget)?;
+    let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) = select_trimmed_taps(
+        reader.as_ref(),
+        &frame_window,
+        &policy.after_logs(&trimmed_logs),
+        kept_taps,
+    )?;
     let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
     let clock_anchors: Vec<ClockAnchorRecord> = if reader.is_legacy() {
@@ -661,6 +656,7 @@ pub fn export_trim(
     let mut share_sidecar_name: Option<&'static str> = None;
     let mut share_sidecar: Option<ShareMp4Sidecar> = None;
 
+    let mut av_mux_report = None;
     if emit_share_mp4 && !trimmed_frames.is_empty() {
         let share_name = if params.burn_taps {
             SHARE_TAPS_MP4_FILE
@@ -706,12 +702,12 @@ pub fn export_trim(
         let tmp_share_mp4 = tmp_dir.join(format!("{trim_job_id}-{share_name}"));
         let lead_in = trimmed_audio.as_ref().map_or(0, |a| a.lead_in_offset_ns);
         _tmp_share_guard = Some(FileCleanupGuard(tmp_share_mp4.clone()));
-        let _mux_report = mux_share_mp4(
+        av_mux_report = Some(mux_share_mp4(
             &video_for_share,
             trimmed_audio.as_ref().map(|a| a.tmp_m4a.as_path()),
             lead_in,
             &tmp_share_mp4,
-        )?;
+        )?);
         let atoms = inspect_mp4_atoms(&tmp_share_mp4)?;
         if atoms.edts_count != 0 || atoms.elst_count != 0 {
             return Err(DaemonError::Internal(format!(
@@ -774,28 +770,24 @@ pub fn export_trim(
         },
     )?;
 
+    let mut share_mp4_path = share_sidecar_name.map(|name| dest_bundle_dir.join(name));
+    if let (Some(source), Some(output)) = (&share_mp4_path, &params.share_output_path) {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Err(err) = arb_media::copy_new(source, output) {
+            let _ = catalog.trash_bundle(&new_bundle_id, &utc_now_iso8601());
+            return Err(err.into());
+        }
+        share_mp4_path = Some(output.clone());
+    }
     drop(lease_guard);
 
-    let mut original_trashed = false;
-    let mut trash_warning: Option<String> = None;
-    if params.trash_original
-        && let Some(src_id) = source_catalog_id
-    {
-        match catalog.trash_bundle(src_id, &utc_now_iso8601()) {
-            Ok(_) => original_trashed = true,
-            Err(err) => {
-                trash_warning = Some(format!(
-                    "trimmed bundle committed but trashing the original failed: {err}"
-                ));
-            }
-        }
-    }
-
-    let share_mp4_path = share_sidecar_name.map(|name| dest_bundle_dir.join(name));
-    let warning = match (commit_warning, trash_warning) {
-        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-        (a, b) => a.or(b),
-    };
+    let (original_trashed, warning) = finish_export(
+        catalog,
+        source_catalog_id.filter(|_| params.trash_original),
+        commit_warning,
+    );
 
     Ok(ExportTrimResponse {
         bundle_id: new_bundle_id,
@@ -806,12 +798,54 @@ pub fn export_trim(
         unanchored_log_count,
         main_tap_count,
         unanchored_tap_count,
+        av_mux_report,
         share_mp4_path,
         app_logs_count,
         original_trashed,
         burn_taps_applied,
         warning,
     })
+}
+
+pub(super) fn validate_trash_source(
+    reader: &dyn BundleReader,
+    entry: Option<&arb_storage::catalog::BundleEntry>,
+) -> Result<(), DaemonError> {
+    if reader.is_legacy()
+        || entry.is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo)
+    {
+        return Err(DaemonError::Conflict(
+            "refusing trash_original on read-only legacy bundle".into(),
+        ));
+    }
+    if !entry.is_some_and(|e| e.state == arb_core::state::BundleLifecycleState::Active) {
+        return Err(DaemonError::Conflict(
+            "refusing trash_original on uncataloged or non-active bundle".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A failed post-publication trash operation must preserve the successful export result.
+pub(super) fn finish_export(
+    catalog: &Catalog,
+    trash_id: Option<&str>,
+    warning: Option<String>,
+) -> (bool, Option<String>) {
+    let Some(id) = trash_id else {
+        return (false, warning);
+    };
+    match catalog.trash_bundle(id, &utc_now_iso8601()) {
+        Ok(_) => (true, warning),
+        Err(err) => {
+            let message =
+                format!("書き出しは完了しましたが、元の録画をゴミ箱に移せませんでした ({err})");
+            (
+                false,
+                Some(warning.map_or_else(|| message.clone(), |w| format!("{w}. {message}"))),
+            )
+        }
+    }
 }
 
 /// Commits the trimmed bundle and registers it idempotently. A commit whose only failure
@@ -824,6 +858,7 @@ fn commit_trimmed_bundle(
     source_apps: &[arb_core::bundle::AppLogSummary],
     entry: &NewBundleEntry,
 ) -> Result<(usize, Option<String>), DaemonError> {
+    ctx.catalog.track_staging(trim_job_id, &entry.path)?;
     let (app_logs_count, warning) = match V2BundleWriter::write_with_source_apps(
         &entry.path,
         trim_job_id,
@@ -865,6 +900,7 @@ fn commit_trimmed_bundle(
                 entry.path.display()
             ))
         })?;
+    let _ = ctx.catalog.forget_staging(trim_job_id, &entry.path);
     Ok((app_logs_count, warning))
 }
 
@@ -1028,8 +1064,14 @@ fn build_trimmed_bundle_draft(
                 }
                 audio
             }),
-            logcat: summary.streams.logcat.clone(),
-            input: summary.streams.input.clone(),
+            logcat: summary.streams.logcat.clone().map(|mut stream| {
+                stream.tail_may_be_incomplete &= video.includes_source_tail;
+                stream
+            }),
+            input: summary.streams.input.clone().map(|mut stream| {
+                stream.tail_may_be_incomplete &= video.includes_source_tail;
+                stream
+            }),
         },
         unanchored_summary,
         video_mp4: Some(MediaPayload::File(video.tmp_mp4)),
@@ -1050,17 +1092,16 @@ fn build_trimmed_frame_records(
     params: &ExportTrimParams,
 ) -> Vec<FrameRecord> {
     let trimmed_mp4_frames = trimmed_track.frames();
-    let selected_source_frames: Vec<&FrameRecord> = source_frames
-        .iter()
-        .filter(|f| {
-            f.frame_index >= params.in_frame_index && f.frame_index <= params.out_frame_index
-        })
-        .collect();
-
+    let indexed: std::collections::BTreeMap<_, _> =
+        source_frames.iter().map(|f| (f.frame_index, f)).collect();
     let mut trimmed_frames = Vec::with_capacity(trimmed_mp4_frames.len());
     for (idx, mp4_f) in trimmed_mp4_frames.iter().enumerate() {
         let frame_index = u64::try_from(idx).unwrap_or(0);
-        let record = match selected_source_frames.get(idx).copied() {
+        let record = match params
+            .in_frame_index
+            .checked_add(frame_index)
+            .and_then(|id| indexed.get(&id).copied())
+        {
             Some(orig) => FrameRecord {
                 frame_index,
                 boot_id: orig.boot_id.clone(),
@@ -1156,12 +1197,16 @@ fn select_trimmed_taps(
     reader: &dyn BundleReader,
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
+    previous: arb_core::selection::SelectedPartition<arb_core::bundle::TapRecord>,
 ) -> Result<(Vec<arb_core::bundle::TapRecord>, usize, usize, usize), DaemonError> {
     let source_main = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let source_unanchored =
-        reader.query_taps(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
-    let part =
-        select_for_trim_with_truncated(source_main, source_unanchored, 0, frame_window, policy);
+    let part = select_for_trim_with_truncated(
+        source_main,
+        previous.unanchored,
+        previous.unanchored_truncated_count,
+        frame_window,
+        policy,
+    );
     let main_count = part.main.len();
     let unanchored_count = part.unanchored.len();
     let mut trimmed = Vec::with_capacity(main_count + unanchored_count);
@@ -1186,7 +1231,7 @@ fn select_trimmed_taps(
     ))
 }
 
-struct LeaseDropGuard<'a> {
+pub(super) struct LeaseDropGuard<'a> {
     catalog: &'a Catalog,
     lease_id: String,
 }
@@ -1197,15 +1242,9 @@ impl Drop for LeaseDropGuard<'_> {
     }
 }
 
-struct FileCleanupGuard(PathBuf);
+use crate::capture::TempFileGuard as FileCleanupGuard;
 
-impl Drop for FileCleanupGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-fn filter_discontinuities_for_window(
+pub(super) fn filter_discontinuities_for_window(
     discontinuities: Vec<DiscontinuityEvent>,
     window: &WindowSpec,
 ) -> Vec<DiscontinuityEvent> {
@@ -1519,6 +1558,7 @@ mod tests {
             dest_dir: None,
             holder_pid: None,
             burn_taps: false,
+            share_output_path: None,
             include_share_mp4: false,
             trash_original: false,
         };

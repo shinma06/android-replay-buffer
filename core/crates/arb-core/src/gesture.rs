@@ -69,6 +69,34 @@ pub struct ClassifiedStroke {
     pub path: Vec<TouchPoint>,
 }
 
+/// Maps physical display pixels (or normalized legacy coordinates) into video pixels.
+/// Without display geometry only normalized coordinates are accepted.
+#[must_use]
+pub fn map_touch_to_frame(
+    x: f64,
+    y: f64,
+    display_w: Option<u32>,
+    display_h: Option<u32>,
+    frame_w: u32,
+    frame_h: u32,
+) -> Option<(f64, f64)> {
+    if frame_w == 0 || frame_h == 0 {
+        return None;
+    }
+    let (dw, dh) = match (display_w, display_h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => (f64::from(w), f64::from(h)),
+        (None, None) => (1.0, 1.0),
+        _ => return None,
+    };
+    if !(0.0..=dw).contains(&x) || !(0.0..=dh).contains(&y) {
+        return None;
+    }
+    Some((
+        (x / dw * f64::from(frame_w)).min(f64::from(frame_w - 1)),
+        (y / dh * f64::from(frame_h)).min(f64::from(frame_h - 1)),
+    ))
+}
+
 /// Resolution-aware touch slop threshold in the same unit as [`TouchPoint::x`]/`y`
 /// (`max(MIN_TOUCH_SLOP, TOUCH_SLOP_DISPLAY_FRACTION * min(display_width, display_height))`
 /// when both display dimensions are known and positive; otherwise [`FALLBACK_TOUCH_SLOP`]).
@@ -90,14 +118,16 @@ pub fn touch_slop(display_width: Option<f64>, display_height: Option<f64>) -> f6
 /// across every sample, so a swipe-and-return gesture (large excursion, small net displacement)
 /// is still correctly classified as a [`GestureKind::Swipe`].
 ///
-/// # Panics
-///
-/// Panics if `samples` is empty.
+/// An empty stroke returns a tap at the origin.
 #[must_use]
 pub fn classify_stroke(samples: &[TouchPoint], slop: f64) -> ClassifiedStroke {
-    assert!(!samples.is_empty(), "classify_stroke requires >= 1 sample");
-    let start = samples[0];
-    let end = *samples.last().expect("non-empty samples");
+    let origin = TouchPoint {
+        x: 0.0,
+        y: 0.0,
+        t_offset_ns: 0,
+    };
+    let start = samples.first().unwrap_or(&origin);
+    let end = samples.last().unwrap_or(start);
 
     let net_dist = hypot(end.x - start.x, end.y - start.y);
     let max_excursion = samples
@@ -105,7 +135,11 @@ pub fn classify_stroke(samples: &[TouchPoint], slop: f64) -> ClassifiedStroke {
         .map(|p| hypot(p.x - start.x, p.y - start.y))
         .fold(0.0_f64, f64::max);
 
-    let kind = if net_dist < slop && max_excursion < slop {
+    let kind = if samples.len() <= 1
+        || !slop.is_finite()
+        || samples.iter().any(|p| !p.x.is_finite() || !p.y.is_finite())
+        || (net_dist < slop && max_excursion < slop)
+    {
         GestureKind::Tap
     } else {
         GestureKind::Swipe
@@ -131,18 +165,39 @@ fn hypot(dx: f64, dy: f64) -> f64 {
 
 /// Decimates `samples` down to at most `cap` points using an even stride, always keeping the
 /// first and last sample so the trajectory's exact `DOWN`/`UP` endpoints are preserved.
+#[expect(
+    clippy::as_conversions,
+    reason = "usize widens losslessly to u128 on supported hosts"
+)]
 fn decimate(samples: &[TouchPoint], cap: usize) -> Vec<TouchPoint> {
     if samples.len() <= cap || cap <= 1 {
         return samples.to_vec();
     }
     let last_idx = samples.len() - 1;
     (0..cap)
-        .map(|i| samples[i * last_idx / (cap - 1)])
+        .map(|i| {
+            samples[usize::try_from(i as u128 * last_idx as u128 / (cap - 1) as u128)
+                .unwrap_or(last_idx)]
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn physical_and_legacy_coordinates_are_unambiguous() {
+        let map = |x| super::map_touch_to_frame(x, x, Some(100), Some(200), 50, 100);
+        assert_eq!(map(1.0), Some((0.5, 0.5)));
+        assert!(map(1.001) > map(1.0));
+        assert_eq!(
+            super::map_touch_to_frame(1.0, 1.0, None, None, 50, 100),
+            Some((49.0, 99.0))
+        );
+        assert_eq!(
+            super::map_touch_to_frame(2.0, 1.0, None, None, 50, 100),
+            None
+        );
+    }
     use super::{
         ClassifiedStroke, GestureKind, MAX_PATH_POINTS, TouchPoint, classify_stroke, touch_slop,
     };

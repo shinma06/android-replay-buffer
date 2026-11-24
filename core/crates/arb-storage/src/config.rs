@@ -105,7 +105,7 @@ impl ConfigStore {
                 .join(format!("{CONFIG_FILE_NAME}.invalid-{clean}-{suffix}"));
             suffix = suffix.saturating_add(1);
         }
-        fs::rename(&source, &target)
+        arb_os::fs::rename_no_replace(&source, &target)
             .map_err(|err| StorageError::io("quarantine_config_json", &source, err))?;
         Ok(target)
     }
@@ -145,7 +145,7 @@ impl ConfigStore {
                 .map_err(|source| StorageError::io("write_config_tmp", &temp_path, source))?;
             fsync_file(&file)?;
             drop(file);
-            fs::rename(&temp_path, &final_path)
+            arb_os::fs::replace_file(&temp_path, &final_path)
                 .map_err(|source| StorageError::io("rename_config_json", &final_path, source))?;
             fsync_dir(&self.data_dir)?;
             Ok(())

@@ -106,6 +106,11 @@ pub fn trim_video(
         )?;
         head_decoded_frames = encoded_head.decoded_frames;
         reencoded_frames = u64::try_from(encoded_head.samples.len()).unwrap_or(0);
+        if reencoded_frames != splice_point - in_frame_index {
+            return Err(MediaError::InvalidContainer(
+                "trim encoder returned an unexpected sample count".into(),
+            ));
+        }
         let head_samples = encoded_head
             .samples
             .into_iter()
@@ -131,10 +136,16 @@ pub fn trim_video(
     let stream_copied_frames =
         write_trim_mp4(output_path, &track, head_segment.as_ref(), copy_range)?;
 
+    let output_frame_count = reencoded_frames + stream_copied_frames;
+    if output_frame_count != out_frame_index - in_frame_index + 1 {
+        return Err(MediaError::InvalidContainer(
+            "trim output frame count mismatch".into(),
+        ));
+    }
     Ok(TrimReport {
         in_frame_index,
         out_frame_index,
-        output_frame_count: reencoded_frames + stream_copied_frames,
+        output_frame_count,
         head_decoded_frames,
         reencoded_frames,
         stream_copied_frames,

@@ -8,7 +8,7 @@
 //!   and **strictly zero `edts`/`elst` boxes**.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -401,35 +401,7 @@ fn read_moov_payload(file: &mut impl Read, payload_len: u64) -> Result<Vec<u8>, 
     Ok(buf)
 }
 
-/// Cross-platform positional exact file read (`pread` on Unix, `seek_read` loop on Windows).
-pub(crate) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileExt as _;
-        file.read_exact_at(buf, offset)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileExt as _;
-        let mut remaining = buf;
-        let mut cur_offset = offset;
-        while !remaining.is_empty() {
-            let n = file.seek_read(remaining, cur_offset)?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "unexpected EOF during positional read",
-                ));
-            }
-            let n_u64 = u64::try_from(n).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "read length overflowed u64")
-            })?;
-            cur_offset = cur_offset.saturating_add(n_u64);
-            remaining = &mut remaining[n..];
-        }
-        Ok(())
-    }
-}
+pub(crate) use arb_os::fs::read_exact_at;
 
 struct ParsedTrack {
     width: u16,
@@ -651,6 +623,14 @@ pub(crate) fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError>
         let spc = usize::try_from(read_u32_be(stsc, off + 4)?).map_err(|_| {
             MediaError::InvalidContainer("stsc samples_per_chunk overflow".to_owned())
         })?;
+        if spc == 0
+            || (entries.is_empty() && first_chunk != 1)
+            || entries.last().is_some_and(|&(prev, _)| prev >= first_chunk)
+        {
+            return Err(MediaError::InvalidContainer(
+                "invalid stsc chunk sequence".into(),
+            ));
+        }
         entries.push((first_chunk, spc));
     }
     if entries.is_empty() {
@@ -847,16 +827,19 @@ pub(crate) fn map_sample_offsets(
     let mut offsets = vec![0u64; sample_count];
     let mut sample_idx = 0usize;
 
+    let mut run = 0;
     for (ci, &chunk_off) in chunk_offsets.iter().enumerate() {
         let chunk_num_1 = ci + 1;
-        let mut spc = stsc_entries[0].1;
-        for &(first_chunk, count) in stsc_entries {
-            if first_chunk <= chunk_num_1 {
-                spc = count;
-            } else {
-                break;
-            }
+        while stsc_entries
+            .get(run + 1)
+            .is_some_and(|&(start, _)| start <= chunk_num_1)
+        {
+            run += 1;
         }
+        let spc = stsc_entries
+            .get(run)
+            .ok_or_else(|| MediaError::InvalidContainer("empty stsc".into()))?
+            .1;
         let mut cur_off = chunk_off;
         for _ in 0..spc {
             if sample_idx >= sample_count {
@@ -2063,7 +2046,12 @@ fn build_moov(
         timescale,
         avcc_payload,
     } = *track;
-    let total_duration: u64 = samples.iter().map(|sm| u64::from(sm.duration_ticks)).sum();
+    let total_duration = samples
+        .iter()
+        .try_fold(0u64, |sum, sm| {
+            sum.checked_add(u64::from(sm.duration_ticks))
+        })
+        .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
 
     let movie_header = build_mvhd(timescale, total_duration)?;
     let track_header = build_tkhd(width, height, total_duration)?;
@@ -2139,14 +2127,18 @@ pub(crate) fn write_faststart_avc1_mp4(
         .try_fold(0u64, |acc, sm| acc.checked_add(u64::from(sm.size)))
         .ok_or_else(|| MediaError::InvalidContainer("mdat payload size overflow".to_owned()))?;
 
-    let use_large_mdat = total_mdat_payload.saturating_add(8) > u64::from(u32::MAX);
+    let use_large_mdat = total_mdat_payload > u64::from(u32::MAX) - 8;
     let mdat_header_len = if use_large_mdat { 16u64 } else { 8u64 };
 
     let moov_probe = build_moov(track, samples, 0, ChunkOffsetMode::Stco32)?;
-    let ftyp_len_u64 = u64::try_from(ftyp.len()).unwrap_or(0);
-    let probe_offset = ftyp_len_u64
-        .saturating_add(u64::try_from(moov_probe.len()).unwrap_or(0))
-        .saturating_add(mdat_header_len);
+    let payload_offset = |moov_len: usize| {
+        ftyp.len()
+            .checked_add(moov_len)
+            .and_then(|len| u64::try_from(len).ok())
+            .and_then(|n| n.checked_add(mdat_header_len))
+            .ok_or_else(|| MediaError::InvalidContainer("mdat offset overflow".into()))
+    };
+    let probe_offset = payload_offset(moov_probe.len())?;
     let offset_mode = if probe_offset > u64::from(u32::MAX) {
         ChunkOffsetMode::Co64
     } else {
@@ -2157,21 +2149,21 @@ pub(crate) fn write_faststart_avc1_mp4(
         ChunkOffsetMode::Co64 => build_moov(track, samples, 0, ChunkOffsetMode::Co64)?,
         ChunkOffsetMode::Stco32 => moov_probe,
     };
-    let mdat_payload_offset = ftyp_len_u64
-        .saturating_add(u64::try_from(moov_pass1.len()).unwrap_or(0))
-        .saturating_add(mdat_header_len);
+    let mdat_payload_offset = payload_offset(moov_pass1.len())?;
     let moov = build_moov(track, samples, mdat_payload_offset, offset_mode)?;
 
     write_atomically(path, mode, |writer| {
         writer.write_all(&ftyp)?;
         writer.write_all(&moov)?;
         if use_large_mdat {
-            let mdat_total = total_mdat_payload.saturating_add(16);
+            let mdat_total = total_mdat_payload
+                .checked_add(16)
+                .ok_or_else(|| MediaError::InvalidContainer("mdat size overflow".into()))?;
             writer.write_all(&1u32.to_be_bytes())?;
             writer.write_all(b"mdat")?;
             writer.write_all(&mdat_total.to_be_bytes())?;
         } else {
-            let mdat_total = u32::try_from(total_mdat_payload.saturating_add(8)).map_err(|_| {
+            let mdat_total = u32::try_from(total_mdat_payload + 8).map_err(|_| {
                 MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
             })?;
             writer.write_all(&mdat_total.to_be_bytes())?;
@@ -2284,6 +2276,8 @@ fn inspect_atoms(file: &mut (impl Read + Seek), len: u64) -> Result<Mp4AtomRepor
     Ok(report)
 }
 
+const MAX_ATOM_DEPTH: usize = 32;
+
 fn walk_atoms(
     slice: &[u8],
     base_offset: u64,
@@ -2292,6 +2286,11 @@ fn walk_atoms(
     moov_offset: &mut Option<u64>,
     mdat_offset: &mut Option<u64>,
 ) -> Result<(), MediaError> {
+    if depth > MAX_ATOM_DEPTH {
+        return Err(MediaError::InvalidContainer(
+            "atom nesting limit exceeded".into(),
+        ));
+    }
     let mut pos = 0usize;
     while pos + 8 <= slice.len() {
         let size32 = usize::try_from(read_u32_be(slice, pos)?)
@@ -2409,6 +2408,7 @@ fn walk_atom_children(
 #[cfg(test)]
 mod atom_io_tests {
     use super::*;
+    use std::io;
     #[test]
     fn sparse_large_mdat_reads_only_headers() {
         use std::io::Write as _;

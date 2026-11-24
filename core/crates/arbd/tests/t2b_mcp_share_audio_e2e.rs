@@ -376,8 +376,8 @@ fn seed_rich_v2_bundle(
                 frame_count: 30,
                 tail_may_be_incomplete: false,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
-                display_width: None,
-                display_height: None,
+                display_width: Some(128),
+                display_height: Some(128),
             }),
             audio: audio_meta,
             logcat: Some(LogcatStreamMeta {

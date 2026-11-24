@@ -245,8 +245,8 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
                 frame_count: 18,
                 tail_may_be_incomplete: false,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
-                display_width: None,
-                display_height: None,
+                display_width: Some(64),
+                display_height: Some(64),
             }),
             audio: Some(AudioStreamMeta {
                 status: StreamStatus::Present,
@@ -666,6 +666,43 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let atoms = inspect_mp4_atoms(&mcp_mp4).expect("inspect mcp share.mp4");
     assert_eq!(atoms.edts_count, 0, "disk edts=0");
     assert_eq!(atoms.elst_count, 0, "disk elst=0");
+
+    // 9a. `tools/call` -> `arb_export_trim` (`format: "share_mp4"`, full bundle without frame range)
+    // Must match `arb-cli share-mp4` / `export.share_mp4`: no redundant duplicate trimmed bundle.
+    let mcp_full_mp4 = tmp.path().join("mcp-full-share.mp4");
+    let full_share_resp = send_mcp_request(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 80,
+            "method": "tools/call",
+            "params": {
+                "name": "arb_export_trim",
+                "arguments": {
+                    "bundle_id": bundle_id,
+                    "format": "share_mp4",
+                    "output_path": mcp_full_mp4
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        full_share_resp["result"]["isError"], false,
+        "full share_mp4 ok: {full_share_resp}"
+    );
+    let full_share_json: Value = serde_json::from_str(
+        full_share_resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("full share text"),
+    )
+    .expect("parse full share json");
+    assert_eq!(full_share_json["video_frame_count"], 18, "all 18 frames");
+    assert!(
+        full_share_json["trimmed_bundle_id"].is_null(),
+        "full-bundle share_mp4 must not create a redundant trimmed bundle: {full_share_json}"
+    );
+    assert!(mcp_full_mp4.is_file(), "full share.mp4 written on disk");
 
     // 9b. `tools/call` -> `arb_export_trim` (`format: "bundle"`, `include_share_mp4: true`, `burn_taps: true`)
     let trim_bundle_resp = send_mcp_request(

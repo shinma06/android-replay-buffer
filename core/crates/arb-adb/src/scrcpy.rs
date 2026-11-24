@@ -766,6 +766,9 @@ fn read_exact_ctx<R: Read>(
             Ok(0) => return Err(ScrcpyError::UnexpectedEof { context }),
             Ok(n) => pos += n,
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(ScrcpyError::UnexpectedEof { context });
+            }
             Err(err) => return Err(ScrcpyError::Io(err)),
         }
     }
@@ -788,6 +791,11 @@ fn read_exact_or_clean_eof<R: Read>(
             }
             Ok(n) => pos += n,
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err)
+                if pos > 0 && matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                return Err(ScrcpyError::UnexpectedEof { context });
+            }
             Err(err) => return Err(ScrcpyError::Io(err)),
         }
     }

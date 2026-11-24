@@ -221,41 +221,14 @@ fn map_point_to_video(
     video_h: u32,
     geom: BurnInDisplayGeometry,
 ) -> Option<(f64, f64)> {
-    if !x.is_finite() || !y.is_finite() || video_w == 0 || video_h == 0 {
-        return None;
-    }
-    let vw = f64::from(video_w);
-    let vh = f64::from(video_h);
-    let is_normalized = (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y);
-
-    if let (Some(dw_u32), Some(dh_u32)) = (geom.display_width, geom.display_height)
-        && dw_u32 > 0
-        && dh_u32 > 0
-        && !is_normalized
-    {
-        // Match Studio & MCP policy: skip orientation mismatch or out-of-bounds raw evdev coords.
-        if video_w != video_h && dw_u32 != dh_u32 && (dw_u32 < dh_u32) != (video_w < video_h) {
-            return None;
-        }
-        let dw = f64::from(dw_u32);
-        let dh = f64::from(dh_u32);
-        if x < 0.0 || y < 0.0 || x > dw || y > dh {
-            return None;
-        }
-        let vx = (x / dw * vw).clamp(0.0, (vw - 1.0).max(0.0));
-        let vy = (y / dh * vh).clamp(0.0, (vh - 1.0).max(0.0));
-        return Some((vx, vy));
-    }
-
-    let (vx, vy) = if is_normalized {
-        (x * vw, y * vh)
-    } else {
-        (x, y)
-    };
-    Some((
-        vx.clamp(0.0, (vw - 1.0).max(0.0)),
-        vy.clamp(0.0, (vh - 1.0).max(0.0)),
-    ))
+    arb_core::gesture::map_touch_to_frame(
+        x,
+        y,
+        geom.display_width,
+        geom.display_height,
+        video_w,
+        video_h,
+    )
 }
 
 fn map_events(
@@ -1061,14 +1034,20 @@ mod tests {
             &mut truncated,
             &events,
             1_000_000_000,
-            BurnInDisplayGeometry::default()
+            BurnInDisplayGeometry {
+                display_width: Some(129),
+                display_height: Some(129)
+            }
         ));
 
         let changed = composite_touch_overlays_rgb24(
             &mut img,
             &events,
             1_100_000_000,
-            BurnInDisplayGeometry::default(),
+            BurnInDisplayGeometry {
+                display_width: Some(129),
+                display_height: Some(129),
+            },
         );
         assert!(changed, "overlay must activate at t=1.1s");
         assert!(
@@ -1090,7 +1069,10 @@ mod tests {
             &mut after,
             &events,
             2_000_000_000,
-            BurnInDisplayGeometry::default(),
+            BurnInDisplayGeometry {
+                display_width: Some(129),
+                display_height: Some(129),
+            },
         );
         assert!(!changed_after, "expired touch events must not render");
     }

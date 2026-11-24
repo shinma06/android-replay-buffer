@@ -52,6 +52,7 @@ name = "arb-media"
 version = "2.0.0-dev"
 dependencies = [
  "arb-core",
+ "arb-os",
  "openh264",
  "png 0.17.16",
  "rusty_aac",
@@ -67,6 +68,8 @@ dependencies = [
  "arb-core",
  "libc",
  "memmap2",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "windows-sys 0.59.0",
 ]

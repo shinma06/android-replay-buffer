@@ -16,7 +16,10 @@ pub mod fs;
 pub mod ipc;
 pub mod parent_watch;
 pub mod paths;
+mod process_os;
+pub mod rpc;
 pub mod shm;
+pub mod signal;
 
 pub use crate::error::OsError;
 

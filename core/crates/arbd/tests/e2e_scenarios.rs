@@ -1344,6 +1344,7 @@ fn scenario_09_concurrent_edit_trash_under_viewer_lease_restore_release_gc() {
     let closed = client.call("bundle.close", &json!({ "lease_id": lease_id }));
     assert_eq!(closed["released"], true, "bundle.close must release lease");
 
+    client.call("config.update", &json!({ "gc_grace_secs": 0 }));
     let gc_purged = client.call("bundle.gc", &json!({ "now_utc": "2099-01-01T00:00:00Z" }));
     assert!(
         gc_purged["purged_bundle_ids"]
@@ -1762,6 +1763,13 @@ fn r3_m1_crash_and_catalog_error_after_register_retry_idempotently() {
     drop(client);
     server.shutdown();
 
+    // The rename already committed the bundle. Its retry must not depend on decoding any ring file.
+    for entry in fs::read_dir(paths.data_dir.join("ring")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "chunk") {
+            fs::remove_file(path).unwrap();
+        }
+    }
     let restarted = DaemonServer::start(DaemonConfig::new(paths)).expect("restart arbd");
     let mut client2 = TestIpcClient::connect(restarted.endpoint());
     let status = client2.call("system.status", &json!({}));
@@ -1869,7 +1877,9 @@ fn r3_m2_selective_window_pinning_leaves_older_chunks_evictable() {
     fs::write(&blocked_file, b"file").expect("create blocking file");
     let failed = client.call(
         "save.trigger",
-        &json!({ "duration_sec": 10, "dest_dir": blocked_file }),
+        &json!({ "duration_sec": 10, "dest_dir": blocked_file,
+            "selection_policy": { "unanchored_ingest_margin_ns": u64::MAX, "max_unanchored_records": 100, "max_unanchored_bytes": 1000, "drain_timeout_ms": 0 }
+        }),
     );
     assert_eq!(
         failed["job"]["state"], "failed_retryable",

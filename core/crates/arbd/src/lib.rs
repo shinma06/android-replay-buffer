@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Single-writer local daemon (`arbd`) for Android Replay Buffer (ARB).
 //!
 //! Coordinates:
@@ -513,6 +515,7 @@ impl DaemonState {
             let Ok(_idle) = self.handover_gate.try_write() else {
                 return Ok(json!({ "ok": false }));
             };
+            let _crash_admission = self.lock(&self.crash_autosave_status, "crash status")?;
             let owner_matches = self
                 .handover_owner
                 .as_deref()
@@ -861,7 +864,7 @@ impl DaemonState {
         let parsed: SaveTriggerParams = parse_optional_params(params)?;
         let outcome = self.execute_save(
             parsed.duration_sec,
-            parsed.dest_dir,
+            parsed.dest_dir.as_deref(),
             parsed.drain_timeout_ms,
             parsed.selection_policy,
             parsed.mode,
@@ -874,7 +877,7 @@ impl DaemonState {
         let parsed: SaveLogsParams = parse_optional_params(params)?;
         let outcome = self.execute_save(
             parsed.window_secs,
-            parsed.dest_dir,
+            parsed.dest_dir.as_deref(),
             parsed.drain_timeout_ms,
             parsed.selection_policy,
             SaveMode::LogsOnly,
@@ -886,7 +889,7 @@ impl DaemonState {
     fn execute_save(
         &self,
         duration_sec: Option<u64>,
-        dest_dir: Option<PathBuf>,
+        dest_dir: Option<&Path>,
         drain_timeout_ms: Option<u64>,
         selection_policy: Option<SelectionPolicy>,
         mode: SaveMode,
@@ -900,23 +903,24 @@ impl DaemonState {
                 "save window {duration_sec}s is outside {MIN_SAVE_WINDOW_SECS}..={MAX_SAVE_WINDOW_SECS} seconds"
             )));
         }
-        let dest_dir = match dest_dir {
-            Some(dest) => {
-                self.validate_output_location(&dest, "dest_dir", None)?;
-                dest
-            }
-            None => match user_cfg.output_dir_override {
-                Some(override_dir) => {
-                    self.validate_output_location(&override_dir, "output_dir_override", None)?;
-                    override_dir
-                }
-                None => self.catalog.managed_bundles_root().to_path_buf(),
-            },
-        };
+        let dest_dir = self.resolve_output_dir(
+            dest_dir,
+            user_cfg.output_dir_override.as_deref(),
+            self.catalog.managed_bundles_root(),
+            None,
+        )?;
         let mut policy = selection_policy.unwrap_or_default();
-        if let Some(drain_ms) = drain_timeout_ms {
-            policy.drain_timeout_ms = drain_ms;
-        }
+        policy.drain_timeout_ms = drain_timeout_ms
+            .unwrap_or(policy.drain_timeout_ms)
+            .min(5_000);
+        let limits = SelectionPolicy::default();
+        policy.unanchored_ingest_margin_ns = policy
+            .unanchored_ingest_margin_ns
+            .min(limits.unanchored_ingest_margin_ns);
+        policy.max_unanchored_records = policy
+            .max_unanchored_records
+            .min(limits.max_unanchored_records);
+        policy.max_unanchored_bytes = policy.max_unanchored_bytes.min(limits.max_unanchored_bytes);
 
         // Phase 1 (R3 S1): fix T_trigger and pin the window chunks immediately, under `C`.
         // When the active/last capture session is `CaptureMode::LogsOnly`, coerce `SaveMode::Full`
@@ -950,7 +954,9 @@ impl DaemonState {
     ) -> Result<SaveOutcomeResponse, DaemonError> {
         // Bounded boundary drain (`SPEC-02` §2) with `C` released between polls.
         let tail = match pending.drain_trigger_boottime_ns() {
-            Some(trigger_bt) => self.wait_for_boundary_drain(&policy, trigger_bt)?,
+            Some(trigger_bt) => {
+                self.wait_for_boundary_drain(&policy, trigger_bt, pending.generation)?
+            }
             None => pending.tail_without_drain(),
         };
 
@@ -1045,15 +1051,16 @@ impl DaemonState {
         &self,
         policy: &SelectionPolicy,
         trigger_boottime_ns: i64,
+        generation: u64,
     ) -> Result<TailCompleteness, DaemonError> {
         let start = Instant::now();
         loop {
             let latest_hb = {
                 let cap = self.lock_capture()?;
-                if !cap.is_connected() {
+                if cap.session_generation() != generation || !cap.is_connected() {
                     return Ok(TailCompleteness::MayBeIncomplete);
                 }
-                cap.latest_heartbeat_boottime_ns()
+                cap.drain_watermark_ns()
             };
             let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             match evaluate_stream_drain(trigger_boottime_ns, latest_hb, elapsed_ms, policy) {
@@ -1245,8 +1252,10 @@ impl DaemonState {
 
     fn handle_bundle_gc(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: BundleGcParams = parse_optional_params(params)?;
-        let now_utc = parsed.now_utc.unwrap_or_else(utc_now_iso8601);
-        let report = self.catalog.gc_trashed_bundles(&now_utc)?;
+        let now_utc = utc_now_iso8601();
+        let cutoff = parsed.now_utc.as_deref().unwrap_or(&now_utc);
+        let grace = self.lock(&self.user_config, "user config")?.gc_grace_secs;
+        let report = self.catalog.gc_as_of(cutoff, grace, &now_utc)?;
         Ok(serde_json::to_value(BundleGcResponse {
             purged_bundle_ids: report.purged_bundle_ids,
             skipped_leased_bundle_ids: report.skipped_leased_bundle_ids,
@@ -1386,28 +1395,44 @@ impl DaemonState {
         }))
     }
 
+    fn resolve_output_dir(
+        &self,
+        explicit: Option<&Path>,
+        configured: Option<&Path>,
+        fallback: &Path,
+        source: Option<&Path>,
+    ) -> Result<PathBuf, DaemonError> {
+        if let Some((dir, name)) = explicit
+            .map(|p| (p, "dest_dir"))
+            .or_else(|| configured.map(|p| (p, "output_dir_override")))
+        {
+            self.validate_output_location(dir, name, source)?;
+            Ok(dir.to_path_buf())
+        } else {
+            Ok(fallback.to_path_buf())
+        }
+    }
+
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
-        let dest_parent = match &parsed.dest_dir {
-            Some(dest) => {
-                self.validate_output_location(dest, "dest_dir", Some(&path))?;
-                dest.clone()
-            }
-            None => match user_cfg.output_dir_override {
-                Some(override_dir) => {
-                    self.validate_output_location(
-                        &override_dir,
-                        "output_dir_override",
-                        Some(&path),
-                    )?;
-                    override_dir
-                }
-                None => self.catalog.managed_bundles_root().to_path_buf(),
-            },
-        };
+        let dest_parent = self.resolve_output_dir(
+            parsed.dest_dir.as_deref(),
+            user_cfg.output_dir_override.as_deref(),
+            self.catalog.managed_bundles_root(),
+            Some(&path),
+        )?;
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        if let Some(output) = &parsed.share_output_path {
+            self.validate_output_location(output, "output_path", Some(&path))?;
+            self.reject_data_dir_state_file(output, "output_path")?;
+            if !(parsed.include_share_mp4 || parsed.burn_taps) || output.exists() {
+                return Err(DaemonError::InvalidParams(
+                    "共有 MP4 の出力先を作成できません".into(),
+                ));
+            }
+        }
         // R3 S9: exports run outside the media mutex `M` with their own codec backend.
         let backend = default_codec_backend();
         let ctx = ExportContext {
@@ -1443,35 +1468,23 @@ impl DaemonState {
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 
-        let dest_parent = match &parsed.dest_dir {
-            Some(dest) => {
-                self.validate_output_location(dest, "dest_dir", Some(&path))?;
-                dest.clone()
-            }
-            None => match user_cfg.output_dir_override.clone() {
-                Some(override_dir) => {
-                    self.validate_output_location(
-                        &override_dir,
-                        "output_dir_override",
-                        Some(&path),
-                    )?;
-                    override_dir
-                }
-                None => self.catalog.managed_bundles_root().to_path_buf(),
-            },
-        };
-
+        let dest_parent = self.resolve_output_dir(
+            parsed.dest_dir.as_deref(),
+            user_cfg.output_dir_override.as_deref(),
+            self.catalog.managed_bundles_root(),
+            Some(&path),
+        )?;
         let share_mp4_path = if let Some(explicit) = &parsed.output_path {
             self.validate_output_location(explicit, "output_path", Some(&path))?;
             self.reject_data_dir_state_file(explicit, "output_path")?;
             explicit.clone()
         } else {
-            let base_dir = if let Some(override_dir) = user_cfg.output_dir_override {
-                self.validate_output_location(&override_dir, "output_dir_override", Some(&path))?;
-                override_dir
-            } else {
-                self.paths.data_dir.join("exports")
-            };
+            let base_dir = self.resolve_output_dir(
+                None,
+                user_cfg.output_dir_override.as_deref(),
+                &self.paths.data_dir.join("exports"),
+                Some(&path),
+            )?;
             let stem = next_id("share");
             let file_name = if parsed.burn_taps {
                 format!("{stem}-taps.mp4")
@@ -1594,6 +1607,7 @@ impl DaemonState {
 #[derive(Debug)]
 pub struct DaemonServer {
     state: Arc<DaemonState>,
+    _data_lock: SingleInstanceLock,
     _lock: SingleInstanceLock,
     accept_thread: Option<JoinHandle<()>>,
     attach_thread: Option<JoinHandle<()>>,
@@ -1619,6 +1633,7 @@ impl DaemonServer {
         std::fs::create_dir_all(config.paths.shm_dir())?;
 
         let lock = SingleInstanceLock::try_acquire(config.paths.lock_file())?;
+        let data_lock = SingleInstanceLock::try_acquire(config.paths.data_lock_file())?;
         // Safe only now: the lock guarantees no other daemon owns these viewport files.
         let _removed_shm = MediaEngine::sweep_stale_shm_files(&config.paths.shm_dir());
 
@@ -1639,6 +1654,7 @@ impl DaemonServer {
         // discarded / unknown jobs are released and journals missing for active jobs are
         // re-created, so a crash between `complete_job` and `unpin_job` cannot leak pins.
         let pin_journal = PinJournal::open(&config.paths.data_dir)?;
+        capture::recover_provisional_jobs(&config.paths.data_dir, &catalog, &pin_journal)?;
         let (recovery, pin_reconcile) =
             catalog.recover_on_startup_with_pins(&utc_now_iso8601(), &pin_journal)?;
 
@@ -1655,6 +1671,15 @@ impl DaemonServer {
         let endpoint = config.paths.ipc_endpoint();
         let listener = LocalIpcListener::bind(&endpoint)?;
         let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let recovered_crashes: Vec<_> = catalog
+            .list_save_jobs()?
+            .into_iter()
+            .filter(|job| {
+                job.trigger_kind == SaveTriggerKind::CrashAutoSave
+                    && recovery.recovered_job_ids.contains(&job.job.job_id)
+            })
+            .map(|job| job.job.job_id)
+            .collect();
         let initial_crash_status = CrashAutoSaveStatusView {
             enabled: user_config.crash_autosave_enabled,
             cooldown_secs: user_config.crash_autosave_cooldown_secs,
@@ -1682,7 +1707,7 @@ impl DaemonServer {
             crash_autosave_status: Mutex::new(initial_crash_status),
             crash_autosave_gate: Mutex::new(CrashAutoSaveGate::new()),
             handover_gate: RwLock::new(()),
-            crash_jobs: std::sync::atomic::AtomicUsize::new(0),
+            crash_jobs: std::sync::atomic::AtomicUsize::new(recovered_crashes.len()),
             crash_tx: Mutex::new(Some(crash_tx)),
             faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
@@ -1696,16 +1721,7 @@ impl DaemonServer {
         });
 
         state.lock_capture()?.crash_daemon = Arc::downgrade(&state);
-        let attach_state = Arc::clone(&state);
-        let attach_thread = thread::Builder::new()
-            .name("arbd-auto-attach".into())
-            .spawn(move || {
-                while !attach_state.is_shutting_down() {
-                    adb_resources::reap(&attach_state.paths.data_dir.join("adb-sessions"));
-                    let _ = attach_state.auto_attach();
-                    thread::park_timeout(Duration::from_secs(2));
-                }
-            })?;
+        let attach_thread = spawn_auto_attach(Arc::clone(&state))?;
         let accept_state = Arc::clone(&state);
         let accept_thread = thread::Builder::new()
             .name("arbd-ipc-accept".to_owned())
@@ -1713,15 +1729,12 @@ impl DaemonServer {
                 run_accept_loop(&listener, &accept_state);
             })?;
 
-        let crash_state = Arc::clone(&state);
-        let crash_worker_thread = thread::Builder::new()
-            .name("arbd-crash-autosave".to_owned())
-            .spawn(move || {
-                run_crash_autosave_worker(&crash_state, &crash_rx);
-            })?;
+        let crash_worker_thread =
+            spawn_crash_worker(Arc::clone(&state), crash_rx, recovered_crashes)?;
 
         Ok(Self {
             state,
+            _data_lock: data_lock,
             _lock: lock,
             accept_thread: Some(accept_thread),
             attach_thread: Some(attach_thread),
@@ -1971,6 +1984,37 @@ fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Optio
     }
 }
 
+fn spawn_auto_attach(attach_state: Arc<DaemonState>) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("arbd-auto-attach".into())
+        .spawn(move || {
+            while !attach_state.is_shutting_down() {
+                adb_resources::reap(&attach_state.paths.data_dir.join("adb-sessions"));
+                let _ = attach_state.auto_attach();
+                thread::park_timeout(Duration::from_secs(2));
+            }
+        })
+}
+
+fn spawn_crash_worker(
+    crash_state: Arc<DaemonState>,
+    crash_rx: mpsc::Receiver<PendingSave>,
+    recovered_crashes: Vec<String>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("arbd-crash-autosave".to_owned())
+        .spawn(move || {
+            for id in recovered_crashes {
+                let result = crash_state
+                    .lock_capture()
+                    .and_then(|cap| cap.prepare_retry(&crash_state.catalog, &id))
+                    .and_then(|plan| phase2_materialize(&plan, &crash_state.catalog, &id));
+                record_crash_outcome(&crash_state, result);
+            }
+            run_crash_autosave_worker(&crash_state, &crash_rx);
+        })
+}
+
 fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
     while let Ok(pending) = rx.recv() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1985,27 +2029,27 @@ fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
                 "crash auto-save worker panicked".into(),
             ))
         });
-        let mut status = state
-            .crash_autosave_status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
-        match result {
-            Ok(outcome) => {
-                status.last_job_id = Some(outcome.job.job_id);
-                status.last_bundle_id = outcome.bundle_id;
-                status.last_error = outcome.job.last_error;
-            }
-            Err(e) => status.last_error = Some(e.to_string()),
+        record_crash_outcome(state, result);
+    }
+}
+
+fn record_crash_outcome(state: &DaemonState, result: Result<SaveOutcomeResponse, DaemonError>) {
+    let mut status = state
+        .crash_autosave_status
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
+    match result {
+        Ok(outcome) => {
+            status.last_job_id = Some(outcome.job.job_id);
+            status.last_bundle_id = outcome.bundle_id;
+            status.last_error = outcome.job.last_error;
         }
+        Err(e) => status.last_error = Some(e.to_string()),
     }
 }
 
 fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &CrashAutoSaveNotice) {
-    let _admission = state
-        .handover_gate
-        .read()
-        .unwrap_or_else(PoisonError::into_inner);
     if state.is_shutting_down() {
         return;
     }
@@ -2040,6 +2084,9 @@ fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &Cra
             .unwrap_or_else(PoisonError::into_inner);
         status.enabled = cfg.crash_autosave_enabled;
         status.cooldown_secs = cfg.crash_autosave_cooldown_secs;
+        if state.is_shutting_down() {
+            return;
+        }
         status.detected_crashes = status.detected_crashes.saturating_add(1);
         status.last_crash_process = Some(notice.process_name.clone());
         status.last_crash_exception = Some(notice.exception_class.clone());
@@ -2121,6 +2168,14 @@ fn run_accept_loop(listener: &LocalIpcListener, state: &Arc<DaemonState>) {
     // R3 S11: give in-flight requests a bounded time to finish (new non-`system.*` requests
     // are already rejected), join the threads that did, and leave only idle connections
     // blocked in a read detached until process teardown.
+    let save_deadline = Instant::now() + Duration::from_secs(15);
+    while matches!(
+        state.handover_gate.try_write(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ) && Instant::now() < save_deadline
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
     let deadline = Instant::now() + CLIENT_JOIN_TIMEOUT;
     while Instant::now() < deadline && client_threads.iter().any(|h| !h.is_finished()) {
         thread::sleep(Duration::from_millis(20));
@@ -2311,6 +2366,52 @@ mod supervisor_hardening_tests {
             cache_dir: tmp.path().join("c"),
             runtime_dir: tmp.path().join("r"),
         }
+    }
+
+    #[test]
+    fn p1_second_runtime_cannot_recover_same_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = test_paths(&tmp);
+        let first = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+        paths.runtime_dir = tmp.path().join("r2");
+        assert!(DaemonServer::start(DaemonConfig::new(paths.clone())).is_err());
+        first.shutdown();
+        DaemonServer::start(DaemonConfig::new(paths))
+            .unwrap()
+            .shutdown();
+    }
+
+    #[test]
+    fn p1_audit_shutdown_releases_data_lock_even_with_detached_idle_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = test_paths(&tmp);
+        // Also verify same-directory runtime_dir == data_dir never self-deadlocks.
+        paths.runtime_dir = paths.data_dir.clone();
+        let first = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+        // Hold an idle client stream open so `run_accept_loop` detaches its worker thread
+        // (which keeps an `Arc<DaemonState>` alive past `DaemonServer::shutdown()`).
+        let _idle_stream = arb_os::ipc::LocalIpcStream::connect(first.endpoint()).unwrap();
+        let _held_handle = first.shutdown_handle();
+        first.shutdown();
+
+        let mut second_paths = paths;
+        second_paths.runtime_dir = tmp.path().join("r2");
+        let second = DaemonServer::start(DaemonConfig::new(second_paths))
+            .expect("second daemon must acquire .arbd-data.lock immediately after shutdown");
+        second.shutdown();
+    }
+
+    #[test]
+    fn p1_shutdown_waits_for_save_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let state = Arc::clone(&server.state);
+        let save = state.handover_gate.read().unwrap();
+        let shutdown = thread::spawn(move || server.shutdown());
+        thread::sleep(CLIENT_JOIN_TIMEOUT + Duration::from_millis(200));
+        assert!(!shutdown.is_finished());
+        drop(save);
+        shutdown.join().unwrap();
     }
 
     #[test]

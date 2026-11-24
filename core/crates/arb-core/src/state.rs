@@ -405,6 +405,8 @@ pub enum RingWriteDecision {
         /// Total bytes held by pinned chunks (preserved untouched).
         pinned_bytes: u64,
     },
+    /// The incoming chunk exceeds the entire ring budget on its own.
+    ChunkTooLarge,
     /// Ring quota is full with pinned or open chunks; stop new capture without evicting pins.
     StopRingFullPinned {
         /// Remaining ring bytes after considering all evictable chunks.
@@ -466,12 +468,11 @@ impl RingEvictionPlanner {
             };
         }
 
-        let mut total_bytes: u64 = chunks
-            .iter()
-            .fold(0u64, |acc, c| acc.saturating_add(c.bytes));
-        let mut total_duration_ns: u64 = chunks
-            .iter()
-            .fold(0u64, |acc, c| acc.saturating_add(c.duration_ns));
+        let mut total_bytes: u128 = chunks.iter().map(|c| u128::from(c.bytes)).sum();
+        let mut total_duration_ns: u128 = chunks.iter().map(|c| u128::from(c.duration_ns)).sum();
+        if incoming_bytes > self.policy.max_ring_bytes {
+            return RingWriteDecision::ChunkTooLarge;
+        }
 
         let mut evictable: Vec<&RingChunkMeta> =
             chunks.iter().filter(|c| c.is_evictable()).collect();
@@ -484,19 +485,19 @@ impl RingEvictionPlanner {
         let mut evict_chunk_ids = Vec::new();
         for candidate in evictable {
             let over_bytes =
-                total_bytes.saturating_add(incoming_bytes) > self.policy.max_ring_bytes;
-            let over_duration = total_duration_ns > self.policy.max_ring_duration_ns;
+                total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes);
+            let over_duration = total_duration_ns > u128::from(self.policy.max_ring_duration_ns);
             if !over_bytes && !over_duration {
                 break;
             }
             evict_chunk_ids.push(candidate.chunk_id.clone());
-            total_bytes = total_bytes.saturating_sub(candidate.bytes);
-            total_duration_ns = total_duration_ns.saturating_sub(candidate.duration_ns);
+            total_bytes -= u128::from(candidate.bytes);
+            total_duration_ns -= u128::from(candidate.duration_ns);
         }
 
-        if total_bytes.saturating_add(incoming_bytes) > self.policy.max_ring_bytes {
+        if total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes) {
             return RingWriteDecision::StopRingFullPinned {
-                remaining_bytes: total_bytes,
+                remaining_bytes: u64::try_from(total_bytes).unwrap_or(u64::MAX),
                 incoming_bytes,
                 max_ring_bytes: self.policy.max_ring_bytes,
                 pinned_bytes,

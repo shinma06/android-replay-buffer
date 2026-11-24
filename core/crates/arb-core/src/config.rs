@@ -211,6 +211,8 @@ pub struct ArbConfig {
     pub device_serial: Option<String>,
     /// Default lookback save window in real elapsed seconds (`5..=600`, default `300`).
     pub save_window_secs: u32,
+    /// Minimum trash retention before physical deletion, in seconds.
+    pub gc_grace_secs: u64,
     /// Maximum live Zone-1 ring buffer byte budget (default `1.5 GiB`).
     pub ring_budget_bytes: u64,
     /// Minimum free host disk space safety floor in bytes (default `3 GiB`).
@@ -244,6 +246,7 @@ impl ArbConfig {
             capture_mode: CaptureMode::VideoAndLogs,
             device_serial: None,
             save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
+            gc_grace_secs: 86_400,
             ring_budget_bytes: DEFAULT_RING_BUDGET_BYTES,
             min_free_disk_bytes: DEFAULT_MIN_FREE_DISK_BYTES,
             video_max_size: DEFAULT_VIDEO_MAX_SIZE,
@@ -337,6 +340,9 @@ impl ArbConfig {
             DeviceSerialPatch::Unchanged => {}
             DeviceSerialPatch::Clear => next.device_serial = None,
             DeviceSerialPatch::Set(serial) => next.device_serial = Some(serial.clone()),
+        }
+        if let Some(v) = patch.gc_grace_secs {
+            next.gc_grace_secs = v;
         }
         if let Some(v) = patch.save_window_secs {
             next.save_window_secs = v;
@@ -502,6 +508,9 @@ pub struct ArbConfigPatch {
     /// Updated default lookback save window in seconds (`5..=600`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_window_secs: Option<u32>,
+    /// Updated trash retention in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_grace_secs: Option<u64>,
     /// Updated live ring byte budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_budget_bytes: Option<u64>,

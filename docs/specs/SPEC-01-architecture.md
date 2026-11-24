@@ -46,9 +46,11 @@ arb-core   (純粋ドメイン：OS/ADB/SQLite/IPC/Media 依存ゼロ)
 - プロジェクト本体は `MIT OR Apache-2.0`。
 - 許可ライセンスは `MIT` / `Apache-2.0` / `BSD-2-Clause` / `BSD-3-Clause` / `ISC` / `Zlib` / `CC0-1.0` / `Unlicense` / `0BSD` / `Unicode-3.0` 等および OS 標準フレームワークに限定する。
 - **GPL / AGPL は静的・動的を問わず禁止** とし、`core/scripts/check-licenses.py`（`cargo metadata --format-version 1`）で自動検査する。許容的 OR 条項（例: `MIT OR Apache-2.0 OR LGPL-2.1-or-later`）を選択する場合のみ明示ログを出して許可する。
-- 有料の Apple 公証や Windows コード署名証明書は導入しない。GitHub Actions で `macos-arm64` / `macos-x64` / `linux-x64` / `windows-x64` 成果物とプラグイン ZIP を生成し、OS 初回許可手順をドキュメント化する。
+- 有料の Apple 公証や Windows コード署名証明書は導入しない。GitHub Actions で Apple Silicon（`macos-arm64`） / `linux-x64` / `windows-x64` 成果物とプラグイン ZIP を生成し、OS 初回許可手順をドキュメント化する。
 
 ## 4. Entire チェックポイント運用境界
 
 - 本リポジトリは `.entire/settings.json` によりチェックポイントを専用の非公開リモート（`shinma06/entire-checkpoints`）へ同期する構成となっている。
 - チェックポイントや録画・生ログ・診断データを `origin` へ決してプッシュしない。
+
+デーモンは起動時にランタイムの `arbd.lock` とデータ領域の `.arbd-data.lock` を取得してからカタログとリングを回復する。異なるランタイムを指定しても、同じ保存先への書き込みは一つのデーモンだけが行う。

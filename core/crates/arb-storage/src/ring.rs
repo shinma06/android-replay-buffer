@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use arb_core::state::{
@@ -84,6 +84,43 @@ impl RingChunkKind {
     }
 }
 
+/// Capture provenance and seek anchors saved atomically with closed chunk metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent presence flags for interleaved streams"
+)]
+pub struct CaptureChunkInfo {
+    /// Approximate host boot epoch. Compared with tolerance for clock sampling jitter.
+    pub host_boot_ns: i64,
+    /// Whether ingest timestamps use the host continuous clock.
+    #[serde(default)]
+    pub host_live: bool,
+    /// Physical device that produced this chunk.
+    pub device_serial: String,
+    /// First and last ingest stamps, independent of FIFO ordering.
+    pub ingest_range: (i64, i64),
+    /// The chunk contains video picture data.
+    pub has_video: bool,
+    /// The chunk contains a random-access picture.
+    pub has_keyframe: bool,
+    /// The chunk contains video parameter sets.
+    pub has_video_config: bool,
+    /// The chunk contains encoded audio.
+    pub has_audio: bool,
+    /// The chunk contains audio decoder configuration.
+    pub has_audio_config: bool,
+    /// The chunk contains a clock or device anchor.
+    pub has_anchor: bool,
+    /// Last known Android boot and paired heartbeat (device boottime, host continuous).
+    pub heartbeat: Option<(String, i64, i64)>,
+    /// Last known video dimensions.
+    pub video_size: (u16, u16),
+    /// Decoder configuration retained when earlier chunks rotate out.
+    pub video_config: Option<Vec<u8>>,
+    /// AAC `AudioSpecificConfig` in effect at the end of this chunk.
+    pub audio_config: Option<Vec<u8>>,
+}
 /// Metadata describing a live or closed immutable Zone-1 ring chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RingChunkDescriptor {
@@ -103,6 +140,32 @@ pub struct RingChunkDescriptor {
     pub status: RingChunkStatus,
     /// Lowercase 64-hex SHA-256 digest populated once the chunk is closed.
     pub sha256: Option<String>,
+    /// Absent for chunks written before capture provenance was recorded.
+    #[serde(default)]
+    pub capture: Option<CaptureChunkInfo>,
+}
+
+impl RingChunkDescriptor {
+    /// Reads a closed chunk and verifies its recorded size and digest.
+    ///
+    /// # Errors
+    /// Returns an error when the file cannot be read or does not match its descriptor.
+    pub fn read_verified(&self, ring_dir: &Path) -> Result<Vec<u8>, StorageError> {
+        let path = ring_dir.join(&self.file_name);
+        let bytes = fs::read(&path).map_err(|e| StorageError::io("read_ring_chunk", &path, e))?;
+        if Some(self.bytes) != u64::try_from(bytes.len()).ok()
+            || self
+                .sha256
+                .as_ref()
+                .is_none_or(|digest| *digest != sha256_bytes(&bytes))
+        {
+            return Err(StorageError::InvalidBundle {
+                path,
+                reason: "ring chunk digest mismatch".into(),
+            });
+        }
+        Ok(bytes)
+    }
 }
 
 /// Durable Phase-1 pin journal record written to `<data_dir>/save_jobs/<job-id>.json`.
@@ -177,7 +240,7 @@ impl PinJournal {
         fsync_file(&file)?;
         drop(file);
 
-        fs::rename(&temp_path, &final_path)
+        arb_os::fs::replace_file(&temp_path, &final_path)
             .map_err(|source| StorageError::io("commit_pin_journal", &final_path, source))?;
         fsync_dir(&self.jobs_dir)?;
         Ok(final_path)
@@ -304,18 +367,6 @@ impl PinJournal {
     }
 }
 
-#[derive(Debug)]
-struct OpenChunkHandle {
-    file: File,
-    hasher: Sha256,
-}
-
-#[derive(Debug)]
-struct ChunkEntry {
-    descriptor: RingChunkDescriptor,
-    open: Option<OpenChunkHandle>,
-}
-
 /// Zone-1 append-only live ring store with Phase-1 pin protection and disk-pressure guard.
 #[derive(Debug)]
 pub struct RingStore<D: DiskSpaceProvider = OsDiskSpaceProvider> {
@@ -323,7 +374,7 @@ pub struct RingStore<D: DiskSpaceProvider = OsDiskSpaceProvider> {
     pin_journal: PinJournal,
     planner: RingEvictionPlanner,
     disk_provider: D,
-    chunks: BTreeMap<String, ChunkEntry>,
+    chunks: BTreeMap<String, RingChunkDescriptor>,
     discontinuities: Vec<DiscontinuityEvent>,
     pressure_active: bool,
 }
@@ -427,172 +478,6 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         self.pressure_active
     }
 
-    /// Opens a new append-only chunk file under `<data_dir>/ring/`.
-    ///
-    /// Checks host free-disk pressure before creating any file on disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::InvalidArgument`] if `chunk_id` is invalid or already
-    /// exists, [`StorageError::StoragePressureStop`] if host free disk is below the
-    /// safety floor, or I/O errors if file creation fails.
-    pub fn open_chunk(
-        &mut self,
-        chunk_id: impl Into<String>,
-        kind: RingChunkKind,
-        created_cont_ns: i64,
-    ) -> Result<String, StorageError> {
-        let chunk_id = chunk_id.into();
-        validate_simple_id("chunk_id", &chunk_id)?;
-        if self.chunks.contains_key(&chunk_id) {
-            return Err(StorageError::InvalidArgument {
-                name: "chunk_id",
-                reason: format!("chunk `{chunk_id}` already exists in ring store"),
-            });
-        }
-
-        // Enforce host disk floor before creating any new file on disk.
-        self.enforce_budget_inner(0, created_cont_ns)?;
-
-        let file_name = format!("{}-{chunk_id}.chunk", kind.as_str());
-        let file_path = self.ring_dir.join(&file_name);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file_path)
-            .map_err(|source| StorageError::io("create_ring_chunk", &file_path, source))?;
-
-        let descriptor = RingChunkDescriptor {
-            chunk_id: chunk_id.clone(),
-            kind,
-            file_name,
-            created_cont_ns,
-            duration_ns: 0,
-            bytes: 0,
-            status: RingChunkStatus::Open,
-            sha256: None,
-        };
-        self.chunks.insert(
-            chunk_id.clone(),
-            ChunkEntry {
-                descriptor,
-                open: Some(OpenChunkHandle {
-                    file,
-                    hasher: Sha256::new(),
-                }),
-            },
-        );
-        Ok(chunk_id)
-    }
-
-    /// Appends `payload` bytes to an open ring chunk after running eviction and
-    /// disk-pressure checks.
-    ///
-    /// Returns the list of evicted unpinned closed chunk IDs, if any.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::NotFound`] if `chunk_id` does not exist,
-    /// [`StorageError::InvalidArgument`] if the chunk is already closed,
-    /// [`StorageError::StoragePressureStop`] if host free disk is below the floor,
-    /// [`StorageError::RingFullPinned`] if remaining chunks are all pinned/open, or I/O errors.
-    pub fn append_to_chunk(
-        &mut self,
-        chunk_id: &str,
-        payload: &[u8],
-        added_duration_ns: u64,
-        observed_cont_ns: i64,
-    ) -> Result<Vec<String>, StorageError> {
-        let is_open = self
-            .chunks
-            .get(chunk_id)
-            .ok_or_else(|| StorageError::NotFound {
-                entity: "chunk",
-                id: chunk_id.to_owned(),
-            })?
-            .open
-            .is_some();
-        if !is_open {
-            return Err(StorageError::InvalidArgument {
-                name: "chunk_id",
-                reason: format!("chunk `{chunk_id}` is already closed and immutable"),
-            });
-        }
-
-        let incoming_bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-        let evicted = self.enforce_budget_inner(incoming_bytes, observed_cont_ns)?;
-
-        let ring_dir = &self.ring_dir;
-        let entry = self
-            .chunks
-            .get_mut(chunk_id)
-            .ok_or_else(|| StorageError::NotFound {
-                entity: "chunk",
-                id: chunk_id.to_owned(),
-            })?;
-        let handle = entry
-            .open
-            .as_mut()
-            .ok_or_else(|| StorageError::InvalidArgument {
-                name: "chunk_id",
-                reason: format!("chunk `{chunk_id}` is closed"),
-            })?;
-        let chunk_path = ring_dir.join(&entry.descriptor.file_name);
-        if let Err(source) = handle.file.write_all(payload) {
-            // A partial write leaves bytes the hasher/descriptor never saw: cut the file back
-            // to the last known-good length and seal the chunk so its sha256/bytes stay
-            // consistent and it remains evictable (never a zombie `Open` entry).
-            let valid = entry.descriptor.bytes;
-            let truncated = handle
-                .file
-                .set_len(valid)
-                .and_then(|()| handle.file.seek(SeekFrom::Start(valid)).map(|_| ()));
-            if truncated.is_ok() {
-                if finalize_open_entry(ring_dir, entry).is_err() {
-                    poison_entry(entry);
-                }
-            } else {
-                poison_entry(entry);
-            }
-            return Err(StorageError::io("append_ring_chunk", &chunk_path, source));
-        }
-        handle.hasher.update(payload);
-        entry.descriptor.bytes = entry.descriptor.bytes.saturating_add(incoming_bytes);
-        entry.descriptor.duration_ns = entry
-            .descriptor
-            .duration_ns
-            .saturating_add(added_duration_ns);
-
-        Ok(evicted)
-    }
-
-    /// Finalizes and `fsync`s an open chunk, marking it closed and immutable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::NotFound`] if `chunk_id` is absent,
-    /// [`StorageError::InvalidArgument`] if already closed, or I/O / OS errors.
-    ///
-    /// The open handle is released only after the `fsync` and the metadata write both
-    /// succeed; on failure the chunk stays `Open` (and appendable/closable) instead of
-    /// becoming an untracked zombie.
-    pub fn close_chunk(&mut self, chunk_id: &str) -> Result<RingChunkDescriptor, StorageError> {
-        let entry = self
-            .chunks
-            .get_mut(chunk_id)
-            .ok_or_else(|| StorageError::NotFound {
-                entity: "chunk",
-                id: chunk_id.to_owned(),
-            })?;
-        if entry.open.is_none() {
-            return Err(StorageError::InvalidArgument {
-                name: "chunk_id",
-                reason: format!("chunk `{chunk_id}` is already closed"),
-            });
-        }
-        finalize_open_entry(&self.ring_dir, entry)
-    }
-
     /// Atomically checks budget/disk pressure, evicts eligible old unpinned chunks,
     /// and writes a complete closed immutable chunk in one operation.
     ///
@@ -610,6 +495,22 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         created_cont_ns: i64,
         duration_ns: u64,
         payload: &[u8],
+    ) -> Result<(RingChunkDescriptor, Vec<String>), StorageError> {
+        self.write_capture_chunk(chunk_id, kind, created_cont_ns, duration_ns, payload, None)
+    }
+
+    /// Writes a closed chunk with capture provenance and seek anchors.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::write_closed_chunk`].
+    pub fn write_capture_chunk(
+        &mut self,
+        chunk_id: impl Into<String>,
+        kind: RingChunkKind,
+        created_cont_ns: i64,
+        duration_ns: u64,
+        payload: &[u8],
+        capture: Option<CaptureChunkInfo>,
     ) -> Result<(RingChunkDescriptor, Vec<String>), StorageError> {
         let chunk_id = chunk_id.into();
         validate_simple_id("chunk_id", &chunk_id)?;
@@ -651,16 +552,11 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             bytes: incoming_bytes,
             status: RingChunkStatus::Closed,
             sha256: Some(digest),
+            capture,
         };
         write_chunk_meta(&self.ring_dir, &descriptor)?;
 
-        self.chunks.insert(
-            chunk_id,
-            ChunkEntry {
-                descriptor: descriptor.clone(),
-                open: None,
-            },
-        );
+        self.chunks.insert(chunk_id, descriptor.clone());
         Ok((descriptor, evicted))
     }
 
@@ -733,13 +629,54 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     /// Returns [`StorageError::NotFound`] if `chunk_id` is absent, or [`StorageError::Io`]
     /// if reading the chunk file fails.
     pub fn read_chunk(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
-        let path = self
-            .chunk_path(chunk_id)
+        let desc = self
+            .descriptor(chunk_id)
             .ok_or_else(|| StorageError::NotFound {
                 entity: "chunk",
                 id: chunk_id.to_owned(),
             })?;
-        fs::read(&path).map_err(|source| StorageError::io("read_ring_chunk", &path, source))
+        desc.read_verified(&self.ring_dir)
+    }
+
+    /// Looks up immutable chunk metadata by ID.
+    #[must_use]
+    pub fn descriptor(&self, id: &str) -> Option<&RingChunkDescriptor> {
+        self.chunks.get(id)
+    }
+
+    /// Removes closed unpinned chunks named in `chunk_ids` (e.g., stale pre-reboot chunks),
+    /// leaving any pinned chunk strictly untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if pin journals cannot be read or chunk files cannot be removed.
+    pub fn purge_unpinned_chunks(
+        &mut self,
+        chunk_ids: &[String],
+    ) -> Result<Vec<String>, StorageError> {
+        if chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pinned_ids = self.pin_journal.pinned_chunk_ids()?;
+        let mut purged = Vec::new();
+        for chunk_id in chunk_ids {
+            if pinned_ids.contains(chunk_id) {
+                continue;
+            }
+            let is_closed = self
+                .chunks
+                .get(chunk_id)
+                .is_some_and(|c| c.status == RingChunkStatus::Closed);
+            if !is_closed {
+                continue;
+            }
+            if let Some(chunk) = self.chunks.get(chunk_id) {
+                remove_chunk_files(&self.ring_dir, chunk)?;
+                self.chunks.remove(chunk_id);
+                purged.push(chunk_id.clone());
+            }
+        }
+        Ok(purged)
     }
 
     /// Returns the filesystem path of a tracked chunk, if present.
@@ -747,18 +684,14 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     pub fn chunk_path(&self, chunk_id: &str) -> Option<PathBuf> {
         self.chunks
             .get(chunk_id)
-            .map(|entry| self.ring_dir.join(&entry.descriptor.file_name))
+            .map(|entry| self.ring_dir.join(&entry.file_name))
     }
 
     /// Returns descriptors for all chunks currently tracked in the ring store,
     /// ordered by creation timestamp then `chunk_id`.
     #[must_use]
     pub fn chunks(&self) -> Vec<RingChunkDescriptor> {
-        let mut list: Vec<RingChunkDescriptor> = self
-            .chunks
-            .values()
-            .map(|entry| entry.descriptor.clone())
-            .collect();
+        let mut list: Vec<RingChunkDescriptor> = self.chunks.values().cloned().collect();
         list.sort_by(|a, b| {
             a.created_cont_ns
                 .cmp(&b.created_cont_ns)
@@ -788,12 +721,12 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             .chunks
             .values()
             .map(|entry| RingChunkMeta {
-                chunk_id: entry.descriptor.chunk_id.clone(),
-                created_cont_ns: entry.descriptor.created_cont_ns,
-                duration_ns: entry.descriptor.duration_ns,
-                bytes: entry.descriptor.bytes,
-                status: entry.descriptor.status,
-                pin: if pinned_ids.contains(&entry.descriptor.chunk_id) {
+                chunk_id: entry.chunk_id.clone(),
+                created_cont_ns: entry.created_cont_ns,
+                duration_ns: entry.duration_ns,
+                bytes: entry.bytes,
+                status: entry.status,
+                pin: if pinned_ids.contains(&entry.chunk_id) {
                     PinStatus::Pinned
                 } else {
                     PinStatus::Unpinned
@@ -816,12 +749,13 @@ impl<D: DiskSpaceProvider> RingStore<D> {
                     let is_closed = self
                         .chunks
                         .get(&chunk_id)
-                        .is_some_and(|c| c.descriptor.status == RingChunkStatus::Closed);
+                        .is_some_and(|c| c.status == RingChunkStatus::Closed);
                     if !is_closed {
                         continue;
                     }
-                    if let Some(removed) = self.chunks.remove(&chunk_id) {
-                        remove_chunk_files(&self.ring_dir, &removed.descriptor)?;
+                    if let Some(chunk) = self.chunks.get(&chunk_id) {
+                        remove_chunk_files(&self.ring_dir, chunk)?;
+                        self.chunks.remove(&chunk_id);
                         evicted.push(chunk_id);
                     }
                 }
@@ -857,6 +791,10 @@ impl<D: DiskSpaceProvider> RingStore<D> {
                     event: Box::new(event),
                 })
             }
+            RingWriteDecision::ChunkTooLarge => Err(StorageError::InvalidArgument {
+                name: "incoming_bytes",
+                reason: "chunk exceeds ring byte budget".into(),
+            }),
             RingWriteDecision::StopRingFullPinned {
                 remaining_bytes,
                 incoming_bytes,
@@ -907,39 +845,6 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
         out.push(char::from(HEX[usize::from(b & 0x0f)]));
     }
     out
-}
-
-/// Seals an open chunk: `fsync`, digest, durable metadata, then (only then) releases the
-/// handle and marks it `Closed`. On error the entry is left untouched (still `Open`).
-fn finalize_open_entry(
-    ring_dir: &Path,
-    entry: &mut ChunkEntry,
-) -> Result<RingChunkDescriptor, StorageError> {
-    let handle = entry
-        .open
-        .as_ref()
-        .ok_or_else(|| StorageError::InvalidArgument {
-            name: "chunk_id",
-            reason: format!("chunk `{}` is already closed", entry.descriptor.chunk_id),
-        })?;
-    fsync_file(&handle.file)?;
-    let digest = hex_lower(&handle.hasher.clone().finalize());
-    let mut descriptor = entry.descriptor.clone();
-    descriptor.status = RingChunkStatus::Closed;
-    descriptor.sha256 = Some(digest);
-    write_chunk_meta(ring_dir, &descriptor)?;
-    entry.open = None;
-    entry.descriptor = descriptor.clone();
-    Ok(descriptor)
-}
-
-/// Last resort when a chunk cannot be sealed durably: drop the handle and mark it `Closed`
-/// in memory (no digest) so it is never appended to again and stays evictable. Without a
-/// `.meta.json`, the next `open` re-finalises or deletes it as an orphan.
-fn poison_entry(entry: &mut ChunkEntry) {
-    entry.open = None;
-    entry.descriptor.status = RingChunkStatus::Closed;
-    entry.descriptor.sha256 = None;
 }
 
 const ALL_CHUNK_KINDS: [RingChunkKind; 5] = [
@@ -997,7 +902,9 @@ fn hash_file(path: &Path) -> Result<(u64, String), StorageError> {
 ///   and the metadata write) → finalised as `Closed` (hashed, sidecar written) so it is
 ///   budgeted and evictable, or deleted when its name is not a valid chunk file name;
 /// - leftover `.*.meta.json.tmp` files are deleted.
-fn recover_ring_dir(ring_dir: &Path) -> Result<BTreeMap<String, ChunkEntry>, StorageError> {
+fn recover_ring_dir(
+    ring_dir: &Path,
+) -> Result<BTreeMap<String, RingChunkDescriptor>, StorageError> {
     let mut chunks = BTreeMap::new();
     let mut chunk_files = BTreeSet::new();
     let mut meta_files = Vec::new();
@@ -1040,13 +947,7 @@ fn recover_ring_dir(ring_dir: &Path) -> Result<BTreeMap<String, ChunkEntry>, Sto
             continue;
         }
         chunk_files.remove(&descriptor.file_name);
-        chunks.insert(
-            descriptor.chunk_id.clone(),
-            ChunkEntry {
-                descriptor,
-                open: None,
-            },
-        );
+        chunks.insert(descriptor.chunk_id.clone(), descriptor);
     }
 
     for name in chunk_files {
@@ -1068,17 +969,12 @@ fn recover_ring_dir(ring_dir: &Path) -> Result<BTreeMap<String, ChunkEntry>, Sto
             created_cont_ns: 0,
             duration_ns: 0,
             bytes,
+            capture: None,
             status: RingChunkStatus::Closed,
             sha256: Some(digest),
         };
         write_chunk_meta(ring_dir, &descriptor)?;
-        chunks.insert(
-            chunk_id,
-            ChunkEntry {
-                descriptor,
-                open: None,
-            },
-        );
+        chunks.insert(chunk_id, descriptor);
     }
     Ok(chunks)
 }
@@ -1104,7 +1000,7 @@ fn write_chunk_meta(ring_dir: &Path, descriptor: &RingChunkDescriptor) -> Result
     fsync_file(&file)?;
     drop(file);
 
-    fs::rename(&temp_path, &final_path)
+    arb_os::fs::replace_file(&temp_path, &final_path)
         .map_err(|source| StorageError::io("commit_chunk_meta", &final_path, source))?;
     fsync_dir(ring_dir)?;
     Ok(())
@@ -1114,18 +1010,11 @@ fn remove_chunk_files(
     ring_dir: &Path,
     descriptor: &RingChunkDescriptor,
 ) -> Result<(), StorageError> {
-    let chunk_path = ring_dir.join(&descriptor.file_name);
-    match fs::remove_file(&chunk_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => return Err(StorageError::io("evict_ring_chunk", &chunk_path, source)),
-    }
-    let meta_path = chunk_meta_path(ring_dir, &descriptor.chunk_id);
-    match fs::remove_file(&meta_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => return Err(StorageError::io("evict_chunk_meta", &meta_path, source)),
-    }
+    remove_file_if_exists(
+        "evict_chunk_meta",
+        &chunk_meta_path(ring_dir, &descriptor.chunk_id),
+    )?;
+    remove_file_if_exists("evict_ring_chunk", &ring_dir.join(&descriptor.file_name))?;
     Ok(())
 }
 
@@ -1183,11 +1072,9 @@ mod tests {
         let mut ring = RingStore::open_with_disk_provider(tmp.path(), policy, disk.clone())
             .expect("ring store open must succeed");
 
-        ring.open_chunk("c1", RingChunkKind::Video, 100)
-            .expect("open c1 must succeed");
-        ring.append_to_chunk("c1", &[1u8; 80], 100_000_000, 110)
-            .expect("append c1 must succeed");
-        let c1 = ring.close_chunk("c1").expect("close c1 must succeed");
+        let (c1, _) = ring
+            .write_closed_chunk("c1", RingChunkKind::Video, 100, 100_000_000, &[1u8; 80])
+            .expect("write c1");
         assert_eq!(c1.status, RingChunkStatus::Closed, "c1 must be closed");
         assert_eq!(c1.bytes, 80, "c1 byte count must equal 80");
         assert!(c1.sha256.is_some(), "closed chunk must record sha256");

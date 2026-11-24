@@ -616,7 +616,7 @@ impl TrayMenuEvent {
                 Some(("capture.start", json!({})))
             }
             Self::ToggleCapture => Some(("capture.stop", json!({}))),
-            Self::StopDaemonAndQuit => Some(("system.shutdown", json!({}))),
+            Self::StopDaemonAndQuit => Some(("system.shutdown_for_handover", json!({}))),
             Self::RevealBundle { .. } | Self::QuitTray => None,
         }
     }
@@ -1100,6 +1100,16 @@ impl TrayController {
             && err.is_transport()
         {
             self.client = None;
+        }
+        if matches!(event, TrayMenuEvent::StopDaemonAndQuit)
+            && let Ok(response) = &result
+            && response["ok"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                code: -32009,
+                message: "Android Studio が管理中、または保存処理中のため終了を延期しました。"
+                    .into(),
+            });
         }
         result.map(Some)
     }

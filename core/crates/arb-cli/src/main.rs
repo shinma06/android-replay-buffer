@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![expect(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -7,8 +8,7 @@
 //! Scriptable CLI client (`arb-cli`) communicating with `arbd` strictly over local IPC + SHM.
 
 mod mcp;
-mod process_os;
-mod rpc;
+use arb_os::rpc;
 mod upgrade;
 
 use std::env;

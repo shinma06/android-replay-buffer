@@ -7,8 +7,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcStream, read_frame_line, write_frame_line};
-use arb_os::paths::ArbPaths;
+use crate::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcStream, read_frame_line, write_frame_line};
+use crate::paths::ArbPaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -16,7 +16,7 @@ use thiserror::Error;
 use crate::process_os::configure_detached_daemon;
 
 /// Control-plane IPC protocol version required by this `arb-cli` binary (SPEC-01 §1 / R3 S16c).
-pub(crate) const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
+pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
 
 const DEFAULT_AUTO_START_TIMEOUT_MS: u64 = 5_000;
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
@@ -25,7 +25,7 @@ const LOG_TAIL_MAX_BYTES: usize = 2_048;
 /// Controls whether connecting to `arbd` should auto-spawn the sibling `arbd` binary.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AutoStartMode {
+pub enum AutoStartMode {
     /// Fail immediately if `arbd` is not already listening.
     Disabled,
     /// Spawn sibling `arbd` if the IPC endpoint is unavailable and wait for `system.hello`.
@@ -35,10 +35,10 @@ pub(crate) enum AutoStartMode {
 /// Errors returned by [`RpcClient`].
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub(crate) enum RpcClientError {
+pub enum RpcClientError {
     /// OS IPC transport error.
     #[error("ipc error: {0}")]
-    Os(#[from] arb_os::OsError),
+    Os(#[from] crate::OsError),
     /// Standard I/O error (e.g., spawning `arbd`).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -84,6 +84,16 @@ pub(crate) enum RpcClientError {
     },
 }
 
+impl RpcClientError {
+    /// `true` when the transport itself is unusable (I/O, EOF, protocol desync, or a
+    /// wrong-protocol daemon) and the connection must be dropped, as opposed to an
+    /// application-level [`RpcClientError::Rpc`] error the daemon answered cleanly.
+    #[must_use]
+    pub const fn is_transport(&self) -> bool {
+        !matches!(self, Self::Rpc { .. })
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct OutgoingRequest<'a> {
     jsonrpc: &'static str,
@@ -106,14 +116,14 @@ struct IncomingResponse {
 
 /// Persistent bidirectional JSON-RPC 2.0 client connected to `arbd` over local IPC.
 #[derive(Debug)]
-pub(crate) struct RpcClient {
+pub struct RpcClient {
     reader: BufReader<LocalIpcStream>,
     writer: LocalIpcStream,
     next_id: u64,
 }
 
 /// Resolves the auto-start timeout from `ARB_AUTO_START_TIMEOUT_MS` (default 5000 ms, R3 S16d).
-pub(crate) fn auto_start_timeout() -> Duration {
+pub fn auto_start_timeout() -> Duration {
     auto_start_timeout_from_str(std::env::var("ARB_AUTO_START_TIMEOUT_MS").ok().as_deref())
 }
 
@@ -133,10 +143,7 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] if connecting, auto-starting, or `system.hello` verification
     /// fails.
-    pub(crate) fn connect(
-        paths: &ArbPaths,
-        auto_start: AutoStartMode,
-    ) -> Result<Self, RpcClientError> {
+    pub fn connect(paths: &ArbPaths, auto_start: AutoStartMode) -> Result<Self, RpcClientError> {
         let endpoint = paths.ipc_endpoint();
         match Self::connect_endpoint(&endpoint) {
             Ok(mut client) => {
@@ -163,7 +170,7 @@ impl RpcClient {
     /// # Errors
     ///
     /// Returns [`RpcClientError::Os`] if the endpoint cannot be connected.
-    pub(crate) fn connect_endpoint(endpoint: &Path) -> Result<Self, RpcClientError> {
+    pub fn connect_endpoint(endpoint: &Path) -> Result<Self, RpcClientError> {
         let stream = LocalIpcStream::connect(endpoint)?;
         let writer = stream.try_clone()?;
         let reader = BufReader::new(stream);
@@ -181,7 +188,7 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError::ProtocolVersionMismatch`] if the daemon reports an
     /// incompatible protocol version, or transport/RPC errors.
-    pub(crate) fn verify_hello(&mut self) -> Result<Value, RpcClientError> {
+    pub fn verify_hello(&mut self) -> Result<Value, RpcClientError> {
         let hello = self.call("system.hello", json!({}))?;
         let actual = hello.get("protocol_version").and_then(Value::as_u64);
         if actual != Some(u64::from(EXPECTED_IPC_PROTOCOL_VERSION)) {
@@ -198,7 +205,7 @@ impl RpcClient {
     /// # Errors
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
-    pub(crate) fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
 
@@ -234,7 +241,7 @@ impl RpcClient {
 /// # Errors
 ///
 /// Returns [`RpcClientError::Io`] if creating the log file or spawning `arbd` fails.
-pub(crate) fn spawn_daemon_process(paths: &ArbPaths) -> Result<(Child, PathBuf), RpcClientError> {
+pub fn spawn_daemon_process(paths: &ArbPaths) -> Result<(Child, PathBuf), RpcClientError> {
     fs::create_dir_all(&paths.runtime_dir)?;
     let log_path = paths.runtime_dir.join("arbd.log");
     let log_file = OpenOptions::new()
@@ -265,7 +272,7 @@ pub(crate) fn spawn_daemon_process(paths: &ArbPaths) -> Result<(Child, PathBuf),
 ///
 /// Returns [`RpcClientError::ProtocolVersionMismatch`], [`RpcClientError::DaemonExited`], or
 /// [`RpcClientError::AutoStartTimeout`].
-pub(crate) fn wait_for_daemon(
+pub fn wait_for_daemon(
     endpoint: &Path,
     timeout: Duration,
     mut child: Option<&mut Child>,
@@ -320,18 +327,22 @@ fn read_log_tail(path: &Path) -> String {
     }
 }
 
-pub(crate) fn locate_arbd_binary() -> PathBuf {
-    if let Some(explicit) = std::env::var_os("ARB_DAEMON_BIN") {
+/// Resolves the configured, sibling, or PATH daemon executable.
+#[must_use]
+pub fn locate_arbd_binary() -> PathBuf {
+    if let Some(explicit) =
+        std::env::var_os("ARB_DAEMON_PATH").or_else(|| std::env::var_os("ARB_DAEMON_BIN"))
+    {
         let p = PathBuf::from(explicit);
         if p.is_file() {
             return p;
         }
     }
-    let bin_name = if cfg!(windows) { "arbd.exe" } else { "arbd" };
+    let bin_name = format!("arbd{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let sibling = dir.join(bin_name);
+        let sibling = dir.join(&bin_name);
         if sibling.is_file() {
             return sibling;
         }
@@ -348,10 +359,10 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use arb_os::ipc::{
+    use crate::ipc::{
         DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
     };
-    use arb_os::paths::ArbPaths;
+    use crate::paths::ArbPaths;
     use serde_json::json;
 
     use super::{

@@ -674,6 +674,15 @@ impl WireFrame {
                 }
                 Ok(n) => read_so_far += n,
                 Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err)
+                    if read_so_far > 0
+                        && matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    return Err(WireError::TruncatedFrame {
+                        expected: HEADER_SIZE,
+                        actual: read_so_far,
+                    });
+                }
                 Err(err) => return Err(WireError::Io(err)),
             }
         }
@@ -696,6 +705,12 @@ impl WireFrame {
                 }
                 Ok(n) => payload_read += n,
                 Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    return Err(WireError::TruncatedFrame {
+                        expected: payload_len_usize,
+                        actual: payload_read,
+                    });
+                }
                 Err(err) => return Err(WireError::Io(err)),
             }
         }
