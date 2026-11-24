@@ -475,7 +475,11 @@ fn assert_well_formed(al: &TimeAlignment) {
 }
 
 /// Split per concrete triple count: the symbolic-count variant exceeded the 15-minute CBMC
-/// timebox (three fully symbolic `ingest_device_triple` calls).
+/// timebox (three fully symbolic `ingest_device_triple` calls). Even one triple stays
+/// `kani-extended`: building any `ClockTimeline` goes through `ingest_device_triple`, whose
+/// `BTreeMap<String, BootEpochState>` entry, `String` clone and `Vec<DiscontinuityEvent>`
+/// drop glue exhaust CBMC memory (> 30 GB), with or without a `std::fmt::format` stub; a
+/// single concrete-key `BTreeMap` insert alone takes ~31 s.
 fn k3_map_device_boot_isolated(n: usize) {
     let tl = timeline_with_triples(n);
     let mono: i64 = kani::any();
@@ -759,6 +763,9 @@ fn k5_bundle_lifecycle() {
 }
 
 // ---------------------------------------------------------------- K6 (arb-core half)
+/// The bounds half is promoted as `k6_map_touch_to_frame_bounds_and_domain`. Monotonicity
+/// compares two symbolic `f64` divisions and stays `kani-extended`: it did not finish within
+/// 250 s even with fixed `1080 -> 460` dimensions.
 #[cfg_attr(feature = "kani-extended", kani::proof)]
 fn k6_map_touch_to_frame_bounds_and_monotonic() {
     let dw: u32 = kani::any();
@@ -781,6 +788,37 @@ fn k6_map_touch_to_frame_bounds_and_monotonic() {
         if x1 <= x2 {
             assert!(p1 <= p2, "monotonic non-decreasing");
         }
+    }
+}
+
+/// Bounds half of K6 with symbolic display/frame dimensions (`<= 2^14`, including `0`), every
+/// display-geometry shape and arbitrary `f64` coordinates (including NaN and infinities).
+#[kani::proof]
+fn k6_map_touch_to_frame_bounds_and_domain() {
+    let dw: u32 = kani::any();
+    let dh: u32 = kani::any();
+    let fw: u32 = kani::any();
+    let fh: u32 = kani::any();
+    kani::assume(dw <= 1 << 14 && dh <= 1 << 14 && fw <= 1 << 14 && fh <= 1 << 14);
+    let (display_w, display_h) = match kani::any::<u8>() % 4 {
+        0 => (Some(dw), Some(dh)),
+        1 => (None, None),
+        2 => (Some(dw), None),
+        _ => (None, Some(dh)),
+    };
+    let x: f64 = kani::any();
+    let y: f64 = kani::any();
+    let r = map_touch_to_frame(x, y, display_w, display_h, fw, fh);
+    let extent = match (display_w, display_h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((f64::from(w), f64::from(h))),
+        (None, None) => Some((1.0, 1.0)),
+        _ => None,
+    };
+    let accepted =
+        fw > 0 && fh > 0 && extent.is_some_and(|(w, h)| x >= 0.0 && x <= w && y >= 0.0 && y <= h);
+    assert_eq!(r.is_some(), accepted, "Some exactly for in-display touches");
+    if let Some((px, py)) = r {
+        assert!(px >= 0.0 && px <= f64::from(fw - 1) && py >= 0.0 && py <= f64::from(fh - 1));
     }
 }
 
@@ -837,31 +875,87 @@ fn k7_empty_and_single_sample_strokes_are_taps() {
     assert_eq!(one.end_t_offset_ns, p.t_offset_ns);
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k7_decimate_keeps_endpoints_and_cap() {
-    let len = usize::from(kani::any::<u8>() % 5) + 1;
-    let cap = usize::from(kani::any::<u8>() % 3) + 2;
-    let mut samples = Vec::new();
+/// Every output sample is an unmodified input sample at a strictly increasing index, the first
+/// and last inputs are kept, and the length is `cap` exactly when decimation applies.
+fn k7_decimate_exact_stride(len: usize, cap: usize) {
+    let mut samples = Vec::with_capacity(len);
     let mut i = 0;
     while i < len {
         samples.push(TouchPoint {
-            x: 0.0,
-            y: 0.0,
-            t_offset_ns: i64::try_from(i).unwrap_or(0),
+            x: kani::any(),
+            y: kani::any(),
+            t_offset_ns: i64::try_from(i).unwrap_or(-1),
         });
         i += 1;
     }
     let out = decimate(&samples, cap);
-    assert!(out.len() <= cap.max(len));
-    if len > cap {
-        assert_eq!(out.len(), cap);
+    let expected = if len <= cap || cap <= 1 { len } else { cap };
+    assert_eq!(out.len(), expected);
+    let mut k = 0;
+    while k < out.len() {
+        let idx = usize::try_from(out[k].t_offset_ns).unwrap_or(usize::MAX);
+        assert!(idx < len, "output is drawn from the input");
+        assert_eq!(out[k].x.to_bits(), samples[idx].x.to_bits());
+        assert_eq!(out[k].y.to_bits(), samples[idx].y.to_bits());
+        if k == 0 {
+            assert_eq!(idx, 0, "first sample kept");
+        } else {
+            assert!(
+                out[k - 1].t_offset_ns < out[k].t_offset_ns,
+                "strictly increasing"
+            );
+        }
+        if k + 1 == out.len() {
+            assert_eq!(idx, len - 1, "last sample kept");
+        }
+        k += 1;
     }
-    assert_eq!(out[0].t_offset_ns, 0, "first sample kept");
-    assert_eq!(
-        out[out.len() - 1].t_offset_ns,
-        samples[len - 1].t_offset_ns,
-        "last sample kept"
-    );
+}
+
+/// One harness per concrete `(len, cap)` pair: with both symbolic, the `u128` stride division
+/// in `decimate` is bit-blasted symbolically and CBMC exhausts memory. Together the pairs
+/// cover the former symbolic domain `len ∈ 2..=5`, `cap ∈ 2..=4` exactly, plus the
+/// pass-through caps `0` and `1`; `len == 1` is covered for every `cap` below.
+macro_rules! k7_decimate_harnesses {
+    ($($name:ident => ($len:literal, $cap:literal);)*) => {$(
+        #[kani::proof]
+        #[kani::unwind(7)]
+        fn $name() {
+            k7_decimate_exact_stride($len, $cap);
+        }
+    )*};
+}
+
+k7_decimate_harnesses! {
+    k7_decimate_keeps_endpoints_and_cap_len2_cap2 => (2, 2);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap2 => (3, 2);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap2 => (4, 2);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap2 => (5, 2);
+    k7_decimate_keeps_endpoints_and_cap_len2_cap3 => (2, 3);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap3 => (3, 3);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap3 => (4, 3);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap3 => (5, 3);
+    k7_decimate_keeps_endpoints_and_cap_len2_cap4 => (2, 4);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap4 => (3, 4);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap4 => (4, 4);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap4 => (5, 4);
+    k7_decimate_passes_through_len3_cap0 => (3, 0);
+    k7_decimate_passes_through_len3_cap1 => (3, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+fn k7_decimate_passes_through_single_sample() {
+    let p = TouchPoint {
+        x: kani::any(),
+        y: kani::any(),
+        t_offset_ns: kani::any(),
+    };
+    let out = decimate(&[p], kani::any());
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].x.to_bits(), p.x.to_bits());
+    assert_eq!(out[0].y.to_bits(), p.y.to_bits());
+    assert_eq!(out[0].t_offset_ns, p.t_offset_ns);
 }
 
 #[kani::proof]
