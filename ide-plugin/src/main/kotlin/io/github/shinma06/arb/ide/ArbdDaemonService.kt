@@ -316,9 +316,18 @@ open class ArbdDaemonService internal constructor(
             // which spawns (or adopts) the parent-bound daemon.
             withClient { rpc ->
                 val hello = rpc.systemHello(verifyProtocolVersion = false)
-                if (processManager.parentBound && !hello.parentBound && processManager.managedDaemonProcess()?.pid() != hello.pid) {
+                if (processManager.parentBound && !hello.parentBound &&
+                    processManager.managedDaemonProcess()?.pid() != hello.pid
+                ) {
                     // Re-probe separately so a busy daemon retains its client and viewport leases.
-                    processManager.connectOrSpawn().client.close()
+                    val next = processManager.connectOrSpawn()
+                    if (next.hello.pid == hello.pid) {
+                        next.client.close()
+                    } else {
+                        closeClientLocked()
+                        client = next.client
+                        lastHello = next.hello
+                    }
                 }
             }
         } catch (e: Exception) {
