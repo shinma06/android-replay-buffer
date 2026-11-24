@@ -15,6 +15,17 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 | Gson | 2.14.0 | Apache-2.0 | IDE プラグイン（`client-core`）の JSON 処理。 |
 | Error Prone Annotations（Gson の推移的依存） | 2.48.0 | Apache-2.0 | IDE プラグイン ZIP の `lib/` に同梱される注釈のみのライブラリ。 |
 
+## 開発・検証専用の依存（配布物に含まれない）
+
+次のツール・ライブラリはテストと検証にだけ使います。プラグイン ZIP・CLI バイナリには同梱もリンクもされません。
+
+| 名称 | 版 | ライセンス | 用途 |
+| --- | --- | --- | --- |
+| Konsist（`com.lemonappdev:konsist`） | 0.17.3 | Apache-2.0 | `ide-plugin` の `testImplementation`。アーキテクチャ規則 KON-1..5。 |
+| Stateright | 0.31 | MIT | `arbd` の `dev-dependencies`。状態モデル S1–S3。 |
+| proptest / tempfile | 1.x / 3.x | MIT OR Apache-2.0 | Rust の `dev-dependencies`。プロパティテスト G1–G7。 |
+| Kani / Miri | Kani 0.68.0 / nightly | MIT OR Apache-2.0 | CI ツール（`.github/workflows/pdd-kani.yml`）。依存としては組み込みません。 |
+
 OpenH264 について: Cisco 配布のバイナリに付く特許ライセンス（AVC/H.264 特許プール費用の Cisco 負担）は、Cisco が配布したバイナリにのみ適用されます。ARB はソースからビルドして静的リンクするため、H.264 に関する特許上の扱いは利用者・配布者が各自確認してください。
 
 ## OpenH264 の再配布条件
