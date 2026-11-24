@@ -12,6 +12,7 @@ import io.github.shinma06.arb.ipc.LocalIpcTransport
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.RecoverySummaryView
@@ -28,6 +29,7 @@ import io.github.shinma06.arb.state.CaptureBarState
 import io.github.shinma06.arb.state.SourceJumpTarget
 import io.github.shinma06.arb.ui.ArbToolWindowController
 import io.github.shinma06.arb.ui.CaptureToggleState
+import io.github.shinma06.arb.ui.persistCaptureEnabled
 import io.github.shinma06.arb.ui.toToolbarSnapshot
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -48,6 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.SwingUtilities
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -271,6 +274,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         val endNs = params.get("end_ns")?.takeUnless { it.isJsonNull }?.asLong
         return rows
             .asSequence()
+            .filter { it.seq > (params.get("after_seq")?.asLong ?: -1L) }
             .filter { (startNs == null || it.tsNs >= startNs) && (endNs == null || it.tsNs <= endNs) }
             .sortedBy { it.seq }
             .take(limit)
@@ -631,7 +635,8 @@ class ArbT7cStudioVfrAndLifecycleTest {
                         requestedLimits += limit
                         val arr = JsonArray()
                         for (seq in 1L..40L) {
-                            val ts = 1_000L + seq * 10L
+                            val ts = 1_000L
+                            if (seq <= (params.get("after_seq")?.asLong ?: 0L)) continue
                             if (startNs != null && ts < startNs) continue
                             if (endNs != null && ts > endNs) continue
                             if (arr.size() >= limit) break
@@ -918,6 +923,13 @@ class ArbT7cStudioVfrAndLifecycleTest {
             assertNull(controller.armedWaitingNotice)
             assertTrue(recordingState.toToolbarSnapshot(captureEnabled = true).captureEnabled)
 
+            val disconnected = recordingState.copy(capture = recordingState.capture!!.copy(connected = false))
+            controller.applyStateForTest(capture = disconnected)
+            assertEquals(CaptureToggleState.ARMED_WAITING, controller.captureToggleState)
+            val disconnectedAction = ArbToolbarPresentationState.toggleCapture(disconnected.toToolbarSnapshot())
+            assertTrue(disconnectedAction.selected)
+            assertTrue(disconnectedAction.description.contains("ON・待機中"))
+
             // 4. Toggle OFF -> sends config.update(capture_enabled = false) and returns to OFF!
             controller.applyStateForTest(
                 capture = controller.captureState.copy(capture = null, config = ArbConfig(captureEnabled = true)),
@@ -1077,6 +1089,56 @@ class ArbT7cStudioVfrAndLifecycleTest {
             assertEquals(2, spawned.size)
             assertFalse(startedWhileOldAlive.get(), "new arb-tray must not start before the old one exited")
             assertTrue(service.isManagedTrayRunningForTest(), "tray must be running after OFF -> ON")
+        } finally {
+            service.dispose()
+        }
+    }
+
+    @Test
+    fun turningTrayOffDuringProjectStartupKeepsItOff(@TempDir tmp: Path) {
+        val service = ArbdDaemonService(
+            processManager = ArbdProcessManager(paths = ArbPaths.resolve()),
+            trayBinaryResolver = { tmp.resolve("arb-tray") },
+            trayProcessStarter = { _, _ -> FakeManagedProcess() },
+        )
+        val preferenceRead = CountDownLatch(1)
+        val resumeStartup = CountDownLatch(1)
+        val startup = Thread {
+            service.restoreTrayAtStartup {
+                preferenceRead.countDown()
+                resumeStartup.await(5, TimeUnit.SECONDS)
+                true
+            }
+        }
+        try {
+            startup.start()
+            assertTrue(preferenceRead.await(5, TimeUnit.SECONDS))
+            val off = assertNotNull(service.syncTrayStateAsync(false))
+            try {
+                off.get(200, TimeUnit.MILLISECONDS)
+            } catch (_: java.util.concurrent.TimeoutException) {
+                // A serialized OFF remains queued until the startup read completes.
+            }
+            resumeStartup.countDown()
+            startup.join(5_000)
+            off.get(5, TimeUnit.SECONDS)
+            assertFalse(service.isManagedTrayRunningForTest())
+        } finally {
+            resumeStartup.countDown()
+            service.dispose()
+        }
+    }
+
+    @Test
+    fun captureConfigErrorsReachTheCaller() {
+        val service = object : ArbdDaemonService() {
+            override fun <T> withClient(block: (ArbdRpcClient) -> T): T =
+                throw ArbdRpcException(-32603, "config write failed", "config.update")
+        }
+        try {
+            assertFailsWith<ArbdRpcException> {
+                persistCaptureEnabled(service, false)
+            }
         } finally {
             service.dispose()
         }

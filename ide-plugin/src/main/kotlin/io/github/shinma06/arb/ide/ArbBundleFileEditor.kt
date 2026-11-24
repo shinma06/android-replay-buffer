@@ -638,16 +638,9 @@ class ArbBundleFileEditor internal constructor(
         // Depth-first, earliest window first: the deque head is the next window to fetch.
         val pending = ArrayDeque<LogWindow>()
         pending.addFirst(LogWindow(Long.MIN_VALUE, Long.MAX_VALUE))
-        var queries = 0
-
         while (pending.isNotEmpty() && collected.size < cap && !disposed) {
-            if (queries >= MAX_LOG_PAGE_QUERIES) {
-                logger.warn("ARB log pagination hit the $MAX_LOG_PAGE_QUERIES-request budget; showing ${collected.size} rows")
-                break
-            }
             val window = pending.first()
-            val windowPageSize = if (window.rowLimit > 0) window.rowLimit else pageSize
-            queries++
+            val limit = if (pageSize == 1) 1 else pageSize + 1
             val page = try {
                 daemonService.withClient {
                     it.timelineQueryLogs(
@@ -655,29 +648,22 @@ class ArbBundleFileEditor internal constructor(
                         bucket = bucket,
                         startNs = window.startNs.takeIf { s -> s != Long.MIN_VALUE },
                         endNs = window.endNs.takeIf { e -> e != Long.MAX_VALUE },
-                        limit = windowPageSize + 1,
+                        limit = limit,
+                        afterSeq = window.afterSeq,
                         packageName = packageName,
                     ).logs
                 }
             } catch (e: ArbdRpcException) {
-                if (!isResponseTooLargeError(e)) throw e
-                pending.removeFirst()
-                when {
-                    windowPageSize <= 1 ->
-                        logger.warn("ARB single log row exceeded the IPC frame cap; skipping window $window")
-                    window.rowLimit > 0 ->
-                        // A grown single-timestamp window hit the cap: settle for what fits.
-                        pending.addFirst(window.copy(rowLimit = windowPageSize / 2, growthStopped = true))
-                    else -> {
-                        pageSize = (pageSize / 2).coerceAtLeast(1)
-                        pending.addFirst(window)
-                    }
-                }
+                if (!isResponseTooLargeError(e) || pageSize == 1) throw e
+                pageSize = (pageSize / 2).coerceAtLeast(1)
                 continue
             }
             pending.removeFirst()
 
-            if (page.size <= windowPageSize) {
+            check(window.afterSeq == null || page.all { it.seq > window.afterSeq }) {
+                "ログのページ取得を続けられません。デーモンを更新してください。"
+            }
+            if (page.size < limit) {
                 for (record in page) collected.putIfAbsent(record.seq, record)
                 continue
             }
@@ -686,19 +672,9 @@ class ArbBundleFileEditor internal constructor(
                 for (part in parts.asReversed()) pending.addFirst(part)
                 continue
             }
-            // More rows than one page share a single exact timestamp (e.g. bounded-alignment rows
-            // stamped with the same lower bound), so the window cannot be narrowed: grow its own
-            // row limit until it completes, the overall cap is reached, or the frame cap pushes back.
-            val stillWanted = cap - collected.size
-            if (window.growthStopped || windowPageSize >= stillWanted) {
-                if (window.growthStopped) {
-                    logger.warn("ARB log rows sharing timestamp ${window.startNs} exceed the IPC frame cap; keeping ${page.size}")
-                }
-                for (record in page.take(stillWanted)) collected.putIfAbsent(record.seq, record)
-                continue
-            }
-            val grown = minOf(stillWanted.toLong(), windowPageSize.toLong() * 4L, MAX_LOG_WINDOW_ROWS.toLong()).toInt()
-            pending.addFirst(window.copy(rowLimit = grown, growthStopped = grown >= MAX_LOG_WINDOW_ROWS))
+            // The window is a single timestamp. Continue in the daemon's stable sequence order.
+            for (record in page.take(cap - collected.size)) collected.putIfAbsent(record.seq, record)
+            pending.addFirst(window.copy(afterSeq = page.last().seq))
         }
 
         val rows = collected.values.toList()
@@ -1183,22 +1159,11 @@ class ArbBundleFileEditor internal constructor(
         // Matches `arbd`'s `RPC_ERR_RESPONSE_TOO_LARGE` structured error code (-32010).
         const val RPC_ERR_RESPONSE_TOO_LARGE: Int = -32010
 
-        /** Safety stop for pathological timestamp layouts; normal bundles need far fewer requests. */
-        const val MAX_LOG_PAGE_QUERIES: Int = 1_000
-
-        /** Upper bound on one single-timestamp window request (below `arbd`'s `MAX_QUERY_LIMIT`). */
-        const val MAX_LOG_WINDOW_ROWS: Int = 50_000
-
-        /**
-         * Closed timestamp window `[startNs, endNs]`; `Long.MIN_VALUE` / `Long.MAX_VALUE` mean
-         * unbounded. [rowLimit] > 0 overrides the shared page size for a single-timestamp window that
-         * cannot be split; [growthStopped] marks one that already hit the IPC frame cap.
-         */
+        /** Inclusive timestamp bounds and an exclusive sequence cursor for timestamp ties. */
         internal data class LogWindow(
             val startNs: Long,
             val endNs: Long,
-            val rowLimit: Int = 0,
-            val growthStopped: Boolean = false,
+            val afterSeq: Long? = null,
         )
 
         /**

@@ -14,8 +14,8 @@ import kotlinx.coroutines.withContext
 class ArbStartupActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
         withContext(Dispatchers.IO) {
-            if (ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled == true) {
-                runCatching { ArbdDaemonService.getInstance().syncTrayState(true) }
+            ArbdDaemonService.getInstance().restoreTrayAtStartup {
+                ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled == true
             }
             LegacyV1SettingsMigrator.migrateOnceIfNeeded(project)
         }

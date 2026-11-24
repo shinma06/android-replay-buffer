@@ -39,6 +39,7 @@ data class ArbToolbarDaemonSnapshot(
     val hasOnlineDevice: Boolean = false,
     val selectedDeviceSerial: String? = null,
     val disabledDeviceHint: String? = null,
+    val captureConnected: Boolean = true,
 )
 
 /**
@@ -328,10 +329,16 @@ open class ArbdDaemonService internal constructor(
      * Off-EDT helper invoked by Settings Apply. Requests run one at a time in submission order, so
      * a quick OFF -> ON ends with the tray running.
      */
-    fun syncTrayStateAsync(enabled: Boolean): Future<*>? = try {
-        trayExecutor.submit { syncTrayState(enabled) }
+    fun syncTrayStateAsync(enabled: Boolean): Future<*>? = submitTrayWork { syncTrayState(enabled) }
+
+    private fun submitTrayWork(work: () -> Unit): Future<*>? = try {
+        trayExecutor.submit(work)
     } catch (_: RejectedExecutionException) {
         null
+    }
+
+    internal fun restoreTrayAtStartup(enabled: () -> Boolean) = submitTrayWork {
+        if (enabled()) syncTrayState(true)
     }
 
     internal fun isManagedTrayRunningForTest(): Boolean = synchronized(trayLock) {

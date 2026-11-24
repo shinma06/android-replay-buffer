@@ -28,6 +28,7 @@ satisfies:
 ## 2. `arbd` ↔ クライアント ローカル IPC と共有メモリフレームリング
 
 - **制御プレーン**: バージョン付き JSON-RPC 2.0 / NDJSON（Linux: `$XDG_RUNTIME_DIR/arb/arbd.sock`、macOS: `~/Library/Caches/arb/arbd.sock`、Windows: `\\.\pipe\arb-daemon-<sid>`）。`system.*`, `device.*`, `capture.*`, `save.*`, `bundle.*`, `timeline.*`, `edit.*`, `export.*`, `media.*` を提供する。
+- `timeline.query_logs` と MCP の `arb_query_logs` は省略可能な `after_seq` を受け付ける。指定時は同じ条件のうち、指定した番号より後の行を `seq` 順に返す。これにより同一時刻のログも分割して取得できる。
 - **高帯域データプレーン**: ビューポート単位のトリプルバッファ共有メモリ（mmap）フレームリングで 1080p30 RGBA/BGRA を配信する。スロットヘッダには `generation`, `frame_index`, `is_approximate`, `width`, `height`, `stride`, `pixel_format`, `boottime_ns` を持ち、`is_approximate == true` の間は UI に近似プレビューバッジを必ず表示する。
 
 ## 3. GPL 非依存メディア処理とフレーム単位トリム（`arb-media`）

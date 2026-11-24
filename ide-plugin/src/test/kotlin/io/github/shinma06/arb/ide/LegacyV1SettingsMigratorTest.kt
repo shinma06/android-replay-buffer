@@ -11,6 +11,10 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -24,6 +28,35 @@ class LegacyV1SettingsMigratorTest {
         val xmlPath = ideaDir.resolve("workspace.xml")
         Files.writeString(xmlPath, content)
         return xmlPath
+    }
+
+    @Test
+    fun concurrentProjectStartupAppliesLegacySettingsOnce(@TempDir tmp: Path) {
+        writeWorkspaceXml(tmp, """<project><component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore"/></project>""")
+        val settings = ArbLocalSettingsState()
+        val pool = Executors.newFixedThreadPool(2)
+        val entered = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
+        val updates = AtomicInteger()
+        fun migrate() = LegacyV1SettingsMigrator.migrateOnceIfNeeded(tmp, settings) {
+            if (updates.incrementAndGet() == 1) {
+                entered.countDown()
+                secondEntered.await(1, TimeUnit.SECONDS)
+            } else {
+                secondEntered.countDown()
+            }
+            ArbConfig()
+        }
+        try {
+            val first = pool.submit { migrate() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val second = pool.submit { migrate() }
+            first.get(5, TimeUnit.SECONDS)
+            second.get(5, TimeUnit.SECONDS)
+            assertEquals(1, updates.get())
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test
@@ -336,6 +369,20 @@ class LegacyV1SettingsMigratorTest {
         assertEquals(15, applied?.videoMaxFps)
         assertEquals(1920 to 30, LegacyV1SettingsMigrator.parseV1VideoQuality("標準（1920px / 30fps / 8Mbps）"))
         assertEquals(null to null, LegacyV1SettingsMigrator.parseV1VideoQuality("unknown"))
+    }
+
+    @Test
+    fun configWriteFailureLeavesMigrationPending(@TempDir tmp: Path) {
+        writeWorkspaceXml(tmp, """<project><component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore"/></project>""")
+        val settings = ArbLocalSettingsState()
+        var writes = 0
+        val result = LegacyV1SettingsMigrator.migrateOnceIfNeeded(tmp, settings) {
+            if (++writes == 1) throw ArbdRpcException(-32603, "config write failed", "config.update")
+            ArbConfig()
+        }
+        assertIs<LegacyV1SettingsMigrator.MigrationResult.DaemonUnavailable>(result)
+        assertEquals(1, writes)
+        assertFalse(settings.migratedFromV1)
     }
 
     @Test

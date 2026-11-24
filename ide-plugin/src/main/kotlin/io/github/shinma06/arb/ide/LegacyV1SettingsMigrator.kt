@@ -82,6 +82,7 @@ object LegacyV1SettingsMigrator {
     }
 
     /** Pure, headless-testable migration entry point. Never modifies `workspace.xml`. */
+    @Synchronized
     internal fun migrateOnceIfNeeded(
         projectBasePath: Path,
         localSettings: ArbLocalSettingsState,
@@ -124,7 +125,7 @@ object LegacyV1SettingsMigrator {
             } catch (rejected: ArbdRpcException) {
                 // An arbd that predates always-on capture rejects the whole patch because of the
                 // unknown `capture_enabled` field: migrate everything else rather than nothing.
-                if (patch.captureEnabled == null) {
+                if (patch.captureEnabled == null || !rejected.isUnknownCaptureEnabledField) {
                     logger.warn("ARB legacy settings rejected by arbd: ${rejected.message}")
                     return MigrationResult.DaemonUnavailable(rejected.message)
                 }

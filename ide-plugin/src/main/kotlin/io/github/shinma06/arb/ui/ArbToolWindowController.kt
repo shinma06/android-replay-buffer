@@ -245,8 +245,8 @@ class ArbToolWindowController(
 
     val captureToggleState: CaptureToggleState
         get() = when {
-            isCaptureActive -> CaptureToggleState.RECORDING
-            isCaptureArmed -> CaptureToggleState.ARMED_WAITING
+            isCaptureActive && captureState.capture?.connected == true -> CaptureToggleState.RECORDING
+            isCaptureOn -> CaptureToggleState.ARMED_WAITING
             else -> CaptureToggleState.OFF
         }
 
@@ -256,7 +256,6 @@ class ArbToolWindowController(
             !captureState.daemonConnected -> "未接続"
             captureState.capture?.storagePressureStopped == true -> "容量停止"
             captureToggleState == CaptureToggleState.RECORDING -> when {
-                captureState.capture?.connected == false -> "ON・再接続中"
                 isLogsOnlyMode -> "ON・REC (ログのみ)"
                 else -> "ON・REC"
             }
@@ -921,6 +920,7 @@ internal fun CaptureBarState.toToolbarSnapshot(
         probed = true,
         daemonConnected = this.daemonConnected,
         captureActive = this.capture?.active == true,
+        captureConnected = this.capture?.connected == true,
         captureEnabled = captureEnabled,
         hasBufferedData = this.ringChunkCount > 0L,
         hasOnlineDevice = this.isSelectedDeviceOnline,
@@ -937,7 +937,8 @@ internal fun CaptureBarState.toToolbarSnapshot(
 internal fun persistCaptureEnabled(daemonService: ArbdDaemonService, enabled: Boolean): Boolean? {
     val updated = try {
         daemonService.withClient { it.configUpdate(ArbConfigPatch(captureEnabled = enabled)).config }
-    } catch (_: ArbdRpcException) {
+    } catch (e: ArbdRpcException) {
+        if (!e.isUnknownCaptureEnabledField) throw e
         return null
     }
     daemonService.notifyConfigUpdated(updated)

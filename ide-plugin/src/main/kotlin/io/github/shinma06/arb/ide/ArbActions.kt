@@ -54,7 +54,7 @@ object ArbToolbarPresentationState {
                 selected = false,
             )
         }
-        if (active) {
+        if (active && snapshot.captureConnected) {
             val serialSuffix = snapshot.selectedDeviceSerial?.let { " ($it)" }.orEmpty()
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・REC)",
@@ -64,7 +64,7 @@ object ArbToolbarPresentationState {
                 selected = true,
             )
         }
-        if (armed) {
+        if (isOn) {
             val detail = snapshot.disabledDeviceHint?.let { " · $it" }.orEmpty()
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・待機中)",

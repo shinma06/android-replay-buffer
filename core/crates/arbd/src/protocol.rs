@@ -634,6 +634,8 @@ pub enum QueryBucket {
 /// Request parameters for `timeline.query_logs` and `timeline.query_taps`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
+    /// Exclusive log sequence cursor for continuing an immutable bundle query.
+    pub after_seq: Option<u64>,
     /// Catalog `bundle_id` or filesystem path.
     #[serde(alias = "bundle_id")]
     pub bundle_id_or_path: String,
