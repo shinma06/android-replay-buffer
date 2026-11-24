@@ -12,8 +12,8 @@
 #
 # Environment:
 #   ARB_LINUX_BUILD_IMAGE     base image (default ubuntu:22.04)
-#   ARB_LINUX_BUILD_CACHE     cargo home, rustup and target dir, kept between runs
-#                             (default ${XDG_CACHE_HOME:-$HOME/.cache}/arb-linux-release-container)
+#   ARB_LINUX_BUILD_CACHE     cargo home, rustup and target dir, kept between runs in a per-architecture
+#                             subdirectory (default ${XDG_CACHE_HOME:-$HOME/.cache}/arb-linux-release-container)
 #   ARB_RUST_TOOLCHAIN        rustup toolchain, must support edition 2024 (default stable)
 #   ARB_LINUX_BUILD_PLATFORM  docker --platform, e.g. linux/amd64 on an Apple Silicon machine
 #   ARB_LINUX_BUILD_OUT       where the binaries are copied (default core/target/release)
@@ -27,9 +27,11 @@ CACHE_DIR="${ARB_LINUX_BUILD_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/arb-linux-
 TOOLCHAIN="${ARB_RUST_TOOLCHAIN:-stable}"
 OUT_DIR="${ARB_LINUX_BUILD_OUT:-${CORE_DIR}/target/release}"
 
-mkdir -p "${CACHE_DIR}/cargo" "${CACHE_DIR}/rustup" "${CACHE_DIR}/target" "${OUT_DIR}/examples"
 platform=()
 if [[ -n "${ARB_LINUX_BUILD_PLATFORM:-}" ]]; then platform=(--platform "${ARB_LINUX_BUILD_PLATFORM}"); fi
+# rustup, cargo and the target dir hold native executables: keep one cache per container architecture.
+CACHE_DIR="${CACHE_DIR}/$(docker run --rm ${platform[@]+"${platform[@]}"} "${IMAGE}" uname -m)"
+mkdir -p "${CACHE_DIR}/cargo" "${CACHE_DIR}/rustup" "${CACHE_DIR}/target" "${OUT_DIR}/examples"
 
 echo "==> building the Linux release binaries in ${IMAGE} (Rust ${TOOLCHAIN}, cache ${CACHE_DIR})"
 docker run --rm ${platform[@]+"${platform[@]}"} \
