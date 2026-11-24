@@ -194,6 +194,8 @@ class Section:
 
     def check(self, name: str, ok: bool, detail: Any = "") -> bool:
         self.checks.append({"name": name, "status": "PASS" if ok else "FAIL", "pass": bool(ok), "detail": str(detail)})
+        if self.name == "upgrade":
+            print(f"    [{'PASS' if ok else 'FAIL'}] {name}", flush=True)
         return bool(ok)
 
     def skip(self, name: str, reason: str) -> None:
@@ -297,22 +299,22 @@ class CliResult:
 
 def run_proc(cmd: Sequence[Any], env: dict[str, str] | None = None, timeout: float = 600, cwd: Path | None = None) -> CliResult:
     started = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            [str(c) for c in cmd],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            env=env,
-            cwd=str(cwd) if cwd else None,
-        )
-        return CliResult(proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - started)
-    except subprocess.TimeoutExpired as exc:
-        return CliResult(124, exc.stdout or "", f"timeout after {timeout}s: {exc.stderr or ''}", time.perf_counter() - started)
-    except OSError as exc:
-        return CliResult(127, "", f"{type(exc).__name__}: {exc}", time.perf_counter() - started)
+    # A background daemon can inherit a launcher's stdio. A file lets us wait for
+    # the foreground process alone, even when a descendant keeps the handle open.
+    with (tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as out,
+          tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err):
+        diagnostic = ""
+        try:
+            rc = subprocess.run(
+                [str(c) for c in cmd], stdout=out, stderr=err, timeout=timeout, env=env, cwd=cwd,
+            ).returncode
+        except subprocess.TimeoutExpired:
+            rc, diagnostic = 124, f"timeout after {timeout}s: "
+        except OSError as exc:
+            rc, diagnostic = 127, f"{type(exc).__name__}: {exc}"
+        out.seek(0)
+        err.seek(0)
+        return CliResult(rc, out.read(), diagnostic + err.read(), time.perf_counter() - started)
 
 
 def list_processes_under(root: Path) -> list[str]:
@@ -1606,6 +1608,11 @@ def self_test() -> int:
     def require(name: str, cond: bool, detail: Any = "") -> None:
         if not cond:
             failures.append(f"{name}: {detail}")
+
+    # A launcher can exit while its daemon still owns a copy of the output handles.
+    launcher = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(5)'], stdout=sys.stdout, stderr=sys.stderr); print('ready')"
+    launched = run_proc([sys.executable, "-c", launcher], timeout=2)
+    require("launcher exits without waiting for daemon output handles", launched.rc == 0 and launched.out.strip() == "ready" and launched.secs < 4, launched.rc)
 
     # pure helpers
     require("normalize_os", normalize_os("Darwin") == "macos" and normalize_os("win32") == "windows" and normalize_os("Linux") == "linux")

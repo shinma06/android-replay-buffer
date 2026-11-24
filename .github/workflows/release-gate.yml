@@ -502,6 +502,8 @@ jobs:
             exit 1
           fi
       - name: verify_release_bundle.py (Named Pipe, MoveFileExW, MCP, legacy RO, Suite B, burn-in, tray, upgrade)
+        id: bundle
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           upgrade=()
@@ -514,6 +516,7 @@ jobs:
             --keep-work --work-dir "$RUNNER_TEMP/gate-work" \
             --out-dir gate-report
       - name: Real Windows GUI evidence (tray, Edge, VLC, Media Foundation, screen recording)
+        if: ${{ !cancelled() && steps.bundle.outcome != 'skipped' }}
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/gate-work"
