@@ -1003,7 +1003,7 @@ const EXCLUDED_SYSTEM_UI_PACKAGES: &[&str] = &[
 ];
 
 /// Returns `true` if `package_name` is an Android system UI or launcher package that should
-/// not generate a dedicated `app-logs/<package>.jsonl` file merely for being briefly visible.
+/// not generate a dedicated `app-logs/<package>.log` file merely for being briefly visible.
 #[must_use]
 pub fn is_excluded_system_ui_package(package_name: &str) -> bool {
     let trimmed = package_name.trim();
@@ -1014,7 +1014,7 @@ pub fn is_excluded_system_ui_package(package_name: &str) -> bool {
 }
 
 /// Sanitizes an Android package name into a safe single-segment filename stem for
-/// `app-logs/<sanitized>.jsonl` (guaranteed free of path separators or `..` traversal).
+/// `app-logs/<sanitized>.log` (guaranteed free of path separators or `..` traversal).
 #[must_use]
 pub fn sanitize_package_filename(package_name: &str) -> String {
     let mut out = String::with_capacity(package_name.len().min(128));
@@ -1038,7 +1038,7 @@ pub fn sanitize_package_filename(package_name: &str) -> String {
         "unknown".to_owned()
     } else if is_windows_reserved_stem(trimmed) {
         // Windows refuses to create files whose first dot-separated segment is a legacy device
-        // name (`CON.jsonl`, `nul.app.jsonl`, ...); keep the save identical on every OS.
+        // name (`CON.log`, `nul.app.log`, ...); keep the save identical on every OS.
         format!("_{trimmed}")
     } else {
         trimmed.to_owned()
@@ -1063,12 +1063,12 @@ fn is_windows_reserved_stem(stem: &str) -> bool {
     }
 }
 
-/// Extracted per-app logcat slice ready to be written to `app-logs/<sanitized>.jsonl`.
+/// Extracted per-app logcat slice ready to be written to `app-logs/<sanitized>.log`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedAppLogs {
     /// Android application package name (e.g., `com.example.app`).
     pub package_name: String,
-    /// Normalized bundle-relative path (e.g., `app-logs/com.example.app.jsonl`).
+    /// Normalized bundle-relative path (e.g., `app-logs/com.example.app.log`).
     pub relative_path: String,
     /// Number of crash markers attributed to this package in the bundle.
     pub crash_count: u64,
@@ -1291,10 +1291,10 @@ pub fn extract_foreground_app_logs(
         let stem = sanitize_package_filename(pkg);
         // De-duplicate case-insensitively: macOS / Windows filesystems would otherwise map
         // `com.Example.app` and `com.example.app` onto the same staged file.
-        let mut rel_path = format!("app-logs/{stem}.jsonl");
+        let mut rel_path = format!("app-logs/{stem}.log");
         let mut suffix = 2_u32;
         while !used_paths.insert(rel_path.to_ascii_lowercase()) {
-            rel_path = format!("app-logs/{stem}-{suffix}.jsonl");
+            rel_path = format!("app-logs/{stem}-{suffix}.log");
             suffix = suffix.saturating_add(1);
         }
         extracted.push(ExtractedAppLogs {
@@ -2372,7 +2372,7 @@ mod tests {
             .iter()
             .find(|e| e.package_name == "com.example.shop")
             .expect("shop app logs");
-        assert_eq!(shop.relative_path, "app-logs/com.example.shop.jsonl");
+        assert_eq!(shop.relative_path, "app-logs/com.example.shop.log");
         assert_eq!(shop.crash_count, 0);
         assert!(
             shop.logs.iter().any(|l| l.message == "checkout tap"),

@@ -823,10 +823,22 @@ pub struct ExportTrimParams {
     pub in_frame_index: u64,
     /// Inclusive integer ending frame index.
     pub out_frame_index: u64,
-    /// Optional destination parent directory (defaults to `<data_dir>/bundles`).
+    /// Optional destination parent directory (defaults to `output_dir_override` or `<data_dir>/bundles`).
     pub dest_dir: Option<PathBuf>,
     /// Optional client PID for the temporary `ExportJob` lease.
     pub holder_pid: Option<u32>,
+    /// When `true`, burns recorded Tap/Swipe overlays into the emitted `share-taps.mp4`
+    /// (implies `include_share_mp4`; lossless `video.mp4` stays raw inside the trimmed bundle).
+    #[serde(default)]
+    pub burn_taps: bool,
+    /// When `true`, also muxes a ready-to-share faststart zero-`elst` `share.mp4` (or
+    /// `share-taps.mp4` when `burn_taps` is enabled) directly inside the trimmed bundle directory.
+    #[serde(default)]
+    pub include_share_mp4: bool,
+    /// When `true`, moves the source bundle to non-destructive Trash strictly AFTER the trimmed
+    /// bundle is committed and verified (refused for read-only legacy or uncataloged bundles).
+    #[serde(default)]
+    pub trash_original: bool,
 }
 
 /// Response payload for `export.trim`.
@@ -848,6 +860,18 @@ pub struct ExportTrimResponse {
     pub main_tap_count: usize,
     /// Quarantined `unanchored` taps carried into the trimmed bundle.
     pub unanchored_tap_count: usize,
+    /// Path to `share.mp4` or `share-taps.mp4` inside the trimmed bundle when generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_mp4_path: Option<PathBuf>,
+    /// Number of per-app `app-logs/<package>.log` files emitted in the trimmed bundle.
+    #[serde(default)]
+    pub app_logs_count: usize,
+    /// `true` if `trash_original` succeeded and the source bundle is now logically trashed.
+    #[serde(default)]
+    pub original_trashed: bool,
+    /// `true` if Tap/Swipe overlays were rendered and re-encoded into `share-taps.mp4`.
+    #[serde(default)]
+    pub burn_taps_applied: bool,
     /// Non-fatal warning (e.g. bundle committed but parent directory `fsync` failed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
@@ -1055,6 +1079,9 @@ pub struct ExportShareMp4Params {
     pub dest_dir: Option<PathBuf>,
     /// Optional client PID for the temporary `ExportJob` lease.
     pub holder_pid: Option<u32>,
+    /// When `true`, composites Tap/Swipe overlays onto frames overlapping touch events before muxing.
+    #[serde(default)]
+    pub burn_taps: bool,
 }
 
 /// Response payload for `export.share_mp4`.

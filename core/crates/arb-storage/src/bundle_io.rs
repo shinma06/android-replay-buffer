@@ -52,6 +52,16 @@ pub const TIMELINE_DB_FILE: &str = "timeline.sqlite";
 pub const VIDEO_MP4_FILE: &str = "video.mp4";
 /// File name of the optional v2 audio payload.
 pub const AUDIO_M4A_FILE: &str = "audio.m4a";
+/// File name of the human-readable main logcat text file written whenever main logs exist.
+pub const LOGCAT_LOG_FILE: &str = "logcat.log";
+/// File name of the human-readable unanchored logcat text file written when unanchored logs exist.
+pub const UNANCHORED_LOG_FILE: &str = "unanchored.log";
+/// File name of the compact human/script-readable timeline events summary sidecar.
+pub const EVENTS_JSONL_FILE: &str = "events.jsonl";
+/// File name of the ready-to-share MP4 (without tap burn-in) inside a trimmed bundle.
+pub const SHARE_MP4_FILE: &str = "share.mp4";
+/// File name of the ready-to-share MP4 (with tap/swipe burn-in) inside a trimmed bundle.
+pub const SHARE_TAPS_MP4_FILE: &str = "share-taps.mp4";
 /// File name of the main-timeline JSONL log sidecar written for `logs_only` bundles.
 pub const LOGS_JSONL_FILE: &str = "logs.jsonl";
 /// File name of the quarantined `unanchored` JSONL log sidecar written for `logs_only` bundles.
@@ -336,6 +346,16 @@ pub enum MediaPayload {
     File(PathBuf),
 }
 
+/// Ready-to-share single-file MP4 staged atomically inside a bundle directory
+/// (typically [`SHARE_MP4_FILE`] or [`SHARE_TAPS_MP4_FILE`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareMp4Sidecar {
+    /// Normalized bundle-relative filename (e.g., `"share.mp4"` or `"share-taps.mp4"`).
+    pub file_name: String,
+    /// Encoded MP4 bytes or temporary file path to stream-copy into staging.
+    pub payload: MediaPayload,
+}
+
 /// Clock anchor row stored in `timeline.sqlite`'s `clock_anchors` table.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +392,8 @@ pub struct V2BundleDraft {
     pub video_mp4: Option<MediaPayload>,
     /// Optional `audio.m4a` payload.
     pub audio_m4a: Option<MediaPayload>,
+    /// Optional ready-to-share MP4 (`share.mp4` or `share-taps.mp4`) placed inside the bundle.
+    pub share_mp4: Option<ShareMp4Sidecar>,
     /// Video frame index rows.
     pub frames: Vec<FrameRecord>,
     /// Discontinuity events.
@@ -418,6 +440,10 @@ impl V2BundleWriter {
     /// `OsError::CommittedParentSyncFailed` when the bundle is already published).
     /// `OsError::AlreadyExists` is returned only when `final_dir` holds something other than
     /// an intact bundle with `draft.bundle_id`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "atomic staging writes media, text/JSONL sidecars, per-app logs, SQLite, and manifest in one transaction"
+    )]
     pub fn write(
         final_dir: impl AsRef<Path>,
         job_id: &str,
@@ -446,6 +472,12 @@ impl V2BundleWriter {
             files.push(digest);
         }
 
+        if let Some(share) = &draft.share_mp4 {
+            validate_share_sidecar_name(&share.file_name)?;
+            let digest = stage_media_file(&staging, &share.file_name, &share.payload)?;
+            files.push(digest);
+        }
+
         if draft.bundle_kind == BundleKind::LogsOnly {
             let logs_digest =
                 stage_logs_jsonl(&staging, LOGS_JSONL_FILE, &draft.logs, RecordBucket::Main)?;
@@ -459,12 +491,47 @@ impl V2BundleWriter {
             files.push(unanchored_digest);
         }
 
-        // Write per-app foreground / crashed extracted logcat sidecars (`app-logs/<pkg>.jsonl`).
+        // Human-readable logcat text sidecars for direct open/grep/attachment without SQLite.
+        let main_logs: Vec<&LogRecord> = draft
+            .logs
+            .iter()
+            .filter(|l| l.bucket == RecordBucket::Main)
+            .collect();
+        if !main_logs.is_empty() {
+            let digest = stage_logs_text(
+                &staging,
+                LOGCAT_LOG_FILE,
+                &main_logs,
+                LogTextFormat::Standard,
+            )?;
+            files.push(digest);
+        }
+        let unanchored_logs: Vec<&LogRecord> = draft
+            .logs
+            .iter()
+            .filter(|l| l.bucket == RecordBucket::Unanchored)
+            .collect();
+        if !unanchored_logs.is_empty() {
+            let digest = stage_logs_text(
+                &staging,
+                UNANCHORED_LOG_FILE,
+                &unanchored_logs,
+                LogTextFormat::WithUnanchoredReason,
+            )?;
+            files.push(digest);
+        }
+
+        // Write per-app foreground / crashed extracted logcat text sidecars (`app-logs/<pkg>.log`).
         let extracted_apps = extract_foreground_app_logs(&draft.logs, &draft.frames);
         let mut app_logs = Vec::with_capacity(extracted_apps.len());
         for extracted in &extracted_apps {
-            let digest =
-                stage_log_slice_jsonl(&staging, &extracted.relative_path, &extracted.logs)?;
+            let refs: Vec<&LogRecord> = extracted.logs.iter().collect();
+            let digest = stage_logs_text(
+                &staging,
+                &extracted.relative_path,
+                &refs,
+                LogTextFormat::Standard,
+            )?;
             let line_count = u64::try_from(extracted.logs.len()).unwrap_or(u64::MAX);
             app_logs.push(AppLogSummary {
                 package_name: extracted.package_name.clone(),
@@ -477,6 +544,11 @@ impl V2BundleWriter {
         }
         if !app_logs.is_empty() {
             arb_os::fs::fsync_dir(&staging.staging_path().join("app-logs"))?;
+        }
+
+        // Write compact chronological `events.jsonl` summary when any event exists.
+        if let Some(events_digest) = stage_events_jsonl(&staging, draft)? {
+            files.push(events_digest);
         }
 
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
@@ -1288,6 +1360,294 @@ pub fn open_bundle(bundle_dir: impl AsRef<Path>) -> Result<Box<dyn BundleReader>
 // ---------------------------------------------------------------------------
 // Staging & Hashing Helpers
 // ---------------------------------------------------------------------------
+
+fn validate_share_sidecar_name(file_name: &str) -> Result<(), StorageError> {
+    let valid = !file_name.trim().is_empty()
+        && !file_name.contains('/')
+        && !file_name.contains('\\')
+        && file_name != "."
+        && file_name != ".."
+        && file_name != MANIFEST_V2_FILE
+        && file_name != TIMELINE_DB_FILE
+        && file_name != VIDEO_MP4_FILE
+        && file_name != AUDIO_M4A_FILE
+        && Path::new(file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"));
+    if !valid {
+        return Err(StorageError::InvalidArgument {
+            name: "share_mp4.file_name",
+            reason: format!("invalid share MP4 sidecar filename `{file_name}`"),
+        });
+    }
+    Ok(())
+}
+
+/// Formats `epoch_ns` (Unix epoch nanoseconds) as `YYYY-MM-DDTHH:MM:SS.mmmZ` without external crates.
+fn format_epoch_ns_iso_utc(epoch_ns: i64) -> String {
+    let secs = epoch_ns.div_euclid(1_000_000_000);
+    let nanos = epoch_ns.rem_euclid(1_000_000_000);
+    let millis = nanos / 1_000_000;
+
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+
+    // Howard Hinnant's civil_from_days algorithm (proleptic Gregorian calendar).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+fn format_ns_offset(prefix: &str, ns: i64) -> String {
+    let sign = if ns < 0 { "-" } else { "" };
+    let abs = ns.unsigned_abs();
+    let secs = abs / 1_000_000_000;
+    let millis = (abs % 1_000_000_000) / 1_000_000;
+    format!("{prefix}{sign}{secs}.{millis:03}s")
+}
+
+fn format_log_timestamp(log: &LogRecord) -> String {
+    if let Some(epoch_ns) = log.header_epoch_ns.filter(|&ns| ns > 0) {
+        return format_epoch_ns_iso_utc(epoch_ns);
+    }
+    match &log.alignment {
+        TimeAlignment::Anchored { boottime_ns, .. } => format_ns_offset("bt+", *boottime_ns),
+        TimeAlignment::Bounded {
+            min_boottime_ns, ..
+        } => format_ns_offset("bt~", *min_boottime_ns),
+        TimeAlignment::Unanchored {
+            pc_ingest_cont_ns, ..
+        } => format_ns_offset("pc+", *pc_ingest_cont_ns),
+        _ => format_ns_offset("pc+", log.pc_ingest_cont_ns),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogTextFormat {
+    Standard,
+    WithUnanchoredReason,
+}
+
+fn format_log_lines(log: &LogRecord, format: LogTextFormat, out: &mut String) {
+    use std::fmt::Write as _;
+
+    let ts = format_log_timestamp(log);
+    let pid = log.pid.map_or_else(|| "-".to_owned(), |v| v.to_string());
+    let tid = log.tid.map_or_else(|| "-".to_owned(), |v| v.to_string());
+    let level = log
+        .level
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("I");
+    let tag = log
+        .tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-");
+    let reason_tag = match format {
+        LogTextFormat::WithUnanchoredReason => match &log.alignment {
+            TimeAlignment::Unanchored { reason, .. } => format!(" [unanchored:{reason:?}]"),
+            TimeAlignment::Bounded { reason, .. } => format!(" [bounded:{reason:?}]"),
+            _ => String::new(),
+        },
+        LogTextFormat::Standard => String::new(),
+    };
+
+    if log.message.is_empty() {
+        let _ = writeln!(out, "{ts} {pid} {tid} {level} {tag}{reason_tag}:");
+        return;
+    }
+    for line in log.message.lines() {
+        let clean = line.trim_end_matches('\r');
+        let _ = writeln!(out, "{ts} {pid} {tid} {level} {tag}{reason_tag}: {clean}");
+    }
+}
+
+fn stage_logs_text(
+    staging: &AtomicStagingDir,
+    rel_name: &str,
+    logs: &[&LogRecord],
+    format: LogTextFormat,
+) -> Result<FileDigest, StorageError> {
+    let mut text = String::with_capacity(logs.len().saturating_mul(96));
+    for log in logs {
+        format_log_lines(log, format, &mut text);
+    }
+    let bytes = text.as_bytes();
+    let _staged_path = staging.write_file_synced(rel_name, bytes)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(FileDigest {
+        path: rel_name.to_owned(),
+        bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        sha256: hex_lower(&hasher.finalize()),
+    })
+}
+
+fn swipe_direction_label(tap: &TapRecord) -> Option<&'static str> {
+    if tap.gesture_kind != GestureKind::Swipe {
+        return None;
+    }
+    let (sx, sy, ex, ey) = (tap.x?, tap.y?, tap.end_x?, tap.end_y?);
+    let dx = ex - sx;
+    let dy = ey - sy;
+    if dx.abs() >= dy.abs() {
+        Some(if dx >= 0.0 { "right" } else { "left" })
+    } else {
+        Some(if dy >= 0.0 { "down" } else { "up" })
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "serializes taps, screen spans, crashes, and discontinuities into one chronologically sorted events.jsonl"
+)]
+fn stage_events_jsonl(
+    staging: &AtomicStagingDir,
+    draft: &V2BundleDraft,
+) -> Result<Option<FileDigest>, StorageError> {
+    let screens = extract_screen_spans(&draft.logs, &draft.frames);
+    let crashes = extract_crash_markers(&draft.logs, &draft.frames);
+
+    let total = draft.taps.len() + screens.len() + crashes.len() + draft.discontinuities.len();
+    if total == 0 {
+        return Ok(None);
+    }
+
+    let mut entries: Vec<(i64, u8, u64, serde_json::Value)> = Vec::with_capacity(total);
+
+    for tap in &draft.taps {
+        let t_ns = alignment_query_timestamp(&tap.alignment).unwrap_or(tap.pc_ingest_cont_ns);
+        let kind = match tap.gesture_kind {
+            GestureKind::Swipe => "swipe",
+            _ => "tap",
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert("kind".to_owned(), serde_json::json!(kind));
+        obj.insert("seq".to_owned(), serde_json::json!(tap.seq));
+        obj.insert("t_ns".to_owned(), serde_json::json!(t_ns));
+        obj.insert(
+            "bucket".to_owned(),
+            serde_json::json!(record_bucket_to_str(tap.bucket)),
+        );
+        if let Some(x) = tap.x {
+            obj.insert("x".to_owned(), serde_json::json!(x));
+        }
+        if let Some(y) = tap.y {
+            obj.insert("y".to_owned(), serde_json::json!(y));
+        }
+        if let Some(ex) = tap.end_x {
+            obj.insert("end_x".to_owned(), serde_json::json!(ex));
+        }
+        if let Some(ey) = tap.end_y {
+            obj.insert("end_y".to_owned(), serde_json::json!(ey));
+        }
+        if let Some(dt) = tap.end_t_offset_ns {
+            obj.insert("end_t_offset_ns".to_owned(), serde_json::json!(dt));
+        }
+        if let Some(dir) = swipe_direction_label(tap) {
+            obj.insert("direction".to_owned(), serde_json::json!(dir));
+        }
+        if let Some(pid) = tap.pointer_id {
+            obj.insert("pointer_id".to_owned(), serde_json::json!(pid));
+        }
+        if !tap.path.is_empty() {
+            obj.insert("path".to_owned(), serde_json::json!(tap.path));
+        }
+        entries.push((t_ns, 1, tap.seq, serde_json::Value::Object(obj)));
+    }
+
+    for (idx, span) in screens.iter().enumerate() {
+        entries.push((
+            span.start_ns,
+            0,
+            u64::try_from(idx).unwrap_or(u64::MAX),
+            serde_json::json!({
+                "kind": "screen",
+                "start_ns": span.start_ns,
+                "end_ns": span.end_ns,
+                "package": span.package_name,
+                "activity": span.activity_name,
+                "short_name": span.short_name,
+                "start_frame": span.start_frame_index,
+                "end_frame": span.end_frame_index,
+            }),
+        ));
+    }
+
+    for crash in &crashes {
+        let t_ns = crash.boottime_ns.unwrap_or(0);
+        entries.push((
+            t_ns,
+            2,
+            crash.source_log_seq,
+            serde_json::json!({
+                "kind": "crash",
+                "t_ns": crash.boottime_ns,
+                "frame_index_hint": crash.frame_index_hint,
+                "process": crash.process_name,
+                "package": crash.package_name,
+                "pid": crash.pid,
+                "exception": crash.exception_class,
+                "message": crash.message,
+                "source_log_seq": crash.source_log_seq,
+            }),
+        ));
+    }
+
+    for (idx, disc) in draft.discontinuities.iter().enumerate() {
+        let t_ns = disc.start_boottime_ns.unwrap_or(disc.pc_cont_start_ns);
+        entries.push((
+            t_ns,
+            3,
+            u64::try_from(idx).unwrap_or(u64::MAX),
+            serde_json::json!({
+                "kind": "discontinuity",
+                "discontinuity_kind": disc.kind,
+                "stream": disc.stream,
+                "boot_id": disc.boot_id,
+                "start_ns": disc.start_boottime_ns,
+                "end_ns": disc.end_boottime_ns,
+                "detail": disc.detail,
+            }),
+        ));
+    }
+
+    entries.sort_by_key(|(t, order, seq, _)| (*t, *order, *seq));
+
+    let mut bytes = Vec::with_capacity(entries.len().saturating_mul(128));
+    for (_, _, _, val) in entries {
+        let line = serde_json::to_string(&val)
+            .map_err(|source| StorageError::json("serialize_events_jsonl", source))?;
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+
+    let _staged_path = staging.write_file_synced(EVENTS_JSONL_FILE, &bytes)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(Some(FileDigest {
+        path: EVENTS_JSONL_FILE.to_owned(),
+        bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        sha256: hex_lower(&hasher.finalize()),
+    }))
+}
 
 fn stage_logs_jsonl(
     staging: &AtomicStagingDir,
@@ -2682,6 +3042,7 @@ mod tests {
             },
             video_mp4: Some(MediaPayload::Bytes(b"fake-mp4-data".to_vec())),
             audio_m4a: Some(MediaPayload::Bytes(b"fake-m4a-data".to_vec())),
+            share_mp4: None,
             frames: vec![FrameRecord {
                 frame_index: 0,
                 boot_id: "boot-1".to_owned(),
@@ -2793,8 +3154,8 @@ mod tests {
             V2BundleWriter::write(&dest, "job-01", &draft).expect("v2 write must succeed");
         assert_eq!(
             manifest.files.len(),
-            3,
-            "manifest must list audio.m4a, timeline.sqlite, and video.mp4"
+            6,
+            "manifest must list audio.m4a, events.jsonl, logcat.log, timeline.sqlite, unanchored.log, and video.mp4"
         );
 
         let reader = V2BundleReader::open(&dest).expect("v2 read-only open must succeed");

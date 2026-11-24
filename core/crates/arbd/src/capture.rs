@@ -2609,6 +2609,7 @@ impl ReplayCollector {
             unanchored_summary,
             video_mp4: media.video_mp4,
             audio_m4a: media.audio_m4a,
+            share_mp4: None,
             frames: media.frames,
             discontinuities,
             logs: final_logs,

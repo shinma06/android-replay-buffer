@@ -14,6 +14,7 @@ use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket, StreamStatus, TapRe
 use arb_core::time::TimeAlignment;
 use arb_media::MediaError;
 use arb_media::audio_decode::{decode_audio_m4a_to_wav, inspect_wav_header};
+use arb_media::burn_in::{BurnInDisplayGeometry, BurnInTouchEvent, burn_in_taps_video};
 use arb_media::codec::PixelFormat as MediaPixelFormat;
 use arb_media::contact_sheet::{
     ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions,
@@ -276,7 +277,7 @@ pub fn export_share_mp4(
         source_bundle_dir,
         source_catalog_id,
         dest_parent,
-        source_video,
+        &source_video,
         requested_trim,
         params,
     )?;
@@ -328,6 +329,15 @@ struct PreparedShareSources {
     audio_path: Option<PathBuf>,
     lead_in_offset_ns: i64,
     warning: Option<String>,
+    _temp_burned_video: Option<TempFileCleanup>,
+}
+
+struct TempFileCleanup(PathBuf);
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn resolve_share_trim_range(
@@ -356,6 +366,53 @@ fn resolve_share_trim_range(
     }
 }
 
+fn burn_in_share_video_if_nonempty(
+    ctx: &ExportContext<'_>,
+    bundle_reader: &dyn BundleReader,
+    video_path: &Path,
+) -> Result<(PathBuf, Option<TempFileCleanup>), DaemonError> {
+    let frames = bundle_reader.frames()?;
+    if frames.is_empty() {
+        return Ok((video_path.to_path_buf(), None));
+    }
+    let taps = bundle_reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    let events: Vec<BurnInTouchEvent> = taps
+        .iter()
+        .filter_map(BurnInTouchEvent::from_tap_record)
+        .collect();
+    if events.is_empty() {
+        return Ok((video_path.to_path_buf(), None));
+    }
+    let frame_ts: Vec<i64> = frames
+        .iter()
+        .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
+        .collect();
+    let summary = bundle_reader.manifest_summary();
+    let geom = BurnInDisplayGeometry {
+        display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
+        display_height: summary
+            .streams
+            .video
+            .as_ref()
+            .and_then(|v| v.display_height),
+    };
+    let tmp_dir = ctx.data_dir.join("tmp");
+    fs::create_dir_all(&tmp_dir)?;
+    let tmp_burned = tmp_dir.join(format!("{}-burned.mp4", next_id("share")));
+    let last_frame = u64::try_from(frames.len().saturating_sub(1)).unwrap_or(0);
+    let _report = burn_in_taps_video(
+        video_path,
+        &tmp_burned,
+        0,
+        last_frame,
+        &frame_ts,
+        &events,
+        geom,
+        ctx.backend,
+    )?;
+    Ok((tmp_burned.clone(), Some(TempFileCleanup(tmp_burned))))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "internal helper bundling validated inputs for full vs trimmed share.mp4 muxing"
@@ -366,7 +423,7 @@ fn prepare_share_mp4_sources(
     source_bundle_dir: &Path,
     source_catalog_id: Option<&str>,
     dest_parent: &Path,
-    source_video: PathBuf,
+    source_video: &Path,
     requested_trim: Option<(u64, u64)>,
     params: &ExportShareMp4Params,
 ) -> Result<PreparedShareSources, DaemonError> {
@@ -377,6 +434,9 @@ fn prepare_share_mp4_sources(
             out_frame_index: out_f,
             dest_dir: params.dest_dir.clone(),
             holder_pid: params.holder_pid,
+            burn_taps: false,
+            include_share_mp4: false,
+            trash_original: false,
         };
         let trim_resp = export_trim(
             ctx,
@@ -399,13 +459,19 @@ fn prepare_share_mp4_sources(
             .audio
             .as_ref()
             .map_or(0, |a| a.audio_lead_in_offset_ns);
+        let (video_path, temp_burned) = if params.burn_taps {
+            burn_in_share_video_if_nonempty(ctx, trimmed_reader.as_ref(), &trimmed_video)?
+        } else {
+            (trimmed_video, None)
+        };
         Ok(PreparedShareSources {
             trimmed_bundle_id: Some(trim_resp.bundle_id),
             trimmed_bundle_path: Some(trim_resp.bundle_path),
-            video_path: trimmed_video,
+            video_path,
             audio_path: trimmed_audio,
             lead_in_offset_ns,
             warning: trim_resp.warning,
+            _temp_burned_video: temp_burned,
         })
     } else {
         let lead_in_offset_ns = reader
@@ -414,13 +480,19 @@ fn prepare_share_mp4_sources(
             .audio
             .as_ref()
             .map_or(0, |a| a.audio_lead_in_offset_ns);
+        let (video_path, temp_burned) = if params.burn_taps {
+            burn_in_share_video_if_nonempty(ctx, reader, source_video)?
+        } else {
+            (source_video.to_path_buf(), None)
+        };
         Ok(PreparedShareSources {
             trimmed_bundle_id: None,
             trimmed_bundle_path: None,
-            video_path: source_video,
+            video_path,
             audio_path: reader.audio_path(),
             lead_in_offset_ns,
             warning: None,
+            _temp_burned_video: temp_burned,
         })
     }
 }

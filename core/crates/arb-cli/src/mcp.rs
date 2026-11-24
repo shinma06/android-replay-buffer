@@ -461,6 +461,10 @@ impl McpServer {
         Ok(vec![image_block(&b64), text_block(&resp)])
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "dispatches both share_mp4 and bundle trim formats with upfront legacy/catalog checks"
+    )]
     fn tool_export_trim(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
         let bundle_id = require_bundle_target(args)?;
         let format = args
@@ -471,6 +475,14 @@ impl McpServer {
             .get("trash_original")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let burn_taps = args
+            .get("burn_taps")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_share_mp4 = args
+            .get("include_share_mp4")
+            .and_then(Value::as_bool)
+            .unwrap_or(burn_taps);
 
         match format {
             "share_mp4" => {
@@ -488,6 +500,7 @@ impl McpServer {
                 if let Some(dest) = optional_abs_path(args, "dest_dir")? {
                     params.insert("dest_dir".to_owned(), json!(dest));
                 }
+                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
                 params.insert("trash_original".to_owned(), Value::Bool(trash_original));
                 params.insert("holder_pid".to_owned(), json!(std::process::id()));
                 let resp = self.call_daemon("export.share_mp4", &Value::Object(params))?;
@@ -533,6 +546,11 @@ impl McpServer {
                 if let Some(dest) = optional_abs_path(args, "dest_dir")? {
                     params.insert("dest_dir".to_owned(), json!(dest));
                 }
+                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
+                params.insert(
+                    "include_share_mp4".to_owned(),
+                    Value::Bool(include_share_mp4),
+                );
                 params.insert("holder_pid".to_owned(), json!(std::process::id()));
 
                 let mut resp = self.call_daemon("export.trim", &Value::Object(params))?;
@@ -1083,6 +1101,8 @@ fn tool_definitions() -> Vec<Value> {
                     "out_frame_index": { "type": "integer", "minimum": 0 },
                     "output_path": { "type": "string", "description": "Optional explicit .mp4 output path (for share_mp4)." },
                     "dest_dir": { "type": "string", "description": "Optional parent directory for the trimmed WORM bundle." },
+                    "burn_taps": { "type": "boolean", "description": "Composite recorded Tap/Swipe overlays onto output video frames (default false; WORM source stays untouched)." },
+                    "include_share_mp4": { "type": "boolean", "description": "When format=\"bundle\", also emit ready-to-share share.mp4 (or share-taps.mp4 when burn_taps=true) inside the trimmed bundle directory." },
                     "trash_original": { "type": "boolean", "description": "Move source bundle to non-destructive Trash after verified commit (default false)." }
                 },
                 "required": ["bundle_id"],

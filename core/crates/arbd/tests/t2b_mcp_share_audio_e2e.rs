@@ -397,6 +397,7 @@ fn seed_rich_v2_bundle(
         },
         video_mp4: Some(MediaPayload::File(video_src)),
         audio_m4a: audio_src.map(MediaPayload::File),
+        share_mp4: None,
         frames,
         discontinuities,
         logs,
@@ -996,6 +997,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
         },
         video_mp4: Some(MediaPayload::File(video_src)),
         audio_m4a: None,
+        share_mp4: None,
         frames: frame_records,
         discontinuities: Vec::new(),
         logs: Vec::new(),
@@ -1066,6 +1068,221 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
         }),
     );
     assert_eq!(sheet["frame_indices_rendered"], json!([0, 18]));
+
+    server.shutdown();
+}
+
+#[test]
+fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4() {
+    use arb_media::codec::VideoCodecBackend;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let mut rpc = RpcClient::connect(server.endpoint());
+
+    // Configure user output_dir_override so omitted dest_dir routes there!
+    let custom_out = tmp.path().join("user-custom-out");
+    fs::create_dir_all(&custom_out).expect("create custom out dir");
+    let _ = rpc.call(
+        "config.update",
+        &json!({ "output_dir_override": custom_out }),
+    );
+
+    let managed = paths.data_dir.join("bundles");
+    let src_dir = seed_rich_v2_bundle(tmp.path(), &managed, "t6i-source-01", true);
+    let opened = rpc.call(
+        "bundle.open",
+        &json!({
+            "bundle_id_or_path": src_dir,
+            "holder_kind": "cli",
+            "holder_pid": std::process::id()
+        }),
+    );
+    let src_id = opened["bundle_id"].as_str().expect("bundle_id").to_owned();
+    let src_lease = opened["lease_id"].as_str().expect("lease_id").to_owned();
+    let _ = rpc.call("bundle.close", &json!({ "lease_id": src_lease }));
+
+    // 1. Complete Trimmed Bundle Directory with include_share_mp4=true & burn_taps=true
+    //    (omitted dest_dir -> MUST land inside output_dir_override!).
+    let trim_burned = rpc.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": src_id,
+            "in_frame_index": 5,
+            "out_frame_index": 22,
+            "include_share_mp4": true,
+            "burn_taps": true,
+            "holder_pid": std::process::id()
+        }),
+    );
+    let trimmed_dir = PathBuf::from(trim_burned["bundle_path"].as_str().expect("bundle_path"));
+    assert!(
+        trimmed_dir.starts_with(&custom_out),
+        "trimmed bundle must respect output_dir_override: {trimmed_dir:?}"
+    );
+    assert_eq!(
+        trim_burned["burn_taps_applied"], true,
+        "burn_taps must be applied on tap-containing trim"
+    );
+    assert!(
+        trim_burned["app_logs_count"].as_u64().unwrap_or(0) >= 1,
+        "trimmed bundle must extract per-app foreground logs"
+    );
+    let share_taps_path = PathBuf::from(
+        trim_burned["share_mp4_path"]
+            .as_str()
+            .expect("share_mp4_path"),
+    );
+    assert_eq!(
+        share_taps_path.file_name().and_then(|s| s.to_str()),
+        Some("share-taps.mp4"),
+        "burn_taps=true must emit share-taps.mp4 inside trimmed bundle"
+    );
+    assert!(share_taps_path.is_file(), "share-taps.mp4 must exist");
+    assert!(
+        trimmed_dir.join("video.mp4").is_file(),
+        "lossless video.mp4"
+    );
+    assert!(trimmed_dir.join("audio.m4a").is_file(), "trimmed audio.m4a");
+    assert!(
+        trimmed_dir.join("timeline.sqlite").is_file(),
+        "timeline.sqlite"
+    );
+    assert!(trimmed_dir.join("manifest.json").is_file(), "manifest.json");
+    assert!(
+        trimmed_dir.join("logcat.log").is_file(),
+        "human-readable logcat.log"
+    );
+    assert!(
+        trimmed_dir.join("events.jsonl").is_file(),
+        "human-readable events.jsonl"
+    );
+    assert!(
+        trimmed_dir
+            .join("app-logs")
+            .join("com.example.shop.log")
+            .is_file(),
+        "per-app logcat must be human-readable .log"
+    );
+    assert!(
+        !trimmed_dir.join("unanchored.log").exists(),
+        "zero unanchored logs -> no empty unanchored.log clutter"
+    );
+
+    // Verify share-taps.mp4 has zero edts/elst, preserves AAC audio track, AND has visibly
+    // modified pixels at tap (64, 80) on frame 5 (source frame 10) compared to lossless video.mp4!
+    let atoms = inspect_mp4_atoms(&share_taps_path).expect("inspect share-taps.mp4");
+    assert_eq!(atoms.edts_count, 0, "share-taps.mp4 edts=0");
+    assert_eq!(atoms.elst_count, 0, "share-taps.mp4 elst=0");
+    let audio_in_share =
+        Mp4AudioTrack::open(&share_taps_path).expect("audio preserved in share-taps.mp4");
+    assert!(audio_in_share.packet_count() > 0, "AAC packets preserved");
+
+    let backend = OpenH264Backend::new();
+    let raw_track = Mp4VideoTrack::open(trimmed_dir.join("video.mp4")).expect("raw track");
+    let burned_track = Mp4VideoTrack::open(&share_taps_path).expect("burned track");
+    assert_eq!(raw_track.frame_count(), 18, "frames 5..=22 = 18 frames");
+    assert_eq!(burned_track.frame_count(), 18, "burned frame count matches");
+    let raw_f = backend
+        .decode_frame(&raw_track, 5, PixelFormat::Yuv420p)
+        .expect("decode raw tap frame");
+    let burned_f = backend
+        .decode_frame(&burned_track, 5, PixelFormat::Yuv420p)
+        .expect("decode burned tap frame");
+    let center_idx = 80 * 128 + 64;
+    let diff = raw_f.data[center_idx].abs_diff(burned_f.data[center_idx]);
+    assert!(
+        diff >= 20,
+        "burned share-taps.mp4 must visibly modify tap pixel at (64,80) vs raw video.mp4 (diff={diff})"
+    );
+
+    // 2. export.trim with include_share_mp4=true & burn_taps=false emits share.mp4 (no burn-in).
+    let trim_plain = rpc.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": src_id,
+            "in_frame_index": 5,
+            "out_frame_index": 22,
+            "include_share_mp4": true,
+            "burn_taps": false,
+            "holder_pid": std::process::id()
+        }),
+    );
+    assert_eq!(trim_plain["burn_taps_applied"], false);
+    let share_plain_path = PathBuf::from(
+        trim_plain["share_mp4_path"]
+            .as_str()
+            .expect("share_mp4_path"),
+    );
+    assert_eq!(
+        share_plain_path.file_name().and_then(|s| s.to_str()),
+        Some("share.mp4"),
+        "burn_taps=false must emit share.mp4"
+    );
+
+    // 3. export.share_mp4 default filenames do NOT collide between burn_taps=false & burn_taps=true.
+    let share_off = rpc.call(
+        "export.share_mp4",
+        &json!({ "bundle_id": src_id, "burn_taps": false }),
+    );
+    let share_on = rpc.call(
+        "export.share_mp4",
+        &json!({ "bundle_id": src_id, "burn_taps": true }),
+    );
+    let off_path = PathBuf::from(share_off["share_mp4_path"].as_str().expect("off path"));
+    let on_path = PathBuf::from(share_on["share_mp4_path"].as_str().expect("on path"));
+    assert_ne!(
+        off_path, on_path,
+        "burned & unburned default filenames must not collide"
+    );
+    assert!(
+        on_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|n| n.ends_with("-taps.mp4")),
+        "burn_taps=true default share filename must end with -taps.mp4: {on_path:?}"
+    );
+    assert!(off_path.starts_with(&custom_out) && on_path.starts_with(&custom_out));
+
+    // 4. export.trim with trash_original=true refuses LegacyRo cleanly and succeeds on managed V2.
+    let legacy_dir = tmp.path().join("t6i-legacy-ro");
+    seed_legacy_ro_bundle(tmp.path(), &legacy_dir);
+    let (legacy_code, legacy_msg) = rpc.call_err(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": legacy_dir,
+            "in_frame_index": 0,
+            "out_frame_index": 5,
+            "trash_original": true
+        }),
+    );
+    assert_eq!(legacy_code, i64::from(RPC_ERR_CONFLICT));
+    assert!(
+        legacy_msg.contains("legacy"),
+        "conflict reason: {legacy_msg}"
+    );
+
+    let trim_trash = rpc.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": src_id,
+            "in_frame_index": 5,
+            "out_frame_index": 15,
+            "include_share_mp4": true,
+            "burn_taps": false,
+            "trash_original": true,
+            "holder_pid": std::process::id()
+        }),
+    );
+    assert_eq!(
+        trim_trash["original_trashed"], true,
+        "source logically trashed"
+    );
+    assert!(
+        src_dir.is_dir(),
+        "WORM source directory remains intact on disk"
+    );
 
     server.shutdown();
 }

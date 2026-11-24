@@ -12,8 +12,10 @@ import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import io.github.shinma06.arb.ide.ArbDaemonStateListener
+import io.github.shinma06.arb.ide.ArbNotifications
 import io.github.shinma06.arb.ide.ArbScreenshotDestinationResolver
 import io.github.shinma06.arb.ide.ArbSettingsConfigurable
+import io.github.shinma06.arb.ide.ArbToolbarDaemonSnapshot
 import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
@@ -126,6 +128,10 @@ class ArbToolWindowController(
         }
 
         override fun onDaemonConnectionChanged() {
+            runAsync { refreshAll() }
+        }
+
+        override fun onCatalogChanged() {
             runAsync { refreshAll() }
         }
     }
@@ -360,27 +366,59 @@ class ArbToolWindowController(
     fun captureScreenshot() {
         val serial = selectedDeviceSerial
         runAsync {
-            val outputDir = runCatching { screenshotDirResolver() }
-                .onFailure { logger.debug("ARB screenshot dir resolution failed", it) }
-                .getOrNull()
-            val res = daemonService.withClient {
-                it.saveScreenshot(SaveScreenshotParams(serial = serial, outputDir = outputDir))
+            try {
+                val outputDir = runCatching { screenshotDirResolver() }
+                    .onFailure { logger.debug("ARB screenshot dir resolution failed", it) }
+                    .getOrNull()
+                val res = daemonService.withClient {
+                    it.saveScreenshot(SaveScreenshotParams(serial = serial, outputDir = outputDir))
+                }
+                ArbNotifications.notifyImageSaved(
+                    project = project,
+                    imagePath = res.path,
+                    width = res.width,
+                    height = res.height,
+                    kindLabel = "スクリーンショット",
+                )
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB screenshot failed", t)
+                ArbNotifications.notifyActionFailed(project, "スクリーンショットの保存", t.message)
+                handleDaemonFailure(t)
             }
-            val fileName = runCatching { Path.of(res.path).fileName.toString() }.getOrDefault(res.path)
-            notifyBalloon("スクリーンショットを保存しました: $fileName (${res.width}x${res.height})")
-            refreshAll()
         }
     }
 
     fun saveLogsOnly() {
         val durationSec = captureState.saveWindowSecs.toLong()
         runAsync {
-            val res = daemonService.withClient {
-                it.saveLogs(SaveLogsParams(windowSecs = durationSec))
+            try {
+                val res = daemonService.withClient {
+                    it.saveLogs(SaveLogsParams(windowSecs = durationSec))
+                }
+                val savedId = res.bundleId
+                if (savedId != null) {
+                    ArbNotifications.notifyLogsOnlySaved(
+                        project = project,
+                        daemonService = daemonService,
+                        bundleId = savedId,
+                        bundlePath = res.bundlePath,
+                        windowSecs = durationSec,
+                        warning = res.warning,
+                    )
+                } else {
+                    ArbNotifications.notifyWarning(
+                        project = project,
+                        message = "ログ保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
+                        includeOpenPanel = true,
+                    )
+                }
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB save.logs failed", t)
+                ArbNotifications.notifyActionFailed(project, "ログのみの保存", t.message)
+                handleDaemonFailure(t)
             }
-            val detail = res.bundleId ?: res.job.state.wire
-            notifyBalloon("直前 ${ArbFormatters.formatSeconds(durationSec)} のログを保存しました: $detail")
-            refreshAll()
         }
     }
 
@@ -533,22 +571,36 @@ class ArbToolWindowController(
 
     private fun triggerSave(durationSec: Long, openEditor: Boolean) {
         runAsync {
-            val res = daemonService.withClient {
-                it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
-            }
-            refreshAll()
-            val savedId = res.bundleId
-            if (savedId != null) {
-                if (openEditor) {
-                    publishOnEdt { onOpenBundle(savedId, savedId, false) }
-                } else {
-                    notifyBalloon("直前 ${ArbFormatters.formatSeconds(durationSec)} を保存しました: $savedId")
+            try {
+                val res = daemonService.withClient {
+                    it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
                 }
-            } else {
-                notifyBalloon(
-                    "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
-                    NotificationType.WARNING,
-                )
+                refreshAll()
+                val savedId = res.bundleId
+                if (savedId != null) {
+                    if (openEditor) {
+                        publishOnEdt { onOpenBundle(savedId, savedId, false) }
+                    }
+                    ArbNotifications.notifyReplaySaved(
+                        project = project,
+                        daemonService = daemonService,
+                        bundleId = savedId,
+                        bundlePath = res.bundlePath,
+                        windowSecs = durationSec,
+                        openedInStudio = openEditor,
+                        warning = res.warning,
+                    )
+                } else {
+                    ArbNotifications.notifyWarning(
+                        project = project,
+                        message = "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
+                        includeOpenPanel = true,
+                    )
+                }
+            } catch (t: Throwable) {
+                logger.warn("ARB save.trigger failed", t)
+                ArbNotifications.notifyActionFailed(project, "直前の記録の保存", t.message)
+                handleDaemonFailure(t)
             }
         }
     }
@@ -631,6 +683,7 @@ class ArbToolWindowController(
                     config = config,
                 ).also { rawCaptureState = it }
             }
+            daemonService.updateCachedToolbarSnapshot(buildToolbarSnapshot(nextCapture))
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(rawRecoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
@@ -667,12 +720,43 @@ class ArbToolWindowController(
         val next = synchronized(captureStateLock) {
             CaptureBarReducer.disconnected(rawCaptureState, t.message ?: "arbd 未起動").also { rawCaptureState = it }
         }
+        daemonService.updateCachedToolbarSnapshot(
+            ArbToolbarDaemonSnapshot(
+                probed = true,
+                daemonConnected = false,
+                captureActive = false,
+            ),
+        )
         publishOnEdt {
             captureState = next
             if (stale != null) {
                 staleDaemonMessage = stale
             }
         }
+    }
+
+    private fun buildToolbarSnapshot(state: CaptureBarState): ArbToolbarDaemonSnapshot {
+        val hint = when (val sel = state.deviceSelection) {
+            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+                if (state.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
+            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+                "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX"
+            else -> when (state.selectedDevice?.state) {
+                AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
+                AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+                null -> NO_DEVICES_PLACEHOLDER
+                else -> null
+            }
+        }
+        return ArbToolbarDaemonSnapshot(
+            probed = true,
+            daemonConnected = state.daemonConnected,
+            captureActive = state.capture?.active == true,
+            hasBufferedData = state.ringChunkCount > 0L,
+            hasOnlineDevice = state.isSelectedDeviceOnline,
+            selectedDeviceSerial = state.selectedDevice?.serial,
+            disabledDeviceHint = hint,
+        )
     }
 
     private fun updateRecovery(next: FailedSaveRecoveryState) {

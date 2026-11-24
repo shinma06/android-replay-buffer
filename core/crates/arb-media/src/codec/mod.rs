@@ -309,6 +309,151 @@ impl Default for EncodeParams {
     }
 }
 
+/// Mutable view over a decoded 4:2:0 YUV frame used for in-place overlay compositing without
+/// full-frame RGB round-trip conversion.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum MutableYuvFrame<'a> {
+    /// Planar 4:2:0 (`Y`, `U`, `V` separate planes).
+    Yuv420p {
+        /// Frame width in pixels.
+        width: usize,
+        /// Frame height in pixels.
+        height: usize,
+        /// Mutable luma plane (`>= y_stride * height`).
+        y: &'a mut [u8],
+        /// Mutable Cb plane (`>= u_stride * ceil(height / 2)`).
+        u: &'a mut [u8],
+        /// Mutable Cr plane (`>= v_stride * ceil(height / 2)`).
+        v: &'a mut [u8],
+        /// Row stride in bytes for [`Self::Yuv420p::y`].
+        y_stride: usize,
+        /// Row stride in bytes for [`Self::Yuv420p::u`].
+        u_stride: usize,
+        /// Row stride in bytes for [`Self::Yuv420p::v`].
+        v_stride: usize,
+    },
+    /// Bi-planar NV12 (`Y` plane + interleaved `U,V` chroma plane).
+    Nv12 {
+        /// Frame width in pixels.
+        width: usize,
+        /// Frame height in pixels.
+        height: usize,
+        /// Mutable luma plane (`>= y_stride * height`).
+        y: &'a mut [u8],
+        /// Mutable interleaved `CbCr` plane (`>= uv_stride * ceil(height / 2)`).
+        uv: &'a mut [u8],
+        /// Row stride in bytes for [`Self::Nv12::y`].
+        y_stride: usize,
+        /// Row stride in bytes for [`Self::Nv12::uv`].
+        uv_stride: usize,
+    },
+}
+
+impl MutableYuvFrame<'_> {
+    /// Returns the frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> usize {
+        match self {
+            Self::Yuv420p { width, .. } | Self::Nv12 { width, .. } => *width,
+        }
+    }
+
+    /// Returns the frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> usize {
+        match self {
+            Self::Yuv420p { height, .. } | Self::Nv12 { height, .. } => *height,
+        }
+    }
+
+    /// Returns a mutable reference to the luma sample at `(x, y)` if in bounds.
+    pub fn y_mut_at(&mut self, x: usize, y_pos: usize) -> Option<&mut u8> {
+        match self {
+            Self::Yuv420p {
+                width,
+                height,
+                y,
+                y_stride,
+                ..
+            }
+            | Self::Nv12 {
+                width,
+                height,
+                y,
+                y_stride,
+                ..
+            } => {
+                if x >= *width || y_pos >= *height {
+                    return None;
+                }
+                y.get_mut(y_pos.checked_mul(*y_stride)?.checked_add(x)?)
+            }
+        }
+    }
+
+    /// Alpha-blends `(ov_u, ov_v)` into the 2x2 chroma cell `(cx, cy)` if in bounds.
+    pub fn blend_uv_at(&mut self, cx: usize, cy: usize, ov_u: f32, ov_v: f32, alpha: f32) {
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "value is explicitly rounded and clamped to [0.0, 255.0] before u8 conversion"
+        )]
+        let blend = |dst: u8, src: f32| -> u8 {
+            (src * alpha + f32::from(dst) * (1.0 - alpha))
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        match self {
+            Self::Yuv420p {
+                width,
+                height,
+                u,
+                v,
+                u_stride,
+                v_stride,
+                ..
+            } => {
+                if cx >= width.div_ceil(2) || cy >= height.div_ceil(2) {
+                    return;
+                }
+                if let Some(u_idx) = cy.checked_mul(*u_stride).and_then(|r| r.checked_add(cx))
+                    && let Some(cell) = u.get_mut(u_idx)
+                {
+                    *cell = blend(*cell, ov_u);
+                }
+                if let Some(v_idx) = cy.checked_mul(*v_stride).and_then(|r| r.checked_add(cx))
+                    && let Some(cell) = v.get_mut(v_idx)
+                {
+                    *cell = blend(*cell, ov_v);
+                }
+            }
+            Self::Nv12 {
+                width,
+                height,
+                uv,
+                uv_stride,
+                ..
+            } => {
+                if cx >= width.div_ceil(2) || cy >= height.div_ceil(2) {
+                    return;
+                }
+                let Some(base) = cy
+                    .checked_mul(*uv_stride)
+                    .and_then(|r| r.checked_add(cx.checked_mul(2)?))
+                else {
+                    return;
+                };
+                if let Some(pair) = uv.get_mut(base..base + 2) {
+                    pair[0] = blend(pair[0], ov_u);
+                    pair[1] = blend(pair[1], ov_v);
+                }
+            }
+        }
+    }
+}
+
 /// GPL-free H.264 video decode and head-GOP re-encode backend abstraction.
 pub trait VideoCodecBackend: Debug + Send + Sync {
     /// Returns a stable human-readable identifier for this codec backend.
@@ -369,6 +514,29 @@ pub trait VideoCodecBackend: Debug + Send + Sync {
         start_frame: u64,
         end_frame_exclusive: u64,
         params: EncodeParams,
+    ) -> Result<EncodedGop, MediaError>;
+
+    /// Decodes `[start_frame..end_frame_exclusive)` (streaming GOP-by-GOP), calls `apply_overlay`
+    /// on each frame where `has_overlay(frame_index)` is `true`, and re-encodes the entire range
+    /// with an initial IDR and periodic IDR keyframes every `keyframe_interval` frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidFrameRange`] if the range is empty or out of bounds, or
+    /// [`MediaError::Codec`] / [`MediaError::Io`] if decode or re-encode fails.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "streaming overlay transcode separates pure predicate from mutable painter for zero-copy VideoToolbox pass-through"
+    )]
+    fn reencode_frame_range_with_overlay(
+        &self,
+        track: &Mp4VideoTrack,
+        start_frame: u64,
+        end_frame_exclusive: u64,
+        params: EncodeParams,
+        keyframe_interval: u64,
+        has_overlay: &dyn Fn(u64) -> bool,
+        apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
     ) -> Result<EncodedGop, MediaError>;
 }
 

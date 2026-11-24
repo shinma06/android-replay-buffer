@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::ptr::{NonNull, null, null_mut};
 
 use crate::codec::{
-    DecodedFrame, EncodeParams, EncodedGop, EncodedSample, PixelFormat, RgbImage,
+    DecodedFrame, EncodeParams, EncodedGop, EncodedSample, MutableYuvFrame, PixelFormat, RgbImage,
     VideoCodecBackend, convert_from_yuv420p, fit_thumbnail_dimensions, nv12_to_rgb24,
     nv12_to_thumb_rgb24, nv12_to_yuv420p,
 };
@@ -39,6 +39,8 @@ type VTSessionRef = *mut c_void;
 
 /// `FourCC` `'420v'`: bi-planar NV12 video-range pixel format native to Apple Silicon hardware decode.
 const K_CV_PIXEL_FORMAT_420V: i32 = 0x3432_3076;
+/// Unsigned `FourCC` `'420v'` for `CVPixelBufferCreate`.
+const K_CV_PIXEL_FORMAT_420V_U32: u32 = 0x3432_3076;
 /// `FourCC` `'avc1'`: H.264 video codec identifier for `VTCompressionSessionCreate`.
 const K_CM_VIDEO_CODEC_H264: u32 = 0x6176_6331;
 /// `kCFNumberSInt32Type` enum constant from `CoreFoundation`.
@@ -138,6 +140,14 @@ unsafe extern "C" {
     static kCVPixelBufferWidthKey: CFStringRef;
     static kCVPixelBufferHeightKey: CFStringRef;
 
+    fn CVPixelBufferCreate(
+        allocator: CFAllocatorRef,
+        width: usize,
+        height: usize,
+        pixel_format_type: u32,
+        pixel_buffer_attributes: CFDictionaryRef,
+        pixel_buffer_out: *mut CVPixelBufferRef,
+    ) -> i32;
     fn CVPixelBufferLockBaseAddress(pixel_buffer: CVPixelBufferRef, lock_flags: u64) -> i32;
     fn CVPixelBufferUnlockBaseAddress(pixel_buffer: CVPixelBufferRef, unlock_flags: u64) -> i32;
     fn CVPixelBufferGetBaseAddressOfPlane(
@@ -446,7 +456,128 @@ impl Drop for PixelBufferReadLock<'_> {
     }
 }
 
+/// RAII read-write lock guard for a newly allocated writable `CVPixelBuffer`.
+struct PixelBufferWriteLock<'a>(&'a RetainedPixelBuffer);
+
+impl<'a> PixelBufferWriteLock<'a> {
+    fn acquire(pb: &'a RetainedPixelBuffer) -> Result<Self, MediaError> {
+        // SAFETY: `pb.0` is an exclusively owned non-null `CVPixelBufferRef`.
+        let status = unsafe { CVPixelBufferLockBaseAddress(pb.0, 0) };
+        if status != 0 {
+            return Err(MediaError::Codec(format!(
+                "CVPixelBufferLockBaseAddress(rw) failed: {status}"
+            )));
+        }
+        Ok(Self(pb))
+    }
+
+    fn plane_mut(&mut self, plane_index: usize) -> Result<(&mut [u8], usize, usize), MediaError> {
+        // SAFETY: `self.0.0` is locked read-write and exclusively owned.
+        let row_count = unsafe { CVPixelBufferGetHeightOfPlane(self.0.0, plane_index) };
+        // SAFETY: `self.0.0` is locked read-write and exclusively owned.
+        let stride = unsafe { CVPixelBufferGetBytesPerRowOfPlane(self.0.0, plane_index) };
+        // SAFETY: `self.0.0` is locked read-write and exclusively owned.
+        let base = unsafe { CVPixelBufferGetBaseAddressOfPlane(self.0.0, plane_index) }.cast_mut();
+        if base.is_null() {
+            return Err(MediaError::Codec(format!(
+                "CVPixelBuffer writable plane {plane_index} base pointer was null"
+            )));
+        }
+        let byte_len = stride.saturating_mul(row_count);
+        // SAFETY: Exclusively locked writable pixel buffer guarantees `stride * row_count` bytes.
+        let slice = unsafe { std::slice::from_raw_parts_mut(base, byte_len) };
+        Ok((slice, stride, row_count))
+    }
+}
+
+impl Drop for PixelBufferWriteLock<'_> {
+    fn drop(&mut self) {
+        // SAFETY: Balances `CVPixelBufferLockBaseAddress(self.0.0, 0)` in `acquire`.
+        let _ = unsafe { CVPixelBufferUnlockBaseAddress(self.0.0, 0) };
+    }
+}
+
 impl RetainedPixelBuffer {
+    /// Allocates a fresh writable NV12 (`'420v'`) `CVPixelBuffer`, copies `self` into it,
+    /// and invokes `painter` on the mutable Y and interleaved UV planes.
+    fn clone_writable_and_paint(
+        &self,
+        painter: &mut dyn FnMut(&mut MutableYuvFrame<'_>),
+    ) -> Result<Self, MediaError> {
+        let src_lock = PixelBufferReadLock::acquire(self)?;
+        let width = src_lock.width();
+        let height = src_lock.height();
+        let (src_y, src_y_stride, _) = src_lock.plane(0)?;
+        let (src_uv, src_uv_stride, _) = src_lock.plane(1)?;
+
+        let mut raw_dst: CVPixelBufferRef = null_mut();
+        // SAFETY: `CVPixelBufferCreate` allocates a new CoreVideo pixel buffer owned by us
+        // (released by `RetainedPixelBuffer::drop` via `CFRelease`).
+        let st = unsafe {
+            CVPixelBufferCreate(
+                null(),
+                width,
+                height,
+                K_CV_PIXEL_FORMAT_420V_U32,
+                null(),
+                &raw mut raw_dst,
+            )
+        };
+        if st != 0 || raw_dst.is_null() {
+            return Err(MediaError::Codec(format!(
+                "CVPixelBufferCreate(420v) failed: {st}"
+            )));
+        }
+        let dst = Self(raw_dst);
+        {
+            let mut dst_lock = PixelBufferWriteLock::acquire(&dst)?;
+            let (dst_y_ptr, dst_y_stride, dst_y_rows) = {
+                let (slice, stride, rows) = dst_lock.plane_mut(0)?;
+                let copy_rows = rows.min(height);
+                for row in 0..copy_rows {
+                    let s_off = row * src_y_stride;
+                    let d_off = row * stride;
+                    let n = width.min(src_y.len().saturating_sub(s_off));
+                    if d_off + n <= slice.len() {
+                        slice[d_off..d_off + n].copy_from_slice(&src_y[s_off..s_off + n]);
+                    }
+                }
+                (slice.as_mut_ptr(), stride, rows)
+            };
+            let (dst_uv_ptr, dst_uv_stride, dst_uv_rows) = {
+                let (slice, stride, rows) = dst_lock.plane_mut(1)?;
+                let chroma_h = height.div_ceil(2);
+                let chroma_row_bytes = width.div_ceil(2).saturating_mul(2);
+                let copy_rows = rows.min(chroma_h);
+                for row in 0..copy_rows {
+                    let s_off = row * src_uv_stride;
+                    let d_off = row * stride;
+                    let n = chroma_row_bytes.min(src_uv.len().saturating_sub(s_off));
+                    if d_off + n <= slice.len() {
+                        slice[d_off..d_off + n].copy_from_slice(&src_uv[s_off..s_off + n]);
+                    }
+                }
+                (slice.as_mut_ptr(), stride, rows)
+            };
+            // SAFETY: Plane 0 (Y) of a bi-planar NV12 `CVPixelBuffer` is locked exclusively by `dst_lock`.
+            let y_mut =
+                unsafe { std::slice::from_raw_parts_mut(dst_y_ptr, dst_y_stride * dst_y_rows) };
+            // SAFETY: Plane 1 (UV) of a bi-planar NV12 `CVPixelBuffer` is disjoint from plane 0 and locked exclusively by `dst_lock`.
+            let uv_mut =
+                unsafe { std::slice::from_raw_parts_mut(dst_uv_ptr, dst_uv_stride * dst_uv_rows) };
+            let mut frame = MutableYuvFrame::Nv12 {
+                width,
+                height,
+                y: y_mut,
+                uv: uv_mut,
+                y_stride: dst_y_stride,
+                uv_stride: dst_uv_stride,
+            };
+            painter(&mut frame);
+        }
+        Ok(dst)
+    }
+
     fn to_decoded_frame(
         &self,
         frame_index: u64,
@@ -1396,6 +1527,129 @@ impl VideoCodecBackend for VideoToolboxBackend {
             if frame_index == start_frame && !is_keyframe {
                 return Err(MediaError::Codec(format!(
                     "VideoToolbox first re-encoded frame {frame_index} was not IDR"
+                )));
+            }
+            samples.push(EncodedSample {
+                frame_index,
+                avcc_data,
+                duration_ticks,
+                is_keyframe,
+            });
+        }
+
+        let avcc_payload = build_avcc_payload(&sps, &pps)?;
+        Ok(EncodedGop {
+            sps,
+            pps,
+            avcc_payload,
+            decoded_frames,
+            samples,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "streaming VideoToolbox decode-paint-reencode pipeline with GOP keyframe pacing"
+    )]
+    fn reencode_frame_range_with_overlay(
+        &self,
+        track: &Mp4VideoTrack,
+        start_frame: u64,
+        end_frame_exclusive: u64,
+        params: EncodeParams,
+        keyframe_interval: u64,
+        has_overlay: &dyn Fn(u64) -> bool,
+        apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
+    ) -> Result<EncodedGop, MediaError> {
+        let frame_count = track.frame_count();
+        if start_frame >= end_frame_exclusive || end_frame_exclusive > frame_count {
+            return Err(MediaError::InvalidFrameRange {
+                in_frame_index: start_frame,
+                out_frame_index: end_frame_exclusive.saturating_sub(1),
+                frame_count,
+            });
+        }
+
+        let interval = keyframe_interval.max(1);
+        let gop_start = track.decodable_gop_start(start_frame)?;
+        let avcc = track.avcc();
+        let mut dec = VtDecoder::new(
+            &avcc.sps,
+            &avcc.pps,
+            avcc.nal_length_size,
+            track.width(),
+            track.height(),
+        )?;
+        let mut enc = VtEncoder::new(track.width(), track.height(), params.bitrate_bps)?;
+        let mut raw = Vec::new();
+        let mut rebased_pts: i64 = 0;
+        let expected_encoded = usize::try_from(end_frame_exclusive - start_frame).unwrap_or(0);
+        let mut head_meta = Vec::with_capacity(expected_encoded);
+        let mut decoded_frames = 0u64;
+
+        for idx in gop_start..end_frame_exclusive {
+            track.read_sample_into(idx, &mut raw)?;
+            let info = track.frame(idx)?;
+            let pb = dec.decode_avcc_sample_sync(
+                &raw,
+                info.pts_ticks,
+                track.timescale(),
+                info.duration_ticks,
+            )?;
+            decoded_frames += 1;
+            if idx >= start_frame {
+                let rel_idx = idx.saturating_sub(start_frame);
+                let mode = if rel_idx % interval == 0 {
+                    FrameEncodeMode::ForceKeyframe
+                } else {
+                    FrameEncodeMode::Normal
+                };
+                if has_overlay(idx) {
+                    let mut overlay_fn =
+                        |frame: &mut MutableYuvFrame<'_>| apply_overlay(idx, frame);
+                    let composited_pb = pb.clone_writable_and_paint(&mut overlay_fn)?;
+                    enc.encode_pixel_buffer(
+                        &composited_pb,
+                        rebased_pts,
+                        track.timescale(),
+                        info.duration_ticks,
+                        mode,
+                    )?;
+                } else {
+                    // Untouched frames stay zero-copy in GPU/IOSurface memory!
+                    enc.encode_pixel_buffer(
+                        &pb,
+                        rebased_pts,
+                        track.timescale(),
+                        info.duration_ticks,
+                        mode,
+                    )?;
+                }
+                rebased_pts = rebased_pts.saturating_add(i64::from(info.duration_ticks));
+                head_meta.push((idx, info.duration_ticks));
+            }
+        }
+
+        let VtEncodedStream {
+            sps,
+            pps,
+            samples: encoded_samples,
+        } = enc.finish()?;
+        if encoded_samples.len() != head_meta.len() {
+            return Err(MediaError::Codec(format!(
+                "VideoToolbox overlay-encoded {} frames, expected {}",
+                encoded_samples.len(),
+                head_meta.len()
+            )));
+        }
+
+        let mut samples = Vec::with_capacity(encoded_samples.len());
+        for ((avcc_data, is_keyframe), (frame_index, duration_ticks)) in
+            encoded_samples.into_iter().zip(head_meta)
+        {
+            if frame_index == start_frame && !is_keyframe {
+                return Err(MediaError::Codec(format!(
+                    "VideoToolbox first overlay-encoded frame {frame_index} was not IDR"
                 )));
             }
             samples.push(EncodedSample {

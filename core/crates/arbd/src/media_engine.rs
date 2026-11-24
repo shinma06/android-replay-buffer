@@ -13,15 +13,18 @@ use arb_core::selection::{SelectionPolicy, WindowSpec, select_for_trim_with_trun
 use arb_core::time::{DiscontinuityEvent, TimeAlignment, TimestampSemantics, UncertaintyReason};
 use arb_media::MediaError;
 use arb_media::audio::trim_audio_m4a;
+use arb_media::burn_in::{BurnInDisplayGeometry, BurnInTouchEvent, burn_in_taps_video};
 use arb_media::codec::{PixelFormat as MediaPixelFormat, VideoCodecBackend, default_codec_backend};
-use arb_media::mp4::Mp4VideoTrack;
+use arb_media::mp4::{Mp4VideoTrack, inspect_mp4_atoms};
+use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::{
     FilmstripCache, FilmstripConfig, FilmstripOrigin, GopLruCache, ScrubController,
 };
 use arb_media::trim::{PngExportMetadata, export_frame_png_with_metadata, trim_video};
 use arb_os::shm::{FrameDescriptor, PixelFormat as ShmPixelFormat, ShmFrameRingWriter};
 use arb_storage::bundle_io::{
-    BundleReader, MediaPayload, TimeRange, V2BundleDraft, V2BundleWriter, open_bundle,
+    BundleReader, ClockAnchorRecord, MediaPayload, SHARE_MP4_FILE, SHARE_TAPS_MP4_FILE,
+    ShareMp4Sidecar, TimeRange, V2BundleDraft, V2BundleReader, V2BundleWriter, open_bundle,
 };
 use arb_storage::catalog::{Catalog, CatalogFormatVersion, LeaseHolderKind, NewBundleEntry};
 
@@ -482,6 +485,10 @@ pub fn export_png(
 ///
 /// Returns [`DaemonError`] if the frame range is invalid, video trim fails, or atomic
 /// v2 bundle write fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end atomic trim pipeline coordinates lease, video/audio trim, optional tap burn-in, share MP4 mux, sidecar draft, and post-commit trash"
+)]
 pub fn export_trim(
     ctx: &ExportContext<'_>,
     source_bundle_dir: &Path,
@@ -492,11 +499,30 @@ pub fn export_trim(
     let now_utc = utc_now_iso8601();
     let holder_pid = params.holder_pid.unwrap_or_else(std::process::id);
     let catalog = ctx.catalog;
-    let _lease_guard = acquire_export_lease(catalog, source_catalog_id, holder_pid)?;
+    let lease_guard = acquire_export_lease(catalog, source_catalog_id, holder_pid)?;
 
     let reader = open_bundle(source_bundle_dir)?;
     let summary = reader.manifest_summary();
     let parent_bundle_id = source_catalog_id.unwrap_or(&summary.bundle_id).to_owned();
+
+    // Enforce REQ-04/07 safety invariant upfront: never trash read-only legacy or uncataloged bundles.
+    if params.trash_original {
+        let is_legacy_catalog = source_catalog_id
+            .and_then(|id| catalog.bundle(id).ok().flatten())
+            .is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo);
+        if reader.is_legacy() || is_legacy_catalog {
+            return Err(DaemonError::Conflict(format!(
+                "refusing trash_original on read-only legacy bundle `{parent_bundle_id}`"
+            )));
+        }
+        if source_catalog_id.is_none() {
+            return Err(DaemonError::Conflict(
+                "refusing trash_original on uncataloged external bundle; open or register it first"
+                    .to_owned(),
+            ));
+        }
+    }
+
     let video_path = reader.video_path().ok_or_else(|| {
         DaemonError::NotFound(format!(
             "source bundle `{parent_bundle_id}` has no video.mp4"
@@ -540,12 +566,101 @@ pub fn export_trim(
         select_trimmed_taps(reader.as_ref(), &frame_window, &policy)?;
     let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
+    let clock_anchors: Vec<ClockAnchorRecord> = if reader.is_legacy() {
+        Vec::new()
+    } else {
+        V2BundleReader::open(source_bundle_dir)
+            .ok()
+            .and_then(|v2| v2.clock_anchors().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|anchor| match anchor {
+                ClockAnchorRecord::DeviceTriple(t) => t.boot_id == frame_window.boot_id(),
+                ClockAnchorRecord::PcSyncProbe(p) => p.boot_id == frame_window.boot_id(),
+                _ => false,
+            })
+            .collect()
+    };
+
     let unanchored_summary = UnanchoredSummary {
         included_count: u64::try_from(unanchored_log_count + unanchored_tap_count)
             .unwrap_or(u64::MAX),
         truncated_count: u64::try_from(log_truncated.saturating_add(tap_truncated))
             .unwrap_or(u64::MAX),
     };
+
+    // Optional ready-to-share MP4 (`share.mp4` or `share-taps.mp4`) staged inside the trimmed bundle.
+    let emit_share_mp4 = params.include_share_mp4 || params.burn_taps;
+    let mut burn_taps_applied = false;
+    let mut _tmp_burned_guard: Option<FileCleanupGuard> = None;
+    let mut _tmp_share_guard: Option<FileCleanupGuard> = None;
+    let mut share_sidecar_name: Option<&'static str> = None;
+    let mut share_sidecar: Option<ShareMp4Sidecar> = None;
+
+    if emit_share_mp4 && !trimmed_frames.is_empty() {
+        let share_name = if params.burn_taps {
+            SHARE_TAPS_MP4_FILE
+        } else {
+            SHARE_MP4_FILE
+        };
+        let video_for_share: std::borrow::Cow<'_, Path> = if params.burn_taps {
+            let burn_events: Vec<BurnInTouchEvent> = trimmed_taps
+                .iter()
+                .filter_map(BurnInTouchEvent::from_tap_record)
+                .collect();
+            let frame_ts: Vec<i64> = trimmed_frames
+                .iter()
+                .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
+                .collect();
+            let geom = BurnInDisplayGeometry {
+                display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
+                display_height: summary
+                    .streams
+                    .video
+                    .as_ref()
+                    .and_then(|v| v.display_height),
+            };
+            let tmp_burned = tmp_dir.join(format!("{trim_job_id}-burned.mp4"));
+            let last_trimmed = u64::try_from(trimmed_frames.len().saturating_sub(1)).unwrap_or(0);
+            let burn_report = burn_in_taps_video(
+                &tmp_trimmed_mp4,
+                &tmp_burned,
+                0,
+                last_trimmed,
+                &frame_ts,
+                &burn_events,
+                geom,
+                ctx.backend,
+            )?;
+            burn_taps_applied = burn_report.reencoded;
+            _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
+            std::borrow::Cow::Owned(tmp_burned)
+        } else {
+            std::borrow::Cow::Borrowed(tmp_trimmed_mp4.as_path())
+        };
+
+        let tmp_share_mp4 = tmp_dir.join(format!("{trim_job_id}-{share_name}"));
+        let lead_in = trimmed_audio.as_ref().map_or(0, |a| a.lead_in_offset_ns);
+        let _mux_report = mux_share_mp4(
+            &video_for_share,
+            trimmed_audio.as_ref().map(|a| a.tmp_m4a.as_path()),
+            lead_in,
+            &tmp_share_mp4,
+        )?;
+        let atoms = inspect_mp4_atoms(&tmp_share_mp4)?;
+        if atoms.edts_count != 0 || atoms.elst_count != 0 {
+            return Err(DaemonError::Internal(format!(
+                "verified trimmed {share_name} unexpectedly contained edts={} elst={}",
+                atoms.edts_count, atoms.elst_count
+            )));
+        }
+        _tmp_share_guard = Some(FileCleanupGuard(tmp_share_mp4.clone()));
+        share_sidecar_name = Some(share_name);
+        share_sidecar = Some(ShareMp4Sidecar {
+            file_name: share_name.to_owned(),
+            payload: MediaPayload::File(tmp_share_mp4),
+        });
+    }
 
     let dest_bundle_dir = dest_parent.join(&new_bundle_id);
     // R3 S8c: a trim that includes the source's last frame inherits its incomplete tail.
@@ -573,13 +688,15 @@ pub fn export_trim(
             frames: trimmed_frames,
         },
         trimmed_audio,
+        share_sidecar,
         unanchored_summary,
         trimmed_discs,
         trimmed_logs,
         trimmed_taps,
+        clock_anchors,
     );
 
-    let warning = commit_trimmed_bundle(
+    let (app_logs_count, commit_warning) = commit_trimmed_bundle(
         ctx,
         &trim_job_id,
         &draft,
@@ -592,6 +709,29 @@ pub fn export_trim(
         },
     )?;
 
+    drop(lease_guard);
+
+    let mut original_trashed = false;
+    let mut trash_warning: Option<String> = None;
+    if params.trash_original
+        && let Some(src_id) = source_catalog_id
+    {
+        match catalog.trash_bundle(src_id, &utc_now_iso8601()) {
+            Ok(_) => original_trashed = true,
+            Err(err) => {
+                trash_warning = Some(format!(
+                    "trimmed bundle committed but trashing the original failed: {err}"
+                ));
+            }
+        }
+    }
+
+    let share_mp4_path = share_sidecar_name.map(|name| dest_bundle_dir.join(name));
+    let warning = match (commit_warning, trash_warning) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    };
+
     Ok(ExportTrimResponse {
         bundle_id: new_bundle_id,
         bundle_path: dest_bundle_dir,
@@ -601,6 +741,10 @@ pub fn export_trim(
         unanchored_log_count,
         main_tap_count,
         unanchored_tap_count,
+        share_mp4_path,
+        app_logs_count,
+        original_trashed,
+        burn_taps_applied,
         warning,
     })
 }
@@ -613,14 +757,31 @@ fn commit_trimmed_bundle(
     trim_job_id: &str,
     draft: &V2BundleDraft,
     entry: &NewBundleEntry,
-) -> Result<Option<String>, DaemonError> {
-    let written = V2BundleWriter::write(&entry.path, trim_job_id, draft)
-        .and_then(|_| ctx.faults.maybe_fail_parent_sync(&entry.path));
-    let warning = match written {
-        Ok(()) => None,
-        Err(err) if err.committed_bundle_path_on_parent_sync_error().is_some() => Some(format!(
-            "trimmed bundle committed but its parent directory could not be fsynced: {err}"
-        )),
+) -> Result<(usize, Option<String>), DaemonError> {
+    let (app_logs_count, warning) = match V2BundleWriter::write(&entry.path, trim_job_id, draft) {
+        Ok(manifest) => {
+            let count = manifest.app_logs.len();
+            match ctx.faults.maybe_fail_parent_sync(&entry.path) {
+                Ok(()) => (count, None),
+                Err(err) if err.committed_bundle_path_on_parent_sync_error().is_some() => (
+                    count,
+                    Some(format!(
+                        "trimmed bundle committed but its parent directory could not be fsynced: {err}"
+                    )),
+                ),
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Err(err) if err.committed_bundle_path_on_parent_sync_error().is_some() => {
+            let count =
+                V2BundleReader::open(&entry.path).map_or(0, |r| r.manifest().app_logs.len());
+            (
+                count,
+                Some(format!(
+                    "trimmed bundle committed but its parent directory could not be fsynced: {err}"
+                )),
+            )
+        }
         Err(err) => return Err(err.into()),
     };
     ctx.catalog
@@ -633,7 +794,7 @@ fn commit_trimmed_bundle(
                 entry.path.display()
             ))
         })?;
-    Ok(warning)
+    Ok((app_logs_count, warning))
 }
 
 /// Trimmed video payload and its per-frame records for [`build_trimmed_bundle_draft`].
@@ -731,10 +892,12 @@ fn build_trimmed_bundle_draft(
     params: &ExportTrimParams,
     video: TrimmedVideo,
     trimmed_audio: Option<TrimmedAudio>,
+    share_mp4: Option<ShareMp4Sidecar>,
     unanchored_summary: UnanchoredSummary,
     trimmed_discs: Vec<DiscontinuityEvent>,
     trimmed_logs: Vec<arb_core::bundle::LogRecord>,
     trimmed_taps: Vec<arb_core::bundle::TapRecord>,
+    clock_anchors: Vec<ClockAnchorRecord>,
 ) -> V2BundleDraft {
     let device = summary.device.clone().unwrap_or_else(|| DeviceInfo {
         serial: "unknown".to_owned(),
@@ -800,11 +963,12 @@ fn build_trimmed_bundle_draft(
         unanchored_summary,
         video_mp4: Some(MediaPayload::File(video.tmp_mp4)),
         audio_m4a: trimmed_audio.map(|a| MediaPayload::File(a.tmp_m4a)),
+        share_mp4,
         frames: video.frames,
         discontinuities: trimmed_discs,
         logs: trimmed_logs,
         taps: trimmed_taps,
-        clock_anchors: Vec::new(),
+        clock_anchors,
     }
 }
 
@@ -1219,6 +1383,9 @@ mod tests {
             out_frame_index: 1,
             dest_dir: None,
             holder_pid: None,
+            burn_taps: false,
+            include_share_mp4: false,
+            trash_original: false,
         };
 
         let out = build_trimmed_frame_records(&track, &source_frames, &window, &params);
