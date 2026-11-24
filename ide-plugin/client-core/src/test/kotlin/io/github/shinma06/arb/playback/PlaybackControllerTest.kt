@@ -387,6 +387,9 @@ class PlaybackControllerTest {
             frameSeeker = seeker,
             fallbackFps = 100.0, // 10 ms/frame so real loop advances rapidly in test
             audioPlayer = audio,
+            // Loop explicitly ON so slow CI scheduler pauses (>100ms) still wrap and advance
+            // instead of settling at frame 9 and pausing before 3 seeks complete.
+            initialLoopInSelection = true,
             autoRunLoop = true,
         )
 
@@ -676,6 +679,58 @@ class PlaybackControllerTest {
             assertTrue(ctrl.state.loopInSelection)
             ctrl.toggleLoop()
             assertFalse(ctrl.loopEnabled)
+        }
+    }
+
+    @Test
+    fun loopWrapResyncsAudioPlayerOnFullRangeAndTrimRange() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        val pts = uniformPtsNs(count = 6, stepMs = 100L) // 0..500ms, end at 600ms
+        val pcm = ByteArray(48_000 * 4 * 2) // 2s stereo s16le
+        val sink = FakeAudioSink(isAvailable = true)
+        val audio = AudioSyncPlayer(
+            source = InMemoryPcmSource(48_000, 2, pcm),
+            sink = sink,
+            autoRunPump = false,
+        )
+
+        PlaybackController(
+            totalFrames = 6L,
+            frameSeeker = seeker,
+            framePtsNs = pts,
+            audioPlayer = audio,
+            clock = clock,
+            initialLoopInSelection = true,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            ctrl.play()
+            repeat(5) { audio.pumpNextSlice() }
+            assertEquals(100_000_000L, audio.audioPositionNs)
+
+            // Full-range wrap: 620ms > 600ms end -> wraps to frame 0 and flushes/resets audio to 0ns.
+            val flushesBeforeFullWrap = sink.flushCount
+            clock.advanceMs(620)
+            assertNotNull(ctrl.tick())
+            assertEquals(0L, ctrl.state.currentFrameIndex)
+            assertEquals(PlaybackMode.PLAYING, ctrl.state.mode)
+            assertEquals(0L, audio.audioPositionNs)
+            assertTrue(sink.flushCount > flushesBeforeFullWrap, "Full-range loop wrap must flush audio sink")
+
+            // Trim-range wrap [2..4]: 200ms..400ms (end at 500ms).
+            ctrl.setInFrame(2L)
+            ctrl.setOutFrame(4L)
+            ctrl.seekToFrame(2L)
+            repeat(5) { audio.pumpNextSlice() }
+            assertEquals(300_000_000L, audio.audioPositionNs)
+
+            val flushesBeforeTrimWrap = sink.flushCount
+            clock.advanceMs(350) // 200ms + 350ms = 550ms >= 500ms selectionEnd -> wrap to frame 2 (200ms)
+            assertNotNull(ctrl.tick())
+            assertEquals(2L, ctrl.state.currentFrameIndex)
+            assertEquals(PlaybackMode.PLAYING, ctrl.state.mode)
+            assertEquals(200_000_000L, audio.audioPositionNs, "Trim-range loop wrap must reset audio to inFrame PTS")
+            assertTrue(sink.flushCount > flushesBeforeTrimWrap, "Trim-range loop wrap must flush audio sink")
         }
     }
 }

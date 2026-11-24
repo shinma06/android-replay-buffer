@@ -38,8 +38,10 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -499,16 +501,24 @@ fun ArbLabeledCheckbox(
             // Shares the `Row.toggleable` above's interaction source so clicking the label text
             // (outside the small checkbox box) still highlights/toggles consistently; Compose
             // resolves clicks on the checkbox itself to the innermost handler, so there is no
-            // double-toggle.
+            // double-toggle. Disable duplicate focus stop and nested Role.Checkbox semantics so
+            // `Row.toggleable` is the single keyboard & accessibility target.
             interactionSource = interactionSource,
             modifier = Modifier
                 .align(Alignment.CenterVertically)
-                .offset(y = CHECKBOX_OPTICAL_OFFSET),
+                .offset(y = CHECKBOX_OPTICAL_OFFSET)
+                .focusProperties { canFocus = false }
+                .clearAndSetSemantics {},
         )
+        val labelColor = when {
+            !enabled -> ArbJewelPalette.dimmedText()
+            muted -> ArbJewelPalette.mutedText()
+            else -> ArbJewelPalette.primaryText()
+        }
         Text(
             text = text,
             style = ArbJewelPalette
-                .bodyStyle(color = if (muted) ArbJewelPalette.mutedText() else ArbJewelPalette.primaryText())
+                .bodyStyle(color = labelColor)
                 .copy(
                     lineHeightStyle = LineHeightStyle(
                         alignment = LineHeightStyle.Alignment.Center,

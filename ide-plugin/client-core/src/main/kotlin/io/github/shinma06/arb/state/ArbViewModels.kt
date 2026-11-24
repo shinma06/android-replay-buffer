@@ -920,7 +920,17 @@ data class TimelineViewerState(
                 return@mapIndexedNotNull null
             }
             val tapBt = alignmentBoottimeNs(tap.alignment) ?: return@mapIndexedNotNull null
-            val deltaNs = tapBt - frameBt
+            val strokeDurationNs = if (tap.gestureKind == GestureKind.SWIPE) {
+                (tap.endTOffsetNs ?: 0L).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            val tapEndBt = tapBt + strokeDurationNs
+            val deltaNs = when {
+                frameBt < tapBt -> tapBt - frameBt
+                frameBt > tapEndBt -> tapEndBt - frameBt
+                else -> 0L
+            }
             if (abs(deltaNs) <= windowNs) {
                 val n = idx + 1
                 ActiveTapOverlay(

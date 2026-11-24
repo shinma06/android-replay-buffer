@@ -206,13 +206,21 @@ object ProtocolJson {
         ): TapRecord {
             val obj = json.asJsonObject
             val pathType = TypeToken.getParameterized(List::class.java, TouchPoint::class.java).type
+            val alignmentEl = obj.get("alignment")?.takeIf { !it.isJsonNull }
+                ?: throw JsonParseException("Missing required field 'alignment'")
+            val bucketEl = obj.get("bucket")?.takeIf { !it.isJsonNull }
+                ?: throw JsonParseException("Missing required field 'bucket'")
+            val alignment = context.deserialize<TimeAlignment>(alignmentEl, TimeAlignment::class.java)
+                ?: throw JsonParseException("Invalid required field 'alignment'")
+            val bucket = context.deserialize<RecordBucket>(bucketEl, RecordBucket::class.java)
+                ?: throw JsonParseException("Invalid required field 'bucket'")
             return TapRecord(
                 seq = obj.requireLong("seq"),
                 bootId = obj.optString("boot_id"),
                 eventMonoNs = obj.optLong("event_mono_ns"),
                 pcIngestContNs = obj.requireLong("pc_ingest_cont_ns"),
-                alignment = context.deserialize(obj.get("alignment"), TimeAlignment::class.java),
-                bucket = context.deserialize(obj.get("bucket"), RecordBucket::class.java),
+                alignment = alignment,
+                bucket = bucket,
                 action = obj.requireString("action"),
                 x = obj.optDouble("x"),
                 y = obj.optDouble("y"),
@@ -224,7 +232,7 @@ object ProtocolJson {
                 endY = obj.optDouble("end_y"),
                 endTOffsetNs = obj.optLong("end_t_offset_ns"),
                 path = obj.get("path")?.takeIf { !it.isJsonNull }
-                    ?.let { context.deserialize<List<TouchPoint>>(it, pathType) }
+                    ?.let { context.deserialize<List<TouchPoint?>>(it, pathType)?.filterNotNull() }
                     ?: emptyList(),
             )
         }

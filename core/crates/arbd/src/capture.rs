@@ -470,11 +470,11 @@ impl TouchNormalizer {
         &mut self,
         payload: &TouchEventPayload,
         viewport: Option<(u32, u32)>,
-    ) -> Option<NormalizedTouchEvent> {
+    ) -> Vec<NormalizedTouchEvent> {
         match (payload.ev_type, payload.ev_code) {
             (EV_ABS, ABS_MT_SLOT) => {
                 self.current_slot = payload.ev_value;
-                None
+                Vec::new()
             }
             (EV_ABS, ABS_MT_TRACKING_ID) => {
                 let slot = self.slots.entry(self.current_slot).or_default();
@@ -485,7 +485,7 @@ impl TouchNormalizer {
                     slot.active = false;
                     slot.pending_action = Some(TouchAction::Up);
                 }
-                None
+                Vec::new()
             }
             (EV_ABS, ABS_MT_POSITION_X | ABS_X) => {
                 let slot = self.slots.entry(self.current_slot).or_default();
@@ -493,7 +493,7 @@ impl TouchNormalizer {
                 if slot.active && slot.pending_action.is_none() {
                     slot.pending_action = Some(TouchAction::Move);
                 }
-                None
+                Vec::new()
             }
             (EV_ABS, ABS_MT_POSITION_Y | ABS_Y) => {
                 let slot = self.slots.entry(self.current_slot).or_default();
@@ -501,7 +501,7 @@ impl TouchNormalizer {
                 if slot.active && slot.pending_action.is_none() {
                     slot.pending_action = Some(TouchAction::Move);
                 }
-                None
+                Vec::new()
             }
             (EV_KEY, BTN_TOUCH) => {
                 let slot = self.slots.entry(self.current_slot).or_default();
@@ -513,23 +513,28 @@ impl TouchNormalizer {
                     TouchAction::Up
                 };
                 slot.pending_action = Some(action);
-                None
+                Vec::new()
             }
             (EV_SYN, SYN_REPORT) => {
-                let slot_id = self.current_slot;
-                let slot = self.slots.entry(slot_id).or_default();
-                let action = slot.pending_action.take()?;
-                Some(NormalizedTouchEvent {
-                    device_mono_ns: payload.event_monotonic_ns(),
-                    device_read_boottime_ns: payload.device_read_boottime_ns,
-                    action,
-                    pointer_id: slot_id,
-                    x: slot.x.unwrap_or(0),
-                    y: slot.y.unwrap_or(0),
-                    viewport,
-                })
+                // Linux MT Protocol B reports updates for multiple slots in a single SYN_REPORT
+                // packet; drain every slot with a pending transition in deterministic slot order.
+                let mut emitted = Vec::new();
+                for (&slot_id, slot) in &mut self.slots {
+                    if let Some(action) = slot.pending_action.take() {
+                        emitted.push(NormalizedTouchEvent {
+                            device_mono_ns: payload.event_monotonic_ns(),
+                            device_read_boottime_ns: payload.device_read_boottime_ns,
+                            action,
+                            pointer_id: slot_id,
+                            x: slot.x.unwrap_or(0),
+                            y: slot.y.unwrap_or(0),
+                            viewport,
+                        });
+                    }
+                }
+                emitted
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 }
@@ -1916,6 +1921,11 @@ struct RawCapturedTap {
     path: Vec<TouchPoint>,
 }
 
+/// Upper bound on raw samples retained in one in-progress [`ActiveStroke`] before decimation,
+/// keeping memory bounded on long high-rate drags while always retaining start, peak excursion,
+/// and latest endpoint.
+const MAX_ACTIVE_STROKE_SAMPLES: usize = 2_048;
+
 /// One in-progress `DOWN -> MOVE* -> [UP]` touch stroke, accumulated per pointer so a completed
 /// gesture can be classified ONCE (T-6H item 2) instead of emitting one raw tap per sample.
 struct ActiveStroke {
@@ -1929,18 +1939,45 @@ struct ActiveStroke {
     /// relative to this (always present, unlike `device_mono_ns`).
     down_read_boottime_ns: i64,
     samples: Vec<TouchPoint>,
+    /// Maximum squared excursion from `samples[0]` seen so far (for bounded-memory peak tracking).
+    max_excursion_sq: f64,
 }
 
 impl ActiveStroke {
     fn push_sample(&mut self, t: &NormalizedTouchEvent) {
         let offset_ns = t
             .device_read_boottime_ns
-            .saturating_sub(self.down_read_boottime_ns);
-        self.samples.push(TouchPoint {
+            .saturating_sub(self.down_read_boottime_ns)
+            .max(0);
+        let pt = TouchPoint {
             x: f64::from(t.x),
             y: f64::from(t.y),
             t_offset_ns: offset_ns,
-        });
+        };
+        if let Some(start) = self.samples.first() {
+            let dx = pt.x - start.x;
+            let dy = pt.y - start.y;
+            let dist_sq = dx * dx + dy * dy;
+            if self.samples.len() < MAX_ACTIVE_STROKE_SAMPLES {
+                if dist_sq > self.max_excursion_sq {
+                    self.max_excursion_sq = dist_sq;
+                }
+                self.samples.push(pt);
+            } else {
+                // At capacity: keep `samples[0]` (start), reserve `len - 2` for the highest
+                // excursion point seen (so swipe-and-return classification stays exact), and
+                // keep `len - 1` as the latest endpoint.
+                let last_idx = self.samples.len() - 1;
+                let peak_idx = self.samples.len() - 2;
+                if dist_sq > self.max_excursion_sq {
+                    self.max_excursion_sq = dist_sq;
+                    self.samples[peak_idx] = pt;
+                }
+                self.samples[last_idx] = pt;
+            }
+        } else {
+            self.samples.push(pt);
+        }
     }
 
     /// Classifies the accumulated samples into exactly one [`RawCapturedTap`] gesture row.
@@ -2147,9 +2184,12 @@ impl ReplayCollector {
                 ..
             } => {
                 let viewport = Some((u32::from(self.video_width), u32::from(self.video_height)));
-                let norm = normalized.or_else(|| self.touch_normalizer.ingest(&payload, viewport));
-                if let Some(t) = norm {
+                if let Some(t) = normalized {
                     self.ingest_touch_sample(boot_id, pc_cont_ns, &t);
+                } else {
+                    for t in self.touch_normalizer.ingest(&payload, viewport) {
+                        self.ingest_touch_sample(boot_id.clone(), pc_cont_ns, &t);
+                    }
                 }
             }
             CaptureEvent::StreamState { payload, .. } => {
@@ -2178,6 +2218,18 @@ impl ReplayCollector {
     /// (T-6H item 2). `DOWN` starts a stroke, `MOVE` appends to it, and `UP`/`CANCEL` classifies
     /// the completed stroke into exactly one [`RawCapturedTap`] gesture row.
     fn ingest_touch_sample(&mut self, boot_id: String, pc_cont_ns: i64, t: &NormalizedTouchEvent) {
+        // Never merge touch samples across a device reboot (`boot_id` change): flush any stale
+        // stroke for this pointer from the previous boot first.
+        if self
+            .active_strokes
+            .get(&t.pointer_id)
+            .is_some_and(|existing| existing.boot_id != boot_id)
+            && let Some(stale) = self.active_strokes.remove(&t.pointer_id)
+            && let Some(tap) = stale.finalize(self.touch_slop_px)
+        {
+            self.raw_taps.push(tap);
+        }
+
         match t.action {
             TouchAction::Down => {
                 // Defensive: a stray `DOWN` without a prior `UP` (e.g. a dropped event) flushes
@@ -2194,6 +2246,7 @@ impl ReplayCollector {
                     down_event_mono_ns: t.device_mono_ns,
                     down_read_boottime_ns: t.device_read_boottime_ns,
                     samples: Vec::new(),
+                    max_excursion_sq: 0.0,
                 };
                 stroke.push_sample(t);
                 self.active_strokes.insert(t.pointer_id, stroke);
@@ -2209,6 +2262,7 @@ impl ReplayCollector {
                             down_event_mono_ns: t.device_mono_ns,
                             down_read_boottime_ns: t.device_read_boottime_ns,
                             samples: Vec::new(),
+                            max_excursion_sq: 0.0,
                         });
                 stroke.push_sample(t);
             }
@@ -2223,6 +2277,7 @@ impl ReplayCollector {
                         down_event_mono_ns: t.device_mono_ns,
                         down_read_boottime_ns: t.device_read_boottime_ns,
                         samples: Vec::new(),
+                        max_excursion_sq: 0.0,
                     });
                 stroke.push_sample(t);
                 if let Some(tap) = stroke.finalize(self.touch_slop_px) {
@@ -4049,5 +4104,197 @@ mod tests {
         );
         assert_eq!(collector.raw_taps[0].gesture_kind, GestureKind::Swipe);
         assert_eq!(collector.raw_taps[1].gesture_kind, GestureKind::Tap);
+    }
+
+    fn raw_evdev(
+        ev_type: u16,
+        ev_code: u16,
+        ev_value: i32,
+        read_bt_ns: i64,
+    ) -> arb_adb::wire::TouchEventPayload {
+        arb_adb::wire::TouchEventPayload {
+            device_read_boottime_ns: read_bt_ns,
+            event_sec: read_bt_ns / 1_000_000_000,
+            event_usec: i32::try_from((read_bt_ns % 1_000_000_000) / 1_000).expect("usec fits i32"),
+            ev_type,
+            ev_code,
+            ev_value,
+            device_path: "/dev/input/event2".to_owned(),
+            raw_line: String::new(),
+        }
+    }
+
+    #[test]
+    fn t6h_touch_normalizer_protocol_b_multi_slot_same_syn_report_emits_all_slots() {
+        let mut norm = super::TouchNormalizer::default();
+        let vp = Some((1080, 2400));
+
+        // Slot 0 and Slot 1 both go DOWN in one SYN_REPORT packet.
+        for (ev_code, ev_value) in [
+            (super::ABS_MT_SLOT, 0),
+            (super::ABS_MT_TRACKING_ID, 10),
+            (super::ABS_MT_POSITION_X, 100),
+            (super::ABS_MT_POSITION_Y, 200),
+            (super::ABS_MT_SLOT, 1),
+            (super::ABS_MT_TRACKING_ID, 11),
+            (super::ABS_MT_POSITION_X, 500),
+            (super::ABS_MT_POSITION_Y, 900),
+        ] {
+            assert_eq!(
+                norm.ingest(&raw_evdev(super::EV_ABS, ev_code, ev_value, 10_000_000), vp)
+                    .len(),
+                0
+            );
+        }
+        let downs = norm.ingest(
+            &raw_evdev(super::EV_SYN, super::SYN_REPORT, 0, 10_000_000),
+            vp,
+        );
+        assert_eq!(downs.len(), 2, "both slots must emit DOWN on SYN_REPORT");
+        assert_eq!(downs[0].pointer_id, 0);
+        assert_eq!(downs[0].action, TouchAction::Down);
+        assert_eq!(downs[1].pointer_id, 1);
+        assert_eq!(downs[1].action, TouchAction::Down);
+
+        // Slot 0 lifts (0xffffffff == -1) while Slot 1 moves in the SAME SYN_REPORT packet.
+        for (ev_code, ev_value) in [
+            (super::ABS_MT_SLOT, 0),
+            (super::ABS_MT_TRACKING_ID, -1),
+            (super::ABS_MT_SLOT, 1),
+            (super::ABS_MT_POSITION_Y, 300),
+        ] {
+            norm.ingest(&raw_evdev(super::EV_ABS, ev_code, ev_value, 50_000_000), vp);
+        }
+        let mixed = norm.ingest(
+            &raw_evdev(super::EV_SYN, super::SYN_REPORT, 0, 50_000_000),
+            vp,
+        );
+        assert_eq!(
+            mixed.len(),
+            2,
+            "slot 0 UP must not be dropped when slot 1 is current_slot at SYN_REPORT"
+        );
+        assert_eq!(mixed[0].pointer_id, 0);
+        assert_eq!(mixed[0].action, TouchAction::Up);
+        assert_eq!(mixed[1].pointer_id, 1);
+        assert_eq!(mixed[1].action, TouchAction::Move);
+        assert_eq!(mixed[1].y, 300);
+    }
+
+    #[test]
+    fn t6h_touch_normalizer_protocol_a_single_touch_btn_touch_swipe() {
+        let params = t6h_gesture_params(Some(1080), Some(2400));
+        let mut collector = ReplayCollector::new(&params);
+
+        let raw_events = [
+            raw_evdev(super::EV_ABS, super::ABS_X, 100, 10_000_000),
+            raw_evdev(super::EV_ABS, super::ABS_Y, 1_800, 10_000_000),
+            raw_evdev(super::EV_KEY, super::BTN_TOUCH, 1, 10_000_000),
+            raw_evdev(super::EV_SYN, super::SYN_REPORT, 0, 10_000_000),
+            raw_evdev(super::EV_ABS, super::ABS_X, 100, 40_000_000),
+            raw_evdev(super::EV_ABS, super::ABS_Y, 600, 40_000_000),
+            raw_evdev(super::EV_SYN, super::SYN_REPORT, 0, 40_000_000),
+            raw_evdev(super::EV_KEY, super::BTN_TOUCH, 0, 80_000_000),
+            raw_evdev(super::EV_SYN, super::SYN_REPORT, 0, 80_000_000),
+        ];
+        for (idx, payload) in raw_events.into_iter().enumerate() {
+            let idx_i64 = i64::try_from(idx).expect("idx fits i64");
+            collector.ingest_one(CaptureEvent::TouchEvent {
+                pc_cont_ns: idx_i64 * 10_000_000,
+                boot_id: "boot-single".to_owned(),
+                flags: arb_adb::wire::FrameFlags::default(),
+                payload,
+                normalized: None,
+            });
+        }
+
+        assert_eq!(collector.active_strokes.len(), 0);
+        assert_eq!(collector.raw_taps.len(), 1);
+        assert_eq!(collector.raw_taps[0].gesture_kind, GestureKind::Swipe);
+        assert_eq!(collector.raw_taps[0].x, Some(100.0));
+        assert_eq!(collector.raw_taps[0].y, Some(1_800.0));
+        assert_eq!(collector.raw_taps[0].end_x, Some(100.0));
+        assert_eq!(collector.raw_taps[0].end_y, Some(600.0));
+        assert_eq!(collector.raw_taps[0].end_t_offset_ns, Some(70_000_000));
+    }
+
+    #[test]
+    fn t6h_active_stroke_clamps_negative_offset_flushes_on_boot_change_and_caps_memory() {
+        let params = t6h_gesture_params(Some(1080), Some(2400));
+        let mut collector = ReplayCollector::new(&params);
+
+        // 1. Backwards boottime timestamp must clamp t_offset_ns to >= 0.
+        collector.ingest_touch_sample(
+            "boot-1".to_owned(),
+            100,
+            &t6h_touch_sample(0, TouchAction::Down, 100, 100, 50_000_000),
+        );
+        collector.ingest_touch_sample(
+            "boot-1".to_owned(),
+            200,
+            &t6h_touch_sample(0, TouchAction::Up, 102, 101, 40_000_000),
+        );
+        assert_eq!(collector.raw_taps.len(), 1);
+        assert_eq!(
+            collector.raw_taps[0].end_t_offset_ns,
+            Some(0),
+            "backwards timestamp must clamp t_offset_ns to 0"
+        );
+
+        // 2. High-rate swipe-and-return exceeding MAX_ACTIVE_STROKE_SAMPLES must bound memory
+        //    AND still classify as Swipe via peak-excursion preservation.
+        collector.ingest_touch_sample(
+            "boot-1".to_owned(),
+            300,
+            &t6h_touch_sample(0, TouchAction::Down, 100, 100, 100_000_000),
+        );
+        for i in 1..=(super::MAX_ACTIVE_STROKE_SAMPLES + 500) {
+            let y = if i == super::MAX_ACTIVE_STROKE_SAMPLES + 100 {
+                1_200 // peak excursion happens AFTER cap is reached
+            } else {
+                100
+            };
+            let i_i64 = i64::try_from(i).expect("i fits i64");
+            collector.ingest_touch_sample(
+                "boot-1".to_owned(),
+                300 + i_i64,
+                &t6h_touch_sample(0, TouchAction::Move, 100, y, 100_000_000 + i_i64 * 1_000),
+            );
+        }
+        assert!(
+            collector.active_strokes[&0].samples.len() <= super::MAX_ACTIVE_STROKE_SAMPLES,
+            "ActiveStroke::samples must stay bounded"
+        );
+        collector.ingest_touch_sample(
+            "boot-1".to_owned(),
+            9_000,
+            &t6h_touch_sample(0, TouchAction::Up, 101, 101, 200_000_000),
+        );
+        assert_eq!(collector.raw_taps.len(), 2);
+        assert_eq!(
+            collector.raw_taps[1].gesture_kind,
+            GestureKind::Swipe,
+            "peak excursion past cap must still classify swipe-and-return as Swipe"
+        );
+
+        // 3. Boot change without UP flushes old boot's stroke before starting new boot's stroke.
+        collector.ingest_touch_sample(
+            "boot-1".to_owned(),
+            10_000,
+            &t6h_touch_sample(0, TouchAction::Down, 50, 50, 300_000_000),
+        );
+        collector.ingest_touch_sample(
+            "boot-2".to_owned(),
+            20_000,
+            &t6h_touch_sample(0, TouchAction::Move, 500, 900, 10_000_000),
+        );
+        collector.ingest_touch_sample(
+            "boot-2".to_owned(),
+            21_000,
+            &t6h_touch_sample(0, TouchAction::Up, 500, 900, 20_000_000),
+        );
+        assert_eq!(collector.raw_taps.len(), 4);
+        assert_eq!(collector.raw_taps[2].boot_id, "boot-1");
+        assert_eq!(collector.raw_taps[3].boot_id, "boot-2");
     }
 }

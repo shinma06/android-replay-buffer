@@ -28,6 +28,7 @@ import java.nio.file.Path
 import java.nio.file.attribute.FileTime
 import java.time.Instant
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -408,6 +409,44 @@ class DeviceSelectionPolicyTest {
         assertEquals(2, swipeTap.path.size)
         assertEquals(900.0, swipeTap.path[0].y)
         assertEquals(180_000_000L, swipeTap.path[1].tOffsetNs)
+
+        // True serialization -> deserialization round-trip preserves all Swipe fields.
+        val roundTripped = ProtocolJson.gson.fromJson(
+            ProtocolJson.gson.toJson(swipeTap),
+            TapRecord::class.java,
+        )
+        assertEquals(swipeTap, roundTripped)
+
+        // Explicit JSON nulls for optional T-6H fields must also degrade cleanly without NPE.
+        val explicitNullJson = """
+            {
+              "seq": 4,
+              "pc_ingest_cont_ns": 8000,
+              "alignment": {
+                "certainty": "anchored",
+                "boot_id": "boot-null",
+                "boottime_ns": 8000,
+                "half_width_ns": 5,
+                "semantics": "input_event_time"
+              },
+              "bucket": "main",
+              "action": "TAP",
+              "gesture_kind": null,
+              "end_x": null,
+              "end_y": null,
+              "end_t_offset_ns": null,
+              "path": null
+            }
+        """.trimIndent()
+        val explicitNullTap = ProtocolJson.gson.fromJson(explicitNullJson, TapRecord::class.java)
+        assertEquals(GestureKind.TAP, explicitNullTap.gestureKind)
+        assertEquals(emptyList(), explicitNullTap.path)
+
+        // Missing required alignment must throw JsonParseException rather than NullPointerException.
+        val missingAlignmentJson = """{"seq": 5, "pc_ingest_cont_ns": 9000, "bucket": "main", "action": "TAP"}"""
+        assertFailsWith<com.google.gson.JsonParseException> {
+            ProtocolJson.gson.fromJson(missingAlignmentJson, TapRecord::class.java)
+        }
 
         // An ordinary Kotlin construction (not via JSON) still honours the constructor defaults.
         val constructed = TapRecord(

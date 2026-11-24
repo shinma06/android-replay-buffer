@@ -925,7 +925,16 @@ impl BundleReader for V2BundleReader {
             None => -1,
         };
 
-        let has_gesture_cols = sqlite_column_exists(&conn, "taps", "gesture_kind")?;
+        let tap_cols = sqlite_table_columns(&conn, "taps")?;
+        let has_gesture_cols = [
+            "gesture_kind",
+            "end_x",
+            "end_y",
+            "end_t_offset_ns",
+            "path_json",
+        ]
+        .iter()
+        .all(|col| tap_cols.contains(*col));
         let sql = if has_gesture_cols {
             "SELECT seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
                     aligned_boottime_ns, certainty, bucket, action, x, y,
@@ -1840,11 +1849,10 @@ fn sqlite_table_exists(conn: &Connection, table_name: &str) -> Result<bool, Stor
     Ok(count > 0)
 }
 
-fn sqlite_column_exists(
+fn sqlite_table_columns(
     conn: &Connection,
     table_name: &str,
-    column_name: &str,
-) -> Result<bool, StorageError> {
+) -> Result<std::collections::BTreeSet<String>, StorageError> {
     let sql = format!("PRAGMA table_info({table_name})");
     let mut stmt = conn
         .prepare(&sql)
@@ -1852,12 +1860,19 @@ fn sqlite_column_exists(
     let names = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|source| StorageError::sqlite("query_column_exists", source))?;
+    let mut cols = std::collections::BTreeSet::new();
     for name in names {
-        if name.map_err(|source| StorageError::sqlite("read_column_name", source))? == column_name {
-            return Ok(true);
-        }
+        cols.insert(name.map_err(|source| StorageError::sqlite("read_column_name", source))?);
     }
-    Ok(false)
+    Ok(cols)
+}
+
+fn sqlite_column_exists(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, StorageError> {
+    Ok(sqlite_table_columns(conn, table_name)?.contains(column_name))
 }
 
 fn read_persisted_crashes(conn: &Connection) -> Result<Vec<CrashMarker>, StorageError> {
@@ -2935,5 +2950,95 @@ mod tests {
             ),
             "tampered logs.jsonl must fail SHA-256 check"
         );
+    }
+
+    #[test]
+    fn pre_t6h_readonly_sqlite_without_gesture_columns_reads_taps_cleanly() {
+        let tmp = TempDir::new().expect("tempdir");
+        let dest = tmp.path().join("bundle-pre-t6h");
+        let draft = sample_draft();
+        let mut manifest =
+            V2BundleWriter::write(&dest, "job-pre-t6h", &draft).expect("seed bundle write");
+
+        // Rebuild `taps` with ONLY the pre-T-6H 16-column schema (no gesture_kind/end_x/end_y/
+        // end_t_offset_ns/path_json) to simulate an already-saved WORM bundle opened strictly
+        // SQLITE_OPEN_READ_ONLY after upgrading to T-6H.
+        let timeline_path = dest.join(super::TIMELINE_DB_FILE);
+        {
+            let conn = rusqlite::Connection::open(&timeline_path).expect("open sqlite rw");
+            conn.execute_batch(
+                "DROP TABLE taps;
+                 CREATE TABLE taps (
+                   seq INTEGER PRIMARY KEY,
+                   boot_id TEXT,
+                   event_mono_ns INTEGER,
+                   pc_ingest_cont_ns INTEGER NOT NULL,
+                   aligned_boottime_ns INTEGER,
+                   certainty TEXT NOT NULL,
+                   bucket TEXT NOT NULL,
+                   action TEXT NOT NULL,
+                   x REAL,
+                   y REAL,
+                   pointer_id INTEGER,
+                   half_width_ns INTEGER,
+                   min_boottime_ns INTEGER,
+                   max_boottime_ns INTEGER,
+                   semantics TEXT,
+                   uncertainty_reason TEXT
+                 );
+                 INSERT INTO taps (
+                   seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
+                   aligned_boottime_ns, certainty, bucket, action, x, y,
+                   pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
+                   semantics, uncertainty_reason
+                 ) VALUES (
+                   0, 'boot-1', 1520, 5020, 1520, 'anchored', 'main', 'DOWN',
+                   120.5, 340.25, 0, 5, NULL, NULL, 'input_event_time', NULL
+                 );",
+            )
+            .expect("rewrite pre-t6h taps table");
+        }
+
+        // Refresh manifest digest for timeline.sqlite so verify_integrity also succeeds.
+        let (bytes, sha256) = super::stream_hash_file(&timeline_path).expect("rehash timeline");
+        for entry in &mut manifest.files {
+            if entry.path == super::TIMELINE_DB_FILE {
+                entry.bytes = bytes;
+                entry.sha256 = sha256.clone();
+            }
+        }
+        std::fs::write(
+            dest.join(super::MANIFEST_V2_FILE),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write updated manifest");
+
+        let reader = V2BundleReader::open(&dest).expect("pre-t6h readonly open must succeed");
+        reader
+            .verify_integrity()
+            .expect("pre-t6h integrity must pass");
+        let taps = reader
+            .query_taps(Some(RecordBucket::Main), TimeRange::all(), None)
+            .expect("pre-t6h query_taps must succeed without no-such-column error");
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].action, "DOWN");
+        assert_eq!(taps[0].gesture_kind, GestureKind::Tap);
+        assert_eq!(taps[0].end_x, None);
+        assert_eq!(taps[0].end_y, None);
+        assert_eq!(taps[0].end_t_offset_ns, None);
+        assert_eq!(taps[0].path, Vec::new());
+
+        // Partial schema (only gesture_kind present, missing the remaining 4 columns) must also
+        // fall back cleanly instead of failing with `no such column: end_x`.
+        {
+            let conn = rusqlite::Connection::open(&timeline_path).expect("open sqlite rw");
+            conn.execute_batch("ALTER TABLE taps ADD COLUMN gesture_kind TEXT;")
+                .expect("add single partial column");
+        }
+        let partial_taps = reader
+            .query_taps(Some(RecordBucket::Main), TimeRange::all(), None)
+            .expect("partial-schema query_taps must fall back cleanly");
+        assert_eq!(partial_taps.len(), 1);
+        assert_eq!(partial_taps[0].gesture_kind, GestureKind::Tap);
     }
 }

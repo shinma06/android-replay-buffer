@@ -342,6 +342,15 @@ class ArbT4StudioModelTest {
         val tapOverlay = state.activeTapsAtFrame(20L).first { it.tapIndex1Based == 2 }
         assertEquals(GestureKind.TAP, tapOverlay.gestureKind)
         assertNull(tapOverlay.endX)
+
+        // A long swipe (>250ms duration) must stay visible across its full stroke interval
+        // [tapBt, tapBt + endTOffsetNs] instead of vanishing 250ms after DOWN.
+        val longSwipe = swipeUp.copy(seq = 3L, endTOffsetNs = 600_000_000L) // 1.0s..1.6s => frames 10..16
+        val longState = state.copy(mainTaps = listOf(longSwipe))
+        val midStroke = longState.activeTapsAtFrame(14L) // 1.4s = 400ms after DOWN, still inside stroke
+        assertEquals(1, midStroke.size, "long swipe must remain visible mid-stroke")
+        assertEquals(0L, midStroke.first().deltaMs)
+        assertTrue(longState.activeTapsAtFrame(20L).isEmpty(), "long swipe must disappear >250ms after end")
     }
 
     @Test

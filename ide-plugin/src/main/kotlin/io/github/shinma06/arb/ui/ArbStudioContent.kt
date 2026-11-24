@@ -806,9 +806,13 @@ private fun RightEventsAndLogsPane(
                         val jewelSb = JewelTheme.scrollbarStyle
                         val rowKeys = remember(rows) { ArbStudioController.uniqueKeys(rows, ArbStudioController::syncedRowKey) }
                         val activeIndex = controller.activeTimelineItemIndex
+                        val activeRowKey = activeIndex?.let { rowKeys.getOrNull(it) }
                         val followPlayhead = controller.followPlayhead
 
-                        LaunchedEffect(followPlayhead, activeIndex, rows) {
+                        // Key on `(followPlayhead, activeIndex, activeRowKey)` rather than `rows`
+                        // so per-frame `isAtPlayhead` / trim-handle flag rebuilds don't cancel and
+                        // restart `animateScrollToItem` while the active row itself hasn't changed.
+                        LaunchedEffect(followPlayhead, activeIndex, activeRowKey) {
                             if (followPlayhead && activeIndex != null && activeIndex in rows.indices) {
                                 // Small upper-third offset keeps a bit of recent context above the
                                 // active row while still showing upcoming entries below it.
