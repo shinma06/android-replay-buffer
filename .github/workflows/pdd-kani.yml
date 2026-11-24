@@ -53,7 +53,7 @@ jobs:
           cargo +nightly miri setup
       - name: M1 arb-os shm RingView
         working-directory: core
-        run: cargo +nightly miri test -p arb-os --lib shm::
+        run: "cargo +nightly miri test -p arb-os --lib shm::"
       - name: M2 arb-core
         working-directory: core
         env:
@@ -63,4 +63,4 @@ jobs:
         working-directory: core
         env:
           PROPTEST_CASES: '8'
-        run: cargo +nightly miri test -p arb-media --lib mp4::
+        run: "cargo +nightly miri test -p arb-media --lib mp4::"
