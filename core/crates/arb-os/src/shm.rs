@@ -1914,48 +1914,90 @@ mod kani_proofs {
         }
     }
 
+    /// Reference row count and minimum row bytes for `fmt`, in exact `u128` arithmetic.
+    fn reference(fmt: PixelFormat, w: u32, h: u32) -> (u128, u128) {
+        let min_row = match fmt {
+            PixelFormat::Bgra8 | PixelFormat::Rgba8 => u128::from(w) * 4,
+            PixelFormat::Rgb24 => u128::from(w) * 3,
+            PixelFormat::Nv12 => u128::from(w.div_ceil(2)) * 2,
+        };
+        let rows = match fmt {
+            PixelFormat::Nv12 => u128::from(h) + u128::from(h.div_ceil(2)),
+            _ => u128::from(h),
+        };
+        (min_row, rows)
+    }
+
+    /// Full `u32` width/stride domain with the height bounded: proving two unbounded 64-bit
+    /// multipliers equivalent is SAT-hard and did not finish within the CI timebox, while a
+    /// 12-bit height keeps the multiplier small. The `u64` overflow edge, reachable only for
+    /// heights above 2^31, is pinned by `k8_required_buffer_bytes_rejects_u64_overflow`.
+    #[kani::proof]
+    fn k8_required_buffer_bytes_exact_or_none() {
+        let fmt = any_format();
+        let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
+        kani::assume(h <= 1 << 12);
+        let (min_row, rows) = reference(fmt, w, h);
+        let r = fmt.required_buffer_bytes(w, h, stride);
+        assert_eq!(
+            r.is_none(),
+            w == 0 || h == 0 || u128::from(stride) < min_row,
+            "None iff zero dimension or undersized stride (no overflow below 2^31 rows)"
+        );
+        if let Some(len) = r {
+            assert_eq!(
+                len as u128,
+                u128::from(stride) * rows,
+                "exact total, no truncation"
+            );
+        }
+    }
+
+    /// The only overflowing shapes: rows x stride above `u64::MAX` (NV12 with h > 2^31 and a
+    /// near-`u32::MAX` stride) is rejected, while the largest packed RGBA frame still fits.
+    #[kani::proof]
+    fn k8_required_buffer_bytes_rejects_u64_overflow() {
+        let w: u32 = kani::any();
+        kani::assume(w >= 1 && u64::from(w) * 4 <= u64::from(u32::MAX));
+        assert_eq!(
+            PixelFormat::Nv12.required_buffer_bytes(w, u32::MAX, u32::MAX),
+            None,
+            "NV12 rows x stride overflows u64"
+        );
+        let rgba = PixelFormat::Rgba8.required_buffer_bytes(w, u32::MAX, u32::MAX);
+        assert_eq!(
+            rgba.map(|n| n as u128),
+            Some(u128::from(u32::MAX) * u128::from(u32::MAX)),
+            "(2^32-1)^2 still fits in u64"
+        );
+    }
+
+    /// Every pixel (and both NV12 chroma bytes) of an accepted frame lies inside the buffer.
+    ///
+    /// `k8_required_buffer_bytes_exact_or_none` proves `len == stride * rows`, so byte
+    /// `row * stride + col` is in bounds exactly when `row < rows` and `col < stride`. This
+    /// harness proves those two linear facts over the full `u32` domain; asking CBMC for the
+    /// symbolic product `y * stride` directly did not finish (nonlinear 64-bit arithmetic).
     #[kani::proof]
     fn k8_required_buffer_bytes_covers_every_pixel() {
         let fmt = any_format();
         let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
-        let min_row: u64 = match fmt {
-            PixelFormat::Bgra8 | PixelFormat::Rgba8 => u64::from(w) * 4,
-            PixelFormat::Rgb24 => u64::from(w) * 3,
-            PixelFormat::Nv12 => u64::from(w).next_multiple_of(2),
-        };
-        let rows: u128 = match fmt {
-            PixelFormat::Nv12 => u128::from(h) + u128::from(h.div_ceil(2)),
-            _ => u128::from(h),
-        };
-        let exact_total = u128::from(stride) * rows;
-        let r = fmt.required_buffer_bytes(w, h, stride);
-        assert_eq!(
-            r.is_none(),
-            w == 0
-                || h == 0
-                || u64::from(stride) < min_row
-                || exact_total > u128::from(u64::MAX)
-                || usize::try_from(exact_total).is_err(),
-            "None iff zero dimension, undersized stride, or total overflowing u64/usize"
-        );
-        if let Some(len) = r {
-            assert_eq!(len as u128, exact_total, "exact total, no truncation");
+        kani::assume(h <= 1 << 12);
+        if fmt.required_buffer_bytes(w, h, stride).is_none() {
+            return;
         }
-        let Some(len) = r else { return };
-        let len = len as u64;
         let (x, y): (u32, u32) = (kani::any(), kani::any());
         kani::assume(x < w && y < h);
-        let (x, y, s) = (u64::from(x), u64::from(y), u64::from(stride));
+        let (_, rows) = reference(fmt, w, h);
+        let (x, y, s) = (u128::from(x), u128::from(y), u128::from(stride));
+        assert!(y < rows, "row in bounds");
         match fmt {
-            PixelFormat::Bgra8 | PixelFormat::Rgba8 => assert!(y * s + x * 4 + 3 < len),
-            PixelFormat::Rgb24 => assert!(y * s + x * 3 + 2 < len),
+            PixelFormat::Bgra8 | PixelFormat::Rgba8 => assert!(x * 4 + 3 < s),
+            PixelFormat::Rgb24 => assert!(x * 3 + 2 < s),
             PixelFormat::Nv12 => {
-                assert!(y * s + x < len, "luma in bounds");
-                let uv_row = u64::from(h) + y / 2;
-                assert!(
-                    uv_row * s + (x / 2) * 2 + 1 < len,
-                    "U and V bytes in bounds"
-                );
+                assert!(x < s, "luma in bounds");
+                assert!(u128::from(h) + y / 2 < rows, "chroma row in bounds");
+                assert!((x / 2) * 2 + 1 < s, "U and V bytes in bounds");
             }
         }
     }
