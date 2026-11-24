@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -410,6 +411,22 @@ def self_test():
             if rc == 0:
                 failed = [c for c in verify_mp4(td / "t.mp4", 31, td) if not c["pass"]]
                 require("verify_mp4", not failed, failed)
+                media = td / "録画.mp4"
+                (td / "t.mp4").rename(media)
+                report_dir = td / "report"
+                child = subprocess.run(
+                    [sys.executable, "-X", "utf8=0", __file__, "--mp4", str(media),
+                     "--expected-frames", "31", "--out-dir", str(report_dir)],
+                    env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+                    capture_output=True, timeout=180,
+                )
+                require("non-ASCII media path with a Windows console code page", b"# Devin verification report" in child.stdout,
+                        child.stderr.decode("utf-8", "replace")[-300:])
+                if b"# Devin verification report" in child.stdout:
+                    result = json.loads((report_dir / "devin-report.json").read_text(encoding="utf-8"))
+                    require("UTF-8 report preserves the input path",
+                            result["input"] == str(media) and str(media) in (report_dir / "devin-report.md").read_text(encoding="utf-8"))
+                    require("exit status reflects media checks", child.returncode == (0 if result["pass"] else 1))
             if not failures:
                 msg += "; ffmpeg/ffprobe pipeline OK"
     else:
@@ -457,11 +474,12 @@ def main():
     ok = all(c["pass"] for c in checks) and not any(p["status"] == "FAIL" for p in players)
     report = {"host": f"{platform.system()} {platform.release()} {platform.machine()}", "input": str(mp4),
               "pass": ok, "checks": checks, "players": players, **extra}
-    (outdir / "devin-report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    (outdir / "devin-report.md").write_text(md_report(report))
+    (outdir / "devin-report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    (outdir / "devin-report.md").write_text(md_report(report), encoding="utf-8")
     print(md_report(report))
     sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(errors="backslashreplace")
     main()
