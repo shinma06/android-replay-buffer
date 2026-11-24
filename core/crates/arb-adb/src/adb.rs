@@ -1798,6 +1798,9 @@ where
             shutdown_handles: Vec::new(),
             _transports: std::marker::PhantomData,
         };
+        if companion_spawned && video_spawned && audio_spawned {
+            return source;
+        }
         let pc_cont_ns = stamp(&source.clock);
         if !companion_spawned {
             source.on_companion_end(pc_cont_ns, "companion_reader_spawn_failed");
