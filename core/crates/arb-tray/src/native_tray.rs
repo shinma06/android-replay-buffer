@@ -46,25 +46,165 @@ use crate::rpc::{AutoStartMode, RpcClient};
 /// worst-case UI latency — it never drives `arbd` polling itself.
 const UI_TICK: Duration = Duration::from_millis(100);
 
-/// Builds a small flat-color square [`Icon`] for `badge` (no external asset files or image
-/// decoding dependencies: just a solid RGBA buffer).
-fn badge_icon(badge: TrayBadge) -> Icon {
-    const SIZE: u32 = 22;
-    const PIXEL_COUNT: usize = 22 * 22;
-    let (r, g, b) = match badge {
-        TrayBadge::DaemonOffline => (120_u8, 120_u8, 120_u8),
-        TrayBadge::StoragePressure => (214, 69, 54),
-        TrayBadge::Disconnected => (230, 126, 34),
-        TrayBadge::SaveAttentionNeeded => (241, 196, 15),
-        TrayBadge::Capturing => (39, 174, 96),
-        TrayBadge::Idle => (52, 152, 219),
+/// Side length of the rasterized tray icon in physical pixels: the macOS menu bar draws status
+/// items at 18-22 pt, so 44 px gives a crisp `@2x` Retina bitmap (Windows / Linux hosts scale it
+/// down cleanly).
+const ICON_SIZE: u32 = 44;
+/// Supersampling grid per pixel axis for anti-aliased edges (`4 x 4 = 16` samples).
+const ICON_SAMPLES: u32 = 4;
+/// Neutral glyph colour readable on both light and dark menu bars / task bars when the icon is
+/// not drawn as a macOS template image (template images only use the alpha channel).
+const GLYPH_RGB: [u8; 3] = [142, 142, 147];
+
+/// A rasterized tray icon: straight RGBA pixels plus whether macOS should draw it as a template
+/// (monochrome, automatically adapting to light / dark menu bars).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IconImage {
+    rgba: Vec<u8>,
+    size: u32,
+    template: bool,
+}
+
+/// Geometry of the replay glyph and the status dot, in pixel units of the 44 px canvas.
+mod glyph {
+    /// Centre of the circular arrow.
+    pub(super) const CENTER: f64 = 21.0;
+    /// Radius of the arrow's centre line.
+    pub(super) const RADIUS: f64 = 13.0;
+    /// Stroke width of the arrow ring.
+    pub(super) const STROKE: f64 = 4.25;
+    /// Arc start angle (degrees, counter-clockwise from +x, y up); carries a round cap.
+    pub(super) const ARC_START_DEG: f64 = 100.0;
+    /// Arc sweep (degrees, counter-clockwise); the arrowhead sits at the arc end.
+    pub(super) const ARC_SWEEP_DEG: f64 = 300.0;
+    /// Arrowhead length along the tangent.
+    pub(super) const HEAD_LENGTH: f64 = 7.5;
+    /// Arrowhead half-width across the ring.
+    pub(super) const HEAD_HALF_WIDTH: f64 = 6.25;
+    /// Status dot centre (bottom-right) and radius.
+    pub(super) const DOT_CENTER: f64 = 35.0;
+    pub(super) const DOT_RADIUS: f64 = 6.5;
+    /// Transparent ring separating the dot from the glyph.
+    pub(super) const DOT_CUTOUT_RADIUS: f64 = 9.0;
+}
+
+/// `true` when canvas point `(x, y)` (pixel units, y down) lies on the circular replay arrow.
+fn replay_glyph_contains(x: f64, y: f64) -> bool {
+    use glyph::{
+        ARC_START_DEG, ARC_SWEEP_DEG, CENTER, HEAD_HALF_WIDTH, HEAD_LENGTH, RADIUS, STROKE,
     };
-    let mut rgba = Vec::with_capacity(PIXEL_COUNT * 4);
-    for _ in 0..PIXEL_COUNT {
-        rgba.extend_from_slice(&[r, g, b, 255]);
+    let dx = x - CENTER;
+    let dy = CENTER - y;
+    let radius = dx.hypot(dy);
+    let angle = dy.atan2(dx).to_degrees();
+    let into_arc = (angle - ARC_START_DEG).rem_euclid(360.0);
+    if (radius - RADIUS).abs() <= STROKE / 2.0 && into_arc <= ARC_SWEEP_DEG {
+        return true;
     }
-    Icon::from_rgba(rgba, SIZE, SIZE)
-        .expect("a freshly built SIZE*SIZE*4-byte RGBA buffer is always a valid icon")
+
+    // Round cap at the arc start.
+    let start = ARC_START_DEG.to_radians();
+    let (cap_x, cap_y) = (RADIUS * start.cos(), RADIUS * start.sin());
+    if (dx - cap_x).hypot(dy - cap_y) <= STROKE / 2.0 {
+        return true;
+    }
+
+    // Arrowhead at the arc end, pointing counter-clockwise (the "replay" direction).
+    let end = (ARC_START_DEG + ARC_SWEEP_DEG).to_radians();
+    let (px, py) = (RADIUS * end.cos(), RADIUS * end.sin());
+    let (tx, ty) = (-end.sin(), end.cos());
+    let (nx, ny) = (end.cos(), end.sin());
+    let tip = (px + tx * HEAD_LENGTH, py + ty * HEAD_LENGTH);
+    let base_a = (
+        px - tx + nx * HEAD_HALF_WIDTH,
+        py - ty + ny * HEAD_HALF_WIDTH,
+    );
+    let base_b = (
+        px - tx - nx * HEAD_HALF_WIDTH,
+        py - ty - ny * HEAD_HALF_WIDTH,
+    );
+    point_in_triangle((dx, dy), tip, base_a, base_b)
+}
+
+fn point_in_triangle(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    let cross = |o: (f64, f64), u: (f64, f64), v: (f64, f64)| {
+        (u.0 - o.0) * (v.1 - o.1) - (u.1 - o.1) * (v.0 - o.0)
+    };
+    let d1 = cross(a, b, p);
+    let d2 = cross(b, c, p);
+    let d3 = cross(c, a, p);
+    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_neg && has_pos)
+}
+
+/// Visual recipe per badge: glyph opacity (0-255), optional status dot colour, template flag.
+const fn badge_style(badge: TrayBadge) -> (u32, Option<[u8; 3]>, bool) {
+    match badge {
+        // Monochrome template icons adapt to light / dark menu bars automatically on macOS.
+        TrayBadge::Idle => (255, None, true),
+        // Dimmed template glyph: the daemon is unreachable.
+        TrayBadge::DaemonOffline => (110, None, true),
+        TrayBadge::Capturing => (255, Some([48, 209, 88]), false),
+        TrayBadge::Disconnected => (255, Some([255, 159, 10]), false),
+        TrayBadge::SaveAttentionNeeded => (255, Some([255, 214, 10]), false),
+        TrayBadge::StoragePressure => (255, Some([255, 59, 48]), false),
+    }
+}
+
+/// Rasterizes the anti-aliased circular replay arrow on a fully transparent background, plus a
+/// status dot (with a transparent separation ring) for attention / capture states.
+fn render_badge_icon(badge: TrayBadge) -> IconImage {
+    let (glyph_alpha, dot, template) = badge_style(badge);
+    let samples_per_pixel = ICON_SAMPLES * ICON_SAMPLES;
+    let mut rgba = Vec::new();
+    for py in 0..ICON_SIZE {
+        for px in 0..ICON_SIZE {
+            let mut glyph_hits = 0_u32;
+            let mut dot_hits = 0_u32;
+            for sy in 0..ICON_SAMPLES {
+                for sx in 0..ICON_SAMPLES {
+                    let x = f64::from(px) + (f64::from(sx) + 0.5) / f64::from(ICON_SAMPLES);
+                    let y = f64::from(py) + (f64::from(sy) + 0.5) / f64::from(ICON_SAMPLES);
+                    let dot_distance = (x - glyph::DOT_CENTER).hypot(y - glyph::DOT_CENTER);
+                    if dot.is_some() && dot_distance <= glyph::DOT_RADIUS {
+                        dot_hits += 1;
+                    } else if (dot.is_none() || dot_distance > glyph::DOT_CUTOUT_RADIUS)
+                        && replay_glyph_contains(x, y)
+                    {
+                        glyph_hits += 1;
+                    }
+                }
+            }
+            // Weighted coverage (0..=255 * samples) of the glyph and the dot.
+            let glyph_weight = glyph_hits * glyph_alpha;
+            let dot_weight = dot_hits * 255;
+            let total_weight = glyph_weight + dot_weight;
+            let alpha = (total_weight / samples_per_pixel).min(255);
+            let dot_rgb = dot.unwrap_or(GLYPH_RGB);
+            let mut pixel = [0_u8; 4];
+            for (channel, slot) in pixel.iter_mut().take(3).enumerate() {
+                let weighted = u32::from(GLYPH_RGB[channel]) * glyph_weight
+                    + u32::from(dot_rgb[channel]) * dot_weight;
+                if let Some(mixed) = weighted.checked_div(total_weight) {
+                    *slot = u8::try_from(mixed).unwrap_or(u8::MAX);
+                }
+            }
+            pixel[3] = u8::try_from(alpha).unwrap_or(u8::MAX);
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    IconImage {
+        rgba,
+        size: ICON_SIZE,
+        template,
+    }
+}
+
+/// Converts a rasterized [`IconImage`] into a `tray-icon` [`Icon`].
+fn to_tray_icon(image: &IconImage) -> Icon {
+    Icon::from_rgba(image.rgba.clone(), image.size, image.size)
+        .expect("a freshly rasterized SIZE*SIZE*4-byte RGBA buffer is always a valid icon")
 }
 
 /// 64-bit FNV-1a over a path's raw bytes; produces a compact, deterministic suffix for
@@ -122,50 +262,372 @@ fn event_map_for(items: &[ModelMenuItem]) -> HashMap<MenuId, TrayMenuEvent> {
     map
 }
 
-/// Recursively converts the pure [`ModelMenuItem`] tree into real `muda` items. Event-carrying
-/// leaves get their content-stable [`event_menu_id`]; inert rows get positional
-/// `arb-tray:item:<n>` ids (they can never dispatch, so aliasing them is harmless).
-fn build_native_items(items: &[ModelMenuItem], next_id: &mut u64) -> Vec<Box<dyn IsMenuItem>> {
-    items
-        .iter()
-        .map(|item| -> Box<dyn IsMenuItem> {
-            if item.separator {
-                return Box::new(PredefinedMenuItem::separator());
-            }
-            if !item.children.is_empty() {
-                let children = build_native_items(&item.children, next_id);
-                let child_refs: Vec<&dyn IsMenuItem> = children.iter().map(AsRef::as_ref).collect();
-                return Box::new(
-                    Submenu::with_items(&item.label, item.enabled, &child_refs).expect(
-                        "submenu construction from freshly built in-process items cannot fail",
-                    ),
-                );
-            }
-            let menu_id = item.event.as_ref().map_or_else(
-                || {
-                    let id = MenuId::new(format!("arb-tray:item:{next_id}"));
-                    *next_id += 1;
-                    id
-                },
-                event_menu_id,
-            );
-            Box::new(MenuItem::with_id(menu_id, &item.label, item.enabled, None))
-        })
-        .collect()
+/// Menu id assigned to a model item: content-stable [`event_menu_id`] for event-carrying leaves,
+/// positional `arb-tray:item:<n>` ids for inert rows (they can never dispatch, so aliasing them is
+/// harmless). Shared by the native builder and the structural fingerprint so both agree.
+fn model_item_id(item: &ModelMenuItem, next_id: &mut u64) -> MenuId {
+    item.event.as_ref().map_or_else(
+        || {
+            let id = MenuId::new(format!("arb-tray:item:{next_id}"));
+            *next_id += 1;
+            id
+        },
+        event_menu_id,
+    )
 }
 
-/// Builds a full native tray [`Menu`] plus its `MenuId -> TrayMenuEvent` lookup table from a
-/// [`crate::controller::TrayViewState`].
-fn build_native_menu(state: &TrayViewState) -> (Menu, HashMap<MenuId, TrayMenuEvent>) {
-    let model_items = build_menu(state);
-    let event_map = event_map_for(&model_items);
+/// Structural fingerprint of one menu node: everything except its label and enabled state,
+/// which [`InPlaceUpdate`]s can change on the live menu without rebuilding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MenuShape {
+    Separator,
+    Leaf(MenuId),
+    Submenu(Vec<MenuShape>),
+}
+
+fn menu_shape(items: &[ModelMenuItem]) -> Vec<MenuShape> {
+    fn walk(items: &[ModelMenuItem], next_id: &mut u64) -> Vec<MenuShape> {
+        items
+            .iter()
+            .map(|item| {
+                if item.separator {
+                    MenuShape::Separator
+                } else if item.children.is_empty() {
+                    MenuShape::Leaf(model_item_id(item, next_id))
+                } else {
+                    MenuShape::Submenu(walk(&item.children, next_id))
+                }
+            })
+            .collect()
+    }
     let mut next_id = 0_u64;
-    let native_items = build_native_items(&model_items, &mut next_id);
-    let menu = Menu::new();
-    let refs: Vec<&dyn IsMenuItem> = native_items.iter().map(AsRef::as_ref).collect();
-    menu.append_items(&refs)
-        .expect("appending freshly built items to a brand-new empty Menu cannot fail");
-    (menu, event_map)
+    walk(items, &mut next_id)
+}
+
+/// A label / enabled change applied in place to the live native item at `path` (child indices
+/// from the root menu) — no menu swap, so an open menu stays open and just refreshes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InPlaceUpdate {
+    path: Vec<usize>,
+    label: Option<String>,
+    enabled: Option<bool>,
+}
+
+/// How the live native menu must change to show a new model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MenuPlan {
+    /// Nothing visible changed.
+    Unchanged,
+    /// Same structure; only labels / enabled states changed (the common 2 s poll tick).
+    InPlace(Vec<InPlaceUpdate>),
+    /// Items were added, removed, or re-identified: the menu items must be rebuilt.
+    Rebuild,
+}
+
+fn plan_menu_update(previous: &[ModelMenuItem], next: &[ModelMenuItem]) -> MenuPlan {
+    fn diff(
+        previous: &[ModelMenuItem],
+        next: &[ModelMenuItem],
+        prefix: &[usize],
+        out: &mut Vec<InPlaceUpdate>,
+    ) {
+        for (index, (old, new)) in previous.iter().zip(next).enumerate() {
+            let mut path = prefix.to_vec();
+            path.push(index);
+            if !new.separator {
+                let label = (old.label != new.label).then(|| new.label.clone());
+                let enabled = (old.enabled != new.enabled).then_some(new.enabled);
+                if label.is_some() || enabled.is_some() {
+                    out.push(InPlaceUpdate {
+                        path: path.clone(),
+                        label,
+                        enabled,
+                    });
+                }
+            }
+            diff(&old.children, &new.children, &path, out);
+        }
+    }
+    if menu_shape(previous) != menu_shape(next) {
+        return MenuPlan::Rebuild;
+    }
+    let mut updates = Vec::new();
+    diff(previous, next, &[], &mut updates);
+    if updates.is_empty() {
+        MenuPlan::Unchanged
+    } else {
+        MenuPlan::InPlace(updates)
+    }
+}
+
+/// The OS-facing half of the tray UI. [`TrayUi`] decides *what* changes (pure, unit-tested with
+/// a recording fake); implementations only apply it.
+trait TrayBackend {
+    /// Creates the tray icon with its (single, never swapped) root menu.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when no tray host / GUI session exists (S6).
+    fn create(
+        &mut self,
+        items: &[ModelMenuItem],
+        icon: &IconImage,
+        tooltip: &str,
+    ) -> Result<(), String>;
+    /// Updates labels / enabled states of existing live items.
+    fn apply_in_place(&mut self, updates: &[InPlaceUpdate]);
+    /// Replaces the items *inside* the existing root menu (never `set_menu`).
+    fn replace_menu_items(&mut self, items: &[ModelMenuItem]);
+    fn set_icon(&mut self, icon: &IconImage);
+    fn set_tooltip(&mut self, tooltip: &str);
+    /// `true` while the user has the tray menu open (macOS menu tracking).
+    fn menu_is_tracking(&self) -> bool;
+}
+
+/// One live native menu node, mirroring the model tree for in-place updates.
+enum NativeNode {
+    Item(MenuItem),
+    Submenu(Submenu, Vec<NativeNode>),
+    Separator,
+}
+
+/// Builds real `muda` items for `items`, returning the boxed items to append and the live node
+/// handles (`muda` items are reference-counted, so both refer to the same native item).
+fn build_native_items(
+    items: &[ModelMenuItem],
+    next_id: &mut u64,
+) -> (Vec<Box<dyn IsMenuItem>>, Vec<NativeNode>) {
+    let mut boxed: Vec<Box<dyn IsMenuItem>> = Vec::with_capacity(items.len());
+    let mut nodes = Vec::with_capacity(items.len());
+    for item in items {
+        if item.separator {
+            boxed.push(Box::new(PredefinedMenuItem::separator()));
+            nodes.push(NativeNode::Separator);
+        } else if item.children.is_empty() {
+            let native = MenuItem::with_id(
+                model_item_id(item, next_id),
+                &item.label,
+                item.enabled,
+                None,
+            );
+            boxed.push(Box::new(native.clone()));
+            nodes.push(NativeNode::Item(native));
+        } else {
+            let (children, child_nodes) = build_native_items(&item.children, next_id);
+            let child_refs: Vec<&dyn IsMenuItem> = children.iter().map(AsRef::as_ref).collect();
+            let submenu = Submenu::with_items(&item.label, item.enabled, &child_refs)
+                .expect("submenu construction from freshly built in-process items cannot fail");
+            boxed.push(Box::new(submenu.clone()));
+            nodes.push(NativeNode::Submenu(submenu, child_nodes));
+        }
+    }
+    (boxed, nodes)
+}
+
+fn node_at<'a>(nodes: &'a [NativeNode], path: &[usize]) -> Option<&'a NativeNode> {
+    let (first, rest) = path.split_first()?;
+    let node = nodes.get(*first)?;
+    if rest.is_empty() {
+        return Some(node);
+    }
+    match node {
+        NativeNode::Submenu(_, children) => node_at(children, rest),
+        NativeNode::Item(_) | NativeNode::Separator => None,
+    }
+}
+
+/// Real `tray-icon` / `muda` backend. The root [`Menu`] is attached exactly once at creation;
+/// later changes mutate it in place so an open menu is never replaced out from under the user.
+struct NativeBackend {
+    tray_icon: Option<TrayIcon>,
+    root: Menu,
+    nodes: Vec<NativeNode>,
+}
+
+impl NativeBackend {
+    fn new() -> Self {
+        Self {
+            tray_icon: None,
+            root: Menu::new(),
+            nodes: Vec::new(),
+        }
+    }
+
+    fn populate_root(&mut self, items: &[ModelMenuItem]) {
+        let mut next_id = 0_u64;
+        let (boxed, nodes) = build_native_items(items, &mut next_id);
+        let refs: Vec<&dyn IsMenuItem> = boxed.iter().map(AsRef::as_ref).collect();
+        if let Err(err) = self.root.append_items(&refs) {
+            eprintln!("[arb-tray] failed to append tray menu items: {err}");
+        }
+        self.nodes = nodes;
+    }
+
+    /// Linux `ksni` serves a D-Bus snapshot that is only re-read when the tray is updated, so
+    /// re-announce the same root menu after mutating it. macOS / Windows mutate the live
+    /// `NSMenu` / `HMENU` directly and must never re-attach it (that dismisses an open menu).
+    #[cfg_attr(
+        any(target_os = "macos", target_os = "windows"),
+        expect(
+            clippy::unused_self,
+            reason = "only the Linux ksni backend re-announces the menu"
+        )
+    )]
+    fn refresh_snapshot(&self) {
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        if let Some(tray) = &self.tray_icon {
+            tray.set_menu(Some(Box::new(self.root.clone())));
+        }
+    }
+}
+
+impl TrayBackend for NativeBackend {
+    fn create(
+        &mut self,
+        items: &[ModelMenuItem],
+        icon: &IconImage,
+        tooltip: &str,
+    ) -> Result<(), String> {
+        self.populate_root(items);
+        let builder = TrayIconBuilder::new()
+            .with_menu(Box::new(self.root.clone()))
+            .with_tooltip(tooltip);
+        #[cfg(target_os = "macos")]
+        let builder = if icon.template {
+            builder.with_icon_templated(to_tray_icon(icon))
+        } else {
+            builder.with_icon(to_tray_icon(icon))
+        };
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(to_tray_icon(icon));
+        self.tray_icon = Some(builder.build().map_err(|err| {
+            format!("failed to build tray icon (no tray host / GUI session?): {err}")
+        })?);
+        Ok(())
+    }
+
+    fn apply_in_place(&mut self, updates: &[InPlaceUpdate]) {
+        for update in updates {
+            match node_at(&self.nodes, &update.path) {
+                Some(NativeNode::Item(item)) => {
+                    if let Some(label) = &update.label {
+                        item.set_text(label);
+                    }
+                    if let Some(enabled) = update.enabled {
+                        item.set_enabled(enabled);
+                    }
+                }
+                Some(NativeNode::Submenu(submenu, _)) => {
+                    if let Some(label) = &update.label {
+                        submenu.set_text(label);
+                    }
+                    if let Some(enabled) = update.enabled {
+                        submenu.set_enabled(enabled);
+                    }
+                }
+                Some(NativeNode::Separator) | None => {}
+            }
+        }
+        self.refresh_snapshot();
+    }
+
+    fn replace_menu_items(&mut self, items: &[ModelMenuItem]) {
+        while self.root.remove_at(0).is_some() {}
+        self.populate_root(items);
+        self.refresh_snapshot();
+    }
+
+    fn set_icon(&mut self, icon: &IconImage) {
+        let Some(tray) = &self.tray_icon else { return };
+        #[cfg(target_os = "macos")]
+        let result = if icon.template {
+            tray.set_icon_templated(Some(to_tray_icon(icon)))
+        } else {
+            tray.set_icon(Some(to_tray_icon(icon)))
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result = tray.set_icon(Some(to_tray_icon(icon)));
+        if let Err(err) = result {
+            eprintln!("[arb-tray] failed to update tray icon: {err}");
+        }
+    }
+
+    fn set_tooltip(&mut self, tooltip: &str) {
+        if let Some(tray) = &self.tray_icon
+            && let Err(err) = tray.set_tooltip(Some(tooltip))
+        {
+            eprintln!("[arb-tray] failed to update tray tooltip: {err}");
+        }
+    }
+
+    fn menu_is_tracking(&self) -> bool {
+        menu_tracking::is_tracking()
+    }
+}
+
+/// Detects whether a tray menu is currently open (being tracked).
+///
+/// macOS runs the main run loop in `NSEventTrackingRunLoopMode` while an `NSMenu` is open; the
+/// Win32 popup menu is modal (no tray updates run while it is shown) and Linux menus are drawn
+/// by the out-of-process `StatusNotifierItem` host, so both report `false`.
+#[cfg(target_os = "macos")]
+mod menu_tracking {
+    use std::ffi::{c_char, c_void};
+
+    type CFRunLoopRef = *mut c_void;
+    type CFStringRef = *const c_void;
+
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    const TRACKING_MODE: &[u8] = b"NSEventTrackingRunLoopMode";
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRunLoopGetMain() -> CFRunLoopRef;
+        fn CFRunLoopCopyCurrentMode(run_loop: CFRunLoopRef) -> CFStringRef;
+        fn CFStringGetCString(
+            string: CFStringRef,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> u8;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    pub(super) fn is_tracking() -> bool {
+        // SAFETY: `CFRunLoopGetMain` has no preconditions and returns a non-owned reference.
+        let main_loop = unsafe { CFRunLoopGetMain() };
+        // SAFETY: `main_loop` is a valid run loop; the returned mode (or null when the loop is
+        // not running) is owned by us and released below.
+        let mode = unsafe { CFRunLoopCopyCurrentMode(main_loop) };
+        if mode.is_null() {
+            return false;
+        }
+        let mut buffer = [0_u8; 64];
+        let capacity = isize::try_from(buffer.len()).unwrap_or(isize::MAX);
+        // SAFETY: `mode` is a valid CFString and `buffer` is writable for `capacity` bytes.
+        let copied = unsafe {
+            CFStringGetCString(
+                mode,
+                buffer.as_mut_ptr().cast::<c_char>(),
+                capacity,
+                K_CF_STRING_ENCODING_UTF8,
+            )
+        };
+        // SAFETY: `mode` came from a `Copy` function, so we own exactly one reference.
+        unsafe { CFRelease(mode) };
+        if copied == 0 {
+            return false;
+        }
+        let len = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+        buffer.get(..len) == Some(TRACKING_MODE)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod menu_tracking {
+    pub(super) const fn is_tracking() -> bool {
+        false
+    }
 }
 
 /// Reveals `path` in the host OS file manager (local-only action, never reaches `arbd`).
@@ -291,65 +753,109 @@ fn ipc_worker(
     }
 }
 
-/// UI-thread render state: the live tray icon and the click→event lookup of the menu it shows.
-struct TrayUi {
-    tray_icon: Option<TrayIcon>,
+/// UI-thread render state: the live tray (through a [`TrayBackend`]), what it currently shows,
+/// and the click→event lookup of that menu.
+///
+/// Rendering is incremental so an open menu is never dismissed (macOS `NSStatusItem` closes an
+/// open menu when its menu or image is replaced): unchanged icon / tooltip are skipped, label and
+/// enabled-state changes are applied in place on the live items, and structural changes, icon and
+/// tooltip swaps are deferred while the menu is being tracked, then flushed by [`TrayUi::tick`].
+struct TrayUi<B: TrayBackend> {
+    backend: B,
+    created: bool,
+    shown_menu: Vec<ModelMenuItem>,
+    shown_badge: Option<TrayBadge>,
+    shown_tooltip: Option<String>,
+    /// Latest state whose (deferred) parts are not yet fully shown.
+    pending: Option<TrayViewState>,
     event_map: HashMap<MenuId, TrayMenuEvent>,
 }
 
-impl TrayUi {
-    fn new() -> Self {
+impl<B: TrayBackend> TrayUi<B> {
+    fn new(backend: B) -> Self {
         Self {
-            tray_icon: None,
+            backend,
+            created: false,
+            shown_menu: Vec::new(),
+            shown_badge: None,
+            shown_tooltip: None,
+            pending: None,
             event_map: HashMap::new(),
         }
     }
 
-    /// Rebuilds the native menu + icon from `state`.
+    /// Shows `state`, touching the native tray only where something actually changed.
     ///
     /// # Errors
     ///
-    /// Returns `Err` when the very first [`TrayIconBuilder::build`] fails (e.g. no tray host
-    /// or GUI session exists — S6) so the caller can print a clean diagnostic and exit
-    /// non-zero instead of panicking.
+    /// Returns `Err` when the very first tray build fails (e.g. no tray host or GUI session
+    /// exists — S6) so the caller can print a clean diagnostic and exit non-zero.
     fn render(&mut self, state: &TrayViewState) -> Result<(), String> {
-        let (menu, map) = build_native_menu(state);
-        let icon = badge_icon(state.badge);
+        let model = build_menu(state);
         let tooltip = state.status_line();
+        if !self.created {
+            self.backend
+                .create(&model, &render_badge_icon(state.badge), &tooltip)?;
+            self.created = true;
+            self.event_map = event_map_for(&model);
+            self.shown_menu = model;
+            self.shown_badge = Some(state.badge);
+            self.shown_tooltip = Some(tooltip);
+            self.pending = None;
+            return Ok(());
+        }
 
-        match self.tray_icon {
-            Some(ref existing) => {
-                existing.set_menu(Some(Box::new(menu)));
-                if let Err(err) = existing.set_tooltip(Some(tooltip)) {
-                    eprintln!("[arb-tray] failed to update tray tooltip: {err}");
-                }
-                if let Err(err) = existing.set_icon(Some(icon)) {
-                    eprintln!("[arb-tray] failed to update tray icon: {err}");
-                }
+        let tracking = self.backend.menu_is_tracking();
+        let mut deferred = false;
+        match plan_menu_update(&self.shown_menu, &model) {
+            MenuPlan::Unchanged => {}
+            MenuPlan::InPlace(updates) => {
+                self.backend.apply_in_place(&updates);
+                self.event_map = event_map_for(&model);
+                self.shown_menu = model;
             }
-            None => {
-                self.tray_icon = Some(
-                    TrayIconBuilder::new()
-                        .with_menu(Box::new(menu))
-                        .with_tooltip(tooltip)
-                        .with_icon(icon)
-                        .build()
-                        .map_err(|err| {
-                            format!(
-                                "failed to build tray icon (no tray host / GUI session?): {err}"
-                            )
-                        })?,
-                );
+            MenuPlan::Rebuild if tracking => deferred = true,
+            MenuPlan::Rebuild => {
+                self.backend.replace_menu_items(&model);
+                self.event_map = event_map_for(&model);
+                self.shown_menu = model;
             }
         }
-        self.event_map = map;
+        if self.shown_badge != Some(state.badge) {
+            if tracking {
+                deferred = true;
+            } else {
+                self.backend.set_icon(&render_badge_icon(state.badge));
+                self.shown_badge = Some(state.badge);
+            }
+        }
+        if self.shown_tooltip.as_deref() != Some(tooltip.as_str()) {
+            if tracking {
+                deferred = true;
+            } else {
+                self.backend.set_tooltip(&tooltip);
+                self.shown_tooltip = Some(tooltip);
+            }
+        }
+        self.pending = deferred.then(|| state.clone());
         Ok(())
+    }
+
+    /// Flushes changes deferred while the menu was open, once tracking has finished.
+    fn tick(&mut self) {
+        if self.pending.is_some()
+            && !self.backend.menu_is_tracking()
+            && let Some(state) = self.pending.take()
+        {
+            // `render` only fails on the first build, which has already succeeded.
+            let _ = self.render(&state);
+        }
     }
 }
 
 /// Applies one worker [`TrayUpdate`] to the UI. Returns `Some(exit_code)` when the tray
 /// process should exit (graceful `QuitNow`, or a fatal first-build error — S6).
-fn apply_update(ui: &mut TrayUi, update: TrayUpdate) -> Option<i32> {
+fn apply_update<B: TrayBackend>(ui: &mut TrayUi<B>, update: TrayUpdate) -> Option<i32> {
     match update {
         TrayUpdate::Refreshed { state, alerts } => {
             for alert in &alerts {
@@ -373,7 +879,11 @@ fn apply_update(ui: &mut TrayUi, update: TrayUpdate) -> Option<i32> {
 /// Routes one queued OS menu click: local-only actions run inline on the UI thread, and every
 /// RPC-backed event is forwarded to the IPC worker — never blocking the UI on `arbd` (R4 M3).
 /// Returns `true` when the tray process should exit (`QuitTray`).
-fn route_menu_click(ui: &TrayUi, command_tx: &mpsc::Sender<TrayCommand>, id: &MenuId) -> bool {
+fn route_menu_click<B: TrayBackend>(
+    ui: &TrayUi<B>,
+    command_tx: &mpsc::Sender<TrayCommand>,
+    id: &MenuId,
+) -> bool {
     let Some(action) = ui.event_map.get(id).cloned() else {
         // Unknown id (e.g. an inert row): nothing to dispatch — never alias another action.
         return false;
@@ -414,7 +924,7 @@ pub fn run(
         .spawn(move || ipc_worker(paths, auto_start, poll_interval, command_rx, update_tx))
         .map_err(|err| format!("failed to spawn arb-tray IPC worker thread: {err}"))?;
 
-    let mut ui = TrayUi::new();
+    let mut ui = TrayUi::new(NativeBackend::new());
     ui.render(&TrayViewState::offline())?;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -431,13 +941,24 @@ pub fn run(
 /// pumped on this (main) thread; `tao` provides one with no window ever created.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_with_event_loop(
-    mut ui: TrayUi,
+    mut ui: TrayUi<NativeBackend>,
     command_tx: mpsc::Sender<TrayCommand>,
     update_rx: mpsc::Receiver<TrayUpdate>,
 ) -> ! {
     use tao::event_loop::{ControlFlow, EventLoop};
 
-    let event_loop: EventLoop<()> = EventLoop::new();
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(unused_mut, reason = "only macOS sets an activation policy")
+    )]
+    let mut event_loop: EventLoop<()> = EventLoop::new();
+    // macOS: run as a menu-bar-only accessory (like `LSUIElement`), so arb-tray never shows a
+    // Dock icon or a Cmd+Tab entry while its status item and menu stay fully interactive.
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    }
     event_loop.run(move |_event, _target, control_flow| {
         while let Ok(update) = update_rx.try_recv() {
             if let Some(code) = apply_update(&mut ui, update) {
@@ -451,6 +972,7 @@ fn run_with_event_loop(
                 return;
             }
         }
+        ui.tick();
         *control_flow = ControlFlow::WaitUntil(Instant::now() + UI_TICK);
     })
 }
@@ -459,7 +981,7 @@ fn run_with_event_loop(
 /// required here — just a plain update/click drain loop on the current thread.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn run_polling_loop(
-    mut ui: TrayUi,
+    mut ui: TrayUi<NativeBackend>,
     command_tx: &mpsc::Sender<TrayCommand>,
     update_rx: &mpsc::Receiver<TrayUpdate>,
 ) -> Result<(), String> {
@@ -474,6 +996,7 @@ fn run_polling_loop(
                 return Ok(());
             }
         }
+        ui.tick();
         thread::sleep(UI_TICK);
     }
 }
@@ -529,6 +1052,7 @@ mod tests {
             storage_pressure_stopped: false,
             jobs,
             bundles,
+            capture_enabled: None,
             section_errors: Vec::new(),
         }
     }
@@ -625,6 +1149,295 @@ mod tests {
             map_b.get(&b1_reveal),
             Some(&TrayMenuEvent::RevealBundle { path: b1_path }),
             "bundle reveal id must not shift when siblings are inserted"
+        );
+    }
+
+    fn alpha_at(image: &IconImage, x: u32, y: u32) -> u8 {
+        let index = usize::try_from((y * image.size + x) * 4 + 3).expect("index fits usize");
+        image.rgba[index]
+    }
+
+    fn rgb_at(image: &IconImage, x: u32, y: u32) -> [u8; 3] {
+        let base = usize::try_from((y * image.size + x) * 4).expect("index fits usize");
+        [image.rgba[base], image.rgba[base + 1], image.rgba[base + 2]]
+    }
+
+    const ALL_BADGES: [TrayBadge; 6] = [
+        TrayBadge::Idle,
+        TrayBadge::DaemonOffline,
+        TrayBadge::Capturing,
+        TrayBadge::Disconnected,
+        TrayBadge::SaveAttentionNeeded,
+        TrayBadge::StoragePressure,
+    ];
+
+    #[test]
+    fn badge_icons_are_transparent_replay_glyphs_not_solid_squares() {
+        for badge in ALL_BADGES {
+            let image = render_badge_icon(badge);
+            assert_eq!(image.size, ICON_SIZE, "{badge:?}: retina-sized icon");
+            assert_eq!(
+                image.rgba.len(),
+                usize::try_from(ICON_SIZE * ICON_SIZE * 4).expect("len"),
+                "{badge:?}: RGBA buffer size"
+            );
+            let last = ICON_SIZE - 1;
+            for (x, y) in [(0, 0), (last, 0), (0, last), (last, last)] {
+                assert_eq!(
+                    alpha_at(&image, x, y),
+                    0,
+                    "{badge:?}: corner ({x},{y}) transparent"
+                );
+            }
+            // The glyph centre (inside the ring) stays transparent: it is a ring, not a fill.
+            assert_eq!(
+                alpha_at(&image, 21, 21),
+                0,
+                "{badge:?}: ring interior must be transparent"
+            );
+            let opaque = image
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 0)
+                .count();
+            let total = usize::try_from(ICON_SIZE * ICON_SIZE).expect("count");
+            assert!(
+                opaque > 150,
+                "{badge:?}: glyph must draw visible pixels ({opaque})"
+            );
+            assert!(
+                opaque < total / 2,
+                "{badge:?}: icon must not be a filled square ({opaque}/{total} opaque)"
+            );
+            let partial = image
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 0 && px[3] < 255)
+                .count();
+            assert!(partial > 0, "{badge:?}: edges must be anti-aliased");
+            let icon = Icon::from_rgba(image.rgba.clone(), image.size, image.size);
+            assert!(icon.is_ok(), "{badge:?}: must be a valid tray icon");
+        }
+    }
+
+    #[test]
+    fn each_badge_renders_a_distinct_icon_with_template_only_for_neutral_states() {
+        let images: Vec<IconImage> = ALL_BADGES.iter().map(|b| render_badge_icon(*b)).collect();
+        for (i, a) in images.iter().enumerate() {
+            for (j, b) in images.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    a, b,
+                    "{:?} and {:?} must render distinct icons",
+                    ALL_BADGES[i], ALL_BADGES[j]
+                );
+            }
+        }
+        for (badge, image) in ALL_BADGES.iter().zip(&images) {
+            let neutral = matches!(badge, TrayBadge::Idle | TrayBadge::DaemonOffline);
+            assert_eq!(
+                image.template, neutral,
+                "{badge:?}: template iff Idle / DaemonOffline"
+            );
+            let dot_alpha = alpha_at(image, 35, 35);
+            if neutral {
+                assert_eq!(dot_alpha, 0, "{badge:?}: no status dot");
+            } else {
+                assert_eq!(dot_alpha, 255, "{badge:?}: opaque status dot");
+            }
+        }
+        assert_eq!(
+            rgb_at(&render_badge_icon(TrayBadge::Capturing), 35, 35),
+            [48, 209, 88],
+            "capturing dot is green"
+        );
+        assert_eq!(
+            rgb_at(&render_badge_icon(TrayBadge::StoragePressure), 35, 35),
+            [255, 59, 48],
+            "storage pressure dot is red"
+        );
+    }
+
+    /// Recording fake backend: counts every native call made by [`TrayUi`].
+    #[derive(Default)]
+    struct FakeBackend {
+        creates: usize,
+        in_place: Vec<InPlaceUpdate>,
+        in_place_calls: usize,
+        menu_rebuilds: usize,
+        icon_sets: usize,
+        tooltip_sets: usize,
+        tracking: bool,
+    }
+
+    impl TrayBackend for FakeBackend {
+        fn create(
+            &mut self,
+            _items: &[ModelMenuItem],
+            _icon: &IconImage,
+            _tooltip: &str,
+        ) -> Result<(), String> {
+            self.creates += 1;
+            Ok(())
+        }
+        fn apply_in_place(&mut self, updates: &[InPlaceUpdate]) {
+            self.in_place_calls += 1;
+            self.in_place.extend_from_slice(updates);
+        }
+        fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) {
+            self.menu_rebuilds += 1;
+        }
+        fn set_icon(&mut self, _icon: &IconImage) {
+            self.icon_sets += 1;
+        }
+        fn set_tooltip(&mut self, _tooltip: &str) {
+            self.tooltip_sets += 1;
+        }
+        fn menu_is_tracking(&self) -> bool {
+            self.tracking
+        }
+    }
+
+    fn capturing_state(buffered_secs: u32) -> TrayViewState {
+        let mut state = state_with(Vec::new(), vec![active_bundle("b-1")]);
+        state.capture = CaptureStatus::Capturing;
+        state.badge = TrayBadge::Capturing;
+        state.device_serial = Some("emulator-5554".to_owned());
+        state.buffered_secs = buffered_secs;
+        state
+    }
+
+    #[test]
+    fn repeated_polls_with_ticking_counters_never_swap_the_menu_or_icon() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).expect("first render");
+        assert_eq!(ui.backend.creates, 1, "tray created once");
+
+        for secs in [12, 14, 16, 18, 20] {
+            ui.render(&capturing_state(secs)).expect("poll render");
+        }
+        assert_eq!(ui.backend.creates, 1, "never re-created");
+        assert_eq!(
+            ui.backend.menu_rebuilds, 0,
+            "ticking counters must not rebuild the menu"
+        );
+        assert_eq!(
+            ui.backend.icon_sets, 0,
+            "unchanged badge must not reset the icon"
+        );
+        assert_eq!(
+            ui.backend.in_place_calls, 5,
+            "each tick updates the live status row in place"
+        );
+        assert!(
+            ui.backend
+                .in_place
+                .iter()
+                .all(|u| u.path == vec![0] && u.enabled.is_none()),
+            "only the status row label changes: {:?}",
+            ui.backend.in_place
+        );
+
+        let tooltip_sets = ui.backend.tooltip_sets;
+        ui.render(&capturing_state(20)).expect("identical render");
+        assert_eq!(
+            ui.backend.in_place_calls, 5,
+            "identical state: no menu call"
+        );
+        assert_eq!(
+            ui.backend.tooltip_sets, tooltip_sets,
+            "identical state: no tooltip call"
+        );
+    }
+
+    #[test]
+    fn structural_changes_rebuild_items_but_are_deferred_while_menu_is_open() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).expect("first render");
+
+        let mut grown = capturing_state(10);
+        grown.bundles.insert(0, active_bundle("b-0"));
+        ui.render(&grown).expect("structural render");
+        assert_eq!(
+            ui.backend.menu_rebuilds, 1,
+            "a new bundle rebuilds the items once"
+        );
+        assert!(
+            ui.event_map
+                .contains_key(&event_menu_id(&TrayMenuEvent::RevealBundle {
+                    path: PathBuf::from("/bundles").join("b-0"),
+                })),
+            "event map follows the rebuilt menu"
+        );
+
+        // The user opens the menu; a failed job appears and the badge changes meanwhile.
+        ui.backend.tracking = true;
+        let mut attention = grown.clone();
+        attention.jobs.push(failed_job("job-9"));
+        attention.badge = TrayBadge::SaveAttentionNeeded;
+        attention.buffered_secs = 12;
+        ui.render(&attention).expect("render while open");
+        assert_eq!(
+            ui.backend.menu_rebuilds, 1,
+            "no structural swap while the menu is open"
+        );
+        assert_eq!(
+            ui.backend.icon_sets, 0,
+            "no icon swap while the menu is open"
+        );
+        ui.tick();
+        assert_eq!(ui.backend.menu_rebuilds, 1, "still open: still deferred");
+
+        ui.backend.tracking = false;
+        ui.tick();
+        assert_eq!(
+            ui.backend.menu_rebuilds, 2,
+            "deferred rebuild flushed after close"
+        );
+        assert_eq!(ui.backend.icon_sets, 1, "deferred icon flushed after close");
+        assert!(
+            ui.event_map
+                .contains_key(&MenuId::new("arb-tray:retry:job-9")),
+            "event map updated after the deferred rebuild"
+        );
+        ui.tick();
+        assert_eq!(ui.backend.menu_rebuilds, 2, "nothing left to flush");
+    }
+
+    #[test]
+    fn menu_plan_classifies_label_enabled_and_structure_changes() {
+        let base = build_menu(&capturing_state(10));
+        assert_eq!(
+            plan_menu_update(&base, &base),
+            MenuPlan::Unchanged,
+            "identical"
+        );
+
+        let ticked = build_menu(&capturing_state(30));
+        assert!(
+            matches!(plan_menu_update(&base, &ticked), MenuPlan::InPlace(ref u) if u.len() == 1),
+            "counter tick is a single in-place label update"
+        );
+
+        let mut offline = capturing_state(10);
+        offline.daemon_online = false;
+        assert!(
+            matches!(
+                plan_menu_update(&base, &build_menu(&offline)),
+                MenuPlan::InPlace(_) | MenuPlan::Rebuild
+            ),
+            "offline transition changes enabled states"
+        );
+
+        let mut more = capturing_state(10);
+        more.bundles.push(active_bundle("b-2"));
+        assert_eq!(
+            plan_menu_update(&base, &build_menu(&more)),
+            MenuPlan::Rebuild,
+            "added bundle is structural"
         );
     }
 }

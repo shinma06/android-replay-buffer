@@ -6,7 +6,6 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.RandomAccessFile
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.Channels
@@ -133,24 +132,35 @@ class PosixUnixSocketTransport private constructor(
 }
 
 /**
- * Windows Named Pipe client (`\\.\pipe\arb-daemon-*`) using standard JVM `RandomAccessFile`.
- * Retries transient `ERROR_PIPE_BUSY` open errors cleanly without external JNI.
+ * Windows Named Pipe client (`\\.\pipe\arb-daemon-*`).
+ *
+ * The pipe is opened with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` and its owner SID is
+ * verified against the current user **before the first RPC byte is written** (H7), matching the
+ * Rust client in `arb-os/src/ipc.rs`. Win32 access goes through [WindowsPipeOpener] /
+ * [WindowsPipeSecurityVerifier] so the verification protocol is unit-tested on every OS; production
+ * uses the JDK Foreign Function & Memory binding [Win32NamedPipes] (zero JNI / third-party code).
+ * Transient `ERROR_PIPE_BUSY` opens are retried.
  */
 class WindowsNamedPipeTransport private constructor(
     override val endpoint: String,
-    private val pipe: RandomAccessFile,
+    private val pipe: WindowsPipeHandle,
     private val maxLineBytes: Int,
 ) : LocalIpcTransport {
     private val input = BufferedInputStream(
         object : InputStream() {
-            override fun read(): Int = pipe.read()
+            override fun read(): Int {
+                val one = ByteArray(1)
+                val n = pipe.read(one, 0, 1)
+                return if (n <= 0) -1 else one[0].toInt() and 0xff
+            }
+
             override fun read(b: ByteArray, off: Int, len: Int): Int = pipe.read(b, off, len)
         },
         8192,
     )
 
     private val output = object : OutputStream() {
-        override fun write(b: Int) = pipe.write(b)
+        override fun write(b: Int) = pipe.write(byteArrayOf(b.toByte()), 0, 1)
         override fun write(b: ByteArray, off: Int, len: Int) = pipe.write(b, off, len)
         override fun flush() {
             // Avoid blocking FlushFileBuffers on bidirectional Windows pipes (matches arb-os/src/ipc.rs).
@@ -158,13 +168,25 @@ class WindowsNamedPipeTransport private constructor(
     }
 
     override fun writeLine(jsonLine: String) {
-        NdjsonFraming.writeFrameLine(output, jsonLine, maxLineBytes)
+        NdjsonFraming.writeFrameLine(BufferedLineOutput(output), jsonLine, maxLineBytes)
     }
 
     override fun readLine(): String? = NdjsonFraming.readFrameLine(input, maxLineBytes)
 
     override fun close() {
         pipe.close()
+    }
+
+    /** Coalesces one NDJSON frame (payload + `\n`) into a single pipe write. */
+    private class BufferedLineOutput(private val sink: OutputStream) : OutputStream() {
+        private val buf = ByteArrayOutputStream(256)
+        override fun write(b: Int) = buf.write(b)
+        override fun write(b: ByteArray, off: Int, len: Int) = buf.write(b, off, len)
+        override fun flush() {
+            val bytes = buf.toByteArray()
+            buf.reset()
+            if (bytes.isNotEmpty()) sink.write(bytes, 0, bytes.size)
+        }
     }
 
     companion object {
@@ -176,31 +198,46 @@ class WindowsNamedPipeTransport private constructor(
         fun connect(
             endpoint: String,
             maxLineBytes: Int = DEFAULT_MAX_IPC_LINE_BYTES,
+        ): WindowsNamedPipeTransport = connect(endpoint, maxLineBytes, Win32NamedPipes, Win32NamedPipes.ownerVerifier)
+
+        /**
+         * Opens [endpoint] through [opener] and admits it only if [verifier] accepts it; on rejection
+         * the handle is closed before a single byte is written.
+         */
+        @Throws(IOException::class)
+        fun connect(
+            endpoint: String,
+            maxLineBytes: Int,
+            opener: WindowsPipeOpener,
+            verifier: WindowsPipeSecurityVerifier,
         ): WindowsNamedPipeTransport {
             if (!endpoint.startsWith(PIPE_PREFIX) || endpoint.length <= PIPE_PREFIX.length) {
                 throw IllegalArgumentException("Windows named pipe must start with '$PIPE_PREFIX': $endpoint")
             }
-            var lastError: IOException? = null
-            for (attempt in 0 until MAX_BUSY_RETRIES) {
-                try {
-                    val raf = RandomAccessFile(endpoint, "rw")
-                    return WindowsNamedPipeTransport(endpoint, raf, maxLineBytes)
-                } catch (e: IOException) {
-                    lastError = e
-                    val msg = e.message.orEmpty().lowercase()
-                    if (attempt + 1 < MAX_BUSY_RETRIES && (msg.contains("busy") || msg.contains("231"))) {
-                        try {
-                            Thread.sleep(BUSY_RETRY_DELAY_MS)
-                        } catch (_: InterruptedException) {
-                            Thread.currentThread().interrupt()
-                            throw e
-                        }
-                        continue
+            var attempt = 0
+            while (true) {
+                val handle = try {
+                    opener.open(endpoint)
+                } catch (busy: WindowsPipeBusyException) {
+                    attempt += 1
+                    if (attempt >= MAX_BUSY_RETRIES) throw busy
+                    try {
+                        Thread.sleep(BUSY_RETRY_DELAY_MS)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw busy
                     }
-                    throw e
+                    continue
                 }
+                try {
+                    verifier.verify(handle)
+                } catch (e: Throwable) {
+                    runCatching { handle.close() }
+                    if (e is IOException) throw e
+                    throw IOException("Windows named pipe verification failed for $endpoint: $e", e)
+                }
+                return WindowsNamedPipeTransport(endpoint, handle, maxLineBytes)
             }
-            throw lastError ?: IOException("Failed to connect to Windows named pipe: $endpoint")
         }
     }
 }

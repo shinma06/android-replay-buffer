@@ -4,8 +4,11 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import io.github.shinma06.arb.model.SystemHelloResponse
 import java.nio.file.attribute.FileTime
+import java.security.MessageDigest
 import java.time.Instant
+import java.util.HexFormat
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -198,5 +201,117 @@ class ArbdProcessManagerTest {
         assertTrue(mgr.identityUpgradeAttempted)
         assertFalse(mgr.tryClaimIdentityUpgrade(), "loop guard: a second identity restart is refused")
         assertFalse(mgr.tryClaimIdentityUpgrade())
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
+    private fun hello(buildId: String, mtime: Long) = SystemHelloResponse(
+        protocolVersion = 1,
+        schemaVersion = 2,
+        pid = 42L,
+        dataDir = "/d",
+        cacheDir = "/c",
+        runtimeDir = "/r",
+        daemonVersion = "2.0.0",
+        buildId = buildId,
+        binaryMtimeSecs = mtime,
+    )
+
+    @Test
+    fun parsesContentDigestBuildIdWithAndWithoutLegacyPrefix() {
+        val hex = "ab".repeat(32)
+        assertEquals(
+            DaemonBuildIdentity(version = "2.0.0", sha256Hex = hex),
+            ArbdProcessManager.parseBuildIdentity("2.0.0:sha256:$hex"),
+        )
+        assertEquals(
+            DaemonBuildIdentity(version = "2.1.0-rc.1", sizeBytes = 9L, mtimeSecs = 5L, sha256Hex = hex),
+            ArbdProcessManager.parseBuildIdentity("2.1.0-rc.1-9-5:sha256:${hex.uppercase()}"),
+        )
+        assertNull(ArbdProcessManager.parseBuildIdentity("2.0.0:sha256:nothex"), "malformed digest")
+        assertNull(ArbdProcessManager.parseBuildIdentity(":sha256:$hex"), "missing version")
+    }
+
+    /**
+     * M9 fail-first: a reproducible plugin ZIP replaced in place yields the same path, the same size
+     * and the same mtime when only constants/strings changed. The size/mtime identity cannot tell
+     * the builds apart; the content digest must trigger exactly one restart.
+     */
+    @Test
+    fun samePathSameSizeSameMtimeDifferentBytesTriggersExactlyOneRestart(@TempDir tmp: Path) {
+        val fixed = 1_795_392_000L // ZIP_TIMESTAMP-style fixed entry time
+        val oldBytes = "arbd-build-AAAA-const=1".toByteArray()
+        val newBytes = "arbd-build-AAAA-const=2".toByteArray()
+        assertEquals(oldBytes.size, newBytes.size, "fixture builds must have identical size")
+
+        val bin = tmp.resolve("native").resolve("arbd")
+        Files.createDirectories(bin.parent)
+        Files.write(bin, newBytes) // the plugin ZIP overwrote the running daemon's path in place
+        Files.setLastModifiedTime(bin, FileTime.from(Instant.ofEpochSecond(fixed)))
+        val size = Files.size(bin)
+
+        // The running daemon was started from the *old* bytes at the same path.
+        val runningOld = hello("2.0.0-$size-$fixed:sha256:${sha256(oldBytes)}", fixed)
+        val legacyOnly = "2.0.0-$size-$fixed"
+        assertFalse(
+            ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed, legacyOnly),
+            "precondition: size/mtime identity alone cannot detect the replaced build",
+        )
+
+        val paths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.LINUX)
+        val mgr = ArbdProcessManager(paths = paths, os = HostOs.LINUX, arch = "x64")
+        var restarts = 0
+        var running = runningOld
+        repeat(4) {
+            if (mgr.shouldRestartForIdentity(bin, bin, running)) {
+                restarts += 1
+                // The respawned daemon now reports the digest of the bundled (new) bytes.
+                running = hello("2.0.0-$size-$fixed:sha256:${sha256(newBytes)}", fixed)
+            }
+        }
+        assertEquals(1, restarts, "content-digest mismatch must restart exactly once")
+        assertFalse(
+            ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed, running.buildId),
+            "matching digest must not restart again",
+        )
+    }
+
+    @Test
+    fun warmedDigestDetectsInPlaceOverwrite(@TempDir tmp: Path) {
+        val bin = Files.writeString(tmp.resolve("arbd"), "old")
+        val timestamp = Files.getLastModifiedTime(bin)
+        val digest = ArbdProcessManager.sha256Hex(bin)
+        Files.writeString(bin, "new")
+        Files.setLastModifiedTime(bin, timestamp)
+        assertTrue(ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, null, "1:sha256:$digest"))
+    }
+
+    @Test
+    fun digestMismatchThatSurvivesRestartIsStillLimitedToOneRestart(@TempDir tmp: Path) {
+        val bin = Files.writeString(tmp.resolve("arbd"), "bundled-bytes")
+        val stale = hello("2.0.0:sha256:${sha256("stale-bytes".toByteArray())}", 0L)
+        val paths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.LINUX)
+        val mgr = ArbdProcessManager(paths = paths, os = HostOs.LINUX, arch = "x64")
+        val restarts = (1..5).count { mgr.shouldRestartForIdentity(bin, bin, stale) }
+        assertEquals(1, restarts, "an unkillable stale daemon must not cause a restart loop")
+    }
+
+    @Test
+    fun differentPathWithIdenticalDigestNeverRestartsEvenIfBundledIsNewer(@TempDir tmp: Path) {
+        val running = Files.writeString(tmp.resolve("running-arbd"), "same-bytes")
+        val bundled = Files.writeString(tmp.resolve("bundled-arbd"), "same-bytes")
+        Files.setLastModifiedTime(running, FileTime.from(Instant.ofEpochSecond(1_700_000_000L)))
+        Files.setLastModifiedTime(bundled, FileTime.from(Instant.ofEpochSecond(1_700_000_600L)))
+        val digest = sha256("same-bytes".toByteArray())
+        assertFalse(
+            ArbdProcessManager.shouldAutoUpgradeBinary(running, bundled, null, "2.0.0:sha256:$digest"),
+            "byte-identical bundled arbd must not restart the daemon",
+        )
+        assertTrue(
+            ArbdProcessManager.shouldAutoUpgradeBinary(running, bundled, null, "2.0.0:sha256:${"0".repeat(64)}"),
+            "different content at a newer bundled path still upgrades",
+        )
+        assertEquals(digest, ArbdProcessManager.sha256Hex(bundled), "sha256Hex matches MessageDigest")
     }
 }

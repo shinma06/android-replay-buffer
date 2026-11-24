@@ -48,6 +48,7 @@ object ProtocolJson {
         .registerTypeHierarchyAdapter(Provenance::class.java, ProvenanceAdapter)
         .registerTypeHierarchyAdapter(TimeAlignment::class.java, TimeAlignmentAdapter)
         .registerTypeAdapter(TapRecord::class.java, TapRecordAdapter)
+        .registerTypeAdapter(MediaOpenViewportResponse::class.java, MediaOpenViewportResponseAdapter)
         .create()
 
     private fun <T : Enum<T>> GsonBuilder.registerWireEnum(
@@ -238,6 +239,40 @@ object ProtocolJson {
         }
     }
 
+    // `MediaOpenViewportResponse` has required fields, so Gson would bypass the Kotlin default and
+    // leave `framePtsNs` null for older daemons that omit `frame_pts_ns` (H8): parse explicitly.
+    private object MediaOpenViewportResponseAdapter : JsonDeserializer<MediaOpenViewportResponse> {
+        override fun deserialize(
+            json: JsonElement,
+            typeOfT: Type,
+            context: JsonDeserializationContext,
+        ): MediaOpenViewportResponse {
+            val obj = json.asJsonObject
+            val pts = obj.get("frame_pts_ns")?.takeUnless { it.isJsonNull }?.let {
+                if (!it.isJsonArray) throw JsonParseException("frame_pts_ns must be an array")
+                it.asJsonArray
+            }
+            return MediaOpenViewportResponse(
+                viewportId = obj.requireString("viewport_id"),
+                bundleId = obj.requireString("bundle_id"),
+                shmPath = obj.requireString("shm_path"),
+                width = obj.requireLong("width").toInt(),
+                height = obj.requireLong("height").toInt(),
+                stride = obj.requireLong("stride").toInt(),
+                pixelFormat = obj.requireString("pixel_format"),
+                slotCapacity = obj.requireLong("slot_capacity").toInt(),
+                frameCount = obj.requireLong("frame_count"),
+                keyframeCount = obj.requireLong("keyframe_count").toInt(),
+                framePtsNs = pts?.map { element ->
+                    if (!element.isJsonPrimitive || !element.asJsonPrimitive.isNumber) {
+                        throw JsonParseException("frame_pts_ns entries must be integers, got: $element")
+                    }
+                    element.asString.toLongOrNull() ?: throw JsonParseException("Invalid frame timestamp: $element")
+                } ?: emptyList(),
+            )
+        }
+    }
+
     fun toConfigPatchJson(src: ArbConfigPatch): JsonObject = JsonObject().apply {
         src.saveWindowSecs?.let { addProperty("save_window_secs", it) }
         src.ringBudgetBytes?.let { addProperty("ring_budget_bytes", it) }
@@ -264,6 +299,7 @@ object ProtocolJson {
             is OutputDirPatch.Set -> addProperty("screenshot_dir_override", dir.path)
         }
         src.ideDefaultSaveAction?.let { addProperty("ide_default_save_action", it.wire) }
+        src.captureEnabled?.let { addProperty("capture_enabled", it) }
     }
 
     private object ArbConfigPatchAdapter : JsonSerializer<ArbConfigPatch> {

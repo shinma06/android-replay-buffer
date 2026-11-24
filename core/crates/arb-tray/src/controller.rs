@@ -180,6 +180,10 @@ pub struct TrayViewState {
     pub jobs: Vec<SaveJobSummary>,
     /// Catalog bundle entries returned by `bundle.list`.
     pub bundles: Vec<RecentBundleSummary>,
+    /// Always-on background capture setting (`system.status.capture_enabled`, falling back to
+    /// `config.get.config.capture_enabled`); `None` when an older `arbd` reports neither.
+    #[serde(default)]
+    pub capture_enabled: Option<bool>,
     /// Per-section `arbd` application errors from the last poll (`"<method>: <error>"`).
     ///
     /// A daemon-reported `Rpc` error on one polled method (e.g. `device.list` failing when
@@ -210,7 +214,23 @@ impl TrayViewState {
             storage_pressure_stopped: false,
             jobs: Vec::new(),
             bundles: Vec::new(),
+            capture_enabled: None,
             section_errors: Vec::new(),
+        }
+    }
+
+    /// One-line label for the always-on background capture setting, or `None` when the daemon
+    /// does not report it: `常時録画: ON・REC` (armed and recording), `常時録画: ON・待機中`
+    /// (armed, waiting for a device / reconnect), or `常時録画: OFF`.
+    #[must_use]
+    pub fn capture_enabled_label(&self) -> Option<&'static str> {
+        if !self.daemon_online {
+            return None;
+        }
+        match (self.capture_enabled?, self.capture) {
+            (true, CaptureStatus::Capturing) => Some("常時録画: ON・REC"),
+            (true, _) => Some("常時録画: ON・待機中"),
+            (false, _) => Some("常時録画: OFF"),
         }
     }
 
@@ -663,10 +683,11 @@ fn build_recent_bundles_section(state: &TrayViewState) -> TrayMenuItem {
 /// strict seconds notation).
 #[must_use]
 pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
-    let mut items = vec![
-        TrayMenuItem::info(state.status_line()),
-        TrayMenuItem::separator(),
-    ];
+    let mut items = vec![TrayMenuItem::info(state.status_line())];
+    if let Some(label) = state.capture_enabled_label() {
+        items.push(TrayMenuItem::info(label));
+    }
+    items.push(TrayMenuItem::separator());
 
     items.push(TrayMenuItem {
         enabled: state.daemon_online,
@@ -924,6 +945,10 @@ fn build_view_state(
         StoragePressureState::Normal
     };
     let badge = derive_badge(capture_status, storage_state, &jobs);
+    let capture_enabled = status
+        .get("capture_enabled")
+        .and_then(Value::as_bool)
+        .or_else(|| cfg_obj.get("capture_enabled").and_then(Value::as_bool));
 
     TrayViewState {
         badge,
@@ -941,6 +966,7 @@ fn build_view_state(
         storage_pressure_stopped,
         jobs,
         bundles,
+        capture_enabled,
         section_errors: Vec::new(),
     }
 }
@@ -1124,6 +1150,7 @@ mod tests {
             storage_pressure_stopped: false,
             jobs: Vec::new(),
             bundles: Vec::new(),
+            capture_enabled: None,
             section_errors: Vec::new(),
         }
     }
@@ -1814,5 +1841,87 @@ mod tests {
                 .status_line()
                 .contains("再接続待機中 192.168.1.50:5555")
         );
+    }
+
+    #[test]
+    fn capture_enabled_is_parsed_from_status_with_config_fallback_and_rendered() {
+        let empty = json!({});
+        let status_on =
+            json!({ "capture": { "active": true, "connected": true }, "capture_enabled": true });
+        let on_rec = super::build_view_state(&status_on, &empty, &empty, &empty, &empty);
+        assert_eq!(
+            on_rec.capture_enabled,
+            Some(true),
+            "status.capture_enabled must be parsed"
+        );
+        assert_eq!(
+            on_rec.capture_enabled_label(),
+            Some("常時録画: ON・REC"),
+            "armed + recording"
+        );
+
+        let status_idle = json!({ "capture": { "active": false } });
+        let config_on = json!({ "config": { "capture_enabled": true } });
+        let on_wait = super::build_view_state(&status_idle, &config_on, &empty, &empty, &empty);
+        assert_eq!(
+            on_wait.capture_enabled,
+            Some(true),
+            "config fallback must be used"
+        );
+        assert_eq!(
+            on_wait.capture_enabled_label(),
+            Some("常時録画: ON・待機中"),
+            "armed, waiting"
+        );
+
+        let status_off =
+            json!({ "capture": { "active": true, "connected": true }, "capture_enabled": false });
+        let off = super::build_view_state(&status_off, &config_on, &empty, &empty, &empty);
+        assert_eq!(
+            off.capture_enabled,
+            Some(false),
+            "status must take precedence over config"
+        );
+        assert_eq!(
+            off.capture_enabled_label(),
+            Some("常時録画: OFF"),
+            "disabled"
+        );
+
+        let legacy = super::build_view_state(&status_idle, &empty, &empty, &empty, &empty);
+        assert_eq!(
+            legacy.capture_enabled, None,
+            "older arbd reports no capture_enabled"
+        );
+        assert_eq!(
+            legacy.capture_enabled_label(),
+            None,
+            "no row for older arbd"
+        );
+        assert_eq!(
+            TrayViewState::offline().capture_enabled_label(),
+            None,
+            "offline daemon shows no capture_enabled row"
+        );
+
+        let menu_on = build_menu(&on_wait);
+        assert_eq!(
+            menu_on.get(1).map(|item| item.label.as_str()),
+            Some("常時録画: ON・待機中"),
+            "capture_enabled row follows the status line"
+        );
+        assert!(!menu_on[1].enabled, "capture_enabled row is informational");
+        let menu_legacy = build_menu(&legacy);
+        assert!(
+            menu_legacy[1].separator,
+            "no capture_enabled row for older arbd"
+        );
+        for label in ["常時録画: ON・REC", "常時録画: ON・待機中", "常時録画: OFF"]
+        {
+            assert!(
+                !contains_emoji(label),
+                "capture_enabled label must be emoji-free"
+            );
+        }
     }
 }

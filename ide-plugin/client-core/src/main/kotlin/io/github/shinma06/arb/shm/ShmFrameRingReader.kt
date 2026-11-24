@@ -5,6 +5,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.VarHandle
+import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
@@ -210,15 +211,15 @@ class ShmFrameRingReader private constructor(
                 continue
             }
 
-            val generation = mapped.getLong(slotBase + SLOT_OFF_GENERATION)
-            val frameIndex = mapped.getLong(slotBase + SLOT_OFF_FRAME_INDEX)
-            val boottimeNs = mapped.getLong(slotBase + SLOT_OFF_BOOTTIME_NS)
-            val width = mapped.getInt(slotBase + SLOT_OFF_WIDTH)
-            val height = mapped.getInt(slotBase + SLOT_OFF_HEIGHT)
-            val stride = mapped.getInt(slotBase + SLOT_OFF_STRIDE)
-            val pixelFormatRaw = mapped.getInt(slotBase + SLOT_OFF_PIXEL_FORMAT)
-            val payloadLen = mapped.getInt(slotBase + SLOT_OFF_PAYLOAD_LEN)
-            val flags = mapped.getInt(slotBase + SLOT_OFF_FLAGS)
+            val generation = LONG_LE.getOpaque(mapped, slotBase + SLOT_OFF_GENERATION) as Long
+            val frameIndex = LONG_LE.getOpaque(mapped, slotBase + SLOT_OFF_FRAME_INDEX) as Long
+            val boottimeNs = LONG_LE.getOpaque(mapped, slotBase + SLOT_OFF_BOOTTIME_NS) as Long
+            val width = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_WIDTH) as Int
+            val height = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_HEIGHT) as Int
+            val stride = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_STRIDE) as Int
+            val pixelFormatRaw = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_PIXEL_FORMAT) as Int
+            val payloadLen = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_PAYLOAD_LEN) as Int
+            val flags = INT_LE.getOpaque(mapped, slotBase + SLOT_OFF_FLAGS) as Int
 
             if (payloadLen < 0 || payloadLen > slotCapacity) {
                 VarHandle.acquireFence()
@@ -238,7 +239,18 @@ class ShmFrameRingReader private constructor(
             } else {
                 ByteArray(payloadLen).also { scratchPixels = it }
             }
-            mapped.get(payloadOffset, pixels, 0, payloadLen)
+            // Match the producer's aligned atomic words, including the padded tail.
+            val output = ByteBuffer.wrap(pixels).order(ByteOrder.LITTLE_ENDIAN)
+            while (output.remaining() >= Long.SIZE_BYTES) {
+                output.putLong(LONG_LE.getOpaque(mapped, payloadOffset + output.position()) as Long)
+            }
+            if (output.hasRemaining()) {
+                var tail = LONG_LE.getOpaque(mapped, payloadOffset + output.position()) as Long
+                while (output.hasRemaining()) {
+                    output.put(tail.toByte())
+                    tail = tail ushr 8
+                }
+            }
 
             VarHandle.acquireFence()
             val seq2 = LONG_LE.getOpaque(mapped, slotBase) as Long

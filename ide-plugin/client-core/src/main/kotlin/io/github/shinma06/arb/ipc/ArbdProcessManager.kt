@@ -7,8 +7,12 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.attribute.FileTime
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
+import java.util.HexFormat
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -41,6 +45,18 @@ class ArbdProcessManager(
 
     /** Claims the single per-session identity-based auto-upgrade; `false` if already spent. */
     fun tryClaimIdentityUpgrade(): Boolean = identityUpgradeClaimed.compareAndSet(false, true)
+
+    /**
+     * Identity-based auto-upgrade decision for a probed daemon: `true` (and the per-session
+     * restart claimed) when [bundledBinary] differs from the running daemon per
+     * [shouldAutoUpgradeBinary], at most once per session (loop guard).
+     */
+    fun shouldRestartForIdentity(
+        runningExe: Path?,
+        bundledBinary: Path?,
+        hello: SystemHelloResponse,
+    ): Boolean = shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs, hello.buildId) &&
+        tryClaimIdentityUpgrade()
 
     /**
      * Resolution order:
@@ -405,9 +421,7 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            if (shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs, hello.buildId) &&
-                tryClaimIdentityUpgrade()
-            ) {
+            if (shouldRestartForIdentity(runningExe, bundledBinary, hello)) {
                 runCatching { client.close() }
                 return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})")
             }
@@ -482,11 +496,14 @@ class ArbdProcessManager(
 
         /**
          * Returns `true` when the bundled plugin `arbd` should replace the running daemon:
-         * - different path (normal plugin upgrade): the bundled file is strictly newer on disk;
-         * - same path (in-place plugin ZIP overwrite): the on-disk mtime is strictly newer than
-         *   [runningBinaryMtimeSecs] from `system.hello`, OR the on-disk size differs from the size
-         *   recorded in [runningBuildId] (`<version>-<size>-<mtime>`), which catches reinstalls whose
-         *   ZIP entries carry fixed/reproducible timestamps.
+         * - when `system.hello` `build_id` carries a content digest (`...:sha256:<hex>`, the SHA-256
+         *   of the running executable): restart iff the bundled binary's SHA-256 differs (same
+         *   path), or — for a different path — never restart onto byte-identical content. This
+         *   catches in-place plugin ZIP overwrites where only constants/strings changed and the
+         *   reproducible ZIP produced the same size and mtime (M9);
+         * - older daemons without a digest (`<version>-<size>-<mtime>`): same path restarts when the
+         *   on-disk mtime is strictly newer than [runningBinaryMtimeSecs] or the size differs;
+         * - different path (normal plugin upgrade): the bundled file is strictly newer on disk.
          *
          * Callers must pair this with [tryClaimIdentityUpgrade] so a restart happens at most once.
          */
@@ -495,29 +512,65 @@ class ArbdProcessManager(
             bundledBinary: Path?,
             runningBinaryMtimeSecs: Long? = null,
             runningBuildId: String? = null,
+            digestOf: (Path) -> String? = ::sha256Hex,
         ): Boolean {
             if (runningExe == null || bundledBinary == null) return false
             if (!Files.isRegularFile(runningExe) || !Files.isRegularFile(bundledBinary)) return false
             val bundledMtime = runCatching { Files.getLastModifiedTime(bundledBinary) }.getOrNull() ?: return false
             val sameFile = runCatching { Files.isSameFile(runningExe, bundledBinary) }.getOrDefault(false)
+            val identity = parseBuildIdentity(runningBuildId)
+            val runningDigest = identity?.sha256Hex
+            val bundledDigest = if (runningDigest != null) digestOf(bundledBinary) else null
             if (sameFile) {
+                if (runningDigest != null && bundledDigest != null) {
+                    return !bundledDigest.equals(runningDigest, ignoreCase = true)
+                }
                 if (runningBinaryMtimeSecs != null && bundledMtime.toInstant().epochSecond > runningBinaryMtimeSecs) {
                     return true
                 }
-                val identity = parseBuildIdentity(runningBuildId) ?: return false
+                val runningSize = identity?.sizeBytes ?: return false
                 val bundledSize = runCatching { Files.size(bundledBinary) }.getOrNull() ?: return false
-                return identity.sizeBytes != bundledSize
+                return runningSize != bundledSize
+            }
+            if (runningDigest != null && bundledDigest != null &&
+                bundledDigest.equals(runningDigest, ignoreCase = true)
+            ) {
+                return false
             }
             val runningMtime = runCatching { Files.getLastModifiedTime(runningExe) }.getOrNull() ?: return false
             return bundledMtime > runningMtime
         }
 
+        private const val SHA256_MARKER = ":sha256:"
+        private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
+
         /**
-         * Parses `arbd`'s `system.hello` `build_id` (`<CARGO_PKG_VERSION>-<size_bytes>-<mtime_secs>`).
-         * The version may itself contain `-`, so the two numeric fields are taken from the end.
+         * Parses `arbd`'s `system.hello` `build_id`:
+         * - `<CARGO_PKG_VERSION>:sha256:<hex>` (content digest of the running executable), optionally
+         *   with a legacy `<version>-<size>-<mtime>` prefix before `:sha256:`;
+         * - legacy `<CARGO_PKG_VERSION>-<size_bytes>-<mtime_secs>` (the version may itself contain
+         *   `-`, so the two numeric fields are taken from the end).
          */
         fun parseBuildIdentity(buildId: String?): DaemonBuildIdentity? {
             val raw = buildId?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val markerAt = raw.lastIndexOf(SHA256_MARKER)
+            if (markerAt >= 0) {
+                val hex = raw.substring(markerAt + SHA256_MARKER.length)
+                if (!SHA256_HEX.matches(hex)) return null
+                val prefix = raw.substring(0, markerAt)
+                val legacy = parseLegacyBuildIdentity(prefix)
+                val version = legacy?.version ?: prefix.takeIf { it.isNotBlank() } ?: return null
+                return DaemonBuildIdentity(
+                    version = version,
+                    sizeBytes = legacy?.sizeBytes,
+                    mtimeSecs = legacy?.mtimeSecs,
+                    sha256Hex = hex.lowercase(),
+                )
+            }
+            return parseLegacyBuildIdentity(raw)
+        }
+
+        private fun parseLegacyBuildIdentity(raw: String): DaemonBuildIdentity? {
             val mtimeSep = raw.lastIndexOf('-')
             if (mtimeSep <= 0) return null
             val sizeSep = raw.lastIndexOf('-', mtimeSep - 1)
@@ -528,12 +581,56 @@ class ArbdProcessManager(
             if (version.isBlank() || size < 0L || mtime < 0L) return null
             return DaemonBuildIdentity(version = version, sizeBytes = size, mtimeSecs = mtime)
         }
+
+        private data class DigestStamp(val device: Long, val inode: Long, val changed: FileTime)
+        private data class CachedDigest(val stamp: DigestStamp, val hex: String)
+        private val digestCache = ConcurrentHashMap<Path, CachedDigest>()
+
+        // An in-place reinstall may preserve inode, size and mtime. Cache only on
+        // filesystems that also report a change time, and recheck it after hashing.
+        private fun digestStamp(path: Path): DigestStamp? {
+            if ("unix" !in path.fileSystem.supportedFileAttributeViews()) return null
+            return runCatching {
+                val attrs = Files.readAttributes(path, "unix:dev,ino,ctime")
+                DigestStamp(attrs["dev"] as Long, attrs["ino"] as Long, attrs["ctime"] as FileTime)
+            }.getOrNull()
+        }
+
+        fun sha256Hex(file: Path): String? = runCatching {
+            val path = file.toAbsolutePath().normalize()
+            val stamp = digestStamp(path) ?: return@runCatching computeSha256Hex(path)
+            // A recently modified inode may still share the filesystem clock tick
+            // with a subsequent overwrite, especially on coarse-grained filesystems.
+            if (stamp.changed.toInstant().isAfter(Instant.now().minusSeconds(2))) {
+                return@runCatching computeSha256Hex(path)
+            }
+            digestCache[path]?.takeIf { it.stamp == stamp }?.hex ?: computeSha256Hex(path).also {
+                if (stamp == digestStamp(path)) digestCache[path] = CachedDigest(stamp, it)
+            }
+        }.getOrNull()
+
+        private fun computeSha256Hex(file: Path): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            Files.newInputStream(file).use { input ->
+                val buf = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            return HexFormat.of().formatHex(md.digest())
+        }
     }
 }
 
-/** Parsed `system.hello` `build_id` fingerprint of the running `arbd` executable. */
+/**
+ * Parsed `system.hello` `build_id` fingerprint of the running `arbd` executable: the content
+ * digest ([sha256Hex]) when the daemon reports one, and/or the legacy size + mtime.
+ */
 data class DaemonBuildIdentity(
     val version: String,
-    val sizeBytes: Long,
-    val mtimeSecs: Long,
+    val sizeBytes: Long? = null,
+    val mtimeSecs: Long? = null,
+    val sha256Hex: String? = null,
 )

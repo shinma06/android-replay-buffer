@@ -124,6 +124,11 @@ data class SystemStatusResponse(
     val recovery: RecoverySummaryView,
     val crashAutosave: CrashAutoSaveStatusView = CrashAutoSaveStatusView(),
     val configWarning: String? = null,
+    /**
+     * Always-on background capture armed state (`capture_enabled`). Older `arbd` builds omit it,
+     * which reads as `false` (not armed).
+     */
+    val captureEnabled: Boolean = false,
 )
 
 data class ShutdownResponse(
@@ -158,6 +163,8 @@ data class ArbConfig(
     val outputDirOverride: String? = null,
     val screenshotDirOverride: String? = null,
     val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
+    /** Always-on background capture (`capture_enabled`): `arbd` auto-attaches and records while on. */
+    val captureEnabled: Boolean = false,
 ) {
     companion object {
         const val CONFIG_SCHEMA_VERSION: Int = 1
@@ -213,6 +220,8 @@ data class ArbConfigPatch(
     val outputDirOverride: OutputDirPatch = OutputDirPatch.Unchanged,
     val screenshotDirOverride: OutputDirPatch = OutputDirPatch.Unchanged,
     val ideDefaultSaveAction: IdeDefaultSaveAction? = null,
+    /** `capture_enabled` toggle; `null` leaves the persisted value unchanged. */
+    val captureEnabled: Boolean? = null,
 )
 
 // ---------------- Device & Capture ----------------
@@ -993,6 +1002,12 @@ data class MediaOpenViewportResponse(
     val slotCapacity: Int,
     val frameCount: Long,
     val keyframeCount: Int,
+    /**
+     * Real per-frame presentation timestamps (`frame_pts_ns`, nanoseconds, index = frame index) for
+     * variable-frame-rate playback. Empty when talking to an older `arbd` that does not send them;
+     * callers then fall back to an average-FPS timeline.
+     */
+    val framePtsNs: List<Long> = emptyList(),
 )
 
 data class FilmstripEntryMeta(
