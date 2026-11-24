@@ -320,7 +320,7 @@ fn read_log_tail(path: &Path) -> String {
     }
 }
 
-fn locate_arbd_binary() -> PathBuf {
+pub(crate) fn locate_arbd_binary() -> PathBuf {
     if let Some(explicit) = std::env::var_os("ARB_DAEMON_BIN") {
         let p = PathBuf::from(explicit);
         if p.is_file() {

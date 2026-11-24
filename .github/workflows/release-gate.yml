@@ -5,8 +5,9 @@ name: Release Gate
 # 3. 組み立て済み ZIP をクリーンな場所へ展開し、各 OS で verify_release_bundle.py を完走させる
 #    （IPC / MCP 17 ツール / 旧形式の読取専用 / Suite B 17/17 / 焼き込み実画素 / arb-tray / 旧リリースからのアップグレード）。
 # 4. Windows では実 GUI（arb-tray、Edge、VLC）の画面と録画を証跡として保存する。
-# 既存の ci.yml・release.yml と必須チェック名（test / os-parity）には触れない。
+# main 昇格前も、登録済みの CI の手動入力から同じワークフローを呼び出せる。
 on:
+  workflow_call:
   workflow_dispatch:
     inputs:
       ref:
@@ -37,6 +38,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
+  PYTHONUTF8: '1'
 jobs:
   prepare:
     name: prepare (version label)
@@ -58,6 +60,7 @@ jobs:
           sha="$(git rev-parse HEAD)"
           base="$(sed -n 's/^devBaseVersion=//p' ide-plugin/gradle.properties)"
           version="${LABEL:-${base}-dev.${sha:0:7}}"
+          [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || exit 2
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "Release gate for ${sha} as ${version}"
@@ -79,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Install nasm (Linux)
         if: runner.os == 'Linux'
@@ -183,7 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v8.0.1
         with:
@@ -246,7 +249,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-java@v6.1.0
         with:
@@ -293,7 +296,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Install gate tools (nasm, ffmpeg, xvfb, dbus)
         run: sudo apt-get update && sudo apt-get install -y nasm ffmpeg xvfb dbus-x11
@@ -307,11 +310,13 @@ jobs:
           path: gate-fixtures
       - name: Fetch the previous release for the in-place upgrade (U5)
         id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
         run: |
           set -euo pipefail
           mkdir -p previous
-          tag="${{ inputs.previous_release_tag }}"
-          if gh release download "$tag" --pattern arb-linux-x86_64.zip --dir previous; then
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-linux-x86_64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-linux-x86_64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-linux-x86_64.zip) downloaded: $(sha256sum previous/arb-linux-x86_64.zip)"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
@@ -352,7 +357,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Install gate tools (ffmpeg)
         run: brew install ffmpeg
@@ -366,11 +371,13 @@ jobs:
           path: gate-fixtures
       - name: Fetch the previous release for the in-place upgrade (U5)
         id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
         run: |
           set -euo pipefail
           mkdir -p previous
-          tag="${{ inputs.previous_release_tag }}"
-          if gh release download "$tag" --pattern arb-macos-arm64.zip --dir previous; then
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-macos-arm64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-macos-arm64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-macos-arm64.zip) downloaded: $(shasum -a 256 previous/arb-macos-arm64.zip)"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
@@ -414,7 +421,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - name: Install gate tools (nasm, ffmpeg, vlc)
         run: |
@@ -478,11 +485,13 @@ jobs:
           PY
       - name: Fetch the previous release for the in-place upgrade (U5)
         id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
         run: |
           set -euo pipefail
           mkdir -p previous
-          tag="${{ inputs.previous_release_tag }}"
-          if gh release download "$tag" --pattern arb-windows-x86_64.zip --dir previous; then
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-windows-x86_64.zip --dir previous -- "$tag"; then
             echo "zip=previous/arb-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
             echo "Previous release '$tag' (arb-windows-x86_64.zip) downloaded: $(sha256sum previous/arb-windows-x86_64.zip)"
           elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
@@ -540,7 +549,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v8.0.1
         with:

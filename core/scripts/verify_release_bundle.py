@@ -1658,6 +1658,12 @@ def self_test() -> int:
             require(f"static verification passes for {bundle.name}", rep.passed and not bad, bad[:3])
         # tampering is detected
         bundle = build_stub_bundle(tmp, "linux", "x86_64", universal_plugin)
+        existing = tmp / "existing"
+        existing.mkdir()
+        marker = existing / "keep.txt"
+        marker.touch()
+        result = main(["--bundle-zip", str(bundle), "--static-only", "--work-dir", str(existing), "--out-dir", str(tmp / "report")])
+        require("existing work directory is preserved", result == 2 and marker.exists())
         tampered = tmp / "tampered" / bundle.name
         tampered.parent.mkdir()
         with zipfile.ZipFile(bundle) as src, zipfile.ZipFile(tampered, "w") as dst:
@@ -1789,15 +1795,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if bundle_os != host_os and not args.static_only:
         print(f"ERROR: bundle is for {bundle_os} but this host is {host_os}; pass --static-only to verify only the ZIP contents", file=sys.stderr)
         return 2
+    out_dir = args.out_dir.resolve()
     if args.work_dir:
         work = args.work_dir.resolve()
-        work.mkdir(parents=True, exist_ok=True)
+        if (work == REPO_ROOT or REPO_ROOT in work.parents or out_dir == work or work in out_dir.parents):
+            print("ERROR: use separate repository, work and report directories", file=sys.stderr)
+            return 2
+        try:
+            work.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            print(f"ERROR: --work-dir must be a new directory: {work}", file=sys.stderr)
+            return 2
     else:
         work = Path(tempfile.mkdtemp(prefix="arb-release-gate-")).resolve()
-    if REPO_ROOT.resolve() in work.parents or work == REPO_ROOT.resolve():
-        print(f"ERROR: the work directory must be outside the repository: {work}", file=sys.stderr)
-        return 2
-    out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     host = {
         "platform": f"{platform.system()} {platform.release()} {platform.machine()}",

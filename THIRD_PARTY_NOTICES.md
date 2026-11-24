@@ -17,6 +17,34 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 
 OpenH264 について: Cisco 配布のバイナリに付く特許ライセンス（AVC/H.264 特許プール費用の Cisco 負担）は、Cisco が配布したバイナリにのみ適用されます。ARB はソースからビルドして静的リンクするため、H.264 に関する特許上の扱いは利用者・配布者が各自確認してください。
 
+## OpenH264 の再配布条件
+
+```text
+Copyright (c) 2013, Cisco Systems
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## Rust 依存クレート
 
 `core/Cargo.lock` に固定した Rust 依存（ワークスペースの本体クレートを含む 330 パッケージ）は、いずれも MIT、Apache-2.0、BSD-2-Clause、BSD-3-Clause、Zlib、Unicode-3.0、Unlicense、0BSD などの許容ライセンスです。ライセンスは `cargo metadata` から取得し、`core/scripts/check-licenses.py`（`core/scripts/verify.sh` の第 4 ゲート、CI の `test` / `os-parity`）で SPDX 式を評価しています。

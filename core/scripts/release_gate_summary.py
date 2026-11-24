@@ -41,9 +41,14 @@ def load_reports(root: Path) -> dict[str, dict]:
 
 def render(job_results: dict[str, str], reports: dict[str, dict]) -> tuple[str, bool]:
     ok = all(result == "success" for result in job_results.values()) and all(r.get("pass") for r in reports.values())
+    expected = {"gate-linux": "arb-linux-x86_64.zip", "gate-macos": "arb-macos-arm64.zip", "gate-windows": "arb-windows-x86_64.zip"}
+    missing = [bundle for job, bundle in expected.items() if job in job_results and bundle not in reports]
+    ok = ok and bool(reports) and not missing
     lines = ["# Release gate", "", f"**{'PASS' if ok else 'FAIL'}**", "", "| job | result |", "| --- | --- |"]
     for job, result in job_results.items():
         lines.append(f"| {job} | {'PASS' if result == 'success' else result.upper()} |")
+    if missing:
+        lines.append("\n不足している OS レポート: " + ", ".join(missing))
     if reports:
         section_names: list[str] = []
         for report in reports.values():
@@ -94,6 +99,8 @@ def self_test() -> int:
         assert ok and "PASS" in text and "arb-linux-x86_64.zip | 1s | 3.0" in text, text
         text, ok = render({"gate-linux": "success", "gate-windows": "cancelled"}, {"arb-linux-x86_64.zip": good})
         assert not ok and "CANCELLED" in text
+        _, ok = render({"gate-linux": "success", "gate-windows": "success"}, {"arb-linux-x86_64.zip": good})
+        assert not ok, "missing Windows report"
     print("release_gate_summary.py --self-test: OK")
     return 0
 

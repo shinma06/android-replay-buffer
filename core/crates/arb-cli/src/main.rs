@@ -9,6 +9,7 @@
 mod mcp;
 mod process_os;
 mod rpc;
+mod upgrade;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -202,6 +203,9 @@ enum CommandSpec {
     Status,
     DaemonStart,
     DaemonStop,
+    PrepareUpgrade {
+        start: AutoStartMode,
+    },
     Devices,
     CaptureStart {
         serial: Option<String>,
@@ -428,6 +432,15 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
 fn parse_daemon_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("start") => Ok(CommandSpec::DaemonStart),
+        Some("prepare-upgrade") if args.len() == 1 || args[1..] == ["--start"] => {
+            Ok(CommandSpec::PrepareUpgrade {
+                start: if args.len() == 2 {
+                    AutoStartMode::Enabled
+                } else {
+                    AutoStartMode::Disabled
+                },
+            })
+        }
         Some("stop") => Ok(CommandSpec::DaemonStop),
         other => Err(CliError::usage(format!(
             "usage: arb-cli daemon <start|stop> (got {other:?})"
@@ -1144,6 +1157,9 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
 
     let paths = opts.resolve_paths()?;
 
+    if let CommandSpec::PrepareUpgrade { start } = cmd {
+        return upgrade::prepare(&paths, start);
+    }
     if matches!(cmd, CommandSpec::Mcp) {
         return mcp::run_mcp_stdio(&paths);
     }
@@ -1330,6 +1346,7 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         ),
         CommandSpec::Help
         | CommandSpec::Version
+        | CommandSpec::PrepareUpgrade { .. }
         | CommandSpec::DaemonStart
         | CommandSpec::Mcp
         | CommandSpec::Status

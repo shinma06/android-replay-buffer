@@ -192,84 +192,12 @@ def render_unix_launcher(target_os: str) -> str:
         'export ARB_DAEMON_PATH="${BIN_DIR}/arbd"\n'
         'export PATH="${BIN_DIR}:${PATH}"\n'
         "\n"
-        "sha256_of() {\n"
-        '    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d" " -f1\n'
-        '    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d" " -f1\n'
-        '    elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "$1" | sed "s/^.*= //"\n'
-        "    else return 1\n"
-        "    fi\n"
-        "}\n"
-        "\n"
-        "# semver_ge A B: succeeds when A >= B by SemVer 2.0 precedence (build metadata ignored;\n"
-        "# a release outranks its own pre-releases).\n"
-        "semver_ge() {\n"
-        '    local a="${1%%+*}" b="${2%%+*}" pa="" pb="" i x y\n'
-        '    local -a av bv\n'
-        '    [[ "$a" == *-* ]] && pa="${a#*-}"\n'
-        '    [[ "$b" == *-* ]] && pb="${b#*-}"\n'
-        '    IFS=. read -r -a av <<<"${a%%-*}"\n'
-        '    IFS=. read -r -a bv <<<"${b%%-*}"\n'
-        "    for i in 0 1 2; do\n"
-        '        x="${av[i]:-0}"; x="${x//[!0-9]/}"; x="${x:-0}"\n'
-        '        y="${bv[i]:-0}"; y="${y//[!0-9]/}"; y="${y:-0}"\n'
-        "        if ((10#$x > 10#$y)); then return 0; fi\n"
-        "        if ((10#$x < 10#$y)); then return 1; fi\n"
-        "    done\n"
-        '    if [[ "$pa" == "$pb" ]]; then return 0; fi\n'
-        '    if [[ -z "$pa" ]]; then return 0; fi\n'
-        '    if [[ -z "$pb" ]]; then return 1; fi\n'
-        '    [[ "$pa" > "$pb" ]]\n'
-        "}\n"
-        "\n"
-        "# should_replace_arbd RUNNING_BUILD_ID LOCAL_SHA LOCAL_VERSION\n"
-        "# RUNNING_BUILD_ID is `<version>:sha256:<hex>` from `arb-cli --json status` (empty when the\n"
-        "# running arbd predates build ids). Succeeds only when the running arbd must be replaced:\n"
-        "#   - it lacks `config.get` (protocol-incompatible), or\n"
-        "#   - it is a different build than ${BIN_DIR}/arbd AND this launcher's arbd is not older\n"
-        "#     (SemVer local >= running; two `-dev` builds are never ordered, so a changed SHA-256 wins).\n"
-        "# The same SHA-256 (e.g. the IDE plugin's bundled copy of this release) is never stopped, and a\n"
-        "# newer running arbd is never downgraded.\n"
-        "should_replace_arbd() {\n"
-        '    local running_id="$1" local_sha="$2" local_ver="$3" running_sha="" running_ver=""\n'
-        '    if ! "${BIN_DIR}/arb-cli" config get >/dev/null 2>&1; then return 0; fi\n'
-        '    [[ -n "$local_sha" ]] || return 1\n'
-        '    if [[ "$running_id" == *:sha256:* ]]; then\n'
-        '        running_sha="${running_id##*:sha256:}"\n'
-        '        running_ver="${running_id%%:sha256:*}"\n'
-        "    fi\n"
-        '    [[ "$running_sha" == "$local_sha" ]] && return 1\n'
-        '    if [[ "$running_ver" == *-dev* && "$local_ver" == *-dev* ]]; then return 0; fi\n'
-        '    semver_ge "$local_ver" "$running_ver"\n'
-        "}\n"
-        "\n"
-        "# Replace a running arbd that is not this release (upgrade in place, v2-old -> v2-new) and wait\n"
-        "# until its socket is released. A healthy arbd from the same build keeps running untouched.\n"
-        "ensure_fresh_daemon() {\n"
-        '    local status_json running_id running_pid local_sha local_ver _\n'
-        '    status_json="$("${BIN_DIR}/arb-cli" --json status 2>/dev/null)" || return 0\n'
-        "    running_id=\"$(printf '%s' \"${status_json}\" | sed -n 's/.*\"build_id\": *\"\\([^\"]*\\)\".*/\\1/p' | head -n 1)\"\n"
-        "    running_pid=\"$(printf '%s' \"${status_json}\" | sed -n 's/.*\"pid\": *\\([0-9][0-9]*\\).*/\\1/p' | head -n 1)\"\n"
-        '    local_sha="$(sha256_of "${BIN_DIR}/arbd" 2>/dev/null || true)"\n'
-        "    local_ver=\"$(\"${BIN_DIR}/arbd\" --version 2>/dev/null | sed -n 's/^arbd //p' | head -n 1 || true)\"\n"
-        '    if should_replace_arbd "${running_id}" "${local_sha}" "${local_ver}"; then\n'
-        '        echo "[arb] Replacing the running arbd (${running_id:-unknown build}) with ${BIN_DIR}/arbd (${local_ver:-unknown version})..." >&2\n'
-        '        "${BIN_DIR}/arb-cli" daemon stop >/dev/null 2>&1 || true\n'
-        "        # The old arbd closes its socket first and releases the single-instance lock only when the\n"
-        "        # process has exited, so wait for both before a new arbd may start.\n"
-        "        for _ in $(seq 1 60); do\n"
-        '            if ! "${BIN_DIR}/arb-cli" status >/dev/null 2>&1 && { [[ -z "${running_pid}" ]] || ! kill -0 "${running_pid}" 2>/dev/null; }; then\n'
-        "                break\n"
-        "            fi\n"
-        "            sleep 0.25\n"
-        "        done\n"
-        '        if "${BIN_DIR}/arb-cli" status >/dev/null 2>&1; then\n'
-        '            echo "[arb] warning: the previous arbd is still running; continuing with it." >&2\n'
-        "        fi\n"
-        "    fi\n"
-        "}\n"
-        "\n"
+        'export ARB_DAEMON_BIN="${BIN_DIR}/arbd"\n'
         'MODE="${1:-tray}"\n'
-        "ensure_fresh_daemon\n"
+        'case "${MODE}" in\n'
+        '    tray|cli|mcp) "${BIN_DIR}/arb-cli" daemon prepare-upgrade --start ;;\n'
+        '    daemon) "${BIN_DIR}/arb-cli" daemon prepare-upgrade ;;\n'
+        'esac\n'
         'case "${MODE}" in\n'
         "    tray)\n"
         '        exec "${BIN_DIR}/arb-tray" --auto-start\n'
@@ -304,58 +232,6 @@ def render_macos_command_launcher() -> str:
     )
 
 
-WINDOWS_DECISION_BEGIN = "# BEGIN arbd-replacement-decision"
-WINDOWS_DECISION_END = "# END arbd-replacement-decision"
-
-
-def render_windows_decision_functions() -> str:
-    """PowerShell functions deciding whether a running arbd must be replaced (unit-tested)."""
-    return (
-        f"{WINDOWS_DECISION_BEGIN}\n"
-        "function Get-Sha256Hex([string]$Path) {\n"
-        "    try { return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant() } catch { return '' }\n"
-        "}\n"
-        "\n"
-        "# Test-SemVerGe A B: $true when A >= B by SemVer 2.0 precedence (build metadata ignored;\n"
-        "# a release outranks its own pre-releases).\n"
-        "function Test-SemVerGe([string]$Left, [string]$Right) {\n"
-        "    $lv = ($Left -split '\\+')[0]; $rv = ($Right -split '\\+')[0]\n"
-        "    $pa = ''; $pb = ''\n"
-        "    if ($lv.Contains('-')) { $pa = $lv.Substring($lv.IndexOf('-') + 1) }\n"
-        "    if ($rv.Contains('-')) { $pb = $rv.Substring($rv.IndexOf('-') + 1) }\n"
-        "    $av = ($lv -split '-')[0] -split '\\.'\n"
-        "    $bv = ($rv -split '-')[0] -split '\\.'\n"
-        "    for ($i = 0; $i -lt 3; $i++) {\n"
-        "        [long]$x = 0; [long]$y = 0\n"
-        "        if ($i -lt $av.Count) { [void][long]::TryParse(($av[$i] -replace '[^0-9]', ''), [ref]$x) }\n"
-        "        if ($i -lt $bv.Count) { [void][long]::TryParse(($bv[$i] -replace '[^0-9]', ''), [ref]$y) }\n"
-        "        if ($x -gt $y) { return $true }\n"
-        "        if ($x -lt $y) { return $false }\n"
-        "    }\n"
-        "    if ($pa -eq $pb) { return $true }\n"
-        "    if ($pa -eq '') { return $true }\n"
-        "    if ($pb -eq '') { return $false }\n"
-        "    return ([string]::CompareOrdinal($pa, $pb) -gt 0)\n"
-        "}\n"
-        "\n"
-        "# Test-ShouldReplaceArbd: $true only when the running arbd lacks config.get, or is a different\n"
-        "# build than the local bin\\arbd.exe and the local one is not older (two -dev builds are never\n"
-        "# ordered, so a changed SHA-256 wins). The same SHA-256 is never stopped; no downgrade.\n"
-        "function Test-ShouldReplaceArbd([string]$RunningId, [string]$LocalSha, [string]$LocalVer, [bool]$HasConfigGet) {\n"
-        "    if (-not $HasConfigGet) { return $true }\n"
-        "    if ([string]::IsNullOrEmpty($LocalSha)) { return $false }\n"
-        "    $runningSha = ''; $runningVer = ''\n"
-        "    $marker = ':sha256:'\n"
-        "    $at = $RunningId.IndexOf($marker)\n"
-        "    if ($at -ge 0) { $runningVer = $RunningId.Substring(0, $at); $runningSha = $RunningId.Substring($at + $marker.Length) }\n"
-        "    if ($runningSha -eq $LocalSha) { return $false }\n"
-        "    if ($runningVer.Contains('-dev') -and $LocalVer.Contains('-dev')) { return $true }\n"
-        "    return (Test-SemVerGe $LocalVer $runningVer)\n"
-        "}\n"
-        f"{WINDOWS_DECISION_END}\n"
-    )
-
-
 def render_windows_launcher() -> str:
     return (
         "# Android Replay Buffer (ARB) launcher (Windows PowerShell)\n"
@@ -380,50 +256,17 @@ def render_windows_launcher() -> str:
         "$env:ARB_DAEMON_PATH = $ExpectedArbd\n"
         '$env:PATH = "$BinDir;$env:PATH"\n'
         "\n"
-        + render_windows_decision_functions()
-        + "\n"
-        "function Ensure-FreshDaemon {\n"
-        "    # Native probes write to stderr on first run; under Windows PowerShell 5.1 that would\n"
-        "    # become a terminating error with Stop, so probe with Continue and use $LASTEXITCODE.\n"
-        "    # A running arbd of the same build (same SHA-256) is never stopped; a different, not older\n"
-        "    # build is replaced in place (v2-old -> v2-new) and its pipe is awaited.\n"
-        "    $prevEap = $ErrorActionPreference\n"
-        '    $ErrorActionPreference = "Continue"\n'
-        "    try {\n"
-        "        $statusJson = & $CliExe --json status 2>$null\n"
-        "        if ($LASTEXITCODE -eq 0) {\n"
-        "            $runningId = ''; $runningPid = 0\n"
-        "            try { $hello = ($statusJson | Out-String | ConvertFrom-Json).hello; $runningId = [string]$hello.build_id; $runningPid = [int]$hello.pid } catch { $runningId = '' }\n"
-        "            & $CliExe config get 2>$null | Out-Null\n"
-        "            $hasConfigGet = ($LASTEXITCODE -eq 0)\n"
-        "            $localSha = Get-Sha256Hex $ExpectedArbd\n"
-        "            $localVer = ''\n"
-        "            try { $localVer = (((& $ExpectedArbd --version 2>$null) | Out-String).Trim() -replace '^arbd\\s+', '') } catch { $localVer = '' }\n"
-        "            if (Test-ShouldReplaceArbd $runningId $localSha $localVer $hasConfigGet) {\n"
-        '                [Console]::Error.WriteLine("[arb] Replacing the running arbd ($runningId) with $ExpectedArbd ($localVer)...")\n'
-        "                & $CliExe daemon stop 2>$null | Out-Null\n"
-        "                # The pipe closes first; the single-instance lock is released only when the process exits.\n"
-        "                for ($i = 0; $i -lt 60; $i++) {\n"
-        "                    & $CliExe status 2>$null | Out-Null\n"
-        "                    $alive = ($runningPid -gt 0) -and [bool](Get-Process -Id $runningPid -ErrorAction SilentlyContinue)\n"
-        "                    if (($LASTEXITCODE -ne 0) -and (-not $alive)) { break }\n"
-        "                    Start-Sleep -Milliseconds 250\n"
-        "                }\n"
-        "            }\n"
-        "        }\n"
-        "    } finally {\n"
-        "        $ErrorActionPreference = $prevEap\n"
-        "    }\n"
-        "}\n"
-        "\n"
-        "Ensure-FreshDaemon\n"
-        "\n"
+        "$env:ARB_DAEMON_BIN = $ExpectedArbd\n"
+        'if ($Mode -eq "daemon") { & $CliExe daemon prepare-upgrade }\n'
+        'else { & $CliExe daemon prepare-upgrade --start }\n'
+        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
         "switch ($Mode) {\n"
         '    "tray"   { & (Join-Path $BinDir "arb-tray.exe") --auto-start }\n'
         '    "daemon" { & $ExpectedArbd }\n'
         '    "mcp"    { & $CliExe mcp @ExtraArgs }\n'
         '    "cli"    { & $CliExe --auto-start @ExtraArgs }\n'
         "}\n"
+        "exit $LASTEXITCODE\n"
     )
 
 
@@ -467,7 +310,7 @@ def render_readme_trial(
 - 対象プラットフォーム: `{target_os}-{arch}`
 - バージョン: `{version}`
 - ライセンス: `MIT OR Apache-2.0`（`LICENSE-MIT` / `LICENSE-APACHE`）。第三者ソフトウェアは `THIRD_PARTY_NOTICES.md` を参照
-- 依存ライセンス方針: MIT / Apache-2.0 / BSD-2-Clause / Unlicense のみ（**GPL / AGPL 依存 0 件**）
+- 依存ライセンス方針: 許容ライセンスは THIRD_PARTY_NOTICES.md を参照（**GPL / AGPL 依存 0 件**）
 
 ## 同梱構成
 
@@ -946,13 +789,11 @@ def run_self_test(repo_root: Path) -> int:
                         assert mode == 0o755, f"expected 0755 on {rel}, got {oct(mode)}"
                         if launcher == "start-arb.sh":
                             raw_sh = zf.read(rel).decode("utf-8")
-                            assert "ensure_fresh_daemon" in raw_sh
-                            assert "daemon stop" in raw_sh and "config get" in raw_sh
+                            assert "daemon prepare-upgrade" in raw_sh
                     else:
                         raw_ps1 = zf.read(rel).decode("utf-8")
                         assert "\r\n" in raw_ps1 and "arbd.exe" in raw_ps1
-                        assert "Ensure-FreshDaemon" in raw_ps1
-                        assert "daemon stop" in raw_ps1 and "config get" in raw_ps1
+                        assert "daemon prepare-upgrade" in raw_ps1
 
                 readme = zf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
                 assert "MCP" in readme and "first-run-os-permissions.md" in readme
@@ -1088,14 +929,13 @@ def run_self_test(repo_root: Path) -> int:
 
         run_binary_identity_self_test(tmp)
         run_release_tag_self_test(tmp)
-        run_launcher_upgrade_self_test(tmp)
         run_core_version_self_test(tmp, repo_root)
 
         print(
             "package_distribution.py --self-test: OK "
             "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, universal 3-OS plugin assembly, POSIX modes, UTF-8 docs, SHA256SUMS, "
             "same-size build digest identity, license files + SHA256SUMS + no retired version label, release tag classification, "
-            "launcher in-place arbd upgrade decisions)"
+            "shared launcher upgrade command)"
         )
     return 0
 
@@ -1122,7 +962,7 @@ def assert_license_files_in_bundle(zf: zipfile.ZipFile, stem: str, repo_root: Pa
     apache = zf.read(f"{stem}/LICENSE-APACHE").decode("utf-8")
     assert "Apache License" in apache and "Version 2.0, January 2004" in apache
     notices = zf.read(f"{stem}/THIRD_PARTY_NOTICES.md").decode("utf-8")
-    for needle in ("scrcpy-server", "v5.0.1", "openh264", "BSD-2-Clause", "rusty_aac", "rusqlite", "check-licenses.py"):
+    for needle in ("scrcpy-server", "v5.0.1", "openh264", "BSD-2-Clause", "rusty_aac", "rusqlite", "check-licenses.py", "Copyright (c) 2013, Cisco Systems", "Redistributions in binary form must reproduce"):
         assert needle.lower() in notices.lower(), f"THIRD_PARTY_NOTICES.md must mention {needle}"
     readme = zf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
     assert "MIT OR Apache-2.0" in readme and "THIRD_PARTY_NOTICES.md" in readme
@@ -1144,114 +984,6 @@ def run_binary_identity_self_test(tmp: Path) -> None:
     assert old_size == new_size, "fixture builds must have identical size"
     assert old_time == new_time == ZIP_TIMESTAMP, "reproducible ZIP entries share a fixed timestamp"
     assert old_digest != new_digest, "content digest must distinguish same-size, same-mtime builds"
-
-
-# (name, running build_id, local sha, local version, config.get works, expect replace)
-LAUNCHER_DECISION_CASES = (
-    ("same SHA-256 coexists (IDE-bundled copy of this release)", "2.0.0-dev:sha256:SAME", "SAME", "2.0.0-dev", True, False),
-    ("different SHA-256, both -dev: replaced", "2.0.0-dev:sha256:OLD0", "NEW0", "2.0.0-dev", True, True),
-    ("running newer release is never downgraded", "2.1.0:sha256:OLD0", "NEW0", "2.0.0", True, False),
-    ("older release is upgraded", "2.0.0:sha256:OLD0", "NEW0", "2.1.0", True, True),
-    ("release replaces its own rc", "2.0.0-rc.1:sha256:OLD0", "NEW0", "2.0.0", True, True),
-    ("rc does not replace its release", "2.0.0:sha256:OLD0", "NEW0", "2.0.0-rc.1", True, False),
-    ("release replaces -dev of the same core", "2.0.0-dev:sha256:OLD0", "NEW0", "2.0.0", True, True),
-    ("release is not downgraded to -dev", "2.0.0:sha256:OLD0", "NEW0", "2.0.0-dev", True, False),
-    ("arbd without config.get is replaced even as a downgrade", "2.1.0:sha256:OLD0", "NEW0", "2.0.0", False, True),
-    ("unknown local SHA-256 keeps the running arbd", "2.0.0:sha256:OLD0", "", "2.1.0", True, False),
-    ("running arbd without build_id is replaced", "", "NEW0", "2.0.0-dev", True, True),
-    ("0.1.0 -> 2.0.0-dev upgrade", "0.1.0:sha256:OLD0", "NEW0", "2.0.0-dev", True, True),
-)
-
-BASH_STUB_CLI = """#!/usr/bin/env bash
-state="$STUB_STATE_DIR"
-rest=()
-for a in "$@"; do case "$a" in --json|--auto-start) ;; *) rest+=("$a");; esac; done
-case "${rest[0]:-}" in
-  status)
-    [[ -f "$state/running" ]] || exit 1
-    id="$(cat "$state/running")"
-    if [[ "$id" == NOBUILDID ]]; then printf '{\\n  "hello": {\\n    "pid": 999999\\n  }\\n}\\n'
-    else printf '{\\n  "hello": {\\n    "build_id": "%s",\\n    "pid": 999999\\n  }\\n}\\n' "$id"; fi ;;
-  config) [[ -f "$state/noconfig" ]] && exit 1; exit 0 ;;
-  daemon) echo "daemon ${rest[1]:-}" >> "$state/log"; rm -f "$state/running"; exit 0 ;;
-  *) echo "cli ${rest[*]:-}" >> "$state/log"; exit 0 ;;
-esac
-"""
-BASH_STUB_ARBD = """#!/usr/bin/env bash
-if [[ "${1:-}" == "--version" ]]; then echo "arbd ${STUB_ARBD_VERSION:-2.0.0-dev}"; exit 0; fi
-echo "arbd stub"
-"""
-
-
-def run_launcher_upgrade_self_test(tmp: Path) -> None:
-    """G-M9: the launchers replace a running arbd of another build (v2-old -> v2-new) but never one of
-    the same build, never a newer one, and always wait for the old socket / pipe to be released."""
-    sh_text = render_unix_launcher("linux")
-    ps_text = render_windows_launcher()
-    for needle in ("sha256_of", "semver_ge", "should_replace_arbd", "build_id", "daemon stop", "config get", "--version"):
-        assert needle in sh_text, f"unix launcher lacks {needle}"
-    for needle in ("Get-FileHash", "Test-SemVerGe", "Test-ShouldReplaceArbd", "build_id", "daemon stop", "config get", "--version"):
-        assert needle in ps_text, f"PowerShell launcher lacks {needle}"
-    assert ps_text.count("{") == ps_text.count("}"), "unbalanced braces in start-arb.ps1"
-
-    bash = shutil.which("bash")
-    if bash and os.name != "nt":
-        root = tmp / "launcher-root"
-        (root / "bin").mkdir(parents=True)
-        launcher = root / "start-arb.sh"
-        launcher.write_text(sh_text, encoding="utf-8")
-        (root / "bin" / "arb-cli").write_text(BASH_STUB_CLI, encoding="utf-8")
-        (root / "bin" / "arbd").write_text(BASH_STUB_ARBD, encoding="utf-8")
-        for path in (launcher, root / "bin" / "arb-cli", root / "bin" / "arbd"):
-            path.chmod(0o755)
-        bad = subprocess.run([bash, "-n", str(launcher)], capture_output=True, text=True)
-        assert bad.returncode == 0, bad.stderr
-        for name, running_id, sha, local_ver, config_ok, expect_replace in LAUNCHER_DECISION_CASES:
-            if sha == "":
-                continue  # "no hashing tool" cannot be simulated portably in bash; covered by the PowerShell cases
-            state = tmp / f"launcher-state-{abs(hash(name))}"
-            state.mkdir()
-            if sha == "SAME":
-                (root / "bin" / "arbd").write_text(BASH_STUB_ARBD, encoding="utf-8")
-                sha_value = sha256_bytes((root / "bin" / "arbd").read_bytes())
-            else:
-                # Different build than the running one: the local stub arbd carries other bytes.
-                (root / "bin" / "arbd").write_text(BASH_STUB_ARBD + f"# build {sha}\n", encoding="utf-8")
-                sha_value = sha
-            running = running_id.replace("SAME", sha_value) if running_id else "NOBUILDID"
-            (state / "running").write_text(running, encoding="utf-8")
-            if not config_ok:
-                (state / "noconfig").write_text("", encoding="utf-8")
-            env = dict(os.environ, STUB_STATE_DIR=str(state), STUB_ARBD_VERSION=local_ver)
-            res = subprocess.run([bash, str(launcher), "cli", "bundles", "list"], capture_output=True, text=True, env=env, timeout=60)
-            assert res.returncode == 0, f"{name}: launcher exit {res.returncode}: {res.stderr}"
-            log = (state / "log").read_text(encoding="utf-8") if (state / "log").exists() else ""
-            replaced = "daemon stop" in log
-            assert replaced is expect_replace, f"{name}: replaced={replaced}, expected {expect_replace}; log={log!r}; err={res.stderr!r}"
-            assert "cli bundles list" in log, f"{name}: the requested command never reached arb-cli: {log!r}"
-        # no daemon at all: nothing is stopped
-        state = tmp / "launcher-state-none"
-        state.mkdir()
-        env = dict(os.environ, STUB_STATE_DIR=str(state))
-        res = subprocess.run([bash, str(launcher), "cli", "bundles", "list"], capture_output=True, text=True, env=env, timeout=60)
-        assert res.returncode == 0 and "daemon stop" not in ((state / "log").read_text() if (state / "log").exists() else ""), res.stderr
-        res = subprocess.run([bash, str(launcher), "bogus"], capture_output=True, text=True, env=env, timeout=60)
-        assert res.returncode == 2 and "Usage" in res.stderr, res.stderr
-
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
-    if powershell:
-        block = ps_text[ps_text.index(WINDOWS_DECISION_BEGIN):ps_text.index(WINDOWS_DECISION_END)]
-        lines = [block]
-        for idx, (name, running_id, sha, local_ver, config_ok, expect_replace) in enumerate(LAUNCHER_DECISION_CASES):
-            running = running_id.replace("SAME", "AAAA")
-            local = "AAAA" if sha == "SAME" else sha
-            flag = "$true" if config_ok else "$false"
-            lines.append(f"Write-Output ('case{idx}=' + (Test-ShouldReplaceArbd '{running}' '{local}' '{local_ver}' {flag}))")
-        res = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", "\n".join(lines)], capture_output=True, text=True, timeout=120)
-        assert res.returncode == 0, f"PowerShell decision script failed: {res.stderr}"
-        got = dict(line.strip().split("=", 1) for line in res.stdout.splitlines() if line.startswith("case"))
-        for idx, (name, *_rest, expect_replace) in enumerate(LAUNCHER_DECISION_CASES):
-            assert got.get(f"case{idx}") == ("True" if expect_replace else "False"), f"PowerShell decision for '{name}': {got.get(f'case{idx}')}"
 
 
 def run_core_version_self_test(tmp: Path, repo_root: Path) -> None:

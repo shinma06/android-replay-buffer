@@ -96,22 +96,13 @@ CI の `gate-windows` が自動で行い、アーティファクト `release-gat
 - `ffmpeg -f gdigrab` の画面録画（`win-playback.mp4`）。ウィンドウを前面に出し、画面と録画フレームが黒でないことを確認済み
 - ide-plugin の全 Gradle テストが Windows で走り、`WindowsPipeSecurityTest.win32CurrentUserSidIsAValidSidOnWindows` が skip されず成功
 
-## Suite F: アップグレード（G-M9 の U1〜U5）
+## Suite F: v2 → v2 アップグレード（G-M9 の U3〜U5）
 
 | ID | 内容 | 手順 |
 | --- | --- | --- |
-| U1 | 旧 v1 の保存物（schema 3 / 4）を新版で読む | `verify_release_bundle.py` の `legacy-read-only` セクションが PASS（操作前後の全ファイル SHA-256 が一致）。実保存物（v1 で撮った `replay-*` フォルダー）があれば、そのコピーを IDE で開き、元フォルダーのハッシュが変わらないことも確認 |
-| U2 | 旧 v1 プラグインを新版プラグインで上書き | 下記「v1 → 新版プラグイン」 |
 | U3 | v2-old → v2-new（稼働中 `arbd`、状態保持） | `verify_release_bundle.py --upgrade-from-zip <前リリースの ZIP>` の `upgrade` セクションが PASS。下記「前 `early` → 新候補プラグイン」で IDE 側も確認 |
 | U4 | `arb-tray` の再起動跨ぎ | `--check-tray --upgrade-from-zip ...` の `upgrade` セクション。トレイの標準エラーに「arbd に再接続しました」が出る |
 | U5 | 公開済み `early` からの実アップグレード | `gh release download early --pattern arb-<os>-<arch>.zip` で取得し、`--upgrade-from-zip` に渡す。CI は `release-gate.yml` が 3 OS で実施 |
-
-### v1 → 新版プラグイン（Devin Cloud Linux / macOS）
-
-1. 実際に公開された v1 のプラグイン ZIP を取得: `gh release download v0.2.0 --repo shinma06/android-replay-buffer --pattern 'android-replay-buffer-plugin-0.2.0.zip'`
-2. Android Studio `2026.2.2.8` に v1 を導入して再起動し、案件を開いて ARB を一度使う（`.idea/workspace.xml` に v1 の設定が書かれる）。保存したバンドル（schema 3 または 4）が 1 つ以上あること
-3. **何も削除せず**、新候補の `arb-ide-plugin-<版>.zip` を `Install Plugin from Disk...` で上書きして再起動する
-4. 合格基準: プラグインが 1 つだけ（二重ロードなし、ID は `io.github.shinma06.android-replay-buffer`）。起動時に例外の通知が出ない。`workspace.xml` の v1 設定（保持秒数・保存先など）が新設定へ移るか、`LegacyV1SettingsMigrator` 撤去後は既定値で起動する。v1 で保存したバンドルが読取専用として開け、元フォルダーのハッシュが変わらない
 
 ### 前 `early` → 新候補プラグイン（Devin Cloud Linux / macOS）
 
@@ -125,7 +116,7 @@ CI の `gate-windows` が自動で行い、アーティファクト `release-gat
 devin-results/<os>/
   suiteA.log  suiteB.md（数値表）  release-bundle-report.json  release-bundle-report.md
   devin-report.json  devin-report.md  frame-0.png  frame-last.png
-  C1-<player>.mp4（プレイヤーごと） D-gui.mp4  F-upgrade-v1.mp4  F-upgrade-early.mp4
+  C1-<player>.mp4（プレイヤーごと） D-gui.mp4  F-upgrade-early.mp4
   SUMMARY.md   # 下記チェックリスト、各行 PASS/FAIL/N-A + 一言
 ```
 
@@ -137,7 +128,7 @@ devin-results/<os>/
 - [ ] C1 各プレイヤー: 開始前フレーム 0、スプライス IDR で滑らか、焼き込みは `share-taps.mp4` だけ
 - [ ] D: 7 項目（または N/A 理由）
 - [ ] E（Windows）: 画面と録画が黒でない、`win32CurrentUserSidIsAValidSidOnWindows` が実行された
-- [ ] F: U1〜U5（実 v0.2.0 ZIP と前 `early` ZIP の上書き、実 `early` からの `--upgrade-from-zip`）
+- [ ] F: U3〜U5（前 `early` ZIP の上書き、実 `early` からの `--upgrade-from-zip`）
 - [ ] 失敗は再現手順・ログ・動画の該当秒を添付
 
 秘密情報・実機録画・logcat を含む成果物は公開しない。

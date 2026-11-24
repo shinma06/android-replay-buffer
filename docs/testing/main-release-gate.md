@@ -17,33 +17,25 @@
 | G-M6 | macOS 実環境の IDE GUI と実機 / エミュレータ | macOS の Android Studio で同じ操作を行い、エミュレータ（API 37）または USB 実機で常時録画・保存・トリム・`share-taps.mp4` を確認する。QuickTime と Chrome で再生する | Devin、動画と `SUMMARY.md` |
 | G-M7 | Windows 実 GUI | `windows-latest` で `ide-plugin` の全 Gradle テストが走り、`WindowsPipeSecurityTest.win32CurrentUserSidIsAValidSidOnWindows`（実 Win32 の Named Pipe 所有者 SID）が skip されず成功する。`verify_release_bundle.py --check-tray` が Named Pipe、`MoveFileExW` による保存、MCP 17 ツール、旧形式の読取専用、Suite B（OpenH264 + `nasm`）、17/17、焼き込み実画素、`start-arb.ps1` を通す。`arb-tray.exe` の実起動・単一インスタンスと、Edge・VLC・Media Foundation での `share.mp4` / `share-taps.mp4` 再生を、非黒の画面と録画で示す | `release-gate.yml` の `gate-windows`、アーティファクト `release-gate-windows` |
 | G-M8 | 異種クロス監査とオーナー GO | 実装と別のエージェントが `codex review --base develop` と手動監査を行い、`entire trail finding` を実指摘は修正・それ以外は理由つきで解決する。必須チェック（`test`、`os-parity (macos-latest)`、`os-parity (windows-latest)`、`Entire Gates`）が緑。G-M1〜G-M7・G-M9 が同一コミットで緑。オーナーが明示的に GO を出す | Entire Trail、PR、`docs/verifications/` の VER |
-| G-M9 | アップグレード互換 | 下の U1〜U5 がすべて通る | `release-gate.yml`、Devin、`ide-plugin` の Gradle テスト |
+| G-M9 | v2 → v2 アップグレード互換 | 下の U3〜U5 がすべて通る | `release-gate.yml`、Devin、`ide-plugin` の Gradle テスト |
 
 ### 性能バー（G-M4）
 
 オーナー確認済みの目安は open ≤ 1 s、seek ≤ 0.2〜0.5 s、trim ≤ 数秒です。バーを超えたら FAIL ではなく「性能指摘」として、OS 間の差も含めて値つきで報告します。
 
-## G-M9 アップグレード互換（U1〜U5）
+## G-M9 v2 → v2 アップグレード互換（U3〜U5）
 
 | ID | 経路 | 確認すること | 自動化 |
 | --- | --- | --- | --- |
-| U1 | 旧 v1 の保存物（schema 3 `session.json` / schema 4 `replay.json`）→ 新版 | 展開済みバイナリで読取・一覧・メタ確認ができ、操作前後で元ディレクトリの全ファイルの SHA-256 が 1 バイトも変わらない。旧ディレクトリへの出力は拒否される | `verify_release_bundle.py` の `legacy-read-only` |
-| U2 | 旧 v1（`v0.2.0`）プラグイン → 新版プラグイン、`.idea/workspace.xml` | `plugin.xml` の `<id>` が v1 と同一の `io.github.shinma06.android-replay-buffer`（別 ID だと二重にロードされる）。旧 `ReplaySettingsStore` を含む `workspace.xml` の案件でも、`LegacyV1SettingsMigrator` が無くても例外なく既定値で起動する | `ide-plugin` の `ArbUpgradeRegressionTest`、`LegacyV1SettingsMigratorTest` |
 | U3 | v2-old → v2-new（稼働中 `arbd`、状態の保持） | 起動中の旧 `arbd` を新しい `start-arb.sh` / `start-arb.ps1` が置換する。`build_id` が新 `arbd` の SHA-256 に切り替わり、旧 `arbd` の残留 0。`config.json`（新フィールド欠落・未知の余剰フィールド、`capture_enabled=true`、任意の出力先）が保たれ不足分は安全な既定値で補われる。`catalog.sqlite` の全状態（保存済・トリム済・ゴミ箱・再試行待ち）が残り、アップグレード後の `bundle.restore` が成功する。旧 5 カラムの `timeline.sqlite`（T-6H 以前）が開ける。IDE 側は固定 mtime の ZIP 上書きでも `build_id` の SHA-256 不一致で `system.shutdown` → 新 `arbd` 起動となり、`ArbLocalSettingsState`（`trayEnabled` / `burnTapsOnExport` ほか）が残る | `verify_release_bundle.py` の `upgrade`、`ArbdInPlaceUpgradeIntegrationTest`、`ArbUpgradeRegressionTest` |
 | U4 | `arb-tray` の `arbd` 再起動を跨ぐ継続 | 稼働中の `arb-tray` が `arbd` の置換・再起動の間もクラッシュせず、二重起動せず、ロックが固着せず、新 `arbd` へ「再接続しました」と出る | `verify_release_bundle.py --check-tray` の `upgrade` |
 | U5 | 公開済みの前リリース `early` → 新ビルド（実バイナリ） | `release-gate.yml` が `early` の `arb-<os>-<arch>.zip` を取得し、`--upgrade-from-zip` で本物の旧 `arbd` を先に起動して新ビルドへ置換する。旧と新の `arbd` が同一 SHA-256 なら成立しない（失敗とする）。取得できない場合も自己検証へはフォールバックせず、失敗理由を明記して止める（`allow_missing_previous` を明示したときだけ「未実施」と警告して続行） | `release-gate.yml` の `gate-*` の「Fetch the previous release」と `--upgrade-from-zip` |
 
 ### ランチャーによる `arbd` の置換規則
 
-`start-arb.sh` / `start-arb.ps1` は、`arb-cli --json status` の `build_id`（`<版>:sha256:<64 桁 hex>`）と、同梱 `bin/arbd` の実 SHA-256（`sha256sum` / `shasum -a 256` / `Get-FileHash`）を比べます。
+`start-arb.sh` と `start-arb.ps1` は、同梱の `arb-cli daemon prepare-upgrade` で稼働中の `arbd` に接続します。`system.hello` の `build_id` と同梱バイナリの SHA-256 が同じなら、IDE が起動したデーモンもそのまま使います。
 
-- SHA-256 が一致: 何も止めずに共存します（同じリリースの IDE 同梱 `arbd` など）。
-- 不一致で、稼働中の `arbd` が `config.get` を持たない: 置換します。
-- 不一致で、両方とも `-dev`: 置換します（`-dev` 同士は順序づけられないため、SHA-256 の変更を優先）。
-- 不一致で、SemVer で `同梱 >= 稼働中`: 置換します。稼働中のほうが新しいときはダウングレードしません。
-- 置換するときは `arb-cli daemon stop` で止め、ソケット / パイプが閉じ、旧プロセスが終了して単一インスタンスロックが解放されるまで最大 15 秒待ってから、新しい `arbd` を起動します。
-
-判定ロジックは `package_distribution.py --self-test` が bash のスタブと PowerShell で同じ 12 ケースを検査します。
+SHA-256 が異なる場合、同梱版の SemVer 優先順位が稼働中の版以上なら置換します。ビルドメタデータは順位に影響しません。識別情報の導入前のデーモンも置換対象です。同じ IPC 接続で `system.shutdown` を送り、単一インスタンスロックの解放を最大 15 秒待ちます。
 
 ## ローカルでの実行
 
@@ -56,20 +48,21 @@ python3 core/scripts/package_distribution.py --self-test
 python3 core/scripts/verify_release_bundle.py --self-test
 
 # 配布 ZIP の実走（自 OS 向け）
-cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray --examples
+cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+cargo build --manifest-path core/Cargo.toml --release -p arbd --example arb_gate_bundle
 python3 core/scripts/package_distribution.py --target-os macos --arch arm64 --version 2.0.0-dev.local \
   --bin-dir core/target/release --device-agent-dir device-agent/build \
-  --plugin-zip ide-plugin/build/distributions/arb-ide-plugin-2.0.0-dev.local.zip --out-dir dist
+  --plugin-zip ide-plugin/build/distributions/arb-ide-plugin-2.0.0-SNAPSHOT.zip --out-dir dist
 python3 core/scripts/verify_release_bundle.py --bundle-zip dist/arb-macos-arm64.zip \
-  --plugin-zip ide-plugin/build/distributions/arb-ide-plugin-2.0.0-dev.local.zip --plugin-scope host-only \
+  --plugin-zip ide-plugin/build/distributions/arb-ide-plugin-2.0.0-SNAPSHOT.zip --plugin-scope host-only \
   --check-tray --upgrade-from-zip <前リリースの arb-macos-arm64.zip> --out-dir release-bundle-out
 ```
 
-3 OS 分を組み立てた本番と同じ構成での実行は、GitHub の Actions から `Release Gate` を手動起動します（入力 `ref`、`version_label`、`previous_release_tag`、`allow_missing_previous`）。
+既定ブランチへの初回昇格前は `gh workflow run ci.yml --ref <候補ブランチ> -f release_gate=true` で、前 `early` を使う 3 OS ゲートを起動できます。昇格後のGitHub の Actions から `Release Gate` を手動起動します（入力 `ref`、`version_label`、`previous_release_tag`、`allow_missing_previous`）。
 
 ## 実機・エミュレータが要るもの / 要らないもの
 
-要らない（自動で通せる）: G-M1〜G-M4、G-M7 のうち Gradle テストと配布物の検査、G-M9 の U1〜U5 のうち ZIP とバイナリで完結する部分。
+要らない（自動で通せる）: G-M1〜G-M4、G-M7 のうち Gradle テストと配布物の検査、G-M9 の U3〜U5 のうち ZIP とバイナリで完結する部分。
 要る: 実 USB 端末の Android 9 / 13 での録画と音声、Android Studio の実画面（G-M5、G-M6）、macOS・Windows のデスクトップ上での目視再生。これらは Devin（`devin-multi-os-test-plan.md`）が動画つきで確認し、未実施の項目は VER に理由つきで残します。
 
 ## `main` 昇格 PR のチェックリスト（オーナー GO の後だけ）
@@ -79,8 +72,6 @@ python3 core/scripts/verify_release_bundle.py --bundle-zip dist/arb-macos-arm64.
    - `ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/LegacyV1SettingsMigratorTest.kt` を削除
    - `ArbStartupActivity.kt` の `LegacyV1SettingsMigrator.migrateOnceIfNeeded(project)` の 1 行と、その KDoc の記述を削除
    - `ArbLocalSettingsState.kt` の `migratedFromV1`（`State` の項目、プロパティ、`loadState` の 1 行）を削除
-   - `ArbUpgradeRegressionTest` の `legacyV1WorkspaceXmlIsHarmlessWhenTheMigratorIsDisabledAsAfterMainPromotion` から `LegacyV1SettingsMigrator` を使う部分を外す（`ArbLocalSettingsState` の既定値と、`workspace.xml` を書き換えないことの確認は残す）。同ファイルの `noProductionCodeOutsideTheSingleMigratorFileReadsWorkspaceXmlOrTheV1Component` は「`ReplaySettingsStore` / `workspace.xml` を参照する本番コードが 0 件」へ読み替えて残す
-   - 撤去後も、旧 v1 の `ReplaySettingsStore` を含む `.idea/workspace.xml` の案件で例外なく既定値で起動することを U2 のテストで確認
    - VER / SPEC に残る migrator の記述を更新
 2. **版の引き上げ**: `core/Cargo.toml` の `[workspace.package] version` を `X.Y.Z` に、`core/Cargo.lock` を更新、`ide-plugin/gradle.properties` の `devBaseVersion` を揃える。`release.yml` は `package_distribution.py --check-core-version` でタグと `Cargo.toml` の食い違いを止める
 3. G-M1〜G-M9 を昇格コミットで再実行し、`release-gate.yml` の結果と Devin の SUMMARY を `docs/verifications/` の VER にまとめる（`sara check --strict` が通ること）
