@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use arb_os::paths::ArbPaths;
 use arb_tray::controller::{self, TrayController, build_menu};
+use arb_tray::instance::{TrayInstance, acquire_tray_instance};
 #[cfg(feature = "native-tray")]
 use arb_tray::native_tray;
 use arb_tray::rpc::AutoStartMode;
@@ -194,6 +195,25 @@ fn main() -> ExitCode {
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::FAILURE;
+        }
+    };
+
+    // Single instance: a second launch (another IDE window, an IDE restart, a login item) must
+    // never add a duplicate menu-bar icon. The guard lives until the process exits.
+    let _instance_guard = match acquire_tray_instance(&paths) {
+        Ok(TrayInstance::Primary(lock)) => Some(lock),
+        Ok(TrayInstance::AlreadyRunning) => {
+            eprintln!(
+                "arb-tray は既に起動しています（{}）。",
+                paths.tray_lock_file().display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        Ok(_) => None,
+        Err(err) => {
+            // Fail open: an unwritable runtime dir must not leave the user without a tray.
+            eprintln!("warning: arb-tray single-instance lock unavailable: {err}");
+            None
         }
     };
 

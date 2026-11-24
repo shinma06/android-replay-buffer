@@ -42,6 +42,8 @@ tasks.test {
     useJUnitPlatform()
     // Provide repository root so real-arbd integration tests can locate core/target/debug/arbd and fixtures.
     systemProperty("arb.repo.root", rootProject.projectDir.parentFile.absolutePath)
+    // The Windows Named Pipe client binds Win32 through java.lang.foreign (restricted methods).
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
     testLogging {
         events("passed", "skipped", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

@@ -10,6 +10,14 @@ use crate::error::OsError;
 /// Default upper bound for a single NDJSON IPC line (4 MiB).
 pub const DEFAULT_MAX_IPC_LINE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Default deadline for [`LocalIpcStream::drain`].
+///
+/// A peer that stops reading (e.g. a suspended IDE process) must never pin the
+/// draining side forever: after this deadline `drain` gives up with
+/// [`io::ErrorKind::TimedOut`] so daemon shutdown and per-connection loops keep
+/// making progress (M4).
+pub const DEFAULT_IPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Local control-plane IPC server bound to a Unix Domain Socket (Unix) or
 /// Named Pipe (Windows).
 #[derive(Debug)]
@@ -104,17 +112,36 @@ impl LocalIpcStream {
         })
     }
 
-    /// Waits for the peer to read all buffered outbound bytes before closing.
-    ///
-    /// On Windows this invokes `FlushFileBuffers` explicitly (unlike
-    /// [`Write::flush`], which is a non-blocking no-op to avoid bidirectional
-    /// JSON-RPC deadlocks). On Unix this delegates to `UnixStream::flush`.
+    /// Waits — at most [`DEFAULT_IPC_DRAIN_TIMEOUT`] — for the peer to read all
+    /// buffered outbound bytes. See [`Self::drain_with_timeout`].
     ///
     /// # Errors
     ///
-    /// Returns [`OsError::Ipc`] if draining the transport fails.
+    /// Returns [`OsError::Ipc`] if draining fails or the deadline expires
+    /// ([`io::ErrorKind::TimedOut`]).
     pub fn drain(&mut self) -> Result<(), OsError> {
-        self.inner.drain(&self.endpoint)
+        self.drain_with_timeout(Some(DEFAULT_IPC_DRAIN_TIMEOUT))
+    }
+
+    /// Waits for the peer to read all buffered outbound bytes, giving up after
+    /// `timeout` (`None` waits without a deadline).
+    ///
+    /// Completed writes already sit in the kernel transport buffer, so normal
+    /// request/response traffic never needs this; it only matters before a
+    /// deliberate close. On Windows the blocking `FlushFileBuffers` runs on a
+    /// helper thread against a duplicated handle and is cancelled
+    /// (`CancelSynchronousIo`) at the deadline, so a peer that stops reading can
+    /// never hang the caller; a still-pending flush is reaped by the next call
+    /// or when the pipe disconnects. On Unix this delegates to
+    /// `UnixStream::flush`, which never blocks on the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OsError::Ipc`] if draining fails, or with
+    /// [`io::ErrorKind::TimedOut`] when the peer has not consumed the buffered
+    /// bytes before `timeout` elapses.
+    pub fn drain_with_timeout(&mut self, timeout: Option<Duration>) -> Result<(), OsError> {
+        self.inner.drain(&self.endpoint, timeout)
     }
 
     /// Sets an optional read timeout on the stream.
@@ -506,7 +533,13 @@ mod imp {
             Ok(Self { stream })
         }
 
-        pub(super) fn drain(&mut self, endpoint: &Path) -> Result<(), OsError> {
+        pub(super) fn drain(
+            &mut self,
+            endpoint: &Path,
+            _timeout: Option<Duration>,
+        ) -> Result<(), OsError> {
+            // `UnixStream::flush` is a no-op: completed socket writes are already
+            // in the kernel buffer and never block on the peer reading them.
             self.stream.flush().map_err(|source| OsError::Ipc {
                 operation: "drain",
                 endpoint: endpoint.display().to_string(),
@@ -562,11 +595,13 @@ mod imp {
     use std::io;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::Path;
     use std::ptr;
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
@@ -586,7 +621,9 @@ mod imp {
         OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION,
         SECURITY_SQOS_PRESENT, WriteFile,
     };
-    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::IO::{
+        CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED,
+    };
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -605,6 +642,60 @@ mod imp {
     const PIPE_CONNECT_WAIT_MS: u32 = 2_000;
     const PIPE_CONNECT_RETRIES: usize = 3;
     const SECURITY_DESCRIPTOR_REVISION_1: u32 = 1;
+    /// Grace period for a cancelled `FlushFileBuffers` helper to report back.
+    const DRAIN_CANCEL_GRACE: Duration = Duration::from_millis(50);
+
+    /// Owned raw handle (no named-pipe disconnect semantics) used by the drain
+    /// helper thread so it never keeps a server pipe instance connected.
+    struct RawOwnedHandle(HANDLE);
+
+    // SAFETY: kernel handles are not thread-affine.
+    unsafe impl Send for RawOwnedHandle {}
+
+    impl Drop for RawOwnedHandle {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a valid owned handle closed exactly once.
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Duplicates `raw` within the current process (same access rights).
+    fn duplicate_raw_handle(raw: HANDLE) -> io::Result<HANDLE> {
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle valid for this process.
+        let current = unsafe { GetCurrentProcess() };
+        let mut duplicated: HANDLE = ptr::null_mut();
+        // SAFETY: `raw` is a valid open handle and `duplicated` is writable
+        // stack storage receiving the newly owned handle.
+        let ok = unsafe {
+            DuplicateHandle(
+                current,
+                raw,
+                current,
+                &raw mut duplicated,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 || duplicated.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(duplicated)
+    }
+
+    /// A `FlushFileBuffers` that outlived its deadline; its result is reaped by
+    /// the next drain (or discarded when the pipe disconnects).
+    #[derive(Debug)]
+    struct PendingDrain {
+        done: mpsc::Receiver<io::Result<()>>,
+    }
+
+    fn drain_timed_out() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "named pipe drain timed out: peer has not read the buffered bytes",
+        )
+    }
 
     #[derive(Debug)]
     struct OwnedPipeHandle {
@@ -1139,6 +1230,8 @@ mod imp {
         read_timeout_ms: AtomicU32,
         /// Per-call write deadline in milliseconds (`NO_TIMEOUT_MS` = block).
         write_timeout_ms: AtomicU32,
+        /// A bounded drain whose `FlushFileBuffers` is still blocked (M4).
+        pending_drain: Option<PendingDrain>,
     }
 
     impl Stream {
@@ -1147,6 +1240,7 @@ mod imp {
                 handle,
                 read_timeout_ms: AtomicU32::new(NO_TIMEOUT_MS),
                 write_timeout_ms: AtomicU32::new(NO_TIMEOUT_MS),
+                pending_drain: None,
             }
         }
     }
@@ -1209,29 +1303,12 @@ mod imp {
         }
 
         pub(super) fn try_clone(&self, endpoint: &Path) -> Result<Self, OsError> {
-            // SAFETY: `GetCurrentProcess` returns a pseudo-handle valid for this process.
-            let current = unsafe { GetCurrentProcess() };
-            let mut duplicated: HANDLE = ptr::null_mut();
-            // SAFETY: `self.handle.raw` is a valid open pipe handle and `duplicated`
-            // is writable stack storage receiving the newly owned handle.
-            let ok = unsafe {
-                DuplicateHandle(
-                    current,
-                    self.handle.raw,
-                    current,
-                    &raw mut duplicated,
-                    0,
-                    0,
-                    DUPLICATE_SAME_ACCESS,
-                )
-            };
-            if ok == 0 || duplicated.is_null() {
-                return Err(OsError::Ipc {
+            let duplicated =
+                duplicate_raw_handle(self.handle.raw).map_err(|source| OsError::Ipc {
                     operation: "DuplicateHandle",
                     endpoint: endpoint.display().to_string(),
-                    source: io::Error::last_os_error(),
-                });
-            }
+                    source,
+                })?;
             let server_refs = self.handle.server_refs.as_ref().map(|refs| {
                 refs.fetch_add(1, Ordering::Relaxed);
                 Arc::clone(refs)
@@ -1245,20 +1322,101 @@ mod imp {
                 // retune its own later via `set_*_timeout`.
                 read_timeout_ms: AtomicU32::new(self.read_timeout_ms.load(Ordering::Relaxed)),
                 write_timeout_ms: AtomicU32::new(self.write_timeout_ms.load(Ordering::Relaxed)),
+                pending_drain: None,
             })
         }
 
-        pub(super) fn drain(&mut self, endpoint: &Path) -> Result<(), OsError> {
-            // SAFETY: `self.handle.raw` is a valid open pipe handle.
-            let ok = unsafe { FlushFileBuffers(self.handle.raw) };
-            if ok == 0 {
-                return Err(OsError::Ipc {
-                    operation: "FlushFileBuffers",
-                    endpoint: endpoint.display().to_string(),
-                    source: io::Error::last_os_error(),
-                });
+        pub(super) fn drain(
+            &mut self,
+            endpoint: &Path,
+            timeout: Option<Duration>,
+        ) -> Result<(), OsError> {
+            let map_err = |source: io::Error| OsError::Ipc {
+                operation: "FlushFileBuffers",
+                endpoint: endpoint.display().to_string(),
+                source,
+            };
+            let Some(timeout) = timeout else {
+                // Explicit opt-in to an unbounded drain.
+                // SAFETY: `self.handle.raw` is a valid open pipe handle.
+                let ok = unsafe { FlushFileBuffers(self.handle.raw) };
+                return if ok == 0 {
+                    Err(map_err(io::Error::last_os_error()))
+                } else {
+                    Ok(())
+                };
+            };
+            let deadline = Instant::now() + timeout;
+
+            // A previous drain is still blocked: the peer has not even consumed
+            // the earlier bytes, so wait for it (bounded) before flushing again.
+            if let Some(pending) = self.pending_drain.take() {
+                match pending.done.recv_timeout(timeout) {
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.pending_drain = Some(pending);
+                        return Err(map_err(drain_timed_out()));
+                    }
+                }
             }
-            Ok(())
+
+            let helper_handle =
+                RawOwnedHandle(duplicate_raw_handle(self.handle.raw).map_err(|source| {
+                    OsError::Ipc {
+                        operation: "DuplicateHandle",
+                        endpoint: endpoint.display().to_string(),
+                        source,
+                    }
+                })?);
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = thread::Builder::new()
+                .name("arb-ipc-drain".to_owned())
+                .spawn(move || {
+                    // SAFETY: `helper_handle` is a valid duplicated pipe handle
+                    // owned by this thread until it is dropped below.
+                    let ok = unsafe { FlushFileBuffers(helper_handle.0) };
+                    let result = if ok == 0 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    };
+                    drop(helper_handle);
+                    let _ = done_tx.send(result);
+                })
+                .map_err(map_err)?;
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match done_rx.recv_timeout(remaining) {
+                Ok(result) => {
+                    let _ = worker.join();
+                    result.map_err(map_err)
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = worker.join();
+                    Err(map_err(io::Error::other("drain helper thread exited")))
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // SAFETY: `worker` is a live joinable thread, so its raw
+                    // handle is valid; cancelling only affects its synchronous I/O.
+                    let _ = unsafe { CancelSynchronousIo(worker.as_raw_handle()) };
+                    match done_rx.recv_timeout(DRAIN_CANCEL_GRACE) {
+                        Ok(Ok(())) => {
+                            let _ = worker.join();
+                            Ok(())
+                        }
+                        Ok(Err(_)) => {
+                            let _ = worker.join();
+                            Err(map_err(drain_timed_out()))
+                        }
+                        Err(_) => {
+                            // Detach: the helper unblocks once the peer reads or
+                            // the pipe disconnects; its result is reaped later.
+                            self.pending_drain = Some(PendingDrain { done: done_rx });
+                            Err(map_err(drain_timed_out()))
+                        }
+                    }
+                }
+            }
         }
 
         pub(super) fn set_read_timeout(
@@ -1727,6 +1885,91 @@ mod tests {
             .join()
             .expect("client writer thread must not panic");
         server.join().expect("server thread must not panic");
+    }
+
+    /// M4: a peer that connects and then stops reading (e.g. a suspended IDE)
+    /// must never hang the draining side. `drain()` returns within its bounded
+    /// deadline (on Windows the unbounded `FlushFileBuffers` used to block
+    /// until the peer read every byte), the buffered reply is not lost, and a
+    /// later drain succeeds once the peer resumes reading.
+    #[test]
+    fn drain_returns_within_deadline_when_peer_stops_reading() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use super::DEFAULT_IPC_DRAIN_TIMEOUT;
+
+        #[cfg_attr(
+            windows,
+            expect(
+                unused_variables,
+                reason = "Windows uses a named pipe, not a socket file"
+            )
+        )]
+        let tmp = TestIpcDir::new("drain");
+        #[cfg(unix)]
+        let sock_path = tmp.path.join("run").join("drain.sock");
+        #[cfg(windows)]
+        let sock_path = PathBuf::from(format!(
+            r"\\.\pipe\arb-os-ipc-drain-{}-{}",
+            std::process::id(),
+            IPC_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let listener = LocalIpcListener::bind(&sock_path).expect("bind drain test listener");
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let client_path = sock_path;
+        let client = thread::spawn(move || {
+            let stream = LocalIpcStream::connect(&client_path).expect("connect drain client");
+            // Simulate a suspended peer: hold the connection without reading.
+            resume_rx.recv().expect("resume signal");
+            let mut reader = BufReader::new(stream);
+            let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .expect("client read reply")
+                .expect("reply must not be lost by the bounded drain");
+            assert_eq!(line, r#"{"result":"bye"}"#, "reply payload mismatch");
+            reader
+        });
+
+        let mut server = listener.accept().expect("accept drain client");
+        write_frame_line(
+            &mut server,
+            r#"{"result":"bye"}"#,
+            DEFAULT_MAX_IPC_LINE_BYTES,
+        )
+        .expect("server write reply");
+
+        // Watchdog: run the drain on a helper thread so a regression (an
+        // unbounded drain) fails the test instead of hanging the suite.
+        let (drained_tx, drained_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let result = server.drain();
+            let _ = drained_tx.send((server, result, started.elapsed()));
+        });
+        let watchdog = DEFAULT_IPC_DRAIN_TIMEOUT + Duration::from_secs(8);
+        let (mut server, result, elapsed) = drained_rx
+            .recv_timeout(watchdog)
+            .expect("drain must return within its deadline while the peer is not reading");
+        assert!(
+            elapsed <= DEFAULT_IPC_DRAIN_TIMEOUT + Duration::from_secs(3),
+            "drain took {elapsed:?}, exceeding the bounded deadline"
+        );
+        match result {
+            Ok(()) => {}
+            Err(OsError::Ipc { source, .. }) => assert_eq!(
+                source.kind(),
+                std::io::ErrorKind::TimedOut,
+                "a bounded drain may only fail with TimedOut, got {source:?}"
+            ),
+            Err(other) => panic!("unexpected drain error: {other:?}"),
+        }
+
+        resume_tx.send(()).expect("resume client");
+        let _reader = client.join().expect("client thread must not panic");
+        server
+            .drain()
+            .expect("drain must succeed once the peer has consumed the reply");
     }
 
     #[test]

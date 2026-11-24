@@ -211,4 +211,61 @@ class ProtocolJsonTest {
         )
         assertTrue(shareReqJson.contains("\"burn_taps\":true"))
     }
+
+    // ---------------- T-7B: VFR frame PTS (H8) & always-on capture wire fields ----------------
+
+    private val viewportBase =
+        """"viewport_id":"vp-1","bundle_id":"b-1","shm_path":"/tmp/vp.shm","width":320,"height":240,""" +
+            """"stride":1280,"pixel_format":"rgba8","slot_capacity":307200,"frame_count":3,"keyframe_count":1"""
+
+    @Test
+    fun mediaOpenViewportParsesFramePtsNsForVariableFrameRate() {
+        val json = """{$viewportBase,"frame_pts_ns":[0,5000000000,5033333333]}"""
+        val resp = gson.fromJson(json, MediaOpenViewportResponse::class.java)
+        assertEquals(listOf(0L, 5_000_000_000L, 5_033_333_333L), resp.framePtsNs)
+        assertEquals("vp-1", resp.viewportId)
+        assertEquals(307_200, resp.slotCapacity)
+        assertEquals(3L, resp.frameCount)
+        assertEquals(1, resp.keyframeCount)
+    }
+
+    @Test
+    fun mediaOpenViewportWithoutFramePtsNsDefaultsToEmptyListForOlderDaemons() {
+        val resp = gson.fromJson("""{$viewportBase}""", MediaOpenViewportResponse::class.java)
+        // A Gson Unsafe allocation would leave this null despite the non-null Kotlin type.
+        val pts: List<Long>? = resp.framePtsNs
+        assertEquals(emptyList(), pts)
+        val nulled = gson.fromJson("""{$viewportBase,"frame_pts_ns":null}""", MediaOpenViewportResponse::class.java)
+        assertEquals(emptyList(), nulled.framePtsNs)
+        assertFailsWith<com.google.gson.JsonParseException> {
+            gson.fromJson("""{$viewportBase,"frame_pts_ns":["x"]}""", MediaOpenViewportResponse::class.java)
+        }
+    }
+
+    @Test
+    fun captureEnabledRoundTripsInConfigPatchAndStatus() {
+        val config = gson.fromJson("""{"capture_enabled":true}""", ArbConfig::class.java)
+        assertTrue(config.captureEnabled)
+        assertEquals(false, gson.fromJson("{}", ArbConfig::class.java).captureEnabled)
+        assertTrue(gson.toJson(ArbConfig(captureEnabled = true)).contains("\"capture_enabled\":true"))
+
+        val enable = ProtocolJson.toConfigPatchJson(ArbConfigPatch(captureEnabled = true))
+        assertEquals("""{"capture_enabled":true}""", enable.toString())
+        val disable = ProtocolJson.toConfigPatchJson(ArbConfigPatch(captureEnabled = false))
+        assertEquals("""{"capture_enabled":false}""", disable.toString())
+        val unchanged = ProtocolJson.toConfigPatchJson(ArbConfigPatch(saveWindowSecs = 60))
+        assertEquals("""{"save_window_secs":60}""", unchanged.toString())
+        assertEquals(
+            """{"capture_enabled":true}""",
+            gson.toJson(ArbConfigPatch(captureEnabled = true)),
+        )
+
+        val statusBase =
+            """"pid":7,"uptime_ms":1,"capture":{"active":false},"ring_chunk_count":0,"ring_total_bytes":0,""" +
+                """"ring_pinned_chunk_count":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}"""
+        val armed = gson.fromJson("""{$statusBase,"capture_enabled":true}""", SystemStatusResponse::class.java)
+        assertTrue(armed.captureEnabled)
+        val legacy = gson.fromJson("""{$statusBase}""", SystemStatusResponse::class.java)
+        assertEquals(false, legacy.captureEnabled)
+    }
 }

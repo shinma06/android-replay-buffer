@@ -6,12 +6,26 @@
 //! `Release`/`Acquire` sequence lock paired with an atomic published slot index
 //! and generation counter so readers never observe torn frames and always see
 //! the exact `frame_index` and `is_approximate` preview badge state.
+//!
+//! # Memory-model soundness (H6)
+//!
+//! The ring is shared between threads *and* processes, so a writer may wrap
+//! around all 3 slots while a reader is still copying one of them. A seqlock
+//! only *detects* such overlap after the fact; under the Rust memory model the
+//! overlapping accesses themselves must therefore be atomic, otherwise the
+//! concurrent plain `memcpy` / volatile reads are a data race (undefined
+//! behaviour) even if the torn result is discarded afterwards. Every access to
+//! slot metadata and payload bytes is consequently an atomic `Relaxed`
+//! `AtomicU64` word (plus `AtomicU8` tail byte) access, bracketed by the
+//! per-slot `Acquire`/`Release` sequence counter and fences. The binary wire
+//! layout is unchanged (atomics have the same size and alignment as the plain
+//! integers they replace), so the Kotlin `ShmFrameRingReader` stays compatible.
 
 use std::fs::{self, File, OpenOptions};
-use std::mem::{align_of, offset_of, size_of};
+use std::mem::{align_of, offset_of, size_of, size_of_val};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
 
 use memmap2::{Mmap, MmapMut};
 
@@ -150,9 +164,25 @@ struct RawRingHeader {
     _reserved: [u8; 24],
 }
 
+/// Per-slot frame metadata. Every field is an atomic with the exact size and
+/// alignment of the plain integer it replaces, so the wire layout is identical
+/// while concurrent writer/reader access stays free of data races.
 #[repr(C)]
-#[derive(Clone, Copy)]
 struct RawSlotFields {
+    generation: AtomicU64,
+    frame_index: AtomicI64,
+    boottime_ns: AtomicI64,
+    width: AtomicU32,
+    height: AtomicU32,
+    stride: AtomicU32,
+    pixel_format: AtomicU32,
+    payload_len: AtomicU32,
+    flags: AtomicU32,
+}
+
+/// Plain snapshot of [`RawSlotFields`] taken by a reader inside one seqlock attempt.
+#[derive(Clone, Copy)]
+struct SlotFieldsSnapshot {
     generation: u64,
     frame_index: i64,
     boottime_ns: i64,
@@ -162,6 +192,39 @@ struct RawSlotFields {
     pixel_format: u32,
     payload_len: u32,
     flags: u32,
+}
+
+impl RawSlotFields {
+    fn store(&self, snapshot: &SlotFieldsSnapshot) {
+        self.generation
+            .store(snapshot.generation, Ordering::Relaxed);
+        self.frame_index
+            .store(snapshot.frame_index, Ordering::Relaxed);
+        self.boottime_ns
+            .store(snapshot.boottime_ns, Ordering::Relaxed);
+        self.width.store(snapshot.width, Ordering::Relaxed);
+        self.height.store(snapshot.height, Ordering::Relaxed);
+        self.stride.store(snapshot.stride, Ordering::Relaxed);
+        self.pixel_format
+            .store(snapshot.pixel_format, Ordering::Relaxed);
+        self.payload_len
+            .store(snapshot.payload_len, Ordering::Relaxed);
+        self.flags.store(snapshot.flags, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> SlotFieldsSnapshot {
+        SlotFieldsSnapshot {
+            generation: self.generation.load(Ordering::Relaxed),
+            frame_index: self.frame_index.load(Ordering::Relaxed),
+            boottime_ns: self.boottime_ns.load(Ordering::Relaxed),
+            width: self.width.load(Ordering::Relaxed),
+            height: self.height.load(Ordering::Relaxed),
+            stride: self.stride.load(Ordering::Relaxed),
+            pixel_format: self.pixel_format.load(Ordering::Relaxed),
+            payload_len: self.payload_len.load(Ordering::Relaxed),
+            flags: self.flags.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[repr(C, align(64))]
@@ -183,6 +246,40 @@ const _: () = {
     assert!(
         offset_of!(RawSlotHeader, fields) == 8,
         "RawSlotFields must sit at 8-byte aligned offset inside RawSlotHeader"
+    );
+    // Wire layout pinned for the Kotlin `ShmFrameRingReader` (byte offsets
+    // relative to the slot header start).
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, generation) == 8,
+        "generation must stay at slot offset 8"
+    );
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, frame_index) == 16,
+        "frame_index must stay at slot offset 16"
+    );
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, boottime_ns) == 24,
+        "boottime_ns must stay at slot offset 24"
+    );
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, width) == 32,
+        "width must stay at slot offset 32"
+    );
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, payload_len) == 48,
+        "payload_len must stay at slot offset 48"
+    );
+    assert!(
+        offset_of!(RawSlotHeader, fields) + offset_of!(RawSlotFields, flags) == 52,
+        "flags must stay at slot offset 52"
+    );
+    assert!(
+        size_of::<AtomicU64>() == 8 && align_of::<AtomicU64>() == 8,
+        "AtomicU64 must match the u64 wire word"
+    );
+    assert!(
+        HEADER_REGION_BYTES.is_multiple_of(CACHE_LINE_BYTES),
+        "payload region must start 64-byte (and thus AtomicU64) aligned"
     );
 };
 
@@ -354,34 +451,12 @@ impl ShmFrameRingWriter {
             })?;
 
         let slot_idx_u8 = self.next_slot;
-        let slot_idx = usize::from(slot_idx_u8);
-        let slot_idx_u32 = u32::from(slot_idx_u8);
-        let base_ptr = self.mmap.as_mut_ptr();
-        let slot_base = slot_base_ptr_mut(base_ptr, slot_idx);
-        let seq_ptr = slot_seq_ptr(slot_base.cast_const());
-        let fields_ptr = slot_fields_ptr_mut(slot_base);
-        let payload_ptr = slot_payload_ptr_mut(base_ptr, slot_idx, self.aligned_slot_stride);
-
-        // SAFETY: `seq_ptr` points to the 64-byte aligned `AtomicU64` sequence
-        // counter at offset 0 of slot `slot_idx` inside the live mapping.
-        let seq_atomic = unsafe { &*seq_ptr };
-        let seq_before = seq_atomic.load(Ordering::Relaxed);
-        // Mark slot as in-progress (odd sequence number) before touching payload/meta.
-        seq_atomic.store(seq_before.wrapping_add(1), Ordering::Relaxed);
-        fence(Ordering::Release);
-
-        // SAFETY: `payload_ptr` points to `self.slot_capacity` writable bytes in
-        // slot `slot_idx`, non-overlapping with `pixels`, and `pixels.len() <= self.slot_capacity`.
-        unsafe {
-            ptr::copy_nonoverlapping(pixels.as_ptr(), payload_ptr, pixels.len());
-        }
-
         let flags = if descriptor.is_approximate {
             FLAG_IS_APPROXIMATE
         } else {
             0
         };
-        let fields = RawSlotFields {
+        let fields = SlotFieldsSnapshot {
             generation: next_gen,
             frame_index: descriptor.frame_index,
             boottime_ns: descriptor.boottime_ns,
@@ -392,28 +467,22 @@ impl ShmFrameRingWriter {
             payload_len,
             flags,
         };
-        // SAFETY: `fields_ptr` is 8-byte aligned inside slot `slot_idx` and
-        // owned exclusively by the single writer while `seq` is odd.
-        unsafe {
-            ptr::write_volatile(fields_ptr, fields);
-        }
-
-        // Publish completed slot (even sequence number) with Release semantics.
-        seq_atomic.store(seq_before.wrapping_add(2), Ordering::Release);
-
-        let ring_hdr_ptr = ring_header_ptr_const(base_ptr.cast_const());
-        // SAFETY: `ring_hdr_ptr` is 64-byte aligned and initialized in `create`.
-        let ring_hdr = unsafe { &*ring_hdr_ptr };
-        ring_hdr
-            .published_slot
-            .store(slot_idx_u32, Ordering::Release);
-        ring_hdr
-            .published_generation
-            .store(next_gen, Ordering::Release);
+        // SAFETY: `self.ring_view()` describes this writer's live, validated
+        // mapping, `slot_idx_u8 < SHM_SLOT_COUNT`, and `pixels.len() <= slot_capacity`.
+        unsafe { self.ring_view().publish_slot(slot_idx_u8, &fields, pixels) };
 
         self.generation = next_gen;
         self.next_slot = (slot_idx_u8 + 1) % SHM_SLOT_COUNT_U8;
         Ok(next_gen)
+    }
+
+    fn ring_view(&mut self) -> RingView {
+        RingView {
+            // Derived from `as_mut_ptr` so the pointer carries write provenance.
+            base: self.mmap.as_mut_ptr().cast_const(),
+            slot_capacity: self.slot_capacity,
+            aligned_slot_stride: self.aligned_slot_stride,
+        }
     }
 
     /// Returns the backing file path of this ring.
@@ -562,7 +631,120 @@ impl ShmFrameRingReader {
     /// Returns [`OsError::InvalidShmRing`] if ring metadata is corrupted or the
     /// slot seqlock fails to stabilize after repeated concurrent overwrites.
     pub fn read_latest(&self, out_pixels: &mut Vec<u8>) -> Result<Option<FrameSlotMeta>, OsError> {
-        let base_ptr = self.mmap.as_ptr();
+        self.read_latest_with_mid_copy_hook(out_pixels, || {})
+    }
+
+    /// [`Self::read_latest`] with `mid_copy` invoked halfway through every
+    /// payload copy attempt. Production passes a no-op (monomorphized away);
+    /// tests use it to deterministically wrap the writer around the whole ring
+    /// while a copy is in flight.
+    fn read_latest_with_mid_copy_hook(
+        &self,
+        out_pixels: &mut Vec<u8>,
+        mid_copy: impl FnMut(),
+    ) -> Result<Option<FrameSlotMeta>, OsError> {
+        // SAFETY: `self.ring_view()` describes this reader's live mapping, whose
+        // header, slot count, and size were validated in `open`.
+        unsafe { self.ring_view().read_latest(out_pixels, mid_copy) }
+    }
+
+    fn ring_view(&self) -> RingView {
+        RingView {
+            base: self.mmap.as_ptr(),
+            slot_capacity: self.slot_capacity,
+            aligned_slot_stride: self.aligned_slot_stride,
+        }
+    }
+
+    /// Returns the backing file path of this ring.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the maximum payload capacity in bytes per frame slot.
+    #[must_use]
+    pub const fn slot_capacity(&self) -> usize {
+        self.slot_capacity
+    }
+}
+
+/// Raw geometry of one mapped ring (writer mapping, reader mapping, or a test
+/// allocation): the seqlock publish/read algorithms operate on this view so the
+/// exact same code can be race-checked over a single shared allocation.
+#[derive(Debug, Clone, Copy)]
+struct RingView {
+    base: *const u8,
+    slot_capacity: usize,
+    aligned_slot_stride: usize,
+}
+
+impl RingView {
+    /// Publishes `pixels` + `fields` into slot `slot_idx_u8` under its seqlock
+    /// and exposes it through the ring header.
+    ///
+    /// # Safety
+    ///
+    /// `self.base` must be a 64-byte aligned, initialized ring of at least
+    /// `HEADER_REGION_BYTES + SHM_SLOT_COUNT * aligned_slot_stride` bytes that is
+    /// only accessed atomically by other parties; the caller must be the single
+    /// writer, `slot_idx_u8 < SHM_SLOT_COUNT`, and `pixels.len() <= slot_capacity`.
+    unsafe fn publish_slot(&self, slot_idx_u8: u8, fields: &SlotFieldsSnapshot, pixels: &[u8]) {
+        let next_gen = fields.generation;
+        let slot_idx = usize::from(slot_idx_u8);
+        let slot_idx_u32 = u32::from(slot_idx_u8);
+        let base_ptr = self.base;
+        let slot_base = slot_base_ptr_const(base_ptr, slot_idx);
+        let seq_ptr = slot_seq_ptr(slot_base);
+        let fields_ptr = slot_fields_ptr(slot_base);
+        let payload_ptr = slot_payload_ptr(base_ptr, slot_idx, self.aligned_slot_stride);
+
+        // SAFETY: `seq_ptr` points to the 64-byte aligned `AtomicU64` sequence
+        // counter at offset 0 of slot `slot_idx` inside the live mapping.
+        let seq_atomic = unsafe { &*seq_ptr };
+        let seq_before = seq_atomic.load(Ordering::Relaxed);
+        // Mark slot as in-progress (odd sequence number) before touching payload/meta.
+        seq_atomic.store(seq_before.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
+
+        // SAFETY: `payload_ptr` is the 64-byte aligned start of slot `slot_idx`'s
+        // payload region holding `slot_capacity >= pixels.len()` bytes inside
+        // the live mapping; concurrent readers only touch it atomically.
+        let payload = unsafe { AtomicPayload::new(payload_ptr, pixels.len()) };
+        payload.store_from(pixels);
+
+        // SAFETY: `fields_ptr` is the 8-byte aligned `RawSlotFields` of slot
+        // `slot_idx` inside the live mapping; all accesses to it are atomic.
+        unsafe { &*fields_ptr }.store(fields);
+
+        // Publish completed slot (even sequence number) with Release semantics.
+        seq_atomic.store(seq_before.wrapping_add(2), Ordering::Release);
+
+        let ring_hdr_ptr = ring_header_ptr_const(base_ptr);
+        // SAFETY: `ring_hdr_ptr` is 64-byte aligned and initialized in `create`.
+        let ring_hdr = unsafe { &*ring_hdr_ptr };
+        ring_hdr
+            .published_slot
+            .store(slot_idx_u32, Ordering::Release);
+        ring_hdr
+            .published_generation
+            .store(next_gen, Ordering::Release);
+    }
+
+    /// Seqlock-reads the latest published slot into `out_pixels`.
+    ///
+    /// # Safety
+    ///
+    /// `self.base` must be a 64-byte aligned ring whose header was validated
+    /// (magic/version/slot count) and that spans at least
+    /// `HEADER_REGION_BYTES + SHM_SLOT_COUNT * aligned_slot_stride` bytes, only
+    /// ever mutated atomically by its writer.
+    unsafe fn read_latest(
+        &self,
+        out_pixels: &mut Vec<u8>,
+        mut mid_copy: impl FnMut(),
+    ) -> Result<Option<FrameSlotMeta>, OsError> {
+        let base_ptr = self.base;
         let ring_hdr_ptr = ring_header_ptr_const(base_ptr);
         // SAFETY: `self.mmap` was validated in `open` to hold a 64-byte aligned
         // `RawRingHeader`.
@@ -598,10 +780,11 @@ impl ShmFrameRingReader {
                 continue;
             }
 
-            let fields_ptr = slot_fields_ptr_const(slot_base);
-            // SAFETY: `fields_ptr` is 8-byte aligned within the validated slot
-            // header; consistency is checked against `seq2` below.
-            let raw = unsafe { ptr::read_volatile(fields_ptr) };
+            let fields_ptr = slot_fields_ptr(slot_base);
+            // SAFETY: `fields_ptr` is the 8-byte aligned `RawSlotFields` within the
+            // validated slot header; every field is loaded atomically and the
+            // snapshot's consistency is checked against `seq2` below.
+            let raw = unsafe { &*fields_ptr }.load();
             let payload_len = usize::try_from(raw.payload_len).unwrap_or(usize::MAX);
             if payload_len > self.slot_capacity {
                 fence(Ordering::Acquire);
@@ -618,12 +801,12 @@ impl ShmFrameRingReader {
             }
 
             out_pixels.resize(payload_len, 0);
-            let payload_ptr = slot_payload_ptr_const(base_ptr, slot_idx, self.aligned_slot_stride);
-            // SAFETY: `payload_len <= self.slot_capacity` and `out_pixels` has
-            // been resized to `payload_len`, non-overlapping with the mmap.
-            unsafe {
-                ptr::copy_nonoverlapping(payload_ptr, out_pixels.as_mut_ptr(), payload_len);
-            }
+            let payload_ptr = slot_payload_ptr(base_ptr, slot_idx, self.aligned_slot_stride);
+            // SAFETY: `payload_ptr` is the 64-byte aligned payload start of a
+            // validated slot and `payload_len <= self.slot_capacity`, so the
+            // whole range lies inside the mapping; it is only read atomically.
+            let payload = unsafe { AtomicPayload::new(payload_ptr, payload_len) };
+            payload.load_into(out_pixels, &mut mid_copy);
 
             fence(Ordering::Acquire);
             let seq2 = seq_atomic.load(Ordering::Relaxed);
@@ -668,21 +851,9 @@ impl ShmFrameRingReader {
             reason: "shared-memory frame seqlock did not stabilize under contention".to_owned(),
         })
     }
-
-    /// Returns the backing file path of this ring.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Returns the maximum payload capacity in bytes per frame slot.
-    #[must_use]
-    pub const fn slot_capacity(&self) -> usize {
-        self.slot_capacity
-    }
 }
 
-fn init_ring_headers(mmap: &mut MmapMut, slot_capacity: usize) -> Result<(), OsError> {
+fn init_ring_headers(mmap: &mut [u8], slot_capacity: usize) -> Result<(), OsError> {
     let slot_cap_u64 = u64::try_from(slot_capacity).map_err(|_| OsError::InvalidArgument {
         name: "slot_capacity",
         reason: "slot_capacity overflowed u64".to_owned(),
@@ -724,11 +895,6 @@ const fn ring_header_ptr_mut(base: *mut u8) -> *mut RawRingHeader {
     base.cast::<RawRingHeader>()
 }
 
-const fn slot_base_ptr_mut(base: *mut u8, slot_idx: usize) -> *mut u8 {
-    let offset = RING_HEADER_BYTES + slot_idx * SLOT_HEADER_BYTES;
-    base.wrapping_add(offset)
-}
-
 const fn slot_base_ptr_const(base: *const u8, slot_idx: usize) -> *const u8 {
     let offset = RING_HEADER_BYTES + slot_idx * SLOT_HEADER_BYTES;
     base.wrapping_add(offset)
@@ -746,34 +912,84 @@ const fn slot_seq_ptr(slot_base: *const u8) -> *const AtomicU64 {
     clippy::cast_ptr_alignment,
     reason = "RawSlotFields sits at offset 8 inside each 64-byte aligned slot header"
 )]
-const fn slot_fields_ptr_mut(slot_base: *mut u8) -> *mut RawSlotFields {
+const fn slot_fields_ptr(slot_base: *const u8) -> *const RawSlotFields {
     slot_base
         .wrapping_add(offset_of!(RawSlotHeader, fields))
         .cast::<RawSlotFields>()
 }
 
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "RawSlotFields sits at offset 8 inside each 64-byte aligned slot header"
-)]
-const fn slot_fields_ptr_const(slot_base: *const u8) -> *const RawSlotFields {
-    slot_base
-        .wrapping_add(offset_of!(RawSlotHeader, fields))
-        .cast::<RawSlotFields>()
-}
-
-const fn slot_payload_ptr_mut(base: *mut u8, slot_idx: usize, aligned_stride: usize) -> *mut u8 {
+const fn slot_payload_ptr(base: *const u8, slot_idx: usize, aligned_stride: usize) -> *const u8 {
     let offset = HEADER_REGION_BYTES + slot_idx * aligned_stride;
     base.wrapping_add(offset)
 }
 
-const fn slot_payload_ptr_const(
-    base: *const u8,
-    slot_idx: usize,
-    aligned_stride: usize,
-) -> *const u8 {
-    let offset = HEADER_REGION_BYTES + slot_idx * aligned_stride;
-    base.wrapping_add(offset)
+/// Atomic view over one slot's payload bytes: `len / 8` aligned `AtomicU64`
+/// words followed by `len % 8` `AtomicU8` tail bytes.
+///
+/// All payload traffic goes through `Relaxed` atomic word accesses so a writer
+/// that laps a reader mid-copy is a benign (seqlock-detected) race rather than
+/// undefined behaviour. Relaxed word loads/stores compile to plain aligned
+/// moves on x86-64 and `AArch64`, keeping the copy allocation-free and fast.
+struct AtomicPayload<'a> {
+    words: &'a [AtomicU64],
+    tail: &'a [AtomicU8],
+}
+
+impl AtomicPayload<'_> {
+    /// # Safety
+    ///
+    /// `ptr` must be 8-byte aligned and valid for `len` bytes of shared
+    /// (possibly concurrently mutated) memory for the returned view's lifetime,
+    /// and that memory must only ever be accessed atomically.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "payload regions start 64-byte aligned (HEADER_REGION_BYTES and slot strides are cache-line multiples)"
+    )]
+    unsafe fn new(ptr: *const u8, len: usize) -> Self {
+        debug_assert_eq!(
+            ptr.align_offset(align_of::<AtomicU64>()),
+            0,
+            "payload pointer must be AtomicU64-aligned"
+        );
+        let word_count = len / size_of::<AtomicU64>();
+        let tail_len = len % size_of::<AtomicU64>();
+        // SAFETY: per the caller contract `ptr` is aligned and valid for
+        // `word_count * 8 <= len` bytes; atomics permit shared mutation.
+        let words = unsafe { std::slice::from_raw_parts(ptr.cast::<AtomicU64>(), word_count) };
+        let tail_ptr = ptr.wrapping_add(word_count * size_of::<AtomicU64>());
+        // SAFETY: the tail lies within the caller-guaranteed `len` bytes.
+        let tail = unsafe { std::slice::from_raw_parts(tail_ptr.cast::<AtomicU8>(), tail_len) };
+        Self { words, tail }
+    }
+
+    fn store_from(&self, src: &[u8]) {
+        let (src_words, src_tail) = src.split_at(size_of_val(self.words));
+        let (chunks, _) = src_words.as_chunks::<8>();
+        for (word, chunk) in self.words.iter().zip(chunks) {
+            word.store(u64::from_ne_bytes(*chunk), Ordering::Relaxed);
+        }
+        for (byte, &value) in self.tail.iter().zip(src_tail) {
+            byte.store(value, Ordering::Relaxed);
+        }
+    }
+
+    fn load_into(&self, dst: &mut [u8], mid_copy: &mut impl FnMut()) {
+        let (dst_words, dst_tail) = dst.split_at_mut(size_of_val(self.words));
+        let (chunks, _) = dst_words.as_chunks_mut::<8>();
+        let half = self.words.len() / 2;
+        for (index, (word, chunk)) in self.words.iter().zip(chunks).enumerate() {
+            if index == half {
+                mid_copy();
+            }
+            *chunk = word.load(Ordering::Relaxed).to_ne_bytes();
+        }
+        if self.words.is_empty() {
+            mid_copy();
+        }
+        for (byte, value) in self.tail.iter().zip(dst_tail) {
+            *value = byte.load(Ordering::Relaxed);
+        }
+    }
 }
 
 const fn align_up(value: usize, align: usize) -> Option<usize> {
@@ -1120,6 +1336,246 @@ mod tests {
             observed >= 10,
             "reader thread should observe frames during stress run, saw {observed}"
         );
+    }
+
+    fn solid_frame(frame_index: i64, width: u32, height: u32) -> FrameDescriptor {
+        FrameDescriptor {
+            frame_index,
+            is_approximate: false,
+            width,
+            height,
+            stride: width * 4,
+            pixel_format: PixelFormat::Rgba8,
+            boottime_ns: frame_index * 1_000,
+        }
+    }
+
+    /// H6: the writer laps the *entire* 3-slot ring while the reader is halfway
+    /// through copying a slot. The interrupted attempt must be discarded and the
+    /// retry must return the newest frame intact (never a torn mix).
+    #[test]
+    fn writer_wrapping_whole_ring_mid_copy_never_returns_torn_frame() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 48;
+        // Odd tail (not a multiple of 8) exercises the AtomicU8 tail path too.
+        const FRAME_BYTES: usize = 64 * 48 * 4 + 5;
+
+        let tmp = TestShmDir::new("wrap-mid-copy");
+        let shm_path = tmp.path.join("wrap.shm");
+        let mut writer = ShmFrameRingWriter::create(&shm_path, FRAME_BYTES).expect("create ring");
+        let reader = ShmFrameRingReader::open(&shm_path).expect("open reader");
+
+        writer
+            .publish(solid_frame(1, WIDTH, HEIGHT), &[0x01; FRAME_BYTES])
+            .expect("publish frame 1");
+
+        let mut hook_calls = 0_u32;
+        let mut buf = Vec::new();
+        let meta = reader
+            .read_latest_with_mid_copy_hook(&mut buf, || {
+                hook_calls += 1;
+                if hook_calls == 1 {
+                    // Lap the full ring: slot 0 (being copied) is overwritten by frame 4.
+                    for (frame_index, fill) in [(2_i64, 0x02_u8), (3, 0x03), (4, 0x04)] {
+                        writer
+                            .publish(
+                                solid_frame(frame_index, WIDTH, HEIGHT),
+                                &[fill; FRAME_BYTES],
+                            )
+                            .expect("publish lapping frame");
+                    }
+                }
+            })
+            .expect("read_latest must recover after a mid-copy wrap")
+            .expect("a frame is published");
+
+        assert_eq!(
+            hook_calls, 2,
+            "the interrupted attempt must be detected and retried exactly once"
+        );
+        assert_eq!(meta.frame_index, 4, "retry must return the newest frame");
+        assert_eq!(
+            meta.generation, 4,
+            "retry must report the newest generation"
+        );
+        assert_eq!(buf.len(), FRAME_BYTES, "payload length must match");
+        assert!(
+            buf.iter().all(|&b| b == 0x04),
+            "returned payload must be the untorn newest frame"
+        );
+    }
+
+    /// H6: when the writer keeps lapping the reader on every attempt, the reader
+    /// reports stale/contended data as an error instead of a torn frame.
+    #[test]
+    fn writer_lapping_every_attempt_yields_contention_error_not_torn_frame() {
+        const FRAME_BYTES: usize = 16 * 16 * 4;
+
+        let tmp = TestShmDir::new("wrap-every-attempt");
+        let shm_path = tmp.path.join("wrap-every.shm");
+        let mut writer = ShmFrameRingWriter::create(&shm_path, FRAME_BYTES).expect("create ring");
+        let reader = ShmFrameRingReader::open(&shm_path).expect("open reader");
+        writer
+            .publish(solid_frame(0, 16, 16), &[0; FRAME_BYTES])
+            .expect("publish frame 0");
+
+        let mut next_index = 1_i64;
+        let mut buf = Vec::new();
+        let result = reader.read_latest_with_mid_copy_hook(&mut buf, || {
+            for _ in 0..super::SHM_SLOT_COUNT {
+                let fill = u8::try_from(next_index.rem_euclid(251)).expect("byte");
+                writer
+                    .publish(solid_frame(next_index, 16, 16), &[fill; FRAME_BYTES])
+                    .expect("publish lapping frame");
+                next_index += 1;
+            }
+        });
+        assert!(
+            matches!(result, Err(OsError::InvalidShmRing { .. })),
+            "perpetual lapping must surface a contention error, got {result:?}"
+        );
+    }
+
+    /// 64-byte aligned heap allocation standing in for one shared mapping.
+    struct SharedRingAlloc {
+        ptr: *mut u8,
+        layout: std::alloc::Layout,
+        view: super::RingView,
+    }
+
+    // SAFETY: the allocation is only accessed through the ring's atomic
+    // seqlock protocol; the raw pointer is shared deliberately.
+    unsafe impl Send for SharedRingAlloc {}
+    // SAFETY: see `Send` above — all concurrent access is atomic.
+    unsafe impl Sync for SharedRingAlloc {}
+
+    impl SharedRingAlloc {
+        fn new(slot_capacity: usize) -> Self {
+            let stride = super::align_up(slot_capacity, super::CACHE_LINE_BYTES).expect("stride");
+            let total = super::HEADER_REGION_BYTES + super::SHM_SLOT_COUNT * stride;
+            let layout = std::alloc::Layout::from_size_align(total, 64).expect("layout");
+            // SAFETY: `layout` has non-zero size.
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            assert!(!ptr.is_null(), "allocation must succeed");
+            // SAFETY: `ptr` is valid for `total` zeroed bytes owned exclusively here.
+            let bytes = unsafe { std::slice::from_raw_parts_mut(ptr, total) };
+            super::init_ring_headers(bytes, slot_capacity).expect("init headers");
+            let view = super::RingView {
+                base: ptr.cast_const(),
+                slot_capacity,
+                aligned_slot_stride: stride,
+            };
+            Self { ptr, layout, view }
+        }
+    }
+
+    impl Drop for SharedRingAlloc {
+        fn drop(&mut self) {
+            // SAFETY: allocated in `new` with exactly `self.layout`.
+            unsafe { std::alloc::dealloc(self.ptr, self.layout) };
+        }
+    }
+
+    /// H6: writer and reader run concurrently over the *same* allocation (same
+    /// virtual addresses, unlike two file mappings), so data-race detectors such
+    /// as `ThreadSanitizer` (`-Zsanitizer=thread`) observe every overlapping
+    /// access. With atomic metadata/payload access this is race-free and the
+    /// reader never returns a torn frame.
+    #[test]
+    fn same_allocation_concurrent_publish_and_read_is_race_free_and_untorn() {
+        const FRAME_BYTES: usize = 32 * 8 * 4 + 3;
+        let alloc = Arc::new(SharedRingAlloc::new(FRAME_BYTES));
+        let view = alloc.view;
+        let done = Arc::new(AtomicBool::new(false));
+        // The writer only starts once the reader is spinning, so their accesses
+        // genuinely overlap instead of being ordered by thread start-up.
+        let reader_live = Arc::new(AtomicBool::new(false));
+
+        let reader_alloc = Arc::clone(&alloc);
+        let reader_done = Arc::clone(&done);
+        let reader_started = Arc::clone(&reader_live);
+        let reader = thread::spawn(move || {
+            let view = reader_alloc.view;
+            let mut buf = Vec::new();
+            let mut observed = 0_u64;
+            reader_started.store(true, Ordering::Relaxed);
+            while !reader_done.load(Ordering::Relaxed) || observed == 0 {
+                // SAFETY: `view` describes the initialized allocation kept alive
+                // by `reader_alloc`; the writer only mutates it atomically.
+                match unsafe { view.read_latest(&mut buf, || {}) } {
+                    Ok(Some(meta)) => {
+                        let expected =
+                            u8::try_from(meta.frame_index.rem_euclid(251)).expect("byte");
+                        assert!(
+                            buf.iter().all(|&b| b == expected),
+                            "torn frame for frame_index={}",
+                            meta.frame_index
+                        );
+                        observed += 1;
+                    }
+                    Ok(None) | Err(OsError::InvalidShmRing { .. }) => {}
+                    Err(other) => panic!("unexpected read error: {other:?}"),
+                }
+            }
+            observed
+        });
+
+        while !reader_live.load(Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+        let mut frame = vec![0_u8; FRAME_BYTES];
+        for i in 1_i64..=2_000 {
+            frame.fill(u8::try_from(i.rem_euclid(251)).expect("byte"));
+            let slot = u8::try_from((i - 1).rem_euclid(3)).expect("slot");
+            let fields = super::SlotFieldsSnapshot {
+                generation: u64::try_from(i).expect("gen"),
+                frame_index: i,
+                boottime_ns: i,
+                width: 32,
+                height: 8,
+                stride: 128,
+                pixel_format: PixelFormat::Rgba8.to_raw(),
+                payload_len: u32::try_from(FRAME_BYTES).expect("len"),
+                flags: 0,
+            };
+            // SAFETY: single writer over the initialized allocation, slot < 3,
+            // and the payload fits the slot capacity.
+            unsafe { view.publish_slot(slot, &fields, &frame) };
+        }
+        done.store(true, Ordering::Relaxed);
+        let observed = reader.join().expect("reader thread must not panic");
+        assert!(observed > 0, "reader must observe at least one frame");
+    }
+
+    /// H6: the atomic payload path round-trips every length class (empty word
+    /// region, tail-only, word-only, word + tail) byte-exactly.
+    #[test]
+    fn atomic_payload_round_trips_all_tail_lengths() {
+        let tmp = TestShmDir::new("tail-lengths");
+        let shm_path = tmp.path.join("tail.shm");
+        let mut writer = ShmFrameRingWriter::create(&shm_path, 4 * 4 + 7).expect("create ring");
+        let reader = ShmFrameRingReader::open(&shm_path).expect("open reader");
+        let mut buf = Vec::new();
+        for extra in 0..8_usize {
+            let len = 4 * 4 + extra.min(7);
+            let pixels: Vec<u8> = (0..len)
+                .map(|i| u8::try_from((i * 37 + extra) % 256).expect("byte"))
+                .collect();
+            writer
+                .publish(
+                    solid_frame(i64::try_from(extra).expect("i64"), 2, 2),
+                    &pixels,
+                )
+                .expect("publish");
+            reader
+                .read_latest(&mut buf)
+                .expect("read")
+                .expect("frame present");
+            assert_eq!(
+                buf, pixels,
+                "payload of {len} bytes must round-trip exactly"
+            );
+        }
     }
 
     #[test]

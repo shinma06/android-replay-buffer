@@ -10,6 +10,10 @@ Packages `arb-<os>-<arch>.zip` containing:
     `start-arb.sh` on Linux, `start-arb.ps1` on Windows)
   - `README-TRIAL.md` (with `docs/first-run-os-permissions.md` & MCP setup guide)
   - `SHA256SUMS.txt` (SHA-256 checksums for every packaged file)
+
+Also classifies release tags for `.github/workflows/release.yml` (`--classify-tag`): only
+`vX.Y.Z` is a stable `--latest` release; `vX.Y.Z-{alpha,beta,rc}.N` is published with
+`--prerelease --latest=false`; anything else is rejected.
 """
 
 from __future__ import annotations
@@ -31,6 +35,59 @@ DEVICE_AGENT_JARS = ("arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar")
 ZIP_TIMESTAMP = (2026, 11, 23, 0, 0, 0)
 REQUIRED_RELEASE_OSES = ("linux", "macos", "windows")
 BUNDLE_ZIP_RE = re.compile(r"^arb-(linux|macos|windows)-([a-z0-9_]+)\.zip$")
+_SEMVER_CORE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+STABLE_TAG_RE = re.compile(rf"^v{_SEMVER_CORE}$")
+PRERELEASE_TAG_RE = re.compile(rf"^v{_SEMVER_CORE}-(alpha|beta|rc)\.(0|[1-9][0-9]*)$")
+
+
+def classify_release_tag(tag: str) -> dict[str, object]:
+    """Classifies a release tag (M12).
+
+    `vX.Y.Z` -> stable (`gh release create --latest`); `vX.Y.Z-alpha.N` / `-beta.N` / `-rc.N` ->
+    prerelease (`--prerelease --latest=false`, never marked as the latest stable release).
+    Raises `ValueError` for any other tag so the release workflow fails before publishing.
+    """
+    value = tag.strip()
+    if STABLE_TAG_RE.fullmatch(value):
+        return {
+            "tag": value,
+            "version": value[1:],
+            "channel": "stable",
+            "prerelease": False,
+            "gh_release_flags": ["--latest"],
+        }
+    if PRERELEASE_TAG_RE.fullmatch(value):
+        return {
+            "tag": value,
+            "version": value[1:],
+            "channel": "prerelease",
+            "prerelease": True,
+            "gh_release_flags": ["--prerelease", "--latest=false"],
+        }
+    raise ValueError(
+        f"unsupported release tag {tag!r}: expected vX.Y.Z (stable) or "
+        "vX.Y.Z-alpha.N / -beta.N / -rc.N (prerelease)"
+    )
+
+
+def write_tag_classification(
+    classification: dict[str, object],
+    github_output: Path | None,
+    *,
+    echo: bool = True,
+) -> None:
+    flags = " ".join(str(flag) for flag in classification["gh_release_flags"])  # type: ignore[union-attr]
+    lines = [
+        f"version={classification['version']}",
+        f"channel={classification['channel']}",
+        f"prerelease={'true' if classification['prerelease'] else 'false'}",
+        f"gh_release_flags={flags}",
+    ]
+    if github_output is not None:
+        with github_output.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    if echo:
+        print("\n".join(lines))
 
 
 def normalize_os(raw: str | None) -> str:
@@ -826,11 +883,61 @@ def run_self_test(repo_root: Path) -> int:
                     digest, rel = line.split("  ", 1)
                     assert sha256_bytes(bzf.read(rel)) == digest, f"checksum mismatch for {rel} in {bzip}"
 
+        run_binary_identity_self_test(tmp)
+        run_release_tag_self_test(tmp)
+
         print(
             "package_distribution.py --self-test: OK "
-            "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, universal 3-OS plugin assembly, POSIX modes, UTF-8 docs, SHA256SUMS)"
+            "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, universal 3-OS plugin assembly, POSIX modes, UTF-8 docs, SHA256SUMS, "
+            "same-size build digest identity, release tag classification)"
         )
     return 0
+
+
+def run_binary_identity_self_test(tmp: Path) -> None:
+    """M9: reproducible ZIPs give two builds that differ only in constants the same size and the
+    same entry timestamp, so size + mtime cannot identify the bundled `arbd`; SHA256SUMS (and the
+    IDE's content digest of the extracted binary) must still tell them apart."""
+    infos = []
+    for label, payload in (("old", b"arbd-const=1"), ("new", b"arbd-const=2")):
+        archive = tmp / f"identity-{label}.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            write_zip_entry(zf, "bin/arbd", payload, executable=True)
+        with zipfile.ZipFile(archive) as zf:
+            info = zf.getinfo("bin/arbd")
+            infos.append((info.file_size, info.date_time, sha256_bytes(zf.read("bin/arbd"))))
+    (old_size, old_time, old_digest), (new_size, new_time, new_digest) = infos
+    assert old_size == new_size, "fixture builds must have identical size"
+    assert old_time == new_time == ZIP_TIMESTAMP, "reproducible ZIP entries share a fixed timestamp"
+    assert old_digest != new_digest, "content digest must distinguish same-size, same-mtime builds"
+
+
+def run_release_tag_self_test(tmp: Path) -> None:
+    """M12: only `vX.Y.Z` is a stable `--latest` release; SemVer prereleases never are."""
+    expectations = {
+        "v2.0.0": ("stable", False, ["--latest"]),
+        "v10.20.30": ("stable", False, ["--latest"]),
+        "v2.1.0-rc.1": ("prerelease", True, ["--prerelease", "--latest=false"]),
+        "v2.1.0-beta.3": ("prerelease", True, ["--prerelease", "--latest=false"]),
+        "v2.1.0-alpha.0": ("prerelease", True, ["--prerelease", "--latest=false"]),
+    }
+    for tag, (channel, prerelease, flags) in expectations.items():
+        got = classify_release_tag(tag)
+        assert got["channel"] == channel, f"{tag}: channel {got['channel']} != {channel}"
+        assert got["prerelease"] is prerelease, f"{tag}: prerelease flag mismatch"
+        assert got["gh_release_flags"] == flags, f"{tag}: gh flags {got['gh_release_flags']} != {flags}"
+        assert got["version"] == tag[1:], f"{tag}: version mismatch"
+    for bad in ("v2.0", "2.0.0", "v02.0.0", "v2.0.0-rc", "v2.0.0-dev.1", "v2.0.0+build", "v2-early", "v2.0.0-rc.01", ""):
+        try:
+            classify_release_tag(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} must be rejected")
+    out = tmp / "github-output.txt"
+    write_tag_classification(classify_release_tag("v2.1.0-rc.1"), out, echo=False)
+    text = out.read_text(encoding="utf-8")
+    assert "prerelease=true" in text and "gh_release_flags=--prerelease --latest=false" in text, text
+    assert "version=2.1.0-rc.1" in text, text
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -852,6 +959,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Input directory containing per-OS arb-*.zip bundles and base arb-ide-plugin-*.zip (for --assemble-release).",
+    )
+    parser.add_argument(
+        "--classify-tag",
+        default=None,
+        help="Classify a release tag (vX.Y.Z stable vs vX.Y.Z-{alpha,beta,rc}.N prerelease) and print gh flags.",
+    )
+    parser.add_argument(
+        "--github-output",
+        type=Path,
+        default=None,
+        help="Append --classify-tag results to this GitHub Actions output file.",
     )
     parser.add_argument("--target-os", default=None, help="Target OS (linux, macos, windows).")
     parser.add_argument("--arch", default=None, help="Target architecture (arm64, x86_64).")
@@ -875,6 +993,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo_root = repo_root_from_script()
     if args.self_test:
         return run_self_test(repo_root)
+    if args.classify_tag is not None:
+        try:
+            classification = classify_release_tag(args.classify_tag)
+        except ValueError as err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            return 1
+        write_tag_classification(classification, args.github_output)
+        return 0
 
     permissions_doc = repo_root / "docs" / "testing" / "first-run-os-permissions.md"
     if args.assemble_release:

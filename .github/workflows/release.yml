@@ -1,5 +1,8 @@
 name: Release
 # 正式版: main 上のタグ vX.Y.Z で、3 OS の自己完結配布 ZIP と IDE プラグイン ZIP を GitHub Release に添付する。
+# タグ vX.Y.Z は正式版（--latest）。vX.Y.Z-alpha.N / -beta.N / -rc.N はプレリリース（--prerelease --latest=false）
+# として公開し、正式版の「最新」扱いにはしない。それ以外の形式のタグは公開前に失敗させる。
+# 判定は core/scripts/package_distribution.py --classify-tag が行い、--self-test で検証する。
 # develop の early プレリリースは ci.yml の `early` ジョブが担当する。この workflow はブランチ push では動かない。
 on:
   push:
@@ -16,22 +19,26 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      gh_release_flags: ${{ steps.version.outputs.gh_release_flags }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require SemVer tag on main
+      - name: Classify release tag (stable vX.Y.Z vs prerelease -alpha/-beta/-rc.N)
+        id: version
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::$GITHUB_REF_NAME is not a valid SemVer tag (expected vX.Y.Z)"
-            exit 1
-          fi
+          python3 core/scripts/package_distribution.py \
+            --classify-tag "$GITHUB_REF_NAME" \
+            --github-output "$GITHUB_OUTPUT" \
+            || { echo "::error::$GITHUB_REF_NAME is not a release tag (expected vX.Y.Z or vX.Y.Z-alpha.N/-beta.N/-rc.N)"; exit 1; }
+      - name: Require tag on main
+        run: |
+          set -euo pipefail
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
-      - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
   bundle-linux:
     name: bundle (Linux + IDE plugin)
@@ -180,7 +187,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          GH_RELEASE_FLAGS: ${{ needs.verify-tag.outputs.gh_release_flags }}
+          IS_PRERELEASE: ${{ needs.verify-tag.outputs.prerelease }}
         run: |
           set -euo pipefail
           ls -lh dist
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --verify-tag --generate-notes
+          case "$GH_RELEASE_FLAGS" in
+            "--latest") [ "$IS_PRERELEASE" = "false" ] ;;
+            "--prerelease --latest=false") [ "$IS_PRERELEASE" = "true" ] ;;
+            *) echo "::error::unexpected release flags '$GH_RELEASE_FLAGS'"; exit 1 ;;
+          esac
+          # shellcheck disable=SC2086 # flags are a fixed, validated word list
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --verify-tag --generate-notes $GH_RELEASE_FLAGS
