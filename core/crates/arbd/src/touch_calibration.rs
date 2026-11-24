@@ -85,10 +85,13 @@ impl TouchCalibration {
     }
 }
 
-/// Layer-1 PDD (K6a): evdev axis projection on realistic (`i16`-range) axes.
+/// Layer-1 PDD (K6a): evdev axis projection.
 ///
-/// Both harnesses are `kani-extended`: the symbolic `i128` division in [`Axis::project`] did
-/// not verify within five minutes locally even on this narrowed domain.
+/// The `_standard_spans` harnesses fix real device spans and display dimensions and keep the
+/// value symbolic. The symbolic-axis harnesses are `kani-extended`: with a symbolic span or
+/// pixel count the `i128` division in [`Axis::project`] did not verify within five minutes
+/// (monotonicity with 1..=65536 pixels on a fixed span also ran past 5 minutes, with CaDiCaL
+/// and Kissat alike).
 #[cfg(kani)]
 mod kani_proofs {
     #![cfg_attr(not(feature = "kani-extended"), allow(dead_code))]
@@ -138,5 +141,64 @@ mod kani_proofs {
             panic!("values inside [min, max] always project");
         };
         assert!(p1 <= p2, "projection is non-decreasing");
+    }
+
+    /// Evdev spans seen on real devices: the emulator's `0..=32767`, 12-bit controllers'
+    /// `0..=4095`, drivers whose maximum is the last pixel index (`0..=1079`) or the dimension
+    /// itself (`0..=1080`), and a span centred on zero.
+    const STANDARD_SPANS: [(i32, i32); 5] =
+        [(0, 32767), (0, 4095), (0, 1079), (0, 1080), (-1000, 1000)];
+
+    /// Display dimensions in pixels: a one-pixel axis, common panel widths/heights (720, 2400),
+    /// and 1080 so both `min == 0` driver quirks take the shortcut path.
+    const STANDARD_PIXELS: [i32; 4] = [1, 720, 1080, 2400];
+
+    /// Range and endpoints for every standard span × display dimension, with a fully symbolic
+    /// `value`. Concrete spans and dimensions keep the `i128` division's operands mostly
+    /// constant; `k6_axis_project_range_and_endpoints` is the symbolic-axis generalisation.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn k6_axis_project_range_and_endpoints_standard_spans() {
+        for (min, max) in STANDARD_SPANS {
+            for pixels in STANDARD_PIXELS {
+                let axis = Axis { min, max, pixels };
+                let v: i32 = kani::any();
+                let r = axis.project(v);
+                assert_eq!(
+                    r.is_some(),
+                    min <= v && v <= max,
+                    "Some iff value in [min,max]"
+                );
+                if let Some(p) = r {
+                    assert!(0 <= p && p < pixels, "projection stays on the display");
+                }
+                assert_eq!(axis.project(min), Some(0), "min maps to first pixel");
+                assert_eq!(
+                    axis.project(max),
+                    Some(pixels - 1),
+                    "max maps to last pixel"
+                );
+            }
+        }
+    }
+
+    /// Adjacent-value monotonicity for every standard span × display dimension (all pairs
+    /// follow by induction); `k6_axis_project_monotonic` is the symbolic-axis generalisation.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn k6_axis_project_monotonic_standard_spans() {
+        for (min, max) in STANDARD_SPANS {
+            for pixels in STANDARD_PIXELS {
+                let axis = Axis { min, max, pixels };
+                let v: i32 = kani::any();
+                kani::assume(min <= v && v < max);
+                let (p1, p2) = (axis.project(v), axis.project(v + 1));
+                assert!(
+                    p1.is_some() && p2.is_some(),
+                    "values inside [min, max] always project"
+                );
+                assert!(p1 <= p2, "projection is non-decreasing");
+            }
+        }
     }
 }
