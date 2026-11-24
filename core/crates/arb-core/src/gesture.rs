@@ -169,7 +169,7 @@ fn hypot(dx: f64, dy: f64) -> f64 {
     clippy::as_conversions,
     reason = "usize widens losslessly to u128 on supported hosts"
 )]
-fn decimate(samples: &[TouchPoint], cap: usize) -> Vec<TouchPoint> {
+pub(crate) fn decimate(samples: &[TouchPoint], cap: usize) -> Vec<TouchPoint> {
     if samples.len() <= cap || cap <= 1 {
         return samples.to_vec();
     }

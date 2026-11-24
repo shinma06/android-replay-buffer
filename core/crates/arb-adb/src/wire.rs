@@ -2170,3 +2170,65 @@ mod tests {
         assert_eq!(decoded, vec![m1, m2], "both messages must deframe cleanly");
     }
 }
+
+/// Layer-1 PDD (K9b): 20-byte frame header validation and roundtrip.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{FrameHeader, HEADER_SIZE, MAGIC, MessageType, PROTOCOL_VERSION, StreamId};
+
+    #[kani::proof]
+    fn k9_frame_header_accepts_iff_valid_and_roundtrips() {
+        let bytes: [u8; HEADER_SIZE] = kani::any();
+        let max: u64 = kani::any();
+        let len = u64::from_le_bytes([
+            bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19],
+        ]);
+        let valid = bytes[0] == MAGIC[0]
+            && bytes[1] == MAGIC[1]
+            && bytes[2] == PROTOCOL_VERSION
+            && StreamId::try_from(bytes[3]).is_ok()
+            && MessageType::try_from(bytes[4]).is_ok()
+            && len <= max;
+        let parsed = FrameHeader::from_bytes(&bytes, max);
+        assert_eq!(parsed.is_ok(), valid, "accept iff PROTOCOL.md §2 valid");
+        if let Ok(h) = parsed {
+            assert_eq!(
+                h.to_bytes(),
+                bytes,
+                "valid header roundtrips byte-identically"
+            );
+            assert_eq!(h.payload_len, len);
+            assert_eq!(
+                StreamId::try_from(h.stream_id.to_wire()).ok(),
+                Some(h.stream_id)
+            );
+            assert_eq!(
+                MessageType::try_from(h.msg_type.to_wire()).ok(),
+                Some(h.msg_type)
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn k9_frame_header_encode_decode_full_u64_len() {
+        let Ok(stream_id) = StreamId::try_from(kani::any::<u8>()) else {
+            return;
+        };
+        let Ok(msg_type) = MessageType::try_from(kani::any::<u8>()) else {
+            return;
+        };
+        let h = FrameHeader {
+            version: PROTOCOL_VERSION,
+            stream_id,
+            msg_type,
+            flags: super::FrameFlags::from_bits(kani::any()),
+            reserved: kani::any(),
+            seq: kani::any(),
+            payload_len: kani::any(),
+        };
+        assert_eq!(
+            FrameHeader::from_bytes(&h.to_bytes(), u64::MAX).ok(),
+            Some(h)
+        );
+    }
+}

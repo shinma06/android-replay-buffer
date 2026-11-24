@@ -84,3 +84,50 @@ impl TouchCalibration {
             .project(event.ev_value)
     }
 }
+
+/// Layer-1 PDD (K6a): evdev axis projection over the full `i32` domain.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::Axis;
+
+    fn any_axis() -> Axis {
+        let axis = Axis {
+            min: kani::any(),
+            max: kani::any(),
+            pixels: kani::any(),
+        };
+        kani::assume(axis.min < axis.max && axis.pixels > 0);
+        axis
+    }
+
+    #[kani::proof]
+    fn k6_axis_project_range_and_endpoints() {
+        let axis = any_axis();
+        let v: i32 = kani::any();
+        let r = axis.project(v);
+        assert_eq!(
+            r.is_some(),
+            axis.min <= v && v <= axis.max,
+            "Some iff value in [min,max]"
+        );
+        if let Some(p) = r {
+            assert!(0 <= p && p <= axis.pixels - 1);
+        }
+        assert_eq!(axis.project(axis.min), Some(0), "min maps to first pixel");
+        assert_eq!(
+            axis.project(axis.max),
+            Some(axis.pixels - 1),
+            "max maps to last pixel"
+        );
+    }
+
+    #[kani::proof]
+    fn k6_axis_project_monotonic() {
+        let axis = any_axis();
+        let (v1, v2): (i32, i32) = (kani::any(), kani::any());
+        kani::assume(v1 <= v2);
+        if let (Some(p1), Some(p2)) = (axis.project(v1), axis.project(v2)) {
+            assert!(p1 <= p2, "projection is non-decreasing");
+        }
+    }
+}
