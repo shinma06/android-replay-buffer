@@ -59,7 +59,8 @@ fn spawn_arbd(paths: &ArbPaths, missing_adb: &Path, lifecycle: Lifecycle) -> (Da
         .arg("--runtime-dir")
         .arg(&paths.runtime_dir);
     if lifecycle == Lifecycle::ParentBound {
-        cmd.arg("--exit-on-stdin-eof");
+        cmd.arg("--exit-on-stdin-eof")
+            .env("ARB_HANDOVER_OWNER", "test-owner");
     }
     let mut child = cmd
         // A missing configured adb keeps auto-attach away from any real host adb server.
@@ -83,10 +84,14 @@ fn spawn_arbd(paths: &ArbPaths, missing_adb: &Path, lifecycle: Lifecycle) -> (Da
 }
 
 fn rpc(endpoint: &Path, method: &str) -> Value {
+    rpc_params(endpoint, method, &json!({}))
+}
+
+fn rpc_params(endpoint: &Path, method: &str, params: &Value) -> Value {
     let stream = LocalIpcStream::connect(endpoint).expect("connect to arbd");
     let mut writer = stream.try_clone().expect("clone IPC stream");
     let mut reader = BufReader::new(stream);
-    let line = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}).to_string();
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string();
     write_frame_line(&mut writer, &line, DEFAULT_MAX_IPC_LINE_BYTES).expect("write frame");
     writer.drain().expect("drain frame");
     let raw = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
@@ -173,6 +178,27 @@ fn parent_pipe_eof_shuts_arbd_down_cleanly_and_frees_the_next_start() {
         .expect("second parent-bound arbd must also exit on EOF");
     assert_eq!(next_exit.code(), Some(0), "second instance exits cleanly");
     assert_released(&paths);
+}
+
+#[test]
+fn only_parent_can_handover_an_idle_bound_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = hermetic_paths(&tmp);
+    let (mut daemon, _stdin) =
+        spawn_arbd(&paths, &tmp.path().join("missing"), Lifecycle::ParentBound);
+    let endpoint = paths.ipc_endpoint();
+    let method = "system.shutdown_for_handover";
+    for params in [json!({}), json!({"owner": "another-parent"})] {
+        assert_eq!(
+            rpc_params(&endpoint, method, &params)["result"]["ok"],
+            false
+        );
+    }
+    assert_eq!(
+        rpc_params(&endpoint, method, &json!({"owner": "test-owner"}))["result"]["ok"],
+        true
+    );
+    assert!(wait_exit(&mut daemon, PARENT_GONE_EXIT_BUDGET).is_some());
 }
 
 #[test]

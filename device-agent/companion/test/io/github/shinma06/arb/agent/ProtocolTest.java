@@ -338,11 +338,13 @@ public final class ProtocolTest {
     private static void testGeteventParserDiscoveryAndLines() {
         String lp = "add device 1: /dev/input/event1\n"
                 + "  name:     \"virtio_input_multi_touch_1\"\n"
-                + "    ABS_MT_POSITION_X     : value 0, min 0, max 32767\n"
-                + "    ABS_MT_POSITION_Y     : value 0, min 0, max 32767\n"
+                + "  events:\n"
+                + "    ABS (0003): ABS_MT_POSITION_X     : value 0, min 0, max 32767, fuzz 0, flat 0, resolution 0\n"
+                + "                ABS_MT_POSITION_Y     : value 0, min 0, max 32767, fuzz 0, flat 0, resolution 0\n"
                 + "add device 2: /dev/input/event2\n"
                 + "  name:     \"qwerty2\"\n"
-                + "    KEY_POWER\n";
+                + "  events:\n"
+                + "    KEY (0001): KEY_POWER\n";
         Set<String> devices = GeteventParser.discoverTouchDevices(lp);
         assertEq(1, devices.size(), "only 1 touch device");
         assertTrue(devices.contains("/dev/input/event1"), "contains event1");

@@ -296,4 +296,46 @@ class ShmFrameRingReaderTest {
         ).use { it.write(java.nio.ByteBuffer.allocate(32)) }
         assertFailsWith<ShmRingException> { ShmFrameRingReader.open(truncated) }
     }
+
+    /**
+     * P1-04: the interleaved NV12 UV row holds `2 * ceil(width / 2)` bytes, so an odd width needs
+     * the V byte of its last U/V pair. A stride of just `width` (1x1, 3x2, 3x3) used to pass the
+     * size check and then read past the payload while decoding.
+     */
+    @Test
+    fun nv12OddWidthsRequireTheFullUvPairAndDecodeWithinBounds(@TempDir tmp: Path) {
+        assertNull(ShmPixelFormat.NV12.requiredBufferBytes(1, 1, 1), "1x1 needs a 2-byte UV row")
+        assertNull(ShmPixelFormat.NV12.requiredBufferBytes(3, 2, 3), "3x2 needs a 4-byte UV row")
+        assertNull(ShmPixelFormat.NV12.requiredBufferBytes(3, 3, 3), "3x3 needs a 4-byte UV row")
+        assertEquals(2 * 2, ShmPixelFormat.NV12.requiredBufferBytes(1, 1, 2))
+        assertEquals(4 * 3, ShmPixelFormat.NV12.requiredBufferBytes(3, 2, 4))
+        assertEquals(4 * 5, ShmPixelFormat.NV12.requiredBufferBytes(3, 3, 4))
+        assertEquals(4 * 6, ShmPixelFormat.NV12.requiredBufferBytes(4, 4, 4), "even widths are unchanged")
+
+        for ((w, h) in listOf(1 to 1, 3 to 2, 3 to 3)) {
+            val stride = (w + 1) / 2 * 2
+            val size = assertNotNull(ShmPixelFormat.NV12.requiredBufferBytes(w, h, stride))
+            val meta = ShmFrameMeta(1L, 0L, false, w, h, stride, ShmPixelFormat.NV12, 0L)
+            val image = ShmFrame(meta, ByteArray(size) { 0x80.toByte() }).toBufferedImage()
+            assertEquals(w to h, image.width to image.height)
+        }
+
+        // A producer publishing the old, too-short 1x1 layout is rejected, never decoded.
+        val ringPath = tmp.resolve("nv12.shm")
+        val (writerCh, mapped) = createRawRingFile(ringPath, 64)
+        writerCh.use {
+            ShmFrameRingReader.open(ringPath).use { reader ->
+                publishSlot(mapped, 64, 0, 1L, 0L, false, 1, 1, 1, ShmPixelFormat.NV12, 0L, byteArrayOf(16, -128))
+                assertFailsWith<ShmRingException> { reader.readLatest() }
+            }
+        }
+    }
+
+    @Test
+    fun alignUpOverflowIsReportedAsAShmRingException() {
+        assertEquals(64, ShmFrameRingReader.alignUp(1))
+        assertEquals(Int.MAX_VALUE - 63, ShmFrameRingReader.alignUp(Int.MAX_VALUE - 63))
+        assertFailsWith<ShmRingException> { ShmFrameRingReader.alignUp(Int.MAX_VALUE) }
+        assertFailsWith<ShmRingException> { ShmFrameRingReader.alignUp(Int.MAX_VALUE - 62) }
+    }
 }

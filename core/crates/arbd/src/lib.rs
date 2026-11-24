@@ -191,6 +191,7 @@ enum CaptureIntent {
     Stopped,
 }
 
+#[derive(Default)]
 struct LiveCapture {
     handle: Option<LiveCaptureHandle>,
     reservation: Option<Arc<()>>,
@@ -230,6 +231,7 @@ struct DaemonState {
     build_id: Option<String>,
     binary_mtime_secs: Option<u64>,
     parent_bound: bool,
+    handover_owner: Option<String>,
 }
 
 /// Computes an optional `(build_id, binary_mtime_secs)` fingerprint of the currently running
@@ -511,7 +513,12 @@ impl DaemonState {
             let Ok(_idle) = self.handover_gate.try_write() else {
                 return Ok(json!({ "ok": false }));
             };
-            let idle = !self.parent_bound && self.crash_jobs.load(Ordering::Acquire) == 0;
+            let owner_matches = self
+                .handover_owner
+                .as_deref()
+                .is_some_and(|owner| params.get("owner").and_then(Value::as_str) == Some(owner));
+            let idle = (!self.parent_bound || owner_matches)
+                && self.crash_jobs.load(Ordering::Acquire) == 0;
             if idle {
                 self.trigger_shutdown();
             }
@@ -1669,11 +1676,7 @@ impl DaemonServer {
             disk_provider,
             catalog,
             capture: Arc::new(Mutex::new(capture)),
-            live_capture: Mutex::new(LiveCapture {
-                handle: None,
-                reservation: None,
-                request: CaptureStartParams::default(),
-            }),
+            live_capture: Mutex::new(LiveCapture::default()),
             media,
             screenshot_provider: config.screenshot_provider,
             crash_autosave_status: Mutex::new(initial_crash_status),
@@ -1687,6 +1690,9 @@ impl DaemonServer {
             build_id,
             binary_mtime_secs,
             parent_bound: config.parent_bound,
+            handover_owner: std::env::var("ARB_HANDOVER_OWNER")
+                .ok()
+                .filter(|s| !s.is_empty()),
         });
 
         state.lock_capture()?.crash_daemon = Arc::downgrade(&state);

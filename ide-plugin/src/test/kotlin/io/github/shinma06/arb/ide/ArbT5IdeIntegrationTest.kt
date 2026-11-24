@@ -23,7 +23,6 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -270,15 +269,6 @@ class ArbT5IdeIntegrationTest {
         assertEquals(logcatDir, inherited.directory)
         assertFalse(ArbFormatters.containsEmoji(inherited.statusText))
 
-        val outputFile = ArbScreenshotDestinationResolver.resolveOutputFilePath(
-            project = null,
-            localSettings = ArbLocalSettingsState().apply { screenshotInheritLogcat = true },
-            now = Instant.parse("2026-11-24T01:02:03Z"),
-            logcatLocationProvider = { "\$DESKTOP_DIR$" },
-            logcatDirectoryResolver = { _, _ -> logcatDir },
-        )
-        assertEquals(logcatDir.resolve("arb-screenshot-20261124-010203.png").toString(), outputFile)
-
         // 2. Inherit Logcat when Studio ABI unavailable -> clean fallback to null (arbd output_dir)
         val fallback = ArbScreenshotDestinationResolver.resolveDirectory(
             project = null,
@@ -395,7 +385,7 @@ class ArbT5IdeIntegrationTest {
     @Test
     fun studioControllerScalesTapsWithDisplaySizeSkipsUnmappableAndFallsBackForLegacyBundles() {
         val drawRect = java.awt.Rectangle(10, 20, 460, 1024)
-        val (scaledX, scaledY) = ArbStudioController.mapTapToCanvasPoint(
+        val (scaledX, scaledY) = assertNotNull(ArbStudioController.mapTapToCanvasPoint(
             tapX = 540.0,
             tapY = 1200.0,
             drawRect = drawRect,
@@ -403,26 +393,45 @@ class ArbT5IdeIntegrationTest {
             videoH = 1024,
             displayW = 1080,
             displayH = 2400,
-        )
+        ))
         assertEquals(240, scaledX)
         assertEquals(532, scaledY)
 
-        val (legacyX, legacyY) = ArbStudioController.mapTapToCanvasPoint(
-            tapX = 230.0,
-            tapY = 512.0,
-            drawRect = drawRect,
-            videoW = 460,
-            videoH = 1024,
-            displayW = null,
-            displayH = null,
-        )
-        assertEquals(240, legacyX)
-        assertEquals(532, legacyY)
+        // Mirror arb-core gesture::map_touch_to_frame, including partially missing geometry.
+        fun map(x: Double, y: Double, videoW: Int = 460, videoH: Int = 1024, displayW: Int? = 1080, displayH: Int? = 2400) =
+            ArbStudioController.mapTapToCanvasPoint(x, y, drawRect, videoW, videoH, displayW, displayH)
+        assertNotNull(map(500.0, 500.0, videoW = 1024, videoH = 460))
+        assertNull(map(0.5, 0.5, displayW = null))
+        assertNull(map(0.5, 0.5, displayH = 0))
+        assertNull(map(4000.0, 1200.0))
+        assertNull(map(-1.0, 10.0), "negative coordinates are unmappable")
+        assertNotNull(map(540.0, 1200.0))
+    }
 
-        // Orientation mismatch or out-of-bounds raw evdev coordinate must be skipped (never edge-clamped)
-        assertTrue(ArbStudioController.isTapUnmappable(500.0, 500.0, videoW = 1024, videoH = 460, displayW = 1080, displayH = 2400))
-        assertTrue(ArbStudioController.isTapUnmappable(4000.0, 1200.0, videoW = 460, videoH = 1024, displayW = 1080, displayH = 2400))
-        assertFalse(ArbStudioController.isTapUnmappable(540.0, 1200.0, videoW = 460, videoH = 1024, displayW = 1080, displayH = 2400))
+    /**
+     * CE-01: with a known display size a tap is always physical pixels. A tap at `(1, 1)` (status
+     * bar corner) used to be read as normalized and drawn at the opposite bottom-right corner.
+     */
+    @Test
+    fun physicalTapAtOneOneStaysTopLeftWhenTheDisplaySizeIsKnown() {
+        val drawRect = java.awt.Rectangle(10, 20, 460, 1024)
+        fun map(x: Double, y: Double, displayW: Int?, displayH: Int?) =
+            ArbStudioController.mapTapToCanvasPoint(x, y, drawRect, 460, 1024, displayW, displayH)
+
+        assertEquals(10 to 20, map(0.0, 0.0, 1080, 2400))
+        assertEquals(10 to 20, map(1.0, 1.0, 1080, 2400), "physical (1,1) is the top-left corner")
+        assertEquals(10 to 20, map(2.0, 2.0, 1080, 2400))
+        assertEquals(10 + 459 to 20 + 1023, map(1080.0, 2400.0, 1080, 2400))
+        // Monotonic in x: 0 <= 1 <= 2 never jumps to the far edge.
+        val xs = listOf(0.0, 0.5, 1.0, 2.0, 3.0).map { assertNotNull(map(it, 100.0, 1080, 2400)).first }
+        assertEquals(xs.sorted(), xs)
+
+        // Unknown display size (legacy): only normalized coordinates are defined.
+        assertEquals(10 + 459 to 20 + 1023, map(1.0, 1.0, null, null))
+        assertEquals(10 + 230 to 20 + 512, map(0.5, 0.5, null, null))
+        assertNull(map(230.0, 512.0, null, null))
+        assertNull(map(16000.0, 16000.0, null, null), "raw evdev values are skipped, never edge-clamped")
+        assertNull(map(Double.NaN, 1.0, 1080, 2400))
     }
 
     @Test

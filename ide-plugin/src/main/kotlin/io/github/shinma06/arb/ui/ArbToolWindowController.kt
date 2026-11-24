@@ -54,7 +54,16 @@ import javax.swing.SwingUtilities
 enum class CaptureToggleState {
     OFF,
     ARMED_WAITING,
-    RECORDING,
+    RECORDING;
+
+    companion object {
+        /** The one 3-state rule shared by the Tool Window and the toolbar / Tools menu action. */
+        fun of(active: Boolean, armed: Boolean, connected: Boolean): CaptureToggleState = when {
+            active && connected -> RECORDING
+            active || armed -> ARMED_WAITING
+            else -> OFF
+        }
+    }
 }
 
 /**
@@ -244,11 +253,11 @@ class ArbToolWindowController(
         get() = isCaptureActive || isCaptureArmed
 
     val captureToggleState: CaptureToggleState
-        get() = when {
-            isCaptureActive && captureState.capture?.connected == true -> CaptureToggleState.RECORDING
-            isCaptureOn -> CaptureToggleState.ARMED_WAITING
-            else -> CaptureToggleState.OFF
-        }
+        get() = CaptureToggleState.of(
+            active = isCaptureActive,
+            armed = isCaptureArmed,
+            connected = captureState.capture?.connected == true,
+        )
 
     /** Compact status indicator text clearly distinguishing OFF / ON・待機中 / ON・REC. */
     val captureStatusBadgeText: String
@@ -419,26 +428,12 @@ class ArbToolWindowController(
         val canStartNow = canUseSelectedDevice
         val serial = selectedDeviceSerial
         runAsync {
-            if (currentlyOn) {
-                persistCaptureEnabled(daemonService, enabled = false)
-                if (currentlyActive) {
-                    daemonService.withClient { it.captureStop() }
-                }
-                daemonService.updateCachedCaptureState(active = false, enabled = false)
-            } else {
-                val armed = persistCaptureEnabled(daemonService, enabled = true) == true
-                val started = if (canStartNow && !serial.isNullOrBlank()) {
-                    val attempt = runCatching {
-                        daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
-                    }
-                    // Without always-on support the start itself is the whole toggle: surface its error.
-                    if (!armed) attempt.getOrThrow()
-                    attempt.getOrNull()?.started == true
-                } else {
-                    false
-                }
-                daemonService.updateCachedCaptureState(active = started, enabled = armed)
-            }
+            setCaptureEnabled(
+                daemonService,
+                enable = !currentlyOn,
+                currentlyActive = currentlyActive,
+                serial = serial.takeIf { canStartNow },
+            )
             refreshAll()
         }
     }
@@ -943,4 +938,43 @@ internal fun persistCaptureEnabled(daemonService: ArbdDaemonService, enabled: Bo
     }
     daemonService.notifyConfigUpdated(updated)
     return updated.captureEnabled
+}
+
+/** Result of [setCaptureEnabled]: the new state and the device a capture was started on. */
+internal data class CaptureToggleResult(val active: Boolean, val armed: Boolean, val startedSerial: String?)
+
+/**
+ * The capture ON/OFF toggle shared by the Tool Window and the toolbar / Tools menu action.
+ * OFF persists `capture_enabled = false` and stops a [currentlyActive] capture. ON persists
+ * `capture_enabled = true` and, when [serial] is given and nothing records yet, starts on it now;
+ * without always-on support (`armed == false`) that start is the whole toggle, so its error is
+ * thrown. The resulting state is published to the toolbar snapshot.
+ */
+internal fun setCaptureEnabled(
+    daemonService: ArbdDaemonService,
+    enable: Boolean,
+    currentlyActive: Boolean,
+    serial: String?,
+): CaptureToggleResult {
+    if (!enable) {
+        persistCaptureEnabled(daemonService, enabled = false)
+        if (currentlyActive) {
+            daemonService.withClient { it.captureStop() }
+        }
+        daemonService.updateCachedCaptureState(active = false, enabled = false)
+        return CaptureToggleResult(active = false, armed = false, startedSerial = null)
+    }
+    val armed = persistCaptureEnabled(daemonService, enabled = true) == true
+    val started = if (!currentlyActive && !serial.isNullOrBlank()) {
+        val attempt = runCatching {
+            daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
+        }
+        if (!armed) attempt.getOrThrow()
+        attempt.getOrNull()?.takeIf { it.started }?.serial
+    } else {
+        null
+    }
+    val active = currentlyActive || started != null
+    daemonService.updateCachedCaptureState(active = active, enabled = armed)
+    return CaptureToggleResult(active = active, armed = armed, startedSerial = started)
 }

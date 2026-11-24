@@ -59,6 +59,60 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ArbUiComponentsTest {
+    /**
+     * P2-06: the Studio header renders [ArbStudioController.headerSubtitle] verbatim. A bundle of
+     * the current format without device info used to show its wire name `v2` there.
+     */
+    @Test
+    fun studioHeaderSubtitleNeverFallsBackToTheWireFormatName() {
+        fun subtitleFor(format: BundleFormat, device: io.github.shinma06.arb.model.DeviceInfo?): String {
+            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+            val summary = TimelineSummaryResponse(
+                bundleId = "b-1",
+                path = "/tmp/b-1",
+                format = format,
+                isLegacy = format != BundleFormat.V2,
+                createdAtUtc = "2026-11-24T01:02:03Z",
+                provenance = Provenance.Original,
+                device = device,
+                streams = StreamsSummary(),
+                unanchoredSummary = UnanchoredSummary(0L, 0L),
+                epochs = emptyList(),
+                frameCount = 1,
+                keyframeCount = 1,
+                logMainCount = 0,
+                logUnanchoredCount = 0,
+                tapMainCount = 0,
+                tapUnanchoredCount = 0,
+                discontinuityCount = 0,
+            )
+            studio.renderState(
+                TimelineViewerState(
+                    bundleId = "b-1",
+                    path = "/tmp/b-1",
+                    format = format,
+                    isLegacy = summary.isLegacy,
+                    leaseId = "l-1",
+                    summary = summary,
+                    frameCount = 1L,
+                ),
+                image = null,
+            )
+            return studio.headerSubtitle
+        }
+
+        for (format in BundleFormat.entries) {
+            val subtitle = subtitleFor(format, device = null)
+            assertEquals("${ArbStudioController.UNKNOWN_DEVICE_LABEL} · 2026-11-24 01:02:03", subtitle)
+            assertFalse(subtitle.contains(format.wire), "wire name '${format.wire}' leaked into '$subtitle'")
+            assertFalse(Regex("""\bv2\b""", RegexOption.IGNORE_CASE).containsMatchIn(subtitle))
+        }
+        assertEquals(
+            "Pixel 9 (API 36) · 2026-11-24 01:02:03",
+            subtitleFor(BundleFormat.V2, io.github.shinma06.arb.model.DeviceInfo("emu", "Pixel 9", 36, true)),
+        )
+    }
+
     @Test
     fun studioControllerTogglesMandatoryApproximateBadgeAndTapRipples() {
         val studio = ArbStudioController(

@@ -40,7 +40,7 @@ public final class LogcatScreenshotSettings {
             Method getSaveLocation = saveConfig.getClass().getMethod("getSaveLocation");
             Object value = getSaveLocation.invoke(saveConfig);
             return (value instanceof String) ? (String) value : null;
-        } catch (Throwable ignored) {
+        } catch (Exception | LinkageError ignored) {
             return null;
         }
     }
@@ -108,7 +108,7 @@ public final class LogcatScreenshotSettings {
                 return null;
             }
             return Path.of(filename).toAbsolutePath().normalize().getParent();
-        } catch (Throwable ignored) {
+        } catch (Exception | LinkageError ignored) {
             return null;
         }
     }

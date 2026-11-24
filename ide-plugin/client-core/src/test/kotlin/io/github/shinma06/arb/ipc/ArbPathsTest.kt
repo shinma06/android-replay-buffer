@@ -1,11 +1,14 @@
 package io.github.shinma06.arb.ipc
 
 import org.junit.jupiter.api.Test
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Paths
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ArbPathsTest {
@@ -59,15 +62,9 @@ class ArbPathsTest {
     }
 
     @Test
-    fun windowsNamedPipeAndSidBinaryEncodingAreDeterministic() {
-        val sidBytes = ArbPaths.encodeWindowsSidStringToBytes("S-1-5-21-3623811015-3361044348-30300820-1013")
-        assertNotNull(sidBytes)
-        // Revision=1, SubAuthorityCount=5, Authority=5 (big-endian 6 bytes)
-        assertEquals(8 + 5 * 4, sidBytes.size)
-        assertContentEquals(byteArrayOf(1, 5, 0, 0, 0, 0, 0, 5), sidBytes.copyOfRange(0, 8))
-
-        val pipeA = ArbPaths.computeWindowsPipeEndpoint("""C:\Users\alice\AppData\Local\arb\runtime""", sidBytes)
-        val pipeB = ArbPaths.computeWindowsPipeEndpoint("""C:\Users\bob\AppData\Local\arb\runtime""", sidBytes)
+    fun windowsNamedPipeIsDeterministicAndKeyedByTheRuntimeDir() {
+        val pipeA = ArbPaths.computeWindowsPipeEndpoint("""C:\Users\alice\AppData\Local\arb\runtime""", GOLDEN_SID)
+        val pipeB = ArbPaths.computeWindowsPipeEndpoint("""C:\Users\bob\AppData\Local\arb\runtime""", GOLDEN_SID)
         assertTrue(pipeA.startsWith("""\\.\pipe\arb-daemon-"""))
         assertEquals("""\\.\pipe\arb-daemon-""".length + 16, pipeA.length)
         assertNotEquals(pipeA, pipeB)
@@ -83,13 +80,48 @@ class ArbPathsTest {
             ArbPaths.computeWindowsPipeEndpoint(runtime, null),
             "no-SID FNV-1a pipe name must match the Rust golden vector",
         )
-        val sidBytes =
-            ArbPaths.encodeWindowsSidStringToBytes("S-1-5-21-3623811015-3361044348-30300820-1013")
-        assertNotNull(sidBytes)
         assertEquals(
             """\\.\pipe\arb-daemon-5e550661a2714c87""",
-            ArbPaths.computeWindowsPipeEndpoint(runtime, sidBytes),
+            ArbPaths.computeWindowsPipeEndpoint(runtime, GOLDEN_SID),
             "SID-mixed FNV-1a pipe name must match the Rust golden vector",
+        )
+        assertEquals(
+            """\\.\pipe\arb-daemon-5e550661a2714c87""",
+            ArbPaths(Paths.get("d"), Paths.get("c"), Paths.get(runtime), os = HostOs.WINDOWS).ipcEndpoint(GOLDEN_SID),
+        )
+    }
+
+    /**
+     * P0-6: the pipe name needs the token user's SID. An unavailable SID must fail closed instead
+     * of silently hashing without it (a name `arbd` never listens on), and the SID must come from
+     * the in-process Win32 lookup, never from spawning `whoami`.
+     */
+    @Test
+    fun windowsPipeNameFailsClosedWithoutTheUserSid() {
+        val runtime = """C:\Users\alice\AppData\Local\arb\runtime"""
+        val noSidName = ArbPaths.computeWindowsPipeEndpoint(runtime, null)
+        assertFailsWith<IOException> { ArbPaths.windowsPipeEndpoint(runtime) { throw IOException("token query failed") } }
+        assertFailsWith<IOException> { ArbPaths.windowsPipeEndpoint(runtime) { ByteArray(0) } }
+
+        // Real lookup on this host: the Win32 token SID on Windows, an explicit failure elsewhere.
+        val viaHost = runCatching {
+            ArbPaths(Paths.get("d"), Paths.get("c"), Paths.get(runtime), os = HostOs.WINDOWS).ipcEndpoint()
+        }
+        viaHost.exceptionOrNull()?.let { assertIs<IOException>(it) }
+        assertNotEquals(noSidName, viaHost.getOrNull(), "never a silent SID-less pipe name")
+
+        val source = Files.readString(
+            Paths.get(System.getProperty("arb.repo.root") ?: "..")
+                .resolve("ide-plugin/client-core/src/main/kotlin/io/github/shinma06/arb/ipc/ArbPaths.kt"),
+        )
+        assertFalse("ProcessBuilder" in source, "ArbPaths must not spawn an external process (whoami)")
+    }
+
+    private companion object {
+        /** Binary Win32 SID of `S-1-5-21-3623811015-3361044348-30300820-1013`. */
+        val GOLDEN_SID = byteArrayOf(
+            1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, -57, -9, -2, -41,
+            124, 119, 85, -56, -108, 90, -50, 1, -11, 3, 0, 0,
         )
     }
 }

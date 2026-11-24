@@ -25,7 +25,9 @@ enum class ShmPixelFormat(val wire: Int) {
         val minRowBytes: Long = when (this) {
             BGRA8, RGBA8 -> width.toLong() * 4L
             RGB24 -> width.toLong() * 3L
-            NV12 -> width.toLong()
+            // The interleaved UV row holds a U/V pair per 2 pixels: 2 * ceil(width / 2) bytes,
+            // so an odd width still needs the V byte of its last pair (same rule as `arb-os`).
+            NV12 -> (width.toLong() + 1L) / 2L * 2L
         }
         if (stride.toLong() < minRowBytes) return null
         val totalRows: Long = when (this) {
@@ -335,9 +337,15 @@ class ShmFrameRingReader private constructor(
         private val INT_LE: VarHandle =
             MethodHandles.byteBufferViewVarHandle(IntArray::class.java, ByteOrder.LITTLE_ENDIAN)
 
+        @Throws(ShmRingException::class)
         fun alignUp(value: Int, align: Int = CACHE_LINE_BYTES): Int {
             val rem = value % align
-            return if (rem == 0) value else Math.addExact(value, align - rem)
+            if (rem == 0) return value
+            val padding = align - rem
+            if (value > Int.MAX_VALUE - padding) {
+                throw ShmRingException("SHM size $value overflows when aligned to $align bytes")
+            }
+            return value + padding
         }
 
         @Throws(IOException::class)

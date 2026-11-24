@@ -11,13 +11,13 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
-import io.github.shinma06.arb.model.CaptureStartParams
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
 import io.github.shinma06.arb.state.ArbFormatters
-import io.github.shinma06.arb.ui.persistCaptureEnabled
+import io.github.shinma06.arb.ui.CaptureToggleState
+import io.github.shinma06.arb.ui.setCaptureEnabled
 import javax.swing.Icon
 import javax.swing.SwingUtilities
 
@@ -32,10 +32,7 @@ data class ArbActionPresentation(
 
 object ArbToolbarPresentationState {
     fun toggleCapture(snapshot: ArbToolbarDaemonSnapshot): ArbActionPresentation {
-        val active = snapshot.captureActive
-        val armed = snapshot.captureEnabled
-        val isOn = active || armed
-        val icon = if (isOn) AllIcons.Actions.Suspend else AllIcons.Actions.Restart
+        val toggleState = snapshot.captureToggleState
         if (!snapshot.probed) {
             return ArbActionPresentation(
                 text = "ARB: キャプチャを開始",
@@ -54,7 +51,7 @@ object ArbToolbarPresentationState {
                 selected = false,
             )
         }
-        if (active && snapshot.captureConnected) {
+        if (toggleState == CaptureToggleState.RECORDING) {
             val serialSuffix = snapshot.selectedDeviceSerial?.let { " ($it)" }.orEmpty()
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・REC)",
@@ -64,7 +61,7 @@ object ArbToolbarPresentationState {
                 selected = true,
             )
         }
-        if (isOn) {
+        if (toggleState == CaptureToggleState.ARMED_WAITING) {
             val detail = snapshot.disabledDeviceHint?.let { " · $it" }.orEmpty()
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・待機中)",
@@ -84,7 +81,7 @@ object ArbToolbarPresentationState {
         return ArbActionPresentation(
             text = "ARB: キャプチャを開始 (OFF)",
             description = reason,
-            icon = icon,
+            icon = AllIcons.Actions.Restart,
             enabled = true,
             selected = false,
         )
@@ -222,49 +219,26 @@ private fun executeSetCaptureState(project: Project?, desiredActive: Boolean) {
         val service = ArbdDaemonService.getInstance()
         try {
             val status = service.withClient { it.systemStatus() }
-            if (!desiredActive) {
-                persistCaptureEnabled(service, enabled = false)
-                if (status.capture.active) {
-                    service.withClient { it.captureStop() }
-                }
-                service.updateCachedCaptureState(active = false, enabled = false)
-                service.notifyCatalogChanged()
-                ArbNotifications.notifyInfo(project, "キャプチャを OFF（停止中）にしました。")
-            } else {
-                // `null`: this arbd predates always-on capture, so only a direct start can turn it ON.
-                val armed = persistCaptureEnabled(service, enabled = true) == true
-                val snap = service.cachedToolbarSnapshot
-                val serial = if (snap.hasOnlineDevice) snap.selectedDeviceSerial else null
-                if (!armed && !status.capture.active && serial.isNullOrBlank()) {
-                    ArbNotifications.notifyInfo(project, "端末未検出（USB / エミュレータを接続してください）")
-                    service.updateCachedCaptureState(active = false, enabled = false)
-                } else if (!status.capture.active && !serial.isNullOrBlank()) {
-                    val attempt = runCatching {
-                        service.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
-                    }
-                    if (!armed) attempt.getOrThrow()
-                    val started = attempt.getOrNull()
-                    if (started?.started == true) {
-                        service.updateCachedCaptureState(active = true, enabled = armed)
-                        service.notifyCatalogChanged()
-                        ArbNotifications.notifyInfo(
-                            project,
-                            "キャプチャを ON・REC（取得中）にしました (端末: ${started.serial})。",
-                        )
-                    } else if (!armed) {
-                        service.updateCachedCaptureState(active = false, enabled = false)
-                        ArbNotifications.notifyInfo(project, "キャプチャを開始できませんでした。端末の接続を確認してください。")
-                    } else {
-                        service.updateCachedCaptureState(active = false, enabled = true)
-                        service.notifyCatalogChanged()
-                        ArbNotifications.notifyInfo(project, "キャプチャを ON・待機中（端末接続で自動開始）にしました。")
-                    }
-                } else {
-                    service.updateCachedCaptureState(active = status.capture.active, enabled = armed)
+            val snap = service.cachedToolbarSnapshot
+            val serial = if (desiredActive && snap.hasOnlineDevice) snap.selectedDeviceSerial else null
+            val result = setCaptureEnabled(service, desiredActive, currentlyActive = status.capture.active, serial = serial)
+            when {
+                !desiredActive -> {
                     service.notifyCatalogChanged()
-                    if (!status.capture.active) {
-                        ArbNotifications.notifyInfo(project, "キャプチャを ON・待機中（端末接続で自動開始）にしました。")
-                    }
+                    ArbNotifications.notifyInfo(project, "キャプチャを OFF（停止中）にしました。")
+                }
+                result.startedSerial != null -> {
+                    service.notifyCatalogChanged()
+                    ArbNotifications.notifyInfo(project, "キャプチャを ON・REC（取得中）にしました (端末: ${result.startedSerial})。")
+                }
+                status.capture.active -> service.notifyCatalogChanged()
+                !result.armed && serial.isNullOrBlank() ->
+                    ArbNotifications.notifyInfo(project, "端末未検出（USB / エミュレータを接続してください）")
+                !result.armed ->
+                    ArbNotifications.notifyInfo(project, "キャプチャを開始できませんでした。端末の接続を確認してください。")
+                else -> {
+                    service.notifyCatalogChanged()
+                    ArbNotifications.notifyInfo(project, "キャプチャを ON・待機中（端末接続で自動開始）にしました。")
                 }
             }
         } catch (t: Throwable) {
@@ -364,8 +338,7 @@ class ArbToggleCaptureAction :
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun isSelected(e: AnActionEvent): Boolean {
-        val snap = readToolbarSnapshotOrDefault()
-        return snap.captureEnabled || snap.captureActive
+        return readToolbarSnapshotOrDefault().captureToggleState != CaptureToggleState.OFF
     }
 
     override fun setSelected(e: AnActionEvent, state: Boolean) {

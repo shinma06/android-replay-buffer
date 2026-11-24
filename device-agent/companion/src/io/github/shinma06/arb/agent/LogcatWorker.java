@@ -2,7 +2,6 @@ package io.github.shinma06.arb.agent;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -22,7 +21,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class LogcatWorker {
     private static final long STATS_INTERVAL_MS = 5000L;
     private static final long STATS_PROBE_TIMEOUT_MS = 4000L;
-    private static final long REAP_TIMEOUT_MS = 500L;
     private static final long INITIAL_BACKOFF_MS = 500L;
     private static final long MAX_BACKOFF_MS = 5000L;
     private static final String SAFE_FALLBACK_BUFFERS = "main,system,crash,events";
@@ -105,7 +103,7 @@ public final class LogcatWorker {
         running.set(false);
         Process p = activeProcess;
         if (p != null) {
-            terminateProcessStreamsAndDestroy(p);
+            ChildProcesses.destroy(p);
         }
         Process statsProc;
         synchronized (statsProcessLock) {
@@ -113,7 +111,7 @@ public final class LogcatWorker {
             activeStatsProcess = null;
         }
         if (statsProc != null) {
-            terminateProcessStreamsAndDestroy(statsProc);
+            ChildProcesses.destroy(statsProc);
         }
         if (readerThread != null) {
             readerThread.interrupt();
@@ -428,7 +426,7 @@ public final class LogcatWorker {
             p = statsStarter.start(cmd);
             synchronized (statsProcessLock) {
                 if (!running.get()) {
-                    terminateAndReap(p);
+                    ChildProcesses.destroyAndReap(p);
                     return null;
                 }
                 activeStatsProcess = p;
@@ -455,7 +453,7 @@ public final class LogcatWorker {
                     if (running.get()) {
                         timedOut.set(true);
                     }
-                    terminateProcessStreamsAndDestroy(watchedProcess);
+                    ChildProcesses.destroy(watchedProcess);
                     callerThread.interrupt();
                 }
             }, "arb-logcat-stats-watchdog");
@@ -476,7 +474,7 @@ public final class LogcatWorker {
             if (!running.get() || timedOut.get()) {
                 return null;
             }
-            p.waitFor(REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            p.waitFor(ChildProcesses.REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             return sb.toString();
         } catch (Throwable ignored) {
             return null;
@@ -496,54 +494,17 @@ public final class LogcatWorker {
                         activeStatsProcess = null;
                     }
                 }
-                terminateAndReap(p);
+                ChildProcesses.destroyAndReap(p);
             }
             if (watchdog != null) {
                 try {
-                    watchdog.join(REAP_TIMEOUT_MS);
+                    watchdog.join(ChildProcesses.REAP_TIMEOUT_MS);
                 } catch (InterruptedException ignored) {
                     if (running.get()) {
                         Thread.currentThread().interrupt();
                     }
                 }
             }
-        }
-    }
-
-    private static void terminateProcessStreamsAndDestroy(Process p) {
-        try {
-            p.destroyForcibly();
-        } catch (NoSuchMethodError e) {
-            p.destroy();
-        } catch (Throwable ignored) {
-        }
-        closeQuietly(p.getInputStream());
-        closeQuietly(p.getErrorStream());
-        closeQuietly(p.getOutputStream());
-    }
-
-    private static void terminateAndReap(Process p) {
-        terminateProcessStreamsAndDestroy(p);
-        boolean wasInterrupted = Thread.interrupted();
-        try {
-            p.waitFor(REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignored) {
-            wasInterrupted = true;
-        } catch (Throwable ignored) {
-        } finally {
-            if (wasInterrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-    private static void closeQuietly(Closeable c) {
-        if (c == null) {
-            return;
-        }
-        try {
-            c.close();
-        } catch (Throwable ignored) {
         }
     }
 
