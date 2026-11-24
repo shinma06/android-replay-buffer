@@ -147,6 +147,71 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Linux binaries must start on the oldest glibc baseline we ship for (Ubuntu 22.04 LTS: glibc 2.35,
+# libstdc++ GLIBCXX_3.4.30). GitHub's `ubuntu-latest` moves on (26.04 = glibc 2.43), so a bundle built
+# there silently stops launching on every LTS release still in use.
+MAX_GLIBC = (2, 35)
+MAX_GLIBCXX = (3, 4, 30)
+SHT_GNU_VERNEED = 0x6FFFFFFE
+
+
+def elf_max_symbol_versions(data: bytes) -> dict[str, tuple[int, ...]]:
+    """Highest versioned dependency per library family (`GLIBC`, `GLIBCXX`, `GCC`, ...) an ELF64
+    little-endian binary requires: the `.gnu.version_r` table that `readelf -V` prints.
+    Raises ValueError for anything that is not such an ELF file."""
+    if data[:4] != b"\x7fELF" or len(data) < 64 or data[4] != 2 or data[5] != 1:
+        raise ValueError("not an ELF64 little-endian file")
+    shoff, = struct.unpack_from("<Q", data, 0x28)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
+    if shentsize < 64 or shoff == 0 or shoff + shentsize * shnum > len(data):
+        raise ValueError("truncated ELF section header table")
+
+    def section(index: int) -> tuple[int, int, int, int, int]:
+        _, sh_type, _, _, offset, size, link, info, *_ = struct.unpack_from("<IIQQQQIIQQ", data, shoff + index * shentsize)
+        return sh_type, offset, size, link, info
+
+    def cstring(table: int, offset: int) -> str:
+        end = data.index(b"\0", table + offset)
+        return data[table + offset:end].decode("ascii", "replace")
+
+    found: dict[str, tuple[int, ...]] = {}
+    for index in range(shnum):
+        sh_type, offset, size, link, count = section(index)
+        if sh_type != SHT_GNU_VERNEED:
+            continue
+        strtab = section(link)[1]
+        entry = offset
+        for _ in range(count):
+            _, aux_count, _, aux_offset, next_entry = struct.unpack_from("<HHIII", data, entry)
+            aux = entry + aux_offset
+            for _ in range(aux_count):
+                _, _, _, name_offset, next_aux = struct.unpack_from("<IHHII", data, aux)
+                name = cstring(strtab, name_offset)
+                family, _, number = name.rpartition("_")
+                if family and re.fullmatch(r"\d+(\.\d+)*", number):
+                    version = tuple(int(part) for part in number.split("."))
+                    found[family] = max(found.get(family, ()), version)
+                aux += next_aux
+            entry += next_entry
+    return found
+
+
+def elf_compat_problems(data: bytes) -> tuple[str, list[str]]:
+    """(summary, problems) for the glibc / libstdc++ baseline of one Linux binary."""
+    needs = elf_max_symbol_versions(data)
+
+    def dotted(version: tuple[int, ...] | None) -> str:
+        return ".".join(map(str, version)) if version else "none"
+
+    summary = f"max GLIBC {dotted(needs.get('GLIBC'))} (limit {dotted(MAX_GLIBC)}), GLIBCXX {dotted(needs.get('GLIBCXX'))} (limit {dotted(MAX_GLIBCXX)})"
+    problems = []
+    if needs.get("GLIBC", ()) > MAX_GLIBC:
+        problems.append(f"GLIBC_{dotted(needs['GLIBC'])} > GLIBC_{dotted(MAX_GLIBC)}")
+    if needs.get("GLIBCXX", ()) > MAX_GLIBCXX:
+        problems.append(f"GLIBCXX_{dotted(needs['GLIBCXX'])} > GLIBCXX_{dotted(MAX_GLIBCXX)}")
+    return summary, problems
+
+
 def snapshot_tree(root: Path) -> dict[str, str]:
     """Relative path -> SHA-256 for every file, plus `<dir>/` markers for every directory."""
     snap: dict[str, str] = {}
@@ -550,6 +615,13 @@ def section_bundle_integrity(report: Report, ctx: dict[str, Any]) -> None:
             path = root / "bin" / exe(binary, bundle_os)
             ok = path.is_file() and (bundle_os == "windows" or os.access(path, os.X_OK))
             sec.check(f"bin/{exe(binary, bundle_os)} present and executable", ok)
+        if bundle_os == "linux":
+            for binary, data in bin_bytes.items():
+                try:
+                    summary, problems = elf_compat_problems(data)
+                except ValueError as err:
+                    summary, problems = str(err), [str(err)]
+                sec.check(f"bin/{binary}: runs on the Ubuntu 22.04 LTS baseline (glibc <= 2.35, GLIBCXX <= 3.4.30)", not problems, f"{summary}{'; ' + ', '.join(problems) if problems else ''}")
         for lic in LICENSE_FILES:
             sec.check(f"{lic} shipped in the bundle", (root / lic).is_file())
         for jar in DEVICE_AGENT_JARS:
@@ -1630,12 +1702,48 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
 # self-test
 # --------------------------------------------------------------------------------------------
 
+def build_stub_elf(requirements: dict[str, Sequence[str]]) -> bytes:
+    """A minimal ELF64 whose `.gnu.version_r` requires the given versioned symbols per library."""
+    dynstr = bytearray(b"\0")
+
+    def add(text: str) -> int:
+        offset = len(dynstr)
+        dynstr.extend(text.encode() + b"\0")
+        return offset
+
+    verneed = bytearray()
+    for index, (library, names) in enumerate(requirements.items()):
+        last = index == len(requirements) - 1
+        verneed += struct.pack("<HHIII", 1, len(names), add(library), 16, 0 if last else 16 + 16 * len(names))
+        for number, name in enumerate(names):
+            verneed += struct.pack("<IHHII", 0, 0, 2 + number, add(name), 0 if number == len(names) - 1 else 16)
+    shstrtab = b"\0.gnu.version_r\0.dynstr\0.shstrtab\0"
+    body = bytes(verneed) + bytes(dynstr) + shstrtab
+    shoff = (64 + len(body) + 7) & ~7
+    headers = (
+        struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        + struct.pack("<IIQQQQIIQQ", 1, SHT_GNU_VERNEED, 2, 0, 64, len(verneed), 2, len(requirements), 8, 0)
+        + struct.pack("<IIQQQQIIQQ", 16, 3, 2, 0, 64 + len(verneed), len(dynstr), 0, 0, 1, 0)
+        + struct.pack("<IIQQQQIIQQ", 24, 3, 0, 0, 64 + len(verneed) + len(dynstr), len(shstrtab), 0, 0, 1, 0)
+    )
+    header = b"\x7fELF" + bytes([2, 1, 1, 0]) + bytes(8) + struct.pack("<HHIQQQIHHHHHH", 2, 0x3E, 1, 0, 0, shoff, 0, 64, 0, 0, 64, 4, 3)
+    return header + body + bytes(shoff - 64 - len(body)) + headers
+
+
+def stub_binary(name: str, target_os: str) -> bytes:
+    """Stand-in shipped binary; Linux ones carry a real glibc 2.34 / GLIBCXX 3.4.29 requirement table."""
+    marker = f"stub-{name}-{target_os}".encode()
+    if target_os != "linux":
+        return marker
+    return build_stub_elf({"libc.so.6": ["GLIBC_2.2.5", "GLIBC_2.34"], "libstdc++.so.6": ["GLIBCXX_3.4.29"]}) + marker
+
+
 def build_stub_bundle(tmp: Path, target_os: str, arch: str, plugin_zip: Path | None) -> Path:
     packager = load_sibling("package_distribution")
     bin_dir = tmp / f"bin-{target_os}"
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in BINARIES:
-        (bin_dir / exe(name, target_os)).write_bytes(f"stub-{name}-{target_os}".encode())
+        (bin_dir / exe(name, target_os)).write_bytes(stub_binary(name, target_os))
     agent = tmp / "agent"
     agent.mkdir(exist_ok=True)
     for jar in DEVICE_AGENT_JARS:
@@ -1681,7 +1789,7 @@ def build_stub_plugin(tmp: Path, slugs: Sequence[str], *, with_licenses: bool = 
             for name in BINARIES:
                 info = zipfile.ZipInfo(f"arb-ide-plugin/native/{slug}/{exe(name, slug_os)}")
                 info.external_attr = (stat.S_IFREG | 0o755) << 16
-                zf.writestr(info, f"stub-{name}-{slug_os}".encode())
+                zf.writestr(info, stub_binary(name, slug_os))
     return plugin
 
 
@@ -1813,6 +1921,39 @@ def self_test() -> int:
         )
         rep = run_static(tmp, labelled, universal_plugin, "universal", "x86_64")
         require("retired label in THIRD_PARTY_NOTICES.md is detected", not rep.passed)
+        # ELF baseline guard: parser, pass at the limit, fail above it
+        at_limit = build_stub_elf({"libc.so.6": ["GLIBC_2.2.5", "GLIBC_2.35"], "libstdc++.so.6": ["GLIBCXX_3.4.9", "GLIBCXX_3.4.30"], "libgcc_s.so.1": ["GCC_3.0"]})
+        require("ELF verneed parser", elf_max_symbol_versions(at_limit) == {"GLIBC": (2, 35), "GLIBCXX": (3, 4, 30), "GCC": (3, 0)}, elf_max_symbol_versions(at_limit))
+        require("ELF at the baseline limit passes", elf_compat_problems(at_limit)[1] == [], elf_compat_problems(at_limit))
+        too_new = build_stub_elf({"libc.so.6": ["GLIBC_2.34", "GLIBC_2.43", "GLIBC_PRIVATE"]})
+        require("GLIBC_2.43 is rejected", elf_compat_problems(too_new)[1] == ["GLIBC_2.43 > GLIBC_2.35"], elf_compat_problems(too_new))
+        require("GLIBC_2.36 is rejected and 2.9 is not newer than 2.35", elf_compat_problems(build_stub_elf({"libc.so.6": ["GLIBC_2.36"]}))[1] != [] and elf_compat_problems(build_stub_elf({"libc.so.6": ["GLIBC_2.9"]}))[1] == [])
+        require("GLIBCXX_3.4.31 is rejected", elf_compat_problems(build_stub_elf({"libstdc++.so.6": ["GLIBCXX_3.4.31"]}))[1] == ["GLIBCXX_3.4.31 > GLIBCXX_3.4.30"])
+        require("a binary without version needs passes", elf_compat_problems(build_stub_elf({}))[1] == [] and elf_max_symbol_versions(build_stub_elf({})) == {})
+        for junk in (b"stub-arbd-linux", b"\x7fELF\x01\x01\x01" + bytes(80), at_limit[:100]):
+            try:
+                elf_max_symbol_versions(junk)
+                require("non-ELF / truncated input raises", False)
+            except (ValueError, struct.error):
+                pass
+        elf_dir = tmp / "elf-cli"
+        elf_dir.mkdir()
+        (elf_dir / "ok").write_bytes(at_limit)
+        (elf_dir / "bad").write_bytes(too_new)
+        require("--check-elf-compat exits 0 at the limit and 1 above it", check_elf_compat_cli([elf_dir / "ok"]) == 0 and check_elf_compat_cli([elf_dir / "ok", elf_dir / "bad"]) == 1)
+        # a Linux bundle whose binary needs a newer glibc fails bundle-integrity
+        new_glibc = tmp / "newglibc"
+        new_glibc.mkdir()
+        new_glibc_bundle = build_stub_bundle(new_glibc, "linux", "x86_64", universal_plugin)
+        broken = new_glibc / "arb-linux-x86_64.zip"
+        new_glibc_bundle.rename(new_glibc / "src.zip")
+        with zipfile.ZipFile(new_glibc / "src.zip") as src, zipfile.ZipFile(broken, "w") as dst:
+            for info in src.infolist():
+                dst.writestr(info, too_new if info.filename.endswith("/bin/arbd") else src.read(info.filename))
+        rep = run_static(tmp, broken, universal_plugin, "universal", "x86_64")
+        glibc_checks = [c for s in rep.sections for c in s.checks if "Ubuntu 22.04" in c["name"]]
+        require("bundle-integrity flags a binary that needs GLIBC_2.43", any(not c["pass"] and "GLIBC_2.43" in str(c["detail"]) for c in glibc_checks), glibc_checks)
+        require("bundle-integrity passes the baseline for stub Linux bundles", all(c["pass"] for c in [c for s in run_static(tmp, bundle, universal_plugin, "universal", "x86_64").sections for c in s.checks if "Ubuntu 22.04" in c["name"]]))
         # previous release identical to the candidate: strict by default, opt-in keeps a real hot-swap
         cand_zip = build_stub_bundle(tmp, "linux", "x86_64", universal_plugin)
         prev_dir = tmp / "prev-same"
@@ -1871,7 +2012,7 @@ def self_test() -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("verify_release_bundle.py --self-test: OK (helpers, MCP framing, pixel comparison, static bundle/plugin verification for linux/macos/windows incl. tamper / missing-license / host-only / retired-label detection, previous-release identity strict / --allow-same-previous-arbd, report rendering)")
+    print("verify_release_bundle.py --self-test: OK (helpers, MCP framing, pixel comparison, static bundle/plugin verification for linux/macos/windows incl. tamper / missing-license / host-only / retired-label detection, ELF glibc / GLIBCXX baseline guard, previous-release identity strict / --allow-same-previous-arbd, report rendering)")
     return 0
 
 
@@ -1882,6 +2023,7 @@ def self_test() -> int:
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true", help="run the helper / static-verification self-test and exit")
+    ap.add_argument("--check-elf-compat", nargs="+", type=Path, metavar="BINARY", help="print the highest GLIBC / GLIBCXX each Linux binary requires and exit non-zero above the Ubuntu 22.04 baseline (glibc 2.35, GLIBCXX 3.4.30)")
     ap.add_argument("--bundle-zip", type=Path, help="arb-<os>-<arch>.zip to verify")
     ap.add_argument("--plugin-zip", type=Path, help="universal arb-ide-plugin-*.zip (also checked against the bundle-embedded copy)")
     ap.add_argument("--plugin-scope", choices=("universal", "host-only"), default="universal", help="require 3 OS native dirs (default) or only the bundle's OS")
@@ -1967,6 +2109,18 @@ def distinct_old_release(sec: Section, old_root: Path, work_dir: Path, bundle_os
     return distinct if signed and after != before else None
 
 
+def check_elf_compat_cli(binaries: Sequence[Path]) -> int:
+    failed = False
+    for path in binaries:
+        try:
+            summary, problems = elf_compat_problems(path.read_bytes())
+        except (OSError, ValueError) as err:
+            summary, problems = str(err), [str(err)]
+        failed = failed or bool(problems)
+        print(f"{'FAIL' if problems else 'OK  '} {path.name}: {summary}{'; ' + ', '.join(problems) if problems else ''}")
+    return 1 if failed else 0
+
+
 def default_core_version() -> str | None:
     cargo = REPO_ROOT / "core" / "Cargo.toml"
     if not cargo.is_file():
@@ -1978,6 +2132,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.check_elf_compat:
+        return check_elf_compat_cli(args.check_elf_compat)
     if args.bundle_zip is None:
         print("ERROR: --bundle-zip is required (or use --self-test)", file=sys.stderr)
         return 2

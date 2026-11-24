@@ -75,8 +75,15 @@ jobs:
           set -euo pipefail
           ./device-agent/build.sh --with-scrcpy-audio 2>&1 | tee device-agent-build.log
           grep -q "ProtocolTest: ALL 19 TESTS PASSED" device-agent-build.log
-      - name: Build arbd + arb-cli + arb-tray (release)
-        run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+      - uses: actions/cache@v4.2.3
+        with:
+          path: ${{ runner.temp }}/arb-linux-release-container
+          key: arb-linux-release-container-${{ runner.os }}-${{ hashFiles('core/Cargo.lock', 'core/scripts/build-linux-release-container.sh') }}
+          restore-keys: arb-linux-release-container-${{ runner.os }}-
+      - name: Build arbd + arb-cli + arb-tray (release) in ubuntu:22.04 (glibc 2.35 baseline)
+        env:
+          ARB_LINUX_BUILD_CACHE: ${{ runner.temp }}/arb-linux-release-container
+        run: ./core/scripts/build-linux-release-container.sh
       - name: Resolve plugin version
         id: version
         run: |
