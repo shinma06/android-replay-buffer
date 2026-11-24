@@ -19,7 +19,6 @@
     clippy::clone_on_ref_ptr,
     reason = "PDD model/property code: long linearized models and generators read best unsplit"
 )]
-
 #![expect(
     clippy::too_many_lines,
     reason = "state machines are clearer as one match"
