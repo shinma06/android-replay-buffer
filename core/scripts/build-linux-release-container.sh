@@ -19,6 +19,37 @@
 #   ARB_LINUX_BUILD_OUT       where the binaries are copied (default core/target/release)
 set -euo pipefail
 
+check_nasm_build() {
+    local log_dir="$1" asm_log
+    asm_log="$log_dir/run/stdout"
+    if [[ ! -f "$asm_log" ]]; then asm_log="$log_dir/output"; fi
+    if [[ ! -s "$asm_log" ]]; then
+        echo "Missing openh264-sys2 build-script output in $log_dir" >&2
+        return 1
+    fi
+    if grep -Ei "not using any assembly|NASM compilation disabled" "$asm_log"; then
+        return 1
+    else
+        [[ $? = 1 ]]
+    fi
+}
+
+if [[ "${1:-}" = --self-test ]]; then
+    tmp="$(mktemp -d)"
+    trap 'rm -rf -- "$tmp"' EXIT
+    if check_nasm_build "$tmp"; then exit 1; fi
+    mkdir -p "$tmp/run"
+    for log_file in "$tmp/output" "$tmp/run/stdout"; do
+        echo "cargo:rustc-link-lib=static=openh264_common" > "$log_file"
+        check_nasm_build "$tmp"
+        echo "Failed to compile NASM files, not using any assembly." >> "$log_file"
+        if check_nasm_build "$tmp"; then exit 1; fi
+        rm "$log_file"
+    done
+    echo "NASM build log self-test passed"
+    exit 0
+fi
+
 if [[ "${1:-}" = --inside-container ]]; then
     export HOME=/cache/home
     export CARGO_HOME=/cache/cargo RUSTUP_HOME=/cache/rustup CARGO_TARGET_DIR=/cache/target
@@ -37,13 +68,9 @@ if [[ "${1:-}" = --inside-container ]]; then
     asm_out="$(jq -ser '
         [.[] | select(.reason == "build-script-executed" and (.package_id | contains("#openh264-sys2@"))) | .out_dir]
         | unique | select(length == 1) | .[0]' /tmp/build.jsonl)"
-    asm_log="${asm_out%/out}/output"
-    [[ -r "${asm_log}" ]]
-    if grep -Ei "not using any assembly|NASM compilation disabled" "${asm_log}"; then
+    if ! check_nasm_build "${asm_out%/out}"; then
         cargo clean --manifest-path core/Cargo.toml --release -p openh264-sys2
         exit 1
-    else
-        [[ $? = 1 ]]
     fi
     cargo build --locked --manifest-path core/Cargo.toml --release -p arbd --example arb_gate_bundle
     cp /cache/target/release/arbd /cache/target/release/arb-cli /cache/target/release/arb-tray /out/

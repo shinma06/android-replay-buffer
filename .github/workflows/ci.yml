@@ -68,6 +68,7 @@ jobs:
           python3 core/scripts/devin_verify_player_matrix.py --self-test
           python3 core/scripts/package_distribution.py --self-test
           python3 core/scripts/verify_release_bundle.py --self-test
+          bash core/scripts/build-linux-release-container.sh --self-test
           python3 core/scripts/release_gate_summary.py --self-test
           python3 core/scripts/windows_gui_evidence.py --self-test
       - name: device-agent build + host protocol tests (companion + scrcpy-audio DEX jars)
