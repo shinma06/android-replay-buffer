@@ -42,6 +42,7 @@ cargo build --manifest-path core/Cargo.toml --release -p arbd --example arb_gate
      --bundle-zip arb-<os>-<arch>.zip --plugin-zip arb-ide-plugin-<版>.zip \
      --fixtures-dir <arb_gate_bundle の出力> --check-tray --out-dir out-<os>
    ```
+   G-M3 の `legacy-read-only` で、schema 3 の `session.json` と schema 4 の `replay.json` が読取専用で開き、操作前後に全ファイルの SHA-256 が一致することを確認する。
    Linux のヘッドレス環境では `xvfb-run -a dbus-run-session -- python3 ...` で包む。
 3. `out-<os>/release-bundle-report.md` の「性能 (Suite B)」表（open / filmstrip / scrub / seek / trim / trim+burn）を 3 OS 分まとめる。トリムは `[47..=647]` の 601 フレーム、GOP 途中開始。
 4. 合格バー（オーナー確認済み）: **open ≤ 1 s / seek ≤ 0.2–0.5 s / trim ≤ 数秒**。超過は FAIL ではなく「性能指摘」として値付きで報告し、OS 間差も記載する。

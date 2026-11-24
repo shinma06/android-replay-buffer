@@ -327,6 +327,15 @@ fn parse_args() -> Result<(PathBuf, u32, u64, String), Box<dyn std::error::Error
     }
     let out_dir = out_dir.ok_or("--out-dir is required")?;
     let bundle_id = bundle_id.unwrap_or_else(|| format!("gate-gop{gop_seconds}s"));
+    if bundle_id.is_empty()
+        || !bundle_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+    {
+        return Err(
+            "--bundle-id must contain only ASCII letters, digits, hyphens or underscores".into(),
+        );
+    }
     Ok((out_dir, gop_seconds, frames, bundle_id))
 }
 
@@ -459,13 +468,12 @@ fn gate_metadata(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (out_dir, gop_seconds, frames, bundle_id) = parse_args()?;
     fs::create_dir_all(&out_dir)?;
-    let work = out_dir.join(format!(".work-{bundle_id}"));
-    fs::create_dir_all(&work)?;
+    let work = tempfile::tempdir_in(&out_dir)?;
     let gop_frames = gop_seconds * u32::try_from(FPS)?;
 
-    let video_src = work.join("video.mp4");
+    let video_src = work.path().join("video.mp4");
     encode_video(&video_src, frames, gop_frames)?;
-    let audio_src = work.join("audio.m4a");
+    let audio_src = work.path().join("audio.m4a");
     let audio_seconds = u32::try_from(frames / u64::try_from(FPS)? + 1)?;
     encode_audio(&audio_src, audio_seconds)?;
     let frame_records = frame_records_for(&video_src, frames)?;
@@ -506,7 +514,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let bundle_dir = out_dir.join(&bundle_id);
     V2BundleWriter::write(&bundle_dir, &format!("gate-{bundle_id}"), &draft)?;
-    fs::remove_dir_all(&work)?;
+    work.close()?;
 
     let meta = gate_metadata(&bundle_id, &bundle_dir, frames, gop_seconds, gop_frames);
     let meta_path = out_dir.join(format!("{bundle_id}.gate.json"));

@@ -25,9 +25,7 @@ import hashlib
 import os
 import platform
 import re
-import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import zipfile
@@ -816,7 +814,7 @@ def run_self_test(repo_root: Path) -> int:
         sh_text = render_unix_launcher("linux")
         ps_text = render_windows_launcher()
         assert "stale_pids" not in sh_text and "${cmd%% *}" not in sh_text, "launcher must not kill/parse foreign arbd"
-        assert 'ErrorActionPreference = "Continue"' in ps_text, "PS probes must not run under Stop"
+        assert "exit $LASTEXITCODE" in ps_text, "PowerShell must propagate a failed CLI command"
         assert "$stale" not in ps_text, "PS launcher must not kill foreign arbd"
 
         # Verify universal 3-OS release assembly (CI early + release.yml publish path).

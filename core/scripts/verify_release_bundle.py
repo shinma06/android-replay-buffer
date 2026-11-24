@@ -774,6 +774,10 @@ def locate_or_generate_fixtures(args: argparse.Namespace, work: Path, sec: Secti
     fixtures = work / "fixtures"
     fixtures.mkdir(parents=True, exist_ok=True)
     for gop in (1, 5):
+        # A previous invocation or another tool may own this directory.
+        sentinel = fixtures / f".work-gate-gop{gop}s" / "existing.txt"
+        sentinel.parent.mkdir()
+        sentinel.touch()
         if generator is not None:
             cmd: list[Any] = [generator, "--out-dir", fixtures, "--gop-seconds", gop]
         elif shutil.which("cargo"):
@@ -782,6 +786,7 @@ def locate_or_generate_fixtures(args: argparse.Namespace, work: Path, sec: Secti
             sec.check("fixture generator available (--fixtures-dir, --generator or cargo)", False, "none found")
             return None
         res = run_proc(cmd, timeout=1800)
+        sec.check("generator preserves existing work files", sentinel.is_file())
         sec.check(f"generated deterministic fixture bundle (GOP {gop}s)", res.rc == 0 and (fixtures / f"gate-gop{gop}s").is_dir(), res.err.strip()[-300:])
     return fixtures if all((fixtures / n).is_dir() for n in needed) else None
 
