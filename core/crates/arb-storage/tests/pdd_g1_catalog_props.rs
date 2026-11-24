@@ -128,9 +128,9 @@ fn run_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                     path: path(b),
                     format_version: CatalogFormatVersion::V2,
                     parent_bundle_id: None,
-                    created_at_utc: t.clone(),
+                    created_at_utc: t,
                 });
-                let expect_ok = !r.bundles.contains_key(&b);
+                let expect_ok = matches!(r.bundles.get(&b), None | Some(RefBundle::Purged));
                 prop_assert_eq!(res.is_ok(), expect_ok, "register {:?}", op);
                 if expect_ok {
                     r.bundles.insert(b, RefBundle::Active);
@@ -255,7 +255,7 @@ fn run_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                     if next.is_terminal() {
                         prop_assert!(job.job.pinned_chunk_ids.is_empty());
                     } else {
-                        prop_assert_eq!(job.job.pinned_chunk_ids.clone(), vec![format!("c{j}")]);
+                        prop_assert_eq!(job.job.pinned_chunk_ids, vec![format!("c{j}")]);
                     }
                     let on = on_bundle && !matches!(op, Op::Retarget(_));
                     r.jobs.insert(j, (next, on));
@@ -272,7 +272,7 @@ fn run_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                     let got = got.ok_or_else(|| TestCaseError::fail("job vanished"))?;
                     prop_assert_eq!(got.job.state.is_terminal(), state.is_terminal());
                     if !state.is_terminal() {
-                        prop_assert_eq!(got.job.pinned_chunk_ids.clone(), vec![format!("c{j}")]);
+                        prop_assert_eq!(got.job.pinned_chunk_ids, vec![format!("c{j}")]);
                     }
                 }
                 let updated: Vec<(usize, SaveJobState)> = r
