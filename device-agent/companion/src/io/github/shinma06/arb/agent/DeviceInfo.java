@@ -2,20 +2,14 @@ package io.github.shinma06.arb.agent;
 
 import android.os.Build;
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
-import java.util.UUID;
 
 /**
  * Collects device identity metadata and {@code boot_id} with graceful SELinux fallback.
  */
 public final class DeviceInfo {
-    private static final String PROC_BOOT_ID = "/proc/sys/kernel/random/boot_id";
-    private static final String PROC_STAT = "/proc/stat";
-
     private DeviceInfo() {}
 
     public static PayloadCodec.Hello collectHello(int heartbeatIntervalMs) {
@@ -24,46 +18,27 @@ public final class DeviceInfo {
         String model = safe(Build.MODEL);
         String manufacturer = safe(Build.MANUFACTURER);
         boolean isEmulator = detectEmulator();
+        String bootReason = readBootReason();
 
-        String bootId = null;
-        int bootIdSource = Protocol.BOOT_ID_KERNEL_PROC;
-        String bootIdDetail = "";
-
-        try {
-            String raw = readFirstLine(PROC_BOOT_ID);
-            if (raw != null && !raw.trim().isEmpty()) {
-                bootId = raw.trim();
-                bootIdSource = Protocol.BOOT_ID_KERNEL_PROC;
-            } else {
-                bootIdDetail = "empty_proc_boot_id";
-            }
-        } catch (Throwable t) {
-            bootIdDetail = "proc_boot_id_error:" + t.getClass().getSimpleName() + ":" + safe(t.getMessage());
-        }
-
-        if (bootId == null) {
-            long btime = readProcStatBtime();
-            if (bootCount >= 0 || btime > 0) {
-                bootId = "fallback:bc=" + bootCount + ":btime=" + btime;
-                bootIdSource = Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME;
-            } else {
-                bootId = "fallback:random:" + UUID.randomUUID();
-                bootIdSource = Protocol.BOOT_ID_FALLBACK_RANDOM_UUID;
-            }
-        }
+        BootIdResolver.Result resolved = BootIdResolver.resolve(
+                BootIdResolver.SYSTEM_PROC_READER,
+                BootIdResolver.DEFAULT_PROC_BOOT_ID,
+                BootIdResolver.DEFAULT_PROC_STAT,
+                bootCount,
+                bootReason);
 
         return new PayloadCodec.Hello(
                 Protocol.VERSION,
                 apiLevel,
                 bootCount,
-                bootIdSource,
+                resolved.bootIdSource,
                 isEmulator,
                 heartbeatIntervalMs,
-                bootId,
+                resolved.bootId,
                 model,
                 manufacturer,
                 Protocol.AGENT_VERSION,
-                bootIdDetail);
+                resolved.bootIdDetail);
     }
 
     private static int readBootCount() {
@@ -78,25 +53,12 @@ public final class DeviceInfo {
         }
     }
 
-    private static long readProcStatBtime() {
-        File f = new File(PROC_STAT);
-        if (!f.canRead()) {
-            return -1L;
+    private static String readBootReason() {
+        String reason = safe(runShortCommand("getprop", "ro.boot.bootreason")).trim();
+        if (!reason.isEmpty()) {
+            return reason;
         }
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (line.startsWith("btime ")) {
-                    String[] parts = line.trim().split("\\s+");
-                    if (parts.length >= 2) {
-                        return Long.parseLong(parts[1]);
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return -1L;
+        return safe(runShortCommand("getprop", "sys.boot.reason")).trim();
     }
 
     private static boolean detectEmulator() {
@@ -120,13 +82,6 @@ public final class DeviceInfo {
         }
         String bootQemu = runShortCommand("getprop", "ro.boot.qemu");
         return "1".equals(safe(bootQemu).trim());
-    }
-
-    private static String readFirstLine(String path) throws Exception {
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8))) {
-            return br.readLine();
-        }
     }
 
     private static String runShortCommand(String... cmd) {

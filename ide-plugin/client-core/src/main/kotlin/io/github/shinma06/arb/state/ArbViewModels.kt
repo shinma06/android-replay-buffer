@@ -3,6 +3,7 @@ package io.github.shinma06.arb.state
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AppLogSummary
 import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.AudioCaptureState
 import io.github.shinma06.arb.model.AudioStreamMeta
 import io.github.shinma06.arb.model.AvOffsetStatus
 import io.github.shinma06.arb.model.BundleEntryView
@@ -81,6 +82,10 @@ data class CaptureBarState(
 
     val isLogsOnlyMode: Boolean
         get() = activeCaptureMode == CaptureMode.LOGS_ONLY
+
+    val audioUnavailableReason: String?
+        get() = capture?.takeIf { it.effectiveAudioState == AudioCaptureState.UNAVAILABLE }?.audioReason
+            ?.takeIf { it.isNotBlank() }
 
     val multipleDevicesNeedSelection: Boolean
         get() = deviceSelection is DeviceSelectionOutcome.MultipleDevicesNeedSelection
@@ -215,6 +220,26 @@ object CaptureBarReducer {
                         kind = CaptureBannerKind.STREAM_GAP,
                         title = "映像エンコーダの警告",
                         detail = status.capture.lastVideoError,
+                    ),
+                )
+            }
+            if (!status.capture.deviceApiWarning.isNullOrBlank()) {
+                add(
+                    CaptureBanner(
+                        kind = CaptureBannerKind.CONFIG_WARNING,
+                        title = "非サポート Android バージョン（ベストエフォート稼働中）",
+                        detail = status.capture.deviceApiWarning,
+                    ),
+                )
+            }
+            if (status.capture.effectiveAudioState == AudioCaptureState.UNAVAILABLE &&
+                !status.capture.audioReason.isNullOrBlank()
+            ) {
+                add(
+                    CaptureBanner(
+                        kind = CaptureBannerKind.CONFIG_WARNING,
+                        title = "音声キャプチャ非対応（映像＋ログで継続中）",
+                        detail = status.capture.audioReason,
                     ),
                 )
             }

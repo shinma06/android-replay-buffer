@@ -21,6 +21,16 @@ public final class LogcatWorker {
     private static final long STATS_INTERVAL_MS = 5000L;
     private static final long INITIAL_BACKOFF_MS = 500L;
     private static final long MAX_BACKOFF_MS = 5000L;
+    private static final String SAFE_FALLBACK_BUFFERS = "main,system,crash,events";
+
+    /**
+     * Builds the {@code logcat -B} invocation. Uses {@code -b all} by default and falls back to
+     * {@code -b main,system,crash,events} if a restricted Android 9 ROM rejects {@code -b all}.
+     */
+    static String[] buildLogcatCommand(boolean restrictedBuffers, String tArg) {
+        String buffers = restrictedBuffers ? SAFE_FALLBACK_BUFFERS : "all";
+        return new String[] {"logcat", "-b", buffers, "-B", "-T", tArg};
+    }
 
     private final WireFrame.FrameWriter writer;
     private final ClockSource clock;
@@ -67,9 +77,12 @@ public final class LogcatWorker {
         LoggerEntryParser.ResumeTracker resume = new LoggerEntryParser.ResumeTracker();
         long backoffMs = INITIAL_BACKOFF_MS;
         boolean recoveredNext = false;
+        boolean useRestrictedBuffers = false;
 
         while (running.get()) {
             Process proc = null;
+            long emittedInAttempt = 0L;
+            boolean immediateFallback = false;
             try {
                 emitState(Protocol.STATE_STARTING, recoveredNext ? "respawning" : "starting");
                 // Resume from the last emitted (sec, nsec) so a respawn neither replays the
@@ -77,8 +90,9 @@ public final class LogcatWorker {
                 // `-T 1` is used only when nothing has been emitted yet.
                 resume.beginResume();
                 String tArg = resume.nextTArgument();
-                proc = new ProcessBuilder("logcat", "-b", "all", "-B", "-T", tArg).start();
+                proc = new ProcessBuilder(buildLogcatCommand(useRestrictedBuffers, tArg)).start();
                 activeProcess = proc;
+                drainStderrQuietly(proc);
                 // stop() may have run between start() and the assignment above, in which case
                 // it saw activeProcess == null and could not destroy this child.
                 if (!running.get()) {
@@ -108,6 +122,7 @@ public final class LogcatWorker {
                             flags,
                             PayloadCodec.encodeLogRecord(rec));
                     if (seq != 0L) {
+                        emittedInAttempt++;
                         totalRecordsEmitted.incrementAndGet();
                         health.recordEmit(Protocol.STREAM_LOGCAT, seq, rec.deviceReadBoottimeNs);
                     }
@@ -119,9 +134,17 @@ public final class LogcatWorker {
                 }
 
                 int exitCode = waitExitQuietly(proc);
-                String reason = "process_exit:" + exitCode;
-                emitState(Protocol.STATE_ERROR, reason);
-                emitGapIfUnresumable(resume, reason);
+                if (!useRestrictedBuffers && emittedInAttempt == 0L && exitCode != 0) {
+                    // Some hardened Android 9 user builds reject `-b all` (e.g. restricted security/kernel
+                    // buffer). Retry immediately with explicit main,system,crash,events buffers.
+                    useRestrictedBuffers = true;
+                    immediateFallback = true;
+                    emitState(Protocol.STATE_RESTARTING, "fallback_buffers:exit=" + exitCode);
+                } else {
+                    String reason = "process_exit:" + exitCode;
+                    emitState(Protocol.STATE_ERROR, reason);
+                    emitGapIfUnresumable(resume, reason);
+                }
             } catch (IOException ioe) {
                 if (!running.get()) {
                     emitState(Protocol.STATE_STOPPED, "shutdown");
@@ -146,6 +169,9 @@ public final class LogcatWorker {
 
             if (!running.get()) {
                 return;
+            }
+            if (immediateFallback) {
+                continue;
             }
 
             health.incrementRestart(Protocol.STREAM_LOGCAT);
@@ -206,7 +232,13 @@ public final class LogcatWorker {
         if (snap.valid) {
             return snap;
         }
-        // Fallback: try default `logcat -S` in case `-b all` is restricted on a device.
+        // Fallback 1: explicit main,system,crash,events buffers if `-b all` is restricted.
+        String restrictedOutput = runCommand("logcat", "-b", SAFE_FALLBACK_BUFFERS, "-S");
+        LogcatStatsParser.Snapshot restrictedSnap = LogcatStatsParser.parseLogcatS(restrictedOutput);
+        if (restrictedSnap.valid) {
+            return restrictedSnap;
+        }
+        // Fallback 2: default `logcat -S`.
         String fallbackOutput = runCommand("logcat", "-S");
         LogcatStatsParser.Snapshot fallbackSnap = LogcatStatsParser.parseLogcatS(fallbackOutput);
         if (fallbackSnap.valid) {
@@ -218,6 +250,21 @@ public final class LogcatWorker {
             return LogcatStatsParser.Snapshot.invalid("logcat_S_unavailable_g_present");
         }
         return snap;
+    }
+
+    private static void drainStderrQuietly(Process proc) {
+        Thread drainer = new Thread(() -> {
+            byte[] buf = new byte[1024];
+            try {
+                java.io.InputStream err = proc.getErrorStream();
+                while (err.read(buf) >= 0) {
+                    // Drain so stderr pipe never backs up and blocks binary `-B` stdout.
+                }
+            } catch (IOException ignored) {
+            }
+        }, "arb-logcat-stderr");
+        drainer.setDaemon(true);
+        drainer.start();
     }
 
     /**

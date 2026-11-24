@@ -131,6 +131,23 @@ pub struct SystemHelloResponse {
     pub binary_mtime_secs: Option<u64>,
 }
 
+/// Honest live audio capture availability state reported in [`CaptureStatusView`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCaptureState {
+    /// Audio availability has not been determined yet (idle or connecting).
+    #[default]
+    Unknown,
+    /// Audio capture is active and streaming AAC frames.
+    Available,
+    /// Audio capture was intentionally disabled (e.g., `audio_enabled=false` or `logs_only`).
+    Disabled,
+    /// Audio capture is unavailable on this device (API < 33, where non-muting playback capture
+    /// is unsupported, or the device rejected audio); video + logs + taps continue.
+    Unavailable,
+}
+
 /// Live capture telemetry inside [`SystemStatusResponse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStatusView {
@@ -167,6 +184,16 @@ pub struct CaptureStatusView {
     /// contention with Android Studio Running Devices mirroring).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_video_error: Option<String>,
+    /// Honest live audio capture availability state (`unknown`, `available`, `disabled`, `unavailable`).
+    #[serde(default)]
+    pub audio_state: AudioCaptureState,
+    /// Optional honest diagnostic explaining why audio is unavailable (e.g., Android 9 / API 28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_reason: Option<String>,
+    /// Optional non-blocking warning when the connected device is below the official
+    /// Android 9 (API 28) support floor (best-effort capture continues without hard-blocking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_api_warning: Option<String>,
 }
 
 /// Startup recovery summary inside [`SystemStatusResponse`].

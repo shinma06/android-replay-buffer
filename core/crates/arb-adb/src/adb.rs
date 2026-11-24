@@ -297,6 +297,19 @@ pub struct AdbDeviceInfo {
     pub transport_id: Option<String>,
 }
 
+/// Parses `adb shell getprop ro.build.version.sdk` stdout into a positive Android API level.
+///
+/// Returns `None` when the output is empty, non-numeric, or zero.
+#[must_use]
+pub fn parse_sdk_version_output(stdout: &str) -> Option<u32> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .and_then(|line| line.parse::<u32>().ok())
+        .filter(|&sdk| sdk > 0)
+}
+
 /// Parses the stdout of `adb shell wm size` into physical display `(width, height)` pixels.
 ///
 /// Prefers `Physical size: WxH` (raw `getevent` touch coordinates live in the physical panel
@@ -720,6 +733,18 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         Ok(out.stdout)
     }
 
+    /// Best-effort query of the device's Android API level via
+    /// `adb -s <serial> shell getprop ro.build.version.sdk`.
+    ///
+    /// Returns `None` if the command fails or produces unrecognized output.
+    #[must_use]
+    pub fn query_sdk_version(&self, serial: &str) -> Option<u32> {
+        let out = self
+            .shell(serial, &["getprop", "ro.build.version.sdk"])
+            .ok()?;
+        parse_sdk_version_output(&out)
+    }
+
     /// Best-effort query of the device's physical display size via `adb -s <serial> shell wm size`.
     ///
     /// Returns `None` if the command fails or produces unrecognized output.
@@ -729,15 +754,24 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         parse_wm_size_output(&out)
     }
 
-    /// Best-effort query of installed package UIDs via `adb -s <serial> shell cmd package list packages -U`.
+    /// Best-effort query of installed package UIDs via
+    /// `adb -s <serial> shell cmd package list packages -U`, falling back cleanly to
+    /// `adb -s <serial> shell pm list packages -U` if `cmd package` fails or returns no
+    /// valid application UIDs (e.g., vendor Android 9 ROMs).
     ///
-    /// Returns an empty map if the command fails (never blocks capture).
+    /// Returns an empty map if both commands fail (never blocks capture).
     #[must_use]
     pub fn query_package_uids(&self, serial: &str) -> BTreeMap<u32, String> {
-        let Ok(out) = self.shell(serial, &["cmd", "package", "list", "packages", "-U"]) else {
-            return BTreeMap::new();
-        };
-        parse_package_uid_list(&out)
+        if let Ok(out) = self.shell(serial, &["cmd", "package", "list", "packages", "-U"]) {
+            let parsed = parse_package_uid_list(&out);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+        if let Ok(out) = self.shell(serial, &["pm", "list", "packages", "-U"]) {
+            return parse_package_uid_list(&out);
+        }
+        BTreeMap::new()
     }
 
     /// Pushes `arb-companion.dex.jar` and optional `replay-scrcpy-audio.dex.jar`
@@ -2763,6 +2797,97 @@ package:com.example.app uid:10234,1010234\n";
         .expect("fallback adb discovery");
         assert_eq!(found, mac_adb);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn t6e_query_sdk_version_parses_api_28_and_handles_invalid_outputs() {
+        assert_eq!(super::parse_sdk_version_output("28\r\n"), Some(28));
+        assert_eq!(super::parse_sdk_version_output("\n  34 \n"), Some(34));
+        assert_eq!(super::parse_sdk_version_output("0\n"), None);
+        assert_eq!(super::parse_sdk_version_output(""), None);
+        assert_eq!(super::parse_sdk_version_output("not-a-number\n"), None);
+
+        let ok_runner = MockRunner::with_responses(vec![AdbCommandOutput {
+            exit_code: Some(0),
+            stdout: "28\r\n".to_owned(),
+            stderr: String::new(),
+        }]);
+        let client = AdbClient::with_runner(PathBuf::from("/usr/bin/adb"), ok_runner);
+        assert_eq!(client.query_sdk_version("R58M123456"), Some(28));
+        let calls = client.runner.invocations.borrow();
+        assert_eq!(
+            calls[0],
+            vec![
+                "-s",
+                "R58M123456",
+                "shell",
+                "getprop",
+                "ro.build.version.sdk"
+            ],
+            "must query ro.build.version.sdk via adb shell getprop"
+        );
+    }
+
+    #[test]
+    fn t6e_query_package_uids_falls_back_to_pm_list_packages_on_aos9_vendor_rom() {
+        // Case 1: `cmd package list packages -U` fails on a vendor Android 9 ROM -> falls back to `pm`.
+        let runner_fail = MockRunner::with_responses(vec![
+            AdbCommandOutput {
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "Can't find service: package".to_owned(),
+            },
+            AdbCommandOutput {
+                exit_code: Some(0),
+                stdout: "package:com.work.app uid:10128\npackage:android uid:1000\n".to_owned(),
+                stderr: String::new(),
+            },
+        ]);
+        let client = AdbClient::with_runner(PathBuf::from("/usr/bin/adb"), runner_fail);
+        let uids = client.query_package_uids("aos9-serial");
+        assert_eq!(uids.get(&10128).map(String::as_str), Some("com.work.app"));
+        assert_eq!(uids.get(&1000), None);
+        {
+            let calls = client.runner.invocations.borrow();
+            assert_eq!(calls.len(), 2, "must try cmd package then pm");
+            assert_eq!(
+                calls[0],
+                vec![
+                    "-s",
+                    "aos9-serial",
+                    "shell",
+                    "cmd",
+                    "package",
+                    "list",
+                    "packages",
+                    "-U"
+                ]
+            );
+            assert_eq!(
+                calls[1],
+                vec!["-s", "aos9-serial", "shell", "pm", "list", "packages", "-U"]
+            );
+        }
+
+        // Case 2: `cmd package` exits 0 with empty stdout -> still falls back to `pm`.
+        let runner_empty = MockRunner::with_responses(vec![
+            AdbCommandOutput {
+                exit_code: Some(0),
+                stdout: "\n".to_owned(),
+                stderr: String::new(),
+            },
+            AdbCommandOutput {
+                exit_code: Some(0),
+                stdout: "package:com.work.fallback uid:10228\n".to_owned(),
+                stderr: String::new(),
+            },
+        ]);
+        let client2 = AdbClient::with_runner(PathBuf::from("/usr/bin/adb"), runner_empty);
+        let uids2 = client2.query_package_uids("aos9-serial");
+        assert_eq!(
+            uids2.get(&10228).map(String::as_str),
+            Some("com.work.fallback")
+        );
     }
 }
 

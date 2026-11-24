@@ -75,20 +75,24 @@ mkdir -p "${BUILD_DIR}/companion/classes" "${BUILD_DIR}/companion/dex" "${BUILD_
 
 # 1. Host pure-Java unit tests (zero Android runtime deps)
 if [[ "${SKIP_TESTS}" -eq 0 ]]; then
-    echo "==> [1/3] Compiling and running pure-Java host unit tests (ProtocolTest)"
+    echo "==> [1/3] Compiling and running pure-Java host unit tests (ProtocolTest + Aos9CompatTest)"
     PURE_SOURCES=(
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/Protocol.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/WireFrame.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/PayloadCodec.java"
+        "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/BootIdResolver.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/LoggerEntryParser.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/LogcatStatsParser.java"
+        "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/LogcatWorker.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/GeteventParser.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/ClockSource.java"
         "${SCRIPT_DIR}/companion/src/io/github/shinma06/arb/agent/StreamHealthTracker.java"
         "${SCRIPT_DIR}/companion/test/io/github/shinma06/arb/agent/ProtocolTest.java"
+        "${SCRIPT_DIR}/companion/test/io/github/shinma06/arb/agent/Aos9CompatTest.java"
     )
     javac --release 11 -Xlint:all,-serial -Werror -d "${BUILD_DIR}/host-test/classes" "${PURE_SOURCES[@]}"
     java -cp "${BUILD_DIR}/host-test/classes" io.github.shinma06.arb.agent.ProtocolTest
+    java -cp "${BUILD_DIR}/host-test/classes" io.github.shinma06.arb.agent.Aos9CompatTest
 fi
 
 # 2. Compile ARB Companion against android.jar (Java 8 bytecode -> d8 min-api 24)

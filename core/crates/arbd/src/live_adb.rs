@@ -38,8 +38,9 @@ use arb_adb::adb::{
 };
 use arb_adb::mock::CaptureEvent;
 use arb_adb::scrcpy::{
-    AudioCaptureMode, AudioPacketKind, AudioTunnelReader, AudioTunnelStatus, SCRCPY_DUMMY_BYTE,
-    ScrcpyError, ScrcpyLaunchOptions, VideoRecord, VideoTunnelReader,
+    AudioCaptureMode, AudioPacketKind, AudioTunnelReader, AudioTunnelStatus,
+    MIN_AUDIO_PLAYBACK_API_LEVEL, SCRCPY_DUMMY_BYTE, ScrcpyError, ScrcpyLaunchOptions, VideoRecord,
+    VideoTunnelReader, audio_unavailable_reason_for_api, unsupported_android_api_warning,
 };
 use arb_adb::wire::{
     DEFAULT_MAX_PAYLOAD_LEN, FrameFlags, HeartbeatPayload, HelloPayload, PingPayload, ShutdownCode,
@@ -55,7 +56,7 @@ use arb_os::clock::{HostClockSample, sample_host_clock};
 
 use crate::capture::CapturePipeline;
 use crate::error::DaemonError;
-use crate::protocol::CaptureStartParams;
+use crate::protocol::{AudioCaptureState, CaptureStartParams};
 use crate::time_util::current_unix_millis;
 
 /// A `Ping` without its `Pong` after this long is abandoned so sync probes resume (R3 S13).
@@ -198,6 +199,22 @@ impl LiveSink {
     fn set_last_video_error(&self, error: Option<String>) {
         if let Ok(mut guard) = self.pipeline.lock() {
             guard.set_last_video_error_for_session(self.generation, error);
+        } else {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn set_audio_status(&self, state: AudioCaptureState, reason: Option<String>) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.set_audio_status_for_session(self.generation, state, reason);
+        } else {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn set_device_api_warning(&self, warning: Option<String>) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.set_device_api_warning_for_session(self.generation, warning);
         } else {
             self.failed.store(true, Ordering::Release);
         }
@@ -694,6 +711,64 @@ fn supervisor_config_for(cfg: &LiveCaptureConfig) -> SupervisorConfig {
     config
 }
 
+/// Proactive audio launch plan computed from the requested audio flag and device API level.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlannedScrcpyAudio {
+    /// Audio was disabled by user config or `logs_only` mode (`audio=false`).
+    Disabled,
+    /// Detected Android SDK does not support requested non-muting audio (`sdk < 33`);
+    /// proactively launch `scrcpy-server` with `audio=false` (single video socket, zero audio wait).
+    ProactiveUnavailable {
+        /// Detected Android API level (`ro.build.version.sdk` or `Hello.api_level`).
+        api_level: u32,
+        /// Explicit tunnel availability status recorded in the capture stream.
+        status: AudioTunnelStatus,
+        /// Honest diagnostic message exposed via `CaptureStatusView.audio_reason`.
+        reason: String,
+    },
+    /// Attempt `audio=true` with runtime fallback to `audio=false` if the device rejects audio.
+    TryWithAudio {
+        /// API level passed to [`ScrcpyLaunchOptions::build_server_args`] (`>= 33`).
+        effective_api_level: u32,
+    },
+}
+
+/// Computes whether `scrcpy-server` should proactively launch with `audio=false` or attempt
+/// `audio=true` (with runtime fallback), given `audio_mode` and `detected_sdk`.
+#[must_use]
+pub fn plan_scrcpy_audio(
+    audio_mode: AudioCaptureMode,
+    detected_sdk: Option<u32>,
+) -> PlannedScrcpyAudio {
+    if matches!(audio_mode, AudioCaptureMode::Disabled) {
+        return PlannedScrcpyAudio::Disabled;
+    }
+    match detected_sdk {
+        Some(sdk) if sdk > 0 && sdk < MIN_AUDIO_PLAYBACK_API_LEVEL => {
+            let reason = audio_unavailable_reason_for_api(sdk).unwrap_or_else(|| {
+                format!(
+                    "Audio capture unavailable on Android API {sdk}. Continuing with video + logs + taps."
+                )
+            });
+            PlannedScrcpyAudio::ProactiveUnavailable {
+                api_level: sdk,
+                status: AudioTunnelStatus::UnavailableApiLevel {
+                    api_level: sdk,
+                    min_required: MIN_AUDIO_PLAYBACK_API_LEVEL,
+                },
+                reason,
+            }
+        }
+        Some(sdk) if sdk >= MIN_AUDIO_PLAYBACK_API_LEVEL => PlannedScrcpyAudio::TryWithAudio {
+            effective_api_level: sdk,
+        },
+        _ => PlannedScrcpyAudio::TryWithAudio {
+            effective_api_level: MIN_AUDIO_PLAYBACK_API_LEVEL,
+        },
+    }
+}
+
 fn run_supervised_adb_loop(
     adb: &AdbClient,
     cfg: &LiveCaptureConfig,
@@ -702,6 +777,7 @@ fn run_supervised_adb_loop(
 ) {
     let mut supervisor = SessionSupervisor::new(cfg.serial.clone(), supervisor_config_for(cfg));
     let mut tracker = LiveTracker::new();
+    let mut cached_sdk: Option<u32> = None;
 
     while !stop_flag.load(Ordering::Acquire) {
         if !sink.session_is_current() {
@@ -709,8 +785,15 @@ fn run_supervised_adb_loop(
         }
 
         supervisor.begin_connecting();
-        let outcome =
-            run_single_adb_session(adb, cfg, stop_flag, sink, &mut supervisor, &mut tracker);
+        let outcome = run_single_adb_session(
+            adb,
+            cfg,
+            stop_flag,
+            sink,
+            &mut supervisor,
+            &mut tracker,
+            &mut cached_sdk,
+        );
         if stop_flag.load(Ordering::Acquire) || sink.has_failed() {
             break;
         }
@@ -765,7 +848,11 @@ fn run_single_adb_session(
     sink: &LiveSink,
     supervisor: &mut SessionSupervisor,
     tracker: &mut LiveTracker,
+    cached_sdk: &mut Option<u32>,
 ) -> Result<(), DaemonError> {
+    if cached_sdk.is_none() {
+        *cached_sdk = adb.query_sdk_version(&cfg.serial);
+    }
     let token_raw = current_unix_millis() % 1_000_000;
     let session_token = format!("s{}-{token_raw:06}", std::process::id());
     let scrcpy_jar_for_deploy = if cfg.capture_mode == CaptureMode::LogsOnly {
@@ -792,7 +879,11 @@ fn run_single_adb_session(
     // 1. Forward and launch arb-companion and complete initial Hello handshake.
     let (mut companion_reader, mut companion_writer, hello) =
         launch_and_handshake_companion(adb, cfg, &session_token, &mut guard, stop_flag)?;
-    let api_level = hello.api_level;
+    let detected_sdk = (*cached_sdk).or_else(|| (hello.api_level > 0).then_some(hello.api_level));
+    if cached_sdk.is_none() {
+        *cached_sdk = detected_sdk;
+    }
+    sink.set_device_api_warning(detected_sdk.and_then(unsupported_android_api_warning));
     sink.push_all(tracker.on_hello(supervisor, hello, sample_cont_ns()));
     if let Some((display_w, display_h)) = adb.query_display_size(&cfg.serial) {
         sink.set_display_size(display_w, display_h);
@@ -807,50 +898,19 @@ fn run_single_adb_session(
     let session_stop = Arc::new(AtomicBool::new(false));
     let (media_tx, media_rx) = channel();
     let scrcpy_stderr = Arc::new(Mutex::new(String::new()));
-    let (media_threads, media_sockets) = if cfg.capture_mode == CaptureMode::LogsOnly {
-        sink.set_last_video_error(None);
-        (Vec::new(), Vec::new())
-    } else {
-        let media = launch_scrcpy_streams(
-            adb,
-            cfg,
-            &mut guard,
-            api_level,
-            &tracker.boot_id,
-            &MediaThreadCtx {
-                session_stop: Arc::clone(&session_stop),
-                global_stop: Arc::clone(stop_flag),
-                sink: sink.clone(),
-                signals: media_tx,
-            },
-            &scrcpy_stderr,
-        );
-        match media {
-            Ok(started) => {
-                sink.set_last_video_error(None);
-                started
-            }
-            Err(err) => {
-                // Give the stderr reader a brief slice to collect any MediaCodec error line.
-                thread::sleep(Duration::from_millis(75));
-                let stderr_snapshot = scrcpy_stderr
-                    .lock()
-                    .ok()
-                    .map(|buf| buf.clone())
-                    .filter(|s| !s.trim().is_empty());
-                let detail =
-                    classify_scrcpy_video_error(&err.to_string(), stderr_snapshot.as_deref());
-                sink.set_last_video_error(Some(detail.clone()));
-                // R3 M5: no silent video loss; capture continues without video.
-                if let Some(gap) =
-                    tracker.on_media_lost(supervisor, StreamId::Video, sample_cont_ns(), &detail)
-                {
-                    sink.push(gap);
-                }
-                (Vec::new(), Vec::new())
-            }
-        }
-    };
+    let (media_threads, media_sockets) = start_session_media_streams(
+        adb,
+        cfg,
+        &mut guard,
+        detected_sdk,
+        stop_flag,
+        &session_stop,
+        sink,
+        supervisor,
+        tracker,
+        media_tx,
+        &scrcpy_stderr,
+    );
 
     // 3. Companion control/logcat/input loop with periodic Ping/Pong RTT sync probes.
     let loop_result = run_companion_event_loop(
@@ -872,6 +932,68 @@ fn run_single_adb_session(
         let _ = handle.join();
     }
     loop_result
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "starts optional scrcpy media streams and records any startup video gap on the supervisor"
+)]
+fn start_session_media_streams(
+    adb: &AdbClient,
+    cfg: &LiveCaptureConfig,
+    guard: &mut SessionCleanupGuard<'_>,
+    detected_sdk: Option<u32>,
+    stop_flag: &Arc<AtomicBool>,
+    session_stop: &Arc<AtomicBool>,
+    sink: &LiveSink,
+    supervisor: &mut SessionSupervisor,
+    tracker: &mut LiveTracker,
+    media_tx: Sender<MediaSignal>,
+    scrcpy_stderr: &Arc<Mutex<String>>,
+) -> (Vec<JoinHandle<()>>, Vec<TcpStream>) {
+    if cfg.capture_mode == CaptureMode::LogsOnly {
+        sink.set_last_video_error(None);
+        sink.set_audio_status(AudioCaptureState::Disabled, None);
+        return (Vec::new(), Vec::new());
+    }
+    let media = launch_scrcpy_streams(
+        adb,
+        cfg,
+        guard,
+        detected_sdk,
+        &tracker.boot_id,
+        &MediaThreadCtx {
+            session_stop: Arc::clone(session_stop),
+            global_stop: Arc::clone(stop_flag),
+            sink: sink.clone(),
+            signals: media_tx,
+        },
+        scrcpy_stderr,
+    );
+    match media {
+        Ok(started) => {
+            sink.set_last_video_error(None);
+            started
+        }
+        Err(err) => {
+            // Give the stderr reader a brief slice to collect any MediaCodec error line.
+            thread::sleep(Duration::from_millis(75));
+            let stderr_snapshot = scrcpy_stderr
+                .lock()
+                .ok()
+                .map(|buf| buf.clone())
+                .filter(|s| !s.trim().is_empty());
+            let detail = classify_scrcpy_video_error(&err.to_string(), stderr_snapshot.as_deref());
+            sink.set_last_video_error(Some(detail.clone()));
+            // R3 M5: no silent video loss; capture continues without video.
+            if let Some(gap) =
+                tracker.on_media_lost(supervisor, StreamId::Video, sample_cont_ns(), &detail)
+            {
+                sink.push(gap);
+            }
+            (Vec::new(), Vec::new())
+        }
+    }
 }
 
 fn launch_and_handshake_companion(
@@ -1006,17 +1128,204 @@ fn collect_scrcpy_stderr<R: BufRead>(mut reader: R, buf: &Mutex<String>) {
     }
 }
 
-/// Launches scrcpy and its reader threads.
+/// Launches scrcpy and its reader threads, proactively disabling audio below Android 13
+/// (`sdk < 33`, including Android 9 API 28) and degrading cleanly to `audio=false` if a
+/// runtime `audio=true` launch fails during handshake.
 ///
 /// # Errors
 ///
-/// Returns an error when no scrcpy jar is deployed or the video tunnel cannot be connected;
-/// the caller records that as a video `StreamGap` (R3 M5) and continues without video.
+/// Returns an error when no scrcpy jar is deployed or the video tunnel cannot be connected
+/// even with `audio=false`; the caller records that as a video `StreamGap` (R3 M5) and
+/// continues without video.
 fn launch_scrcpy_streams(
     adb: &AdbClient,
     cfg: &LiveCaptureConfig,
     guard: &mut SessionCleanupGuard<'_>,
+    detected_sdk: Option<u32>,
+    boot_id: &str,
+    ctx: &MediaThreadCtx,
+    scrcpy_stderr: &Arc<Mutex<String>>,
+) -> Result<(Vec<JoinHandle<()>>, Vec<TcpStream>), DaemonError> {
+    let Some(remote_scrcpy) = guard.deployed.scrcpy_jar.clone() else {
+        return Err(DaemonError::NotFound(
+            "replay-scrcpy-audio.dex.jar was not deployed".to_owned(),
+        ));
+    };
+
+    let requested_audio = if cfg.audio_enabled {
+        AudioCaptureMode::Enabled
+    } else {
+        AudioCaptureMode::Disabled
+    };
+    match plan_scrcpy_audio(requested_audio, detected_sdk) {
+        PlannedScrcpyAudio::Disabled => {
+            ctx.sink.set_audio_status(AudioCaptureState::Disabled, None);
+            launch_scrcpy_attempt(
+                adb,
+                cfg,
+                guard,
+                &remote_scrcpy,
+                detected_sdk.unwrap_or(0),
+                AudioCaptureMode::Disabled,
+                0,
+                boot_id,
+                ctx,
+                scrcpy_stderr,
+            )
+        }
+        PlannedScrcpyAudio::ProactiveUnavailable {
+            api_level,
+            status,
+            reason,
+        } => {
+            ctx.sink
+                .set_audio_status(AudioCaptureState::Unavailable, Some(reason));
+            ctx.sink.push(CaptureEvent::AudioUnavailable {
+                pc_cont_ns: sample_cont_ns(),
+                boot_id: boot_id.to_owned(),
+                status,
+            });
+            launch_scrcpy_attempt(
+                adb,
+                cfg,
+                guard,
+                &remote_scrcpy,
+                api_level,
+                AudioCaptureMode::Disabled,
+                0,
+                boot_id,
+                ctx,
+                scrcpy_stderr,
+            )
+        }
+        PlannedScrcpyAudio::TryWithAudio {
+            effective_api_level,
+        } => launch_scrcpy_with_audio_fallback(
+            adb,
+            cfg,
+            guard,
+            &remote_scrcpy,
+            effective_api_level,
+            boot_id,
+            ctx,
+            scrcpy_stderr,
+        ),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "retries a failed audio=true scrcpy launch cleanly with audio=false"
+)]
+fn launch_scrcpy_with_audio_fallback(
+    adb: &AdbClient,
+    cfg: &LiveCaptureConfig,
+    guard: &mut SessionCleanupGuard<'_>,
+    remote_scrcpy: &str,
+    effective_api_level: u32,
+    boot_id: &str,
+    ctx: &MediaThreadCtx,
+    scrcpy_stderr: &Arc<Mutex<String>>,
+) -> Result<(Vec<JoinHandle<()>>, Vec<TcpStream>), DaemonError> {
+    match launch_scrcpy_attempt(
+        adb,
+        cfg,
+        guard,
+        remote_scrcpy,
+        effective_api_level,
+        AudioCaptureMode::Enabled,
+        0,
+        boot_id,
+        ctx,
+        scrcpy_stderr,
+    ) {
+        Ok(started) => Ok(started),
+        Err(first_err) if !ctx.should_stop() => {
+            // Tear down the failed `audio=true` scrcpy attempt and degrade cleanly
+            // to `audio=false` (single video socket) so video + logs + taps continue.
+            kill_child(guard.scrcpy_child.take());
+            thread::sleep(Duration::from_millis(50));
+            let stderr_note = scrcpy_stderr
+                .lock()
+                .ok()
+                .map(|mut buf| {
+                    let snap = buf.trim().to_owned();
+                    buf.clear();
+                    snap
+                })
+                .filter(|s| !s.is_empty());
+            let retry = launch_scrcpy_attempt(
+                adb,
+                cfg,
+                guard,
+                remote_scrcpy,
+                effective_api_level,
+                AudioCaptureMode::Disabled,
+                1,
+                boot_id,
+                ctx,
+                scrcpy_stderr,
+            );
+            // Only blame audio once the audio=false retry has proved video can start.
+            let retry_err = retry.as_ref().err().map(ToString::to_string);
+            let detail = audio_fallback_reason(
+                &first_err.to_string(),
+                stderr_note.as_deref(),
+                retry_err.as_deref(),
+            );
+            ctx.sink
+                .set_audio_status(AudioCaptureState::Unavailable, Some(detail));
+            ctx.sink.push(CaptureEvent::AudioUnavailable {
+                pc_cont_ns: sample_cont_ns(),
+                boot_id: boot_id.to_owned(),
+                status: AudioTunnelStatus::DeviceError,
+            });
+            retry
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Derives the 8-hex-digit `scrcpy-server` `scid` for one launch attempt.
+///
+/// `scrcpy-server` parses `scid` with Java `Integer.parseInt(hex)` and rejects values above
+/// `0x7FFF_FFFF`, so bit 31 is always cleared before the `0x1000_0000` marker is applied.
+fn scrcpy_scid_hex(unix_millis: u64, salt: u32) -> String {
+    let low = u32::try_from(unix_millis & 0xFFFF_FFFF)
+        .unwrap_or(0)
+        .wrapping_add(salt);
+    format!("{:08x}", (low & 0x7FFF_FFFF) | 0x1000_0000)
+}
+
+/// Honest `audio_reason` after an `audio=true` scrcpy launch failed and the `audio=false`
+/// retry finished (`retry_err` is `Some` when the retry failed too).
+fn audio_fallback_reason(first_err: &str, stderr: Option<&str>, retry_err: Option<&str>) -> String {
+    let first = match stderr {
+        Some(stderr) => format!("{first_err}; stderr: {stderr}"),
+        None => first_err.to_owned(),
+    };
+    match retry_err {
+        None => format!(
+            "Audio capture failed during scrcpy startup ({first}); degraded to video + logs + taps."
+        ),
+        Some(retry_err) => format!(
+            "scrcpy-server failed to start with audio=true ({first}) and with audio=false ({retry_err}); no video or audio is captured, logs + taps continue."
+        ),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single scrcpy launch attempt binds adb, config, cleanup guard, audio mode, and reader thread context"
+)]
+fn launch_scrcpy_attempt(
+    adb: &AdbClient,
+    cfg: &LiveCaptureConfig,
+    guard: &mut SessionCleanupGuard<'_>,
+    remote_scrcpy: &str,
     api_level: u32,
+    audio_mode: AudioCaptureMode,
+    scid_salt: u32,
     boot_id: &str,
     ctx: &MediaThreadCtx,
     scrcpy_stderr: &Arc<Mutex<String>>,
@@ -1024,14 +1333,7 @@ fn launch_scrcpy_streams(
     let mut media_threads: Vec<JoinHandle<()>> = Vec::new();
     let mut media_sockets: Vec<TcpStream> = Vec::new();
 
-    let Some(remote_scrcpy) = guard.deployed.scrcpy_jar.clone() else {
-        return Err(DaemonError::NotFound(
-            "replay-scrcpy-audio.dex.jar was not deployed".to_owned(),
-        ));
-    };
-
-    let scid_low = u32::try_from(current_unix_millis() & 0xFFFF_FFFF).unwrap_or(0);
-    let scid = format!("{:08x}", scid_low | 0x1000_0000);
+    let scid = scrcpy_scid_hex(current_unix_millis(), scid_salt);
     let scrcpy_abstract = format!("scrcpy_{scid}");
     let scrcpy_port = adb.forward_tcp_to_abstract(&cfg.serial, &scrcpy_abstract)?;
     guard.forwarded_ports.push(scrcpy_port);
@@ -1042,24 +1344,13 @@ fn launch_scrcpy_streams(
         max_fps: cfg.max_fps,
         video_bit_rate: cfg.video_bit_rate,
         audio_bit_rate: 128_000,
-        audio_mode: if cfg.audio_enabled {
-            AudioCaptureMode::Enabled
-        } else {
-            AudioCaptureMode::Disabled
-        },
+        audio_mode,
     };
     let (_server_args, planned_audio) = scrcpy_opts.build_server_args(api_level);
     let expect_audio_socket = matches!(planned_audio, AudioTunnelStatus::Available { .. });
-    if !expect_audio_socket && cfg.audio_enabled {
-        ctx.sink.push(CaptureEvent::AudioUnavailable {
-            pc_cont_ns: sample_cont_ns(),
-            boot_id: boot_id.to_owned(),
-            status: planned_audio,
-        });
-    }
 
     let scrcpy_cmd = AdbClient::<arb_adb::adb::SystemAdbRunner>::scrcpy_launch_command(
-        &remote_scrcpy,
+        remote_scrcpy,
         &scrcpy_opts,
         api_level,
     );
@@ -1084,12 +1375,25 @@ fn launch_scrcpy_streams(
         video_shutdown,
         audio_stream,
         audio_connect_error,
-    } = connect_scrcpy_tunnels(
+    } = match connect_scrcpy_tunnels(
         scrcpy_port,
         audio_socket_mode,
         Duration::from_secs(8),
         &global_stop,
-    )?;
+    ) {
+        Ok(tunnels) => tunnels,
+        Err(err) => {
+            if let Some(pos) = guard
+                .forwarded_ports
+                .iter()
+                .rposition(|&p| p == scrcpy_port)
+            {
+                let port = guard.forwarded_ports.remove(pos);
+                let _ = adb.remove_forward(&cfg.serial, port);
+            }
+            return Err(err);
+        }
+    };
     media_sockets.push(video_shutdown);
     let v_ctx = ctx.clone_for_thread();
     let v_boot = boot_id.to_owned();
@@ -1107,6 +1411,15 @@ fn launch_scrcpy_streams(
             run_audio_reader_loop(audio_sock, &a_boot, &a_ctx);
         }));
     } else if let Some(err) = audio_connect_error {
+        let reason =
+            format!("Audio tunnel could not connect ({err}). Continuing with video + logs + taps.");
+        ctx.sink
+            .set_audio_status(AudioCaptureState::Unavailable, Some(reason));
+        ctx.sink.push(CaptureEvent::AudioUnavailable {
+            pc_cont_ns: sample_cont_ns(),
+            boot_id: boot_id.to_owned(),
+            status: AudioTunnelStatus::DeviceError,
+        });
         ctx.report_lost(StreamId::Audio, format!("audio connect failed: {err}"));
     }
 
@@ -1371,9 +1684,18 @@ fn run_audio_reader_loop(stream: TcpStream, boot_id: &str, ctx: &MediaThreadCtx)
             if let Some(sock) = timeout_ctl {
                 let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
             }
+            ctx.sink
+                .set_audio_status(AudioCaptureState::Available, None);
             r
         }
         Err(ScrcpyError::AudioDisabled) => {
+            ctx.sink.set_audio_status(
+                AudioCaptureState::Unavailable,
+                Some(
+                    "Device disabled or refused audio capture (codec_id = 0). Continuing with video + logs + taps."
+                        .to_owned(),
+                ),
+            );
             ctx.sink.push(CaptureEvent::AudioUnavailable {
                 pc_cont_ns: sample_cont_ns(),
                 boot_id: boot_id.to_owned(),
@@ -1382,6 +1704,13 @@ fn run_audio_reader_loop(stream: TcpStream, boot_id: &str, ctx: &MediaThreadCtx)
             return;
         }
         Err(ScrcpyError::AudioServerError) => {
+            ctx.sink.set_audio_status(
+                AudioCaptureState::Unavailable,
+                Some(
+                    "Device audio encoder failed to initialize (codec_id = 1). Continuing with video + logs + taps."
+                        .to_owned(),
+                ),
+            );
             ctx.sink.push(CaptureEvent::AudioUnavailable {
                 pc_cont_ns: sample_cont_ns(),
                 boot_id: boot_id.to_owned(),
@@ -1390,6 +1719,17 @@ fn run_audio_reader_loop(stream: TcpStream, boot_id: &str, ctx: &MediaThreadCtx)
             return;
         }
         Err(err) => {
+            ctx.sink.set_audio_status(
+                AudioCaptureState::Unavailable,
+                Some(format!(
+                    "Audio tunnel closed during handshake ({err}). Continuing with video + logs + taps."
+                )),
+            );
+            ctx.sink.push(CaptureEvent::AudioUnavailable {
+                pc_cont_ns: sample_cont_ns(),
+                boot_id: boot_id.to_owned(),
+                status: AudioTunnelStatus::DeviceError,
+            });
             ctx.report_lost(StreamId::Audio, format!("audio handshake failed: {err}"));
             return;
         }
@@ -2102,6 +2442,221 @@ mod tests {
             usize::try_from(cursor_consumed.position()).expect("pos"),
             super::MAX_SCRCPY_STDERR_BYTES * 3,
             "collector must drain the whole stream to EOF"
+        );
+    }
+
+    #[test]
+    fn t6e_plan_scrcpy_audio_proactively_disables_on_aos9_and_tries_fallback_on_api33_or_unknown() {
+        use arb_adb::scrcpy::{AudioCaptureMode, AudioTunnelStatus};
+
+        use super::{PlannedScrcpyAudio, plan_scrcpy_audio};
+
+        assert_eq!(
+            plan_scrcpy_audio(AudioCaptureMode::Disabled, Some(34)),
+            PlannedScrcpyAudio::Disabled
+        );
+
+        // Android 9 (API 28) -> proactive audio=false with honest diagnostic!
+        match plan_scrcpy_audio(AudioCaptureMode::Enabled, Some(28)) {
+            PlannedScrcpyAudio::ProactiveUnavailable {
+                api_level,
+                status,
+                reason,
+            } => {
+                assert_eq!(api_level, 28);
+                assert_eq!(
+                    status,
+                    AudioTunnelStatus::UnavailableApiLevel {
+                        api_level: 28,
+                        min_required: 33,
+                    }
+                );
+                assert_eq!(
+                    reason,
+                    "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps."
+                );
+            }
+            other => panic!("expected ProactiveUnavailable on API 28, got {other:?}"),
+        }
+
+        // Android 10 (API 29) -> proactive audio=false
+        assert!(matches!(
+            plan_scrcpy_audio(AudioCaptureMode::Enabled, Some(29)),
+            PlannedScrcpyAudio::ProactiveUnavailable { api_level: 29, .. }
+        ));
+
+        // Android 12 (API 32) -> proactive audio=false (playback dup requires API 33)
+        assert!(matches!(
+            plan_scrcpy_audio(AudioCaptureMode::Enabled, Some(32)),
+            PlannedScrcpyAudio::ProactiveUnavailable { api_level: 32, .. }
+        ));
+
+        // Android 13 (API 33) and unknown SDK (None) -> TryWithAudio (runtime fallback armed)
+        assert_eq!(
+            plan_scrcpy_audio(AudioCaptureMode::Enabled, Some(33)),
+            PlannedScrcpyAudio::TryWithAudio {
+                effective_api_level: 33
+            }
+        );
+        assert_eq!(
+            plan_scrcpy_audio(AudioCaptureMode::Enabled, None),
+            PlannedScrcpyAudio::TryWithAudio {
+                effective_api_level: 33
+            }
+        );
+    }
+
+    #[test]
+    fn t6e_single_video_socket_handshake_never_waits_for_audio_socket_on_aos9() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::thread;
+
+        use arb_adb::scrcpy::{CODEC_ID_H264, SCRCPY_DUMMY_BYTE};
+
+        use super::{AudioSocketMode, connect_scrcpy_tunnels};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock aos9 scrcpy listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        // Mirrors scrcpy-server launched with `audio=false`: accepts ONLY socket 1 (video),
+        // writes 0x00 dummy byte + "h264" immediately, and closes the listener.
+        let server = thread::spawn(move || {
+            let (mut video, _) = listener.accept().expect("accept single video socket");
+            video.write_all(&[SCRCPY_DUMMY_BYTE]).expect("write dummy");
+            video
+                .write_all(&CODEC_ID_H264.to_be_bytes())
+                .expect("write h264 codec id");
+            video.flush().expect("flush");
+        });
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let tunnels = connect_scrcpy_tunnels(
+            port,
+            AudioSocketMode::Disabled,
+            Duration::from_secs(5),
+            &stop,
+        )
+        .expect("single-socket handshake must succeed without audio socket");
+        assert_eq!(tunnels.video_reader.codec_id(), CODEC_ID_H264);
+        assert!(tunnels.audio_stream.is_none());
+        assert!(tunnels.audio_connect_error.is_none());
+        server.join().expect("mock server thread");
+    }
+
+    #[test]
+    fn t6e_audio_reader_degrades_honestly_when_audio_socket_closes_immediately() {
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::thread;
+
+        use arb_core::state::RingBudgetPolicy;
+        use tempfile::TempDir;
+
+        use crate::capture::{CapturePipeline, SharedDiskSpaceProvider};
+        use crate::protocol::AudioCaptureState;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut pipe = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::os_default(),
+        )
+        .expect("open pipeline");
+        let generation = pipe.begin_live_session("aos9-fallback");
+        let pipeline = Arc::new(Mutex::new(pipe));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock audio listener");
+        let addr = listener.local_addr().expect("addr");
+        let server = thread::spawn(move || {
+            // Immediately close the audio socket (simulates scrcpy rejecting audio on init).
+            let (_sock, _) = listener.accept().expect("accept");
+        });
+        let stream = TcpStream::connect(addr).expect("connect");
+
+        let (tx, _rx) = mpsc::channel();
+        let ctx = super::MediaThreadCtx {
+            session_stop: Arc::new(AtomicBool::new(false)),
+            global_stop: Arc::new(AtomicBool::new(false)),
+            sink: super::LiveSink {
+                pipeline: Arc::clone(&pipeline),
+                generation,
+                failed: Arc::new(AtomicBool::new(false)),
+            },
+            signals: tx,
+        };
+        super::run_audio_reader_loop(stream, "boot-1", &ctx);
+        server.join().expect("server");
+
+        let status = pipeline.lock().expect("lock").status_view();
+        assert_eq!(status.audio_state, AudioCaptureState::Unavailable);
+        let reason = status
+            .audio_reason
+            .expect("must record honest audio fallback reason");
+        assert!(
+            reason.contains("Continuing with video + logs + taps"),
+            "reason={reason}"
+        );
+    }
+
+    #[test]
+    fn opus_review_scrcpy_scid_never_exceeds_int_max_for_high_bit_millis() {
+        // scrcpy-server v5.0.1 parses `scid` with `Integer.parseInt(hex)` and rejects values
+        // above 0x7FFFFFFF, so bit 31 of the wall-clock millis must never reach the scid.
+        for (millis, salt) in [
+            (0x0000_0000_u64, 0_u32),
+            (0x0AF9_A1B2, 0),
+            (0x7FFF_FFFF, 1),
+            (0x8000_0000, 0),
+            (0x1_9ABC_DEF0, 0),
+            (0xFFFF_FFFF, 0),
+            (0xFFFF_FFFF, 1),
+        ] {
+            let scid = super::scrcpy_scid_hex(millis, salt);
+            assert_eq!(scid.len(), 8, "scid={scid}");
+            let value = u32::from_str_radix(&scid, 16).expect("hex scid");
+            assert!(
+                value <= 0x7FFF_FFFF,
+                "scid {scid} (millis={millis:#x}, salt={salt}) exceeds Java int range"
+            );
+            assert!(
+                value >= 0x1000_0000,
+                "scid {scid} keeps the 0x10000000 marker"
+            );
+        }
+        assert_ne!(
+            super::scrcpy_scid_hex(0x8000_0000, 0),
+            super::scrcpy_scid_hex(0x8000_0000, 1),
+            "the audio=false retry salt must yield a different scid"
+        );
+    }
+
+    #[test]
+    fn opus_review_audio_fallback_reason_does_not_blame_audio_when_retry_also_fails() {
+        let degraded = super::audio_fallback_reason("handshake eof", Some("audio init"), None);
+        assert!(degraded.contains("Audio capture failed"), "{degraded}");
+        assert!(
+            degraded.contains("degraded to video + logs + taps"),
+            "{degraded}"
+        );
+
+        let both_failed = super::audio_fallback_reason(
+            "handshake eof",
+            Some("MediaCodec busy"),
+            Some("video tunnel timed out"),
+        );
+        assert!(
+            !both_failed.contains("degraded to video"),
+            "video did not start, so the reason must not claim video continues: {both_failed}"
+        );
+        assert!(
+            both_failed.contains("scrcpy-server failed to start"),
+            "{both_failed}"
+        );
+        assert!(
+            both_failed.contains("video tunnel timed out"),
+            "{both_failed}"
         );
     }
 }

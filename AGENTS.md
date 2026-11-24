@@ -32,7 +32,7 @@ Entire Trails drive the change; GitHub runs CI and publishes releases. Always pa
 - Merge with `entire trail merge <n>` once gates pass (findings, required checks, up to date). Never `--force`. Merge on Entire, not on GitHub. Afterwards close the trail with `entire trail update <n> --status closed`.
 - Required CI check names are fixed by repository rulesets: `test`, `os-parity (macos-latest)`, `os-parity (windows-latest)`. Do not rename those jobs.
 - `early` follows `develop` (CI `early` job); never edit it by hand. Stable releases are tags `vX.Y.Z` on `main` (SemVer) after VM IDE/emulator acceptance.
-- Support floor: Android 9 (API 28)+ core guaranteed (API 28–29 degrade audio cleanly to `audio=false` / `Unavailable`), Android 11 (API 30)+ recommended for audio capture/playback, API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
+- Support floor: Android 9 (API 28)+ core guaranteed (API 28–32 degrade audio cleanly to `audio=false` / `Unavailable`), Android 13 (API 33)+ recommended for audio capture/playback (non-muting `audio_source=playback audio_dup=true`, SPEC-03), API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
 ## Rules

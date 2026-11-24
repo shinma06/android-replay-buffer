@@ -312,4 +312,50 @@ class ArbViewModelsTest {
         assertEquals(10L, movedOutBeforeIn.inFrameIndex)
         assertEquals(10L, movedOutBeforeIn.outFrameIndex)
     }
+
+    @Test
+    fun aos9AudioUnavailableSurfacesHonestNoticeWhileRecordingStaysHealthy() {
+        val status = SystemStatusResponse(
+            pid = 200L,
+            uptimeMs = 10_000L,
+            capture = CaptureStatusView(
+                active = true,
+                connected = true,
+                serial = "aos9-phone",
+                bootId = "fallback:bc=5:btime=1700000000",
+                storagePressureStopped = false,
+                videoFrames = 120L,
+                audioFrames = 0L,
+                logRecords = 50L,
+                tapRecords = 4L,
+                discontinuities = 0L,
+                staticHoldEvents = 0L,
+                audioState = io.github.shinma06.arb.model.AudioCaptureState.UNAVAILABLE,
+                audioReason = "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps.",
+            ),
+            ringChunkCount = 4L,
+            ringTotalBytes = 4096L,
+            ringPinnedChunkCount = 0L,
+            activeViewports = 0L,
+            activeSaveJobs = 0L,
+            recovery = RecoverySummaryView(),
+        )
+        val state = CaptureBarReducer.fromStatus(CaptureBarState(), status)
+        assertTrue(state.isRecordingHealthy)
+        assertEquals(
+            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps.",
+            state.audioUnavailableReason,
+        )
+        assertTrue(state.banners.any { it.detail.contains("API 28") })
+
+        // API < 28 (e.g. API 27) surfaces a non-blocking support-floor warning while staying healthy.
+        val api27Status = status.copy(
+            capture = status.capture.copy(
+                deviceApiWarning = "Android 9 (API 28) 未満は非サポート対象です (API 27)。ベストエフォートで音声なしキャプチャを継続します。",
+            ),
+        )
+        val state27 = CaptureBarReducer.fromStatus(CaptureBarState(), api27Status)
+        assertTrue(state27.isRecordingHealthy)
+        assertTrue(state27.banners.any { it.detail.contains("API 27") })
+    }
 }

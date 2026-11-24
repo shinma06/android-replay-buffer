@@ -23,8 +23,8 @@ Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント
 
 | 区分 | 対象バージョン | 利用できる機能 |
 | --- | --- | --- |
-| **最小サポート（コア機能保証）** | **Android 9（API 28）以上** | 画面録画・logcat・タップ・スクリーンショット・クラッシュ自動保存・画面遷移スパン（`am_*` / `wm_*`）・アプリ別ログ・トリム・MCP（API 28〜29 では端末音声を自動的に `audio=false` / `Unavailable` へフォールバック） |
-| **推奨（全機能）** | **Android 11（API 30）以上** | 上記すべて + 端末音声キャプチャ・音声付き A/V 再生・音声付き `share.mp4` 出力 |
+| **最小サポート（コア機能保証）** | **Android 9（API 28）以上** | 画面録画・logcat・タップ・スクリーンショット・クラッシュ自動保存・画面遷移スパン（`am_*` / `wm_*`）・アプリ別ログ・トリム・MCP（API 28〜32 では端末音声を自動的に `audio=false` / `Unavailable` へフォールバック） |
+| **推奨（全機能）** | **Android 13（API 33）以上** | 上記すべて + 端末音声キャプチャ（端末側の再生音を止めない `audio_source=playback audio_dup=true`）・音声付き A/V 再生・音声付き `share.mp4` 出力 |
 | **非サポート** | **Android 8.1（API 27）以下** | 動作保証外（接続時に非ブロッキング警告を表示） |
 
 ### Android Studio プラグイン / 他 IDE

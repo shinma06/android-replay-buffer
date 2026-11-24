@@ -51,6 +51,19 @@ enum class CaptureMode(val wire: String) {
     }
 }
 
+enum class AudioCaptureState(val wire: String) {
+    UNKNOWN("unknown"),
+    AVAILABLE("available"),
+    DISABLED("disabled"),
+    UNAVAILABLE("unavailable");
+
+    companion object {
+        fun fromWire(value: String): AudioCaptureState =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown AudioCaptureState: $value")
+    }
+}
+
 data class CaptureStatusView(
     val active: Boolean,
     val connected: Boolean,
@@ -66,7 +79,13 @@ data class CaptureStatusView(
     val discontinuities: Long,
     val staticHoldEvents: Long,
     val ringWriteErrors: Long = 0L,
-)
+    val audioState: AudioCaptureState? = null,
+    val audioReason: String? = null,
+    val deviceApiWarning: String? = null,
+) {
+    val effectiveAudioState: AudioCaptureState
+        get() = audioState ?: AudioCaptureState.UNKNOWN
+}
 
 data class RecoverySummaryView(
     val removedStagingDirs: Long = 0,
