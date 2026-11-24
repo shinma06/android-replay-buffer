@@ -678,6 +678,7 @@ struct Job {
     boot: u8,
     managed: bool,
     staging: Option<Staging>,
+    parent_sync_warning: bool,
 }
 
 impl Job {
@@ -774,9 +775,9 @@ impl S2State {
         }) && self.active_jobs() == 0
     }
     fn release_pins(&mut self, pins: u8) {
-        for slot in 0..2 {
+        for (slot, chunk) in self.chunks.iter_mut().enumerate() {
             if pins & (1 << slot) != 0 {
-                if let Some(c) = self.chunks[slot].as_mut() {
+                if let Some(c) = chunk.as_mut() {
                     c.pinned = false;
                 }
             }
@@ -939,8 +940,8 @@ impl Model for S2Model {
                     return None;
                 }
                 let mut pins = 0u8;
-                for slot in 0..2 {
-                    if let Some(c) = n.chunks[slot].as_mut() {
+                for (slot, chunk) in n.chunks.iter_mut().enumerate() {
+                    if let Some(c) = chunk.as_mut() {
                         if c.boot == s.boot {
                             c.pinned = true;
                             pins |= 1 << slot;
@@ -956,6 +957,7 @@ impl Model for S2Model {
                     boot: s.boot,
                     managed: true,
                     staging: None,
+                    parent_sync_warning: false,
                 });
                 n.bundle = None;
                 n.gc_marked = false;
@@ -990,13 +992,16 @@ impl Model for S2Model {
                 if j.phase != JobPhase::Staged {
                     return None;
                 }
-                if parent_sync_ok {
-                    j.phase = JobPhase::Renamed;
-                    j.staging = None;
-                } else {
+                if s.disk == Disk::Full {
+                    // The rename itself failed: staging is cleaned up, the job stays retryable.
                     j.phase = JobPhase::FailedRetryable;
-                    j.staging = None; // staging cleaned up on failure
+                } else {
+                    // A parent fsync failure after the rename only adds a warning: the bundle is
+                    // already published and is registered as usual (never failed or discarded).
+                    j.phase = JobPhase::Renamed;
+                    j.parent_sync_warning = !parent_sync_ok;
                 }
+                j.staging = None;
                 n.job = Some(j);
             }
             S2Action::Phase2CatalogRegister => {
@@ -1274,6 +1279,7 @@ enum Wm {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Drain {
+    generation: u8,
     video: Wm,
     audio: Wm,
     audio_required: bool,
@@ -1489,6 +1495,7 @@ impl Model for S3Model {
                 }
                 let audio_required = s.audio == Audio::Active;
                 n.drain = Some(Drain {
+                    generation: s.generation,
                     video: Wm::Before,
                     audio: if audio_required {
                         Wm::Before
@@ -1502,7 +1509,8 @@ impl Model for S3Model {
             }
             S3Action::AdvanceWatermark { audio } => {
                 let mut d = s.drain?;
-                if d.complete {
+                // A reconnect starts a new generation; its progress never completes an older drain.
+                if d.complete || d.generation != s.generation {
                     return None;
                 }
                 let (live, wm) = if audio {
@@ -1532,7 +1540,11 @@ impl Model for S3Model {
             }
             S3Action::DrainComplete => {
                 let mut d = s.drain?;
-                if d.complete || d.video < Wm::Equal || (d.audio_required && d.audio < Wm::Equal) {
+                if d.complete
+                    || d.generation != s.generation
+                    || d.video < Wm::Equal
+                    || (d.audio_required && d.audio < Wm::Equal)
+                {
                     return None;
                 }
                 d.complete = true;
