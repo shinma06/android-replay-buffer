@@ -81,11 +81,14 @@ def production_sources():
         yield rel, src
 
 
+# Raw strings, strings and char literals, matched left to right so a quote inside one
+# literal never pairs with code after it (e.g. `feature = "windows"`, `'"'`, `r#"'"'"#`).
+LITERAL = re.compile(r'r(#*)".*?"\1|"(?:[^"\\]|\\.)*"' + r"|'(?:[^'\\]|\\.)'")
+
+
 def grep(src: str, pattern: re.Pattern[str]):
     for n, line in enumerate(src.split("\n"), 1):
-        # String/char literals (e.g. `feature = "windows"`, `'"'`) are not OS conditions or calls.
-        code = re.sub(r"'(?:[^'\\]|\\.)'", "' '", line)
-        if pattern.search(re.sub(r'"(?:[^"\\]|\\.)*"', '""', code)):
+        if pattern.search(LITERAL.sub("_", line)):
             yield n, line.strip()
 
 
