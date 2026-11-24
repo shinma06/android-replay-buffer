@@ -1,0 +1,28 @@
+{
+  "bundle_id": "01JPDDG5000000000000000001",
+  "device": {
+    "api_level": 33,
+    "is_emulator": true,
+    "model": "Pixel",
+    "serial": "EMU"
+  },
+  "duration_sec": 30,
+  "policy": {
+    "drain_timeout_ms": 500,
+    "max_unanchored_bytes": 16777216,
+    "max_unanchored_records": 50000,
+    "unanchored_ingest_margin_ns": 2000000000
+  },
+  "tail_may_be_incomplete": true,
+  "trigger_utc": "2026-11-24T00:00:00Z",
+  "video_height": 2400,
+  "video_width": 1080,
+  "window": {
+    "boot_id": "boot-g5",
+    "end_boottime_ns": 2,
+    "ingest_end_cont_ns": 4,
+    "ingest_start_cont_ns": 3,
+    "kind": "real_elapsed",
+    "start_boottime_ns": 1
+  }
+}

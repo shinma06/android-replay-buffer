@@ -3679,6 +3679,10 @@ const fn log_priority_label(priority: u8) -> &'static str {
 }
 
 #[cfg(test)]
+#[path = "capture_pdd_g5_tests.rs"]
+mod pdd_g5_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
