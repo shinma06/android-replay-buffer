@@ -9,6 +9,7 @@ use arb_core::bundle::{
     StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary,
 };
 use arb_core::config::{ArbConfig, CaptureMode};
+use arb_core::gesture::GestureKind;
 use arb_core::selection::SelectionPolicy;
 use arb_core::state::{BundleLifecycleState, SaveJobState, SaveTriggerKind};
 use arb_core::time::DiscontinuityEvent;
@@ -1119,8 +1120,21 @@ pub struct OverviewTapItem {
     pub x: Option<f64>,
     /// Touch Y coordinate in display pixels, if available.
     pub y: Option<f64>,
-    /// Input action label (e.g., `"DOWN"`, `"UP"`, `"MOVE"`).
+    /// Input action label (e.g., `"TAP"`, `"SWIPE"`; `"DOWN"`/`"UP"`/`"MOVE"` for legacy bundles
+    /// saved before T-6H item 2's per-stroke gesture classification).
     pub kind: String,
+    /// `Tap` vs `Swipe` classification (`#[serde(default)]`: `Tap` for legacy bundles/responses).
+    #[serde(default)]
+    pub gesture_kind: GestureKind,
+    /// End X coordinate for a `Swipe` (`None` for `Tap` or legacy data).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_x: Option<f64>,
+    /// End Y coordinate for a `Swipe` (`None` for `Tap` or legacy data).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_y: Option<f64>,
+    /// End timestamp in milliseconds relative to the start of the bundle timeline (mirrors `t_ms`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_t_ms: Option<i64>,
 }
 
 /// Compact `E`/`F` error log highlight returned inside [`TimelineOverviewResponse`].

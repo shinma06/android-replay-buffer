@@ -33,7 +33,7 @@ class PlaybackController(
     initialOutFrameIndex: Long = (totalFrames - 1L).coerceAtLeast(0L),
     initialSpeed: PlaybackSpeed = PlaybackSpeed.NORMAL,
     initialMuted: Boolean = false,
-    initialLoopInSelection: Boolean = true,
+    initialLoopInSelection: Boolean = false,
     initialAvOffsetMs: Long = audioPlayer?.avOffsetMs ?: 0L,
     private val autoRunLoop: Boolean = true,
     private val closeAudioPlayerOnClose: Boolean = true,
@@ -543,6 +543,20 @@ class PlaybackController(
             notifyListeners(snapshot)
         }
     }
+
+    /**
+     * Loop playback toggle (Owner trial feedback T-6H item 3) — alias for [PlaybackState.loopInSelection].
+     * `true` means reaching the end of `[inFrameIndex..outFrameIndex]` (or the full bundle when no
+     * trim is set) wraps smoothly back to the start and keeps playing instead of stopping.
+     */
+    val loopEnabled: Boolean
+        get() = currentState.loopInSelection
+
+    /** Sets [loopEnabled] explicitly. See [setLoopInSelection]. */
+    fun setLoopEnabled(enabled: Boolean) = setLoopInSelection(enabled)
+
+    /** Flips [loopEnabled]. */
+    fun toggleLoop() = setLoopInSelection(!currentState.loopInSelection)
 
     fun setAvOffsetMs(avOffsetMs: Long) {
         val snapshot = stateLock.withLock {

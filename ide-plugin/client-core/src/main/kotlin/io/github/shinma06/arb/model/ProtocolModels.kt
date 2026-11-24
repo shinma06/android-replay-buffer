@@ -761,6 +761,29 @@ data class TimelineLogsResponse(
     val logs: List<LogRecord>,
 )
 
+/**
+ * `Tap` vs `Swipe` gesture classification (T-6H item 2).
+ *
+ * Mirrors Rust `arb_core::gesture::GestureKind`: missing/unknown wire values deserialize as
+ * [TAP] so bundles saved before this feature (and any future unknown variant) degrade cleanly.
+ */
+enum class GestureKind(val wire: String) {
+    TAP("tap"),
+    SWIPE("swipe");
+
+    companion object {
+        fun fromWire(value: String): GestureKind =
+            entries.firstOrNull { it.wire == value } ?: TAP
+    }
+}
+
+/** One sample of a decimated `Swipe` trajectory. Mirrors Rust `arb_core::gesture::TouchPoint`. */
+data class TouchPoint(
+    val x: Double,
+    val y: Double,
+    val tOffsetNs: Long,
+)
+
 data class TapRecord(
     val seq: Long,
     val bootId: String? = null,
@@ -772,6 +795,14 @@ data class TapRecord(
     val x: Double? = null,
     val y: Double? = null,
     val pointerId: Int? = null,
+    /** `Tap` for bundles saved before T-6H item 2. */
+    val gestureKind: GestureKind = GestureKind.TAP,
+    /** End point of a `Swipe`; `null` for `Tap` or legacy data. */
+    val endX: Double? = null,
+    val endY: Double? = null,
+    val endTOffsetNs: Long? = null,
+    /** Decimated `Swipe` trajectory; always empty for `Tap`. */
+    val path: List<TouchPoint> = emptyList(),
 )
 
 data class TimelineTapsResponse(

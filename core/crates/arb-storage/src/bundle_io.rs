@@ -25,6 +25,7 @@ use arb_core::bundle::{
     LogCompleteness, LogRecord, LogcatStreamMeta, ManifestV2, Provenance, RecordBucket,
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
+use arb_core::gesture::{GestureKind, TouchPoint};
 use arb_core::legacy::{
     LegacyBundleMetadata, LegacySaveKind, LegacySchemaVersion, parse_schema3_frames_jsonl,
     parse_schema3_session, parse_schema4_frames_jsonl, parse_schema4_logs_jsonl,
@@ -130,7 +131,12 @@ CREATE TABLE taps (
   min_boottime_ns INTEGER,
   max_boottime_ns INTEGER,
   semantics TEXT,
-  uncertainty_reason TEXT
+  uncertainty_reason TEXT,
+  gesture_kind TEXT,
+  end_x REAL,
+  end_y REAL,
+  end_t_offset_ns INTEGER,
+  path_json TEXT
 );
 
 CREATE TABLE clock_anchors (
@@ -919,19 +925,44 @@ impl BundleReader for V2BundleReader {
             None => -1,
         };
 
+        let tap_cols = sqlite_table_columns(&conn, "taps")?;
+        let has_gesture_cols = [
+            "gesture_kind",
+            "end_x",
+            "end_y",
+            "end_t_offset_ns",
+            "path_json",
+        ]
+        .iter()
+        .all(|col| tap_cols.contains(*col));
+        let sql = if has_gesture_cols {
+            "SELECT seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
+                    aligned_boottime_ns, certainty, bucket, action, x, y,
+                    pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
+                    semantics, uncertainty_reason,
+                    gesture_kind, end_x, end_y, end_t_offset_ns, path_json
+             FROM taps
+             WHERE (?1 IS NULL OR bucket = ?1)
+               AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
+               AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+             ORDER BY seq ASC
+             LIMIT ?4"
+        } else {
+            "SELECT seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
+                    aligned_boottime_ns, certainty, bucket, action, x, y,
+                    pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
+                    semantics, uncertainty_reason,
+                    NULL, NULL, NULL, NULL, NULL
+             FROM taps
+             WHERE (?1 IS NULL OR bucket = ?1)
+               AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
+               AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+             ORDER BY seq ASC
+             LIMIT ?4"
+        };
+
         let mut stmt = conn
-            .prepare(
-                "SELECT seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
-                        aligned_boottime_ns, certainty, bucket, action, x, y,
-                        pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
-                        semantics, uncertainty_reason
-                 FROM taps
-                 WHERE (?1 IS NULL OR bucket = ?1)
-                   AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
-                   AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
-                 ORDER BY seq ASC
-                 LIMIT ?4",
-            )
+            .prepare(sql)
             .map_err(|source| StorageError::sqlite("prepare_query_taps", source))?;
 
         let rows = stmt
@@ -955,6 +986,11 @@ impl BundleReader for V2BundleReader {
                         max_boottime_ns: row.get(13)?,
                         semantics: row.get(14)?,
                         uncertainty_reason: row.get(15)?,
+                        gesture_kind: row.get(16)?,
+                        end_x: row.get(17)?,
+                        end_y: row.get(18)?,
+                        end_t_offset_ns: row.get(19)?,
+                        path_json: row.get(20)?,
                     })
                 },
             )
@@ -1693,14 +1729,26 @@ fn insert_taps(tx: &rusqlite::Transaction<'_>, taps: &[TapRecord]) -> Result<(),
                 seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
                 aligned_boottime_ns, certainty, bucket, action, x, y,
                 pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
-                semantics, uncertainty_reason
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                semantics, uncertainty_reason,
+                gesture_kind, end_x, end_y, end_t_offset_ns, path_json
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20, ?21
+            )",
         )
         .map_err(|source| StorageError::sqlite("prepare_insert_taps", source))?;
 
     for tap in taps {
         let cols = encode_alignment(&tap.alignment)?;
         let seq = u64_to_i64(tap.seq, "tap.seq")?;
+        let path_json = if tap.path.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&tap.path)
+                    .map_err(|source| StorageError::json("encode_tap_path", source))?,
+            )
+        };
         stmt.execute(params![
             seq,
             tap.boot_id,
@@ -1718,6 +1766,11 @@ fn insert_taps(tx: &rusqlite::Transaction<'_>, taps: &[TapRecord]) -> Result<(),
             cols.max_boottime_ns,
             cols.semantics,
             cols.uncertainty_reason,
+            gesture_kind_to_str(tap.gesture_kind),
+            tap.end_x,
+            tap.end_y,
+            tap.end_t_offset_ns,
+            path_json,
         ])
         .map_err(|source| StorageError::sqlite("insert_tap", source))?;
     }
@@ -1796,11 +1849,10 @@ fn sqlite_table_exists(conn: &Connection, table_name: &str) -> Result<bool, Stor
     Ok(count > 0)
 }
 
-fn sqlite_column_exists(
+fn sqlite_table_columns(
     conn: &Connection,
     table_name: &str,
-    column_name: &str,
-) -> Result<bool, StorageError> {
+) -> Result<std::collections::BTreeSet<String>, StorageError> {
     let sql = format!("PRAGMA table_info({table_name})");
     let mut stmt = conn
         .prepare(&sql)
@@ -1808,12 +1860,19 @@ fn sqlite_column_exists(
     let names = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|source| StorageError::sqlite("query_column_exists", source))?;
+    let mut cols = std::collections::BTreeSet::new();
     for name in names {
-        if name.map_err(|source| StorageError::sqlite("read_column_name", source))? == column_name {
-            return Ok(true);
-        }
+        cols.insert(name.map_err(|source| StorageError::sqlite("read_column_name", source))?);
     }
-    Ok(false)
+    Ok(cols)
+}
+
+fn sqlite_column_exists(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, StorageError> {
+    Ok(sqlite_table_columns(conn, table_name)?.contains(column_name))
 }
 
 fn read_persisted_crashes(conn: &Connection) -> Result<Vec<CrashMarker>, StorageError> {
@@ -2033,6 +2092,26 @@ struct RawTapSqlRow {
     max_boottime_ns: Option<i64>,
     semantics: Option<String>,
     uncertainty_reason: Option<String>,
+    // T-6H item 2: `None` when reading a bundle saved before the gesture columns existed.
+    gesture_kind: Option<String>,
+    end_x: Option<f64>,
+    end_y: Option<f64>,
+    end_t_offset_ns: Option<i64>,
+    path_json: Option<String>,
+}
+
+fn gesture_kind_to_str(kind: GestureKind) -> &'static str {
+    match kind {
+        GestureKind::Swipe => "swipe",
+        _ => "tap",
+    }
+}
+
+fn parse_gesture_kind(raw: Option<&str>) -> GestureKind {
+    match raw {
+        Some("swipe") => GestureKind::Swipe,
+        _ => GestureKind::Tap,
+    }
 }
 
 fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
@@ -2048,6 +2127,11 @@ fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
         uncertainty_reason: raw.uncertainty_reason,
         default_semantics: TimestampSemantics::InputEventTime,
     })?;
+    let path: Vec<TouchPoint> = raw
+        .path_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
     Ok(TapRecord {
         seq: i64_to_u64(raw.seq, "tap.seq")?,
         boot_id: raw.boot_id,
@@ -2059,6 +2143,11 @@ fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
         x: raw.x,
         y: raw.y,
         pointer_id: raw.pointer_id,
+        gesture_kind: parse_gesture_kind(raw.gesture_kind.as_deref()),
+        end_x: raw.end_x,
+        end_y: raw.end_y,
+        end_t_offset_ns: raw.end_t_offset_ns,
+        path,
     })
 }
 
@@ -2268,6 +2357,13 @@ fn load_legacy_taps(
             x: row.x.or(row.screen_x),
             y: row.y.or(row.screen_y),
             pointer_id: row.pointer,
+            // Legacy schema 3/4 bundles only ever recorded one row per raw touch sample, so
+            // there is no stroke to classify; default to `Tap` (T-6H item 2 backward compat).
+            gesture_kind: GestureKind::default(),
+            end_x: None,
+            end_y: None,
+            end_t_offset_ns: None,
+            path: Vec::new(),
         });
     }
     Ok(records)
@@ -2476,6 +2572,7 @@ mod tests {
         LogRecord, LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus,
         StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
     };
+    use arb_core::gesture::{GestureKind, TouchPoint};
     use arb_core::time::{
         DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, StreamKind, TimeAlignment,
         TimestampSemantics, UncertaintyReason,
@@ -2533,6 +2630,10 @@ mod tests {
         ]
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture builder lists every bundle struct field explicitly"
+    )]
     fn sample_draft() -> V2BundleDraft {
         V2BundleDraft {
             bundle_kind: BundleKind::Full,
@@ -2609,23 +2710,70 @@ mod tests {
                 detail: Some("synthetic gap".to_owned()),
             }],
             logs: sample_logs(),
-            taps: vec![TapRecord {
-                seq: 0,
-                boot_id: Some("boot-1".to_owned()),
-                event_mono_ns: Some(1_520),
-                pc_ingest_cont_ns: 5_020,
-                alignment: TimeAlignment::Anchored {
-                    boot_id: "boot-1".to_owned(),
-                    boottime_ns: 1_520,
-                    half_width_ns: 5,
-                    semantics: TimestampSemantics::InputEventTime,
+            taps: vec![
+                TapRecord {
+                    seq: 0,
+                    boot_id: Some("boot-1".to_owned()),
+                    event_mono_ns: Some(1_520),
+                    pc_ingest_cont_ns: 5_020,
+                    alignment: TimeAlignment::Anchored {
+                        boot_id: "boot-1".to_owned(),
+                        boottime_ns: 1_520,
+                        half_width_ns: 5,
+                        semantics: TimestampSemantics::InputEventTime,
+                    },
+                    bucket: RecordBucket::Main,
+                    action: "TAP".to_owned(),
+                    x: Some(120.5),
+                    y: Some(340.25),
+                    pointer_id: Some(0),
+                    gesture_kind: GestureKind::Tap,
+                    end_x: None,
+                    end_y: None,
+                    end_t_offset_ns: None,
+                    path: Vec::new(),
                 },
-                bucket: RecordBucket::Main,
-                action: "DOWN".to_owned(),
-                x: Some(120.5),
-                y: Some(340.25),
-                pointer_id: Some(0),
-            }],
+                // Swipe round-trip (T-6H item 2): non-null end_x/end_y/end_t_offset_ns and a
+                // decimated path must survive the `taps` sqlite table losslessly.
+                TapRecord {
+                    seq: 1,
+                    boot_id: Some("boot-1".to_owned()),
+                    event_mono_ns: Some(1_600),
+                    pc_ingest_cont_ns: 5_100,
+                    alignment: TimeAlignment::Anchored {
+                        boot_id: "boot-1".to_owned(),
+                        boottime_ns: 1_600,
+                        half_width_ns: 5,
+                        semantics: TimestampSemantics::InputEventTime,
+                    },
+                    bucket: RecordBucket::Main,
+                    action: "SWIPE".to_owned(),
+                    x: Some(50.0),
+                    y: Some(900.0),
+                    pointer_id: Some(1),
+                    gesture_kind: GestureKind::Swipe,
+                    end_x: Some(50.0),
+                    end_y: Some(200.0),
+                    end_t_offset_ns: Some(180_000_000),
+                    path: vec![
+                        TouchPoint {
+                            x: 50.0,
+                            y: 900.0,
+                            t_offset_ns: 0,
+                        },
+                        TouchPoint {
+                            x: 50.0,
+                            y: 550.0,
+                            t_offset_ns: 90_000_000,
+                        },
+                        TouchPoint {
+                            x: 50.0,
+                            y: 200.0,
+                            t_offset_ns: 180_000_000,
+                        },
+                    ],
+                },
+            ],
             clock_anchors: vec![ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
                 boot_id: "boot-1".to_owned(),
                 boottime_ns: 1_500,
@@ -2802,5 +2950,95 @@ mod tests {
             ),
             "tampered logs.jsonl must fail SHA-256 check"
         );
+    }
+
+    #[test]
+    fn pre_t6h_readonly_sqlite_without_gesture_columns_reads_taps_cleanly() {
+        let tmp = TempDir::new().expect("tempdir");
+        let dest = tmp.path().join("bundle-pre-t6h");
+        let draft = sample_draft();
+        let mut manifest =
+            V2BundleWriter::write(&dest, "job-pre-t6h", &draft).expect("seed bundle write");
+
+        // Rebuild `taps` with ONLY the pre-T-6H 16-column schema (no gesture_kind/end_x/end_y/
+        // end_t_offset_ns/path_json) to simulate an already-saved WORM bundle opened strictly
+        // SQLITE_OPEN_READ_ONLY after upgrading to T-6H.
+        let timeline_path = dest.join(super::TIMELINE_DB_FILE);
+        {
+            let conn = rusqlite::Connection::open(&timeline_path).expect("open sqlite rw");
+            conn.execute_batch(
+                "DROP TABLE taps;
+                 CREATE TABLE taps (
+                   seq INTEGER PRIMARY KEY,
+                   boot_id TEXT,
+                   event_mono_ns INTEGER,
+                   pc_ingest_cont_ns INTEGER NOT NULL,
+                   aligned_boottime_ns INTEGER,
+                   certainty TEXT NOT NULL,
+                   bucket TEXT NOT NULL,
+                   action TEXT NOT NULL,
+                   x REAL,
+                   y REAL,
+                   pointer_id INTEGER,
+                   half_width_ns INTEGER,
+                   min_boottime_ns INTEGER,
+                   max_boottime_ns INTEGER,
+                   semantics TEXT,
+                   uncertainty_reason TEXT
+                 );
+                 INSERT INTO taps (
+                   seq, boot_id, event_mono_ns, pc_ingest_cont_ns,
+                   aligned_boottime_ns, certainty, bucket, action, x, y,
+                   pointer_id, half_width_ns, min_boottime_ns, max_boottime_ns,
+                   semantics, uncertainty_reason
+                 ) VALUES (
+                   0, 'boot-1', 1520, 5020, 1520, 'anchored', 'main', 'DOWN',
+                   120.5, 340.25, 0, 5, NULL, NULL, 'input_event_time', NULL
+                 );",
+            )
+            .expect("rewrite pre-t6h taps table");
+        }
+
+        // Refresh manifest digest for timeline.sqlite so verify_integrity also succeeds.
+        let (bytes, sha256) = super::stream_hash_file(&timeline_path).expect("rehash timeline");
+        for entry in &mut manifest.files {
+            if entry.path == super::TIMELINE_DB_FILE {
+                entry.bytes = bytes;
+                entry.sha256 = sha256.clone();
+            }
+        }
+        std::fs::write(
+            dest.join(super::MANIFEST_V2_FILE),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write updated manifest");
+
+        let reader = V2BundleReader::open(&dest).expect("pre-t6h readonly open must succeed");
+        reader
+            .verify_integrity()
+            .expect("pre-t6h integrity must pass");
+        let taps = reader
+            .query_taps(Some(RecordBucket::Main), TimeRange::all(), None)
+            .expect("pre-t6h query_taps must succeed without no-such-column error");
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].action, "DOWN");
+        assert_eq!(taps[0].gesture_kind, GestureKind::Tap);
+        assert_eq!(taps[0].end_x, None);
+        assert_eq!(taps[0].end_y, None);
+        assert_eq!(taps[0].end_t_offset_ns, None);
+        assert_eq!(taps[0].path, Vec::new());
+
+        // Partial schema (only gesture_kind present, missing the remaining 4 columns) must also
+        // fall back cleanly instead of failing with `no such column: end_x`.
+        {
+            let conn = rusqlite::Connection::open(&timeline_path).expect("open sqlite rw");
+            conn.execute_batch("ALTER TABLE taps ADD COLUMN gesture_kind TEXT;")
+                .expect("add single partial column");
+        }
+        let partial_taps = reader
+            .query_taps(Some(RecordBucket::Main), TimeRange::all(), None)
+            .expect("partial-schema query_taps must fall back cleanly");
+        assert_eq!(partial_taps.len(), 1);
+        assert_eq!(partial_taps[0].gesture_kind, GestureKind::Tap);
     }
 }

@@ -1102,6 +1102,10 @@ fn build_overview_taps(
                 bt.and_then(|t| nearest_frame_index_for_epoch(frames, tap_boot_id(tap), t));
             let t_ms =
                 bt.and_then(|t| base_boottime_ns.map(|base| t.saturating_sub(base) / 1_000_000));
+            let end_t_ms = tap
+                .end_t_offset_ns
+                .zip(t_ms)
+                .map(|(off, base)| base.saturating_add(off / 1_000_000));
             OverviewTapItem {
                 tap_index,
                 seq: tap.seq,
@@ -1110,6 +1114,10 @@ fn build_overview_taps(
                 x: tap.x,
                 y: tap.y,
                 kind: tap.action.clone(),
+                gesture_kind: tap.gesture_kind,
+                end_x: tap.end_x,
+                end_y: tap.end_y,
+                end_t_ms,
             }
         })
         .collect()

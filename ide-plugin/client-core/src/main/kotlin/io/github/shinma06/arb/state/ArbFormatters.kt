@@ -1,8 +1,10 @@
 package io.github.shinma06.arb.state
 
+import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.TapRecord
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -112,21 +114,49 @@ object ArbFormatters {
         return "${formatShortTimecode(inMs)} – ${formatShortTimecode(outMs)} · ${formatDurationSeconds(durMs)} (${frameCount}f)"
     }
 
-    /** Honest tap row label strictly from recorded coordinates — zero guessed UI labels. */
+    /**
+     * Honest tap/swipe row label strictly from recorded coordinates — zero guessed UI labels.
+     *
+     * T-6H item 2: a true per-stroke [GestureKind.SWIPE] renders as
+     * `Swipe #N (x1, y1) -> (x2, y2) (右スワイプ)`. Bundles saved before per-stroke
+     * classification existed (`gesture_kind` missing, defaulting to `Tap`) keep the legacy
+     * per-sample `MOVE`/`SWIPE` action heuristic so old bundles render exactly as before.
+     */
     fun formatTapDisplay(tapIndex1Based: Int, tap: TapRecord): String {
-        val prefix = if (tap.action.equals("MOVE", ignoreCase = true) ||
-            tap.action.equals("SWIPE", ignoreCase = true)
-        ) {
-            "Swipe"
-        } else {
-            "Tap"
-        }
         val x = tap.x
         val y = tap.y
+        if (tap.gestureKind == GestureKind.SWIPE) {
+            val endX = tap.endX
+            val endY = tap.endY
+            val direction = swipeDirectionLabel(x, y, endX, endY)?.let { " ($it)" }.orEmpty()
+            return when {
+                x != null && y != null && endX != null && endY != null ->
+                    "Swipe #$tapIndex1Based (${x.roundToInt()}, ${y.roundToInt()}) -> " +
+                        "(${endX.roundToInt()}, ${endY.roundToInt()})$direction"
+                x != null && y != null -> "Swipe #$tapIndex1Based (${x.roundToInt()}, ${y.roundToInt()})"
+                else -> "Swipe #$tapIndex1Based"
+            }
+        }
+        val legacyIsSwipe = tap.action.equals("MOVE", ignoreCase = true) ||
+            tap.action.equals("SWIPE", ignoreCase = true)
+        val prefix = if (legacyIsSwipe) "Swipe" else "Tap"
         return if (x != null && y != null) {
             "$prefix #$tapIndex1Based (${x.roundToInt()}, ${y.roundToInt()})"
         } else {
             "$prefix #$tapIndex1Based"
+        }
+    }
+
+    /** Cardinal Japanese swipe direction label from the dominant axis of travel, or `null` if still. */
+    private fun swipeDirectionLabel(x: Double?, y: Double?, endX: Double?, endY: Double?): String? {
+        if (x == null || y == null || endX == null || endY == null) return null
+        val dx = endX - x
+        val dy = endY - y
+        if (dx == 0.0 && dy == 0.0) return null
+        return if (abs(dx) >= abs(dy)) {
+            if (dx >= 0.0) "右スワイプ" else "左スワイプ"
+        } else {
+            if (dy >= 0.0) "下スワイプ" else "上スワイプ"
         }
     }
 

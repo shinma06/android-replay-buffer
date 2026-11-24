@@ -9,13 +9,18 @@ import io.github.shinma06.arb.model.ArbConfigPatch
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartParams
 import io.github.shinma06.arb.model.CaptureStatusView
+import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.ProtocolJson
+import io.github.shinma06.arb.model.RecordBucket
 import io.github.shinma06.arb.model.RecoverySummaryView
 import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.StringPatch
 import io.github.shinma06.arb.model.SystemHelloResponse
 import io.github.shinma06.arb.model.SystemStatusResponse
+import io.github.shinma06.arb.model.TapRecord
+import io.github.shinma06.arb.model.TimeAlignment
+import io.github.shinma06.arb.model.TimestampSemantics
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -23,6 +28,7 @@ import java.nio.file.Path
 import java.nio.file.attribute.FileTime
 import java.time.Instant
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -331,5 +337,126 @@ class DeviceSelectionPolicyTest {
             DeviceSelectionOutcome.Selected(serial = "emulator-5554", autoSelected = false),
             DeviceSelectionPolicy.evaluateOnlineSerials(" emulator-5554", listOf("emulator-5554 ", "R3CN")),
         )
+    }
+
+    @Test
+    fun t6hTapRecordGestureKindJsonRoundtripsAndDegradesLegacyBundlesToTap() {
+        // A legacy bundle's `taps` row (saved before T-6H item 2) never had gesture_kind/end_x/
+        // end_y/end_t_offset_ns/path on the wire at all, and `arbd` omits an empty `path` even on
+        // current bundles (`skip_serializing_if = "Vec::is_empty"`). Both must degrade cleanly.
+        val legacyTapJson = """
+            {
+              "seq": 1,
+              "boot_id": "boot-legacy",
+              "event_mono_ns": 1000,
+              "pc_ingest_cont_ns": 2000,
+              "alignment": {
+                "certainty": "anchored",
+                "boot_id": "boot-legacy",
+                "boottime_ns": 1000,
+                "half_width_ns": 5,
+                "semantics": "input_event_time"
+              },
+              "bucket": "main",
+              "action": "DOWN",
+              "x": 10.0,
+              "y": 20.0,
+              "pointer_id": 0
+            }
+        """.trimIndent()
+        val legacyTap = ProtocolJson.gson.fromJson(legacyTapJson, TapRecord::class.java)
+        assertEquals(GestureKind.TAP, legacyTap.gestureKind, "missing gesture_kind must degrade to Tap")
+        assertNull(legacyTap.endX)
+        assertNull(legacyTap.endY)
+        assertNull(legacyTap.endTOffsetNs)
+        assertEquals(emptyList(), legacyTap.path, "missing path must degrade to an empty list, never null")
+
+        // A current Swipe row carries a decimated path and a non-null end point.
+        val swipeJson = """
+            {
+              "seq": 2,
+              "boot_id": "boot-current",
+              "event_mono_ns": 5000,
+              "pc_ingest_cont_ns": 6000,
+              "alignment": {
+                "certainty": "anchored",
+                "boot_id": "boot-current",
+                "boottime_ns": 5000,
+                "half_width_ns": 5,
+                "semantics": "input_event_time"
+              },
+              "bucket": "main",
+              "action": "SWIPE",
+              "x": 50.0,
+              "y": 900.0,
+              "pointer_id": 1,
+              "gesture_kind": "swipe",
+              "end_x": 50.0,
+              "end_y": 200.0,
+              "end_t_offset_ns": 180000000,
+              "path": [
+                {"x": 50.0, "y": 900.0, "t_offset_ns": 0},
+                {"x": 50.0, "y": 200.0, "t_offset_ns": 180000000}
+              ]
+            }
+        """.trimIndent()
+        val swipeTap = ProtocolJson.gson.fromJson(swipeJson, TapRecord::class.java)
+        assertEquals(GestureKind.SWIPE, swipeTap.gestureKind)
+        assertEquals(RecordBucket.MAIN, swipeTap.bucket)
+        assertEquals(50.0, swipeTap.endX)
+        assertEquals(200.0, swipeTap.endY)
+        assertEquals(180_000_000L, swipeTap.endTOffsetNs)
+        assertEquals(2, swipeTap.path.size)
+        assertEquals(900.0, swipeTap.path[0].y)
+        assertEquals(180_000_000L, swipeTap.path[1].tOffsetNs)
+
+        // True serialization -> deserialization round-trip preserves all Swipe fields.
+        val roundTripped = ProtocolJson.gson.fromJson(
+            ProtocolJson.gson.toJson(swipeTap),
+            TapRecord::class.java,
+        )
+        assertEquals(swipeTap, roundTripped)
+
+        // Explicit JSON nulls for optional T-6H fields must also degrade cleanly without NPE.
+        val explicitNullJson = """
+            {
+              "seq": 4,
+              "pc_ingest_cont_ns": 8000,
+              "alignment": {
+                "certainty": "anchored",
+                "boot_id": "boot-null",
+                "boottime_ns": 8000,
+                "half_width_ns": 5,
+                "semantics": "input_event_time"
+              },
+              "bucket": "main",
+              "action": "TAP",
+              "gesture_kind": null,
+              "end_x": null,
+              "end_y": null,
+              "end_t_offset_ns": null,
+              "path": null
+            }
+        """.trimIndent()
+        val explicitNullTap = ProtocolJson.gson.fromJson(explicitNullJson, TapRecord::class.java)
+        assertEquals(GestureKind.TAP, explicitNullTap.gestureKind)
+        assertEquals(emptyList(), explicitNullTap.path)
+
+        // Missing required alignment must throw JsonParseException rather than NullPointerException.
+        val missingAlignmentJson = """{"seq": 5, "pc_ingest_cont_ns": 9000, "bucket": "main", "action": "TAP"}"""
+        assertFailsWith<com.google.gson.JsonParseException> {
+            ProtocolJson.gson.fromJson(missingAlignmentJson, TapRecord::class.java)
+        }
+
+        // An ordinary Kotlin construction (not via JSON) still honours the constructor defaults.
+        val constructed = TapRecord(
+            seq = 3,
+            pcIngestContNs = 7_000L,
+            alignment = TimeAlignment.Anchored("boot-x", 7_000L, 5L, TimestampSemantics.INPUT_EVENT_TIME),
+            bucket = RecordBucket.MAIN,
+            action = "TAP",
+        )
+        assertEquals(GestureKind.TAP, constructed.gestureKind)
+        assertEquals(emptyList(), constructed.path)
     }
 }
