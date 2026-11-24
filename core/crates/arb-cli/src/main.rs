@@ -1595,7 +1595,7 @@ fn emit_value(output: OutputFormat, value: &Value, label: &str) {
 
 fn print_help() {
     println!(
-        "arb-cli {} — Android Replay Buffer v2 CLI\n\n\
+        "arb-cli {} — Android Replay Buffer CLI\n\n\
 GLOBAL OPTIONS:\n  \
   --data-dir <DIR>       Override ARB_DATA_DIR\n  \
   --cache-dir <DIR>      Override ARB_CACHE_DIR\n  \

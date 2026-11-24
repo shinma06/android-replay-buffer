@@ -25,5 +25,5 @@ satisfies:
 
 - **Rust 品質ゲート**: `morganlinton/BeautifulRust` 由来の厳格な `[workspace.lints.rust]` / `[workspace.lints.clippy]` と `core/clippy.toml`（`max-fn-params-bools = 0`、テスト内のみ `unwrap`/`expect`/`print` 許容）、および `.agents/skills/rust-best-practices` / `rust-review` をリポジトリ内へ同梱する。
 - **ライセンスゲート**: `core/scripts/check-licenses.py` により全クレートの SPDX 式を検証し、GPL / AGPL 違反を機械的に遮断する。
-- **軽量 3-Type 要件トレース**: `docs/v2/sara.toml` と `docs/v2/model.yaml`（`requirement` ← `spec` ← `verification` の 3 型のみ）を `sara check --strict -c docs/v2/sara.toml` で検証し、下流 `SPEC-*` を持たない孤児 `REQ-*` が存在しないことも合わせて検査する。
+- **軽量 3-Type 要件トレース**: `docs/sara.toml` と `docs/model.yaml`（`requirement` ← `spec` ← `verification` の 3 型のみ）を `sara check --strict -c docs/sara.toml` で検証し、下流 `SPEC-*` を持たない孤児 `REQ-*` が存在しないことも合わせて検査する。
 - **統合検証コマンド**: `core/scripts/verify.sh` が `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、ライセンス検査、`sara check --strict`、および孤児 `REQ-*` 検査を一括実行し、全項目 exit 0 を必須とする。

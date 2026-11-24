@@ -3,7 +3,7 @@ name = "arb-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure domain model for ARB v2 (dual-layer time, 3-valued selection, WORM bundle schemas, state machines)."
+description = "Pure domain model for Android Replay Buffer (ARB) (dual-layer time, 3-valued selection, WORM bundle schemas, state machines)."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

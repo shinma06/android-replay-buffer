@@ -36,7 +36,7 @@ pub struct AppLogSummary {
     pub sha256: String,
 }
 
-/// Top-level `manifest.json` schema for ARB v2 immutable saved bundles.
+/// Top-level `manifest.json` schema for ARB immutable saved bundles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestV2 {
     /// Bundle manifest schema version; must equal [`BUNDLE_SCHEMA_VERSION`] (`2`).

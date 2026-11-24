@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Cross-OS self-contained distribution packager for Android Replay Buffer (ARB) v2.
+"""Cross-OS self-contained distribution packager for Android Replay Buffer (ARB).
 
 Pure Python 3 stdlib (Linux / macOS / Windows, UTF-8 safe).
-Packages `arb-v2-<os>-<arch>.zip` containing:
+Packages `arb-<os>-<arch>.zip` containing:
   - `arb-ide-plugin-*.zip` (Android Studio plugin)
   - `bin/{arbd,arb-cli,arb-tray}` (`.exe` on Windows)
   - `device-agent/*.dex.jar` (`arb-companion.dex.jar`, `replay-scrcpy-audio.dex.jar`)
@@ -30,7 +30,7 @@ BINARIES = ("arbd", "arb-cli", "arb-tray")
 DEVICE_AGENT_JARS = ("arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar")
 ZIP_TIMESTAMP = (2026, 11, 23, 0, 0, 0)
 REQUIRED_RELEASE_OSES = ("linux", "macos", "windows")
-BUNDLE_ZIP_RE = re.compile(r"^arb-v2-(linux|macos|windows)-([a-z0-9_]+)\.zip$")
+BUNDLE_ZIP_RE = re.compile(r"^arb-(linux|macos|windows)-([a-z0-9_]+)\.zip$")
 
 
 def normalize_os(raw: str | None) -> str:
@@ -82,7 +82,7 @@ def render_unix_launcher(target_os: str) -> str:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "\n"
-        f"# Android Replay Buffer (ARB) v2 launcher ({os_note})\n"
+        f"# Android Replay Buffer (ARB) launcher ({os_note})\n"
         'ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\n'
         'BIN_DIR="${ROOT_DIR}/bin"\n'
         'AGENT_DIR="${ROOT_DIR}/device-agent"\n'
@@ -142,7 +142,7 @@ def render_macos_command_launcher() -> str:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "\n"
-        "# Double-clickable Finder launcher for Android Replay Buffer (ARB) v2 menu bar tray\n"
+        "# Double-clickable Finder launcher for Android Replay Buffer (ARB) menu bar tray\n"
         'ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\n'
         'exec "${ROOT_DIR}/start-arb.sh" tray\n'
     )
@@ -150,7 +150,7 @@ def render_macos_command_launcher() -> str:
 
 def render_windows_launcher() -> str:
     return (
-        "# Android Replay Buffer (ARB) v2 launcher (Windows PowerShell)\n"
+        "# Android Replay Buffer (ARB) launcher (Windows PowerShell)\n"
         "param(\n"
         '    [ValidateSet("tray", "daemon", "mcp", "cli")]\n'
         '    [string]$Mode = "tray",\n'
@@ -220,16 +220,16 @@ def render_readme_trial(
     arbd_bin = binary_filename("arbd", target_os)
     if target_os == "windows":
         launcher_cmd = ".\\start-arb.ps1 tray"
-        mcp_bin_example = f"C:\\\\path\\\\to\\\\arb-v2-{target_os}-{arch}\\\\bin\\\\{cli_bin}"
-        arbd_path_example = f"C:\\\\path\\\\to\\\\arb-v2-{target_os}-{arch}\\\\bin\\\\{arbd_bin}"
+        mcp_bin_example = f"C:\\\\path\\\\to\\\\arb-{target_os}-{arch}\\\\bin\\\\{cli_bin}"
+        arbd_path_example = f"C:\\\\path\\\\to\\\\arb-{target_os}-{arch}\\\\bin\\\\{arbd_bin}"
     elif target_os == "macos":
         launcher_cmd = "./start-arb.sh tray  （または Finder で start-arb-tray.command をダブルクリック）"
-        mcp_bin_example = f"/path/to/arb-v2-{target_os}-{arch}/bin/{cli_bin}"
-        arbd_path_example = f"/path/to/arb-v2-{target_os}-{arch}/bin/{arbd_bin}"
+        mcp_bin_example = f"/path/to/arb-{target_os}-{arch}/bin/{cli_bin}"
+        arbd_path_example = f"/path/to/arb-{target_os}-{arch}/bin/{arbd_bin}"
     else:
         launcher_cmd = "./start-arb.sh tray"
-        mcp_bin_example = f"/path/to/arb-v2-{target_os}-{arch}/bin/{cli_bin}"
-        arbd_path_example = f"/path/to/arb-v2-{target_os}-{arch}/bin/{arbd_bin}"
+        mcp_bin_example = f"/path/to/arb-{target_os}-{arch}/bin/{cli_bin}"
+        arbd_path_example = f"/path/to/arb-{target_os}-{arch}/bin/{arbd_bin}"
 
     plugin_line = (
         f"- `{plugin_zip_name}`: Android Studio プラグイン（`Settings -> Plugins -> 歯車 -> Install Plugin from Disk...`）"
@@ -242,7 +242,7 @@ def render_readme_trial(
         else "- `device-agent/*.dex.jar`: `./device-agent/build.sh --with-scrcpy-audio` で生成して配置"
     )
 
-    return f"""# Android Replay Buffer (ARB) v2 トライアル配布パッケージ
+    return f"""# Android Replay Buffer (ARB) トライアル配布パッケージ
 
 - 対象プラットフォーム: `{target_os}-{arch}`
 - バージョン: `{version}`
@@ -341,7 +341,7 @@ def build_distribution_zip(
 ) -> Path:
     target_os = normalize_os(target_os)
     arch = normalize_arch(arch)
-    package_stem = f"arb-v2-{target_os}-{arch}"
+    package_stem = f"arb-{target_os}-{arch}"
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_path = out_dir / f"{package_stem}.zip"
 
@@ -490,10 +490,10 @@ def assemble_universal_release(
 ) -> list[Path]:
     """Assemble a universal 3-OS zero-zsh plugin ZIP and symmetric 3-OS bundles.
 
-    Reads per-OS `arb-v2-<os>-<arch>.zip` bundles and a base `arb-ide-plugin-*.zip`
+    Reads per-OS `arb-<os>-<arch>.zip` bundles and a base `arb-ide-plugin-*.zip`
     found recursively under `input_dir`, merges all 3 OS native binaries + both
     `device-agent/*.dex.jar` files into one universal `arb-ide-plugin-<version>.zip`,
-    and rebuilds every `arb-v2-<os>-<arch>.zip` with `device-agent/*.dex.jar`,
+    and rebuilds every `arb-<os>-<arch>.zip` with `device-agent/*.dex.jar`,
     the universal plugin ZIP, and fresh `SHA256SUMS.txt`.
     """
     if not input_dir.is_dir():
@@ -536,7 +536,7 @@ def assemble_universal_release(
 
         # Extract native binaries and any device-agent DEX jars from per-OS bundles.
         for (target_os, arch), bundle_path in sorted(os_bundles.items()):
-            stem = f"arb-v2-{target_os}-{arch}"
+            stem = f"arb-{target_os}-{arch}"
             bin_dir = tmp / "bins" / f"{target_os}-{arch}"
             bin_dir.mkdir(parents=True)
             with zipfile.ZipFile(bundle_path, "r") as zf:
@@ -633,7 +633,7 @@ def assemble_universal_release(
 
 
 def run_self_test(repo_root: Path) -> int:
-    permissions_doc = repo_root / "docs" / "v2" / "testing" / "first-run-os-permissions.md"
+    permissions_doc = repo_root / "docs" / "testing" / "first-run-os-permissions.md"
     if not permissions_doc.is_file():
         print(f"ERROR: missing permissions doc for self-test: {permissions_doc}", file=sys.stderr)
         return 1
@@ -674,7 +674,7 @@ def run_self_test(repo_root: Path) -> int:
                 permissions_doc_path=permissions_doc,
                 out_dir=out_dir,
             )
-            stem = f"arb-v2-{target_os}-{arch}"
+            stem = f"arb-{target_os}-{arch}"
             assert archive.name == f"{stem}.zip", f"unexpected archive name: {archive.name}"
 
             with zipfile.ZipFile(archive, "r") as zf:
@@ -709,6 +709,10 @@ def run_self_test(repo_root: Path) -> int:
                 readme = zf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
                 assert "MCP" in readme and "first-run-os-permissions.md" in readme
                 assert "GPL / AGPL" in readme
+                legacy_ver = "v" + "2"
+                assert f"ARB) {legacy_ver}" not in readme
+                assert f"arb-{legacy_ver}-" not in readme
+                assert f"({legacy_ver})" not in readme
                 perm = zf.read(f"{stem}/docs/first-run-os-permissions.md").decode("utf-8")
                 assert "Gatekeeper" in perm and "SmartScreen" in perm
 
@@ -808,7 +812,7 @@ def run_self_test(repo_root: Path) -> int:
                         assert mode == 0o755, f"expected 0755 on {rel}, got {oct(mode)}"
 
         for target_os, arch, _ in matrix:
-            stem = f"arb-v2-{target_os}-{arch}"
+            stem = f"arb-{target_os}-{arch}"
             bzip = assembled_dir / f"{stem}.zip"
             assert bzip.is_file(), f"missing assembled bundle {bzip}"
             with zipfile.ZipFile(bzip, "r") as bzf:
@@ -831,7 +835,7 @@ def run_self_test(repo_root: Path) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Package self-contained 3-OS distribution ZIP for Android Replay Buffer v2."
+        description="Package self-contained 3-OS distribution ZIP for Android Replay Buffer."
     )
     parser.add_argument(
         "--self-test",
@@ -847,7 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--input-dir",
         type=Path,
         default=None,
-        help="Input directory containing per-OS arb-v2-*.zip bundles and base arb-ide-plugin-*.zip (for --assemble-release).",
+        help="Input directory containing per-OS arb-*.zip bundles and base arb-ide-plugin-*.zip (for --assemble-release).",
     )
     parser.add_argument("--target-os", default=None, help="Target OS (linux, macos, windows).")
     parser.add_argument("--arch", default=None, help="Target architecture (arm64, x86_64).")
@@ -872,7 +876,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.self_test:
         return run_self_test(repo_root)
 
-    permissions_doc = repo_root / "docs" / "v2" / "testing" / "first-run-os-permissions.md"
+    permissions_doc = repo_root / "docs" / "testing" / "first-run-os-permissions.md"
     if args.assemble_release:
         if args.input_dir is None:
             parser.error("--assemble-release requires --input-dir")

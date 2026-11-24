@@ -368,7 +368,7 @@ data class BundleCatalogItem(
     val displayTitle: String = bundleId,
 ) {
     val formatBadge: String
-        get() = if (isLegacyReadOnly) LEGACY_READ_ONLY_BADGE_TEXT else "v2"
+        get() = if (isLegacyReadOnly) LEGACY_READ_ONLY_BADGE_TEXT else "ARB"
 
     val isTrimmed: Boolean
         get() = !parentBundleId.isNullOrBlank()
@@ -1187,7 +1187,7 @@ object ProvenanceFormatter {
             Provenance.Original -> if (summary.isLegacy) {
                 "来歴: 旧形式読取専用 (${summary.format.wire}) — $LEGACY_READ_ONLY_BADGE_TEXT"
             } else {
-                "来歴: オリジナル保存 (v2 WORM)"
+                "来歴: オリジナル保存 (WORM)"
             }
             is Provenance.Trimmed ->
                 "来歴: 非破壊トリム (親=${p.parentBundleId}, フレーム [${p.inFrameIndex}..${p.outFrameIndex}])"

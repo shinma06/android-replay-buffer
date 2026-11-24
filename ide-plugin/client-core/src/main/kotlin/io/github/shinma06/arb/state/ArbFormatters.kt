@@ -6,7 +6,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * Pure UI string and numeric formatters enforcing ARB v2's strict UX contracts:
+ * Pure UI string and numeric formatters enforcing ARB's strict UX contracts:
  * - Strict seconds notation everywhere (never convert/round seconds to minutes!)
  * - Zero emoji chrome anywhere
  * - Generic non-narrowed Japanese copy (never "エビデンス")

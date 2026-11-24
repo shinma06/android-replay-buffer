@@ -1,6 +1,6 @@
 //! Stdio JSON-RPC 2.0 Model Context Protocol (MCP) server for `arb-cli mcp`.
 //!
-//! Exposes Android Replay Buffer v2 live capture, WORM bundle inspection, contact-sheet /
+//! Exposes Android Replay Buffer live capture, WORM bundle inspection, contact-sheet /
 //! tap-crop AI visual framing, and strict integer-frame trimming (`share.mp4` / WORM bundle)
 //! over newline-delimited JSON-RPC 2.0 on stdin/stdout (`2025-03-26` & `2024-11-05` compatible).
 //!
@@ -25,7 +25,7 @@ const JSONRPC_INVALID_REQUEST: i32 = -32_600;
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32_601;
 const JSONRPC_INVALID_PARAMS: i32 = -32_602;
 
-const SERVER_INSTRUCTIONS: &str = "Android Replay Buffer (ARB) v2 MCP server. \
+const SERVER_INSTRUCTIONS: &str = "Android Replay Buffer (ARB) MCP server. \
 Recommended AI triage & precision-trim workflow: \
 (1) Call `arb_list_bundles` or `arb_save` to locate/create a WORM bundle. \
 (2) Call `arb_timeline_overview` once to inspect screens, taps, crashes, gaps, and error logs. \
@@ -929,7 +929,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "arb_save",
-            "Save the last `window_secs` of the live ring buffer into an immutable WORM v2 bundle.",
+            "Save the last `window_secs` of the live ring buffer into an immutable WORM bundle.",
             &json!({
                 "type": "object",
                 "properties": {
@@ -958,7 +958,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "arb_save_logs",
-            "Save a log-only WORM v2 bundle (`timeline.sqlite` + `logs.jsonl` + `unanchored.jsonl`) without interrupting video capture.",
+            "Save a log-only WORM bundle (`timeline.sqlite` + `logs.jsonl` + `unanchored.jsonl`) without interrupting video capture.",
             &json!({
                 "type": "object",
                 "properties": {

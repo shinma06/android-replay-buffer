@@ -1,4 +1,4 @@
-//! Error types for the ARB v2 three-zone storage layer.
+//! Error types for the ARB three-zone storage layer.
 
 use std::io;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-//! Three-zone persistence layer for Android Replay Buffer (ARB) v2.
+//! Three-zone persistence layer for Android Replay Buffer (ARB).
 //!
 //! Owns:
 //! - [`ring`] (Zone 1): append-only immutable live ring chunks, durable Phase-1

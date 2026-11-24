@@ -8,7 +8,7 @@ import kotlin.concurrent.withLock
 import kotlin.math.roundToLong
 
 /**
- * Deterministic, thread-safe continuous playback & trim-range controller for the ARB v2 IDE viewer.
+ * Deterministic, thread-safe continuous playback & trim-range controller for the ARB IDE viewer.
  *
  * Guarantees:
  * - Frame positions and trim boundaries are strictly integer `frameIndex: Long` values.

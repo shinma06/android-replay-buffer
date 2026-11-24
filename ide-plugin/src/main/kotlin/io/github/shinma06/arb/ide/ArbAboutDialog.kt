@@ -97,7 +97,7 @@ internal fun ArbAboutContent(info: ArbAboutInfo) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "Android Replay Buffer (v2)",
+            text = "Android Replay Buffer",
             style = ArbJewelPalette.bodyStyle(sizeSp = 14f, bold = true),
         )
 
@@ -158,7 +158,7 @@ class ArbAboutDialog(
     private val info: ArbAboutInfo,
 ) : DialogWrapper(project, true) {
     init {
-        title = "Android Replay Buffer (v2) について"
+        title = "Android Replay Buffer について"
         setOKButtonText("閉じる")
         init()
     }

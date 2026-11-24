@@ -1,6 +1,6 @@
 //! ADB transport, device-agent binary wire protocol, scrcpy-server stream parsing,
 //! auto-reconnect session supervision, and deterministic fault-injection harness
-//! for Android Replay Buffer (ARB) v2.
+//! for Android Replay Buffer (ARB).
 //!
 //! # Architecture
 //!

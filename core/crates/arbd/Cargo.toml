@@ -3,7 +3,7 @@ name = "arbd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Single-writer local daemon for Android Replay Buffer (ARB) v2."
+description = "Single-writer local daemon for Android Replay Buffer (ARB)."
 
 [dependencies]
 arb-adb.workspace = true

@@ -3,7 +3,7 @@ name = "arb-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Three-zone storage engine for ARB v2 (live ring chunks, WORM v2 + legacy bundle I/O, SQLite WAL catalog and leases)."
+description = "Three-zone storage engine for Android Replay Buffer (ARB) (live ring chunks, WORM + legacy bundle I/O, SQLite WAL catalog and leases)."
 
 [dependencies]
 arb-core.workspace = true

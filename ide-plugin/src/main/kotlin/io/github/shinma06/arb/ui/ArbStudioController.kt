@@ -232,7 +232,7 @@ class ArbStudioController(
     val displayHeight: Int?
         get() = viewerState?.summary?.streams?.video?.displayHeight?.takeIf { it > 0 }
 
-    /** Shown only for v2 bundles whose manifest lists extracted `app-logs/<package>.jsonl`. */
+    /** Shown only for ARB bundles whose manifest lists extracted `app-logs/<package>.jsonl`. */
     val isAppPackageFilterVisible: Boolean
         get() = viewerState?.let { !it.isLegacy && it.appLogs.isNotEmpty() } == true
 

@@ -4,7 +4,7 @@ import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.testFramework.LightVirtualFile
 
 /**
- * Lightweight virtual file representing an ARB v2 or Legacy (RO) bundle tab in the IDE editor area.
+ * Lightweight virtual file representing an ARB or Legacy (RO) bundle tab in the IDE editor area.
  */
 class ArbBundleVirtualFile(
     val bundleIdOrPath: String,

@@ -2,7 +2,7 @@
 
 Android 端末の画面・logcat・タップ・時刻情報を常時バッファし、不具合を見つけた瞬間の「直近 N 秒」をバンドルとして保存する開発者向けツールです。Android Studio（IntelliJ）プラグイン、CLI、MCP サーバー、トレイが同じ常駐デーモンと同じ保存処理を共有し、GUI・CLI・MCP の挙動は同一です。
 
-Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント・Compose / Jewel プラグインの 3 層で構成されます。製品の要件・仕様・検証記録は [`docs/v2/`](docs/v2/) にあります。
+Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント・Compose / Jewel プラグインの 3 層で構成されます。製品の要件・仕様・検証記録は [`docs/`](docs/) にあります。
 
 ## 構成
 
@@ -11,7 +11,7 @@ Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント
 | [`core/`](core/) | Rust ワークスペース。`arbd`（常駐デーモン）、`arb-cli`（CLI と 17 ツールの MCP サーバー）、`arb-tray`（トレイ）、`arb-core` / `arb-os` / `arb-adb` / `arb-media` / `arb-storage`（共有ライブラリ） |
 | [`device-agent/`](device-agent/) | 端末側 Companion（Java、`arb-companion.dex.jar`）と、パッチ済み scrcpy 音声取得 DEX |
 | [`ide-plugin/`](ide-plugin/) | Android Studio / IntelliJ プラグイン（Kotlin、Compose / Jewel）。`arbd` / `arb-cli` / `arb-tray` と DEX を同梱した自己完結 ZIP（zsh 不要） |
-| [`docs/v2/`](docs/v2/) | 要件（REQ）・仕様（SPEC）・検証記録（VER）。[`sara`](https://crates.io/crates/sara-cli) でトレーサビリティを検査 |
+| [`docs/`](docs/) | 要件（REQ）・仕様（SPEC）・検証記録（VER）。[`sara`](https://crates.io/crates/sara-cli) でトレーサビリティを検査 |
 | [`fixtures/`](fixtures/) | 旧形式の保存済みバンドル（schema 3/4）に対する読み取り専用互換テスト用フィクスチャ |
 | [`third-party/scrcpy/`](third-party/scrcpy/) | Apache-2.0 の scrcpy-server v5.0.1（SHA-256 固定）と音声取得パッチ |
 
@@ -32,16 +32,16 @@ Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント
 | 区分 | 対象環境 | 利用方法 |
 | --- | --- | --- |
 | **Android Studio プラグイン対応** | **Android Studio Rabbit（2026.2 / IntelliJ Platform `262.9437.185`〜`262.*`）** | 現行安定版の IntelliJ / Java 25 + JetBrains Jewel `composeUI()` 世代に追従。`arb-ide-plugin-<version>.zip` を導入 |
-| **旧 Android Studio（Panda / Quail 等）・他 IDE（VS Code / Cursor 等）** | Linux / macOS / Windows | IDE 非依存のネイティブ **`arb-tray` + `arb-cli` + MCP** で全機能を利用可能（`arb-v2-<OS>-<arch>.zip`） |
+| **旧 Android Studio（Panda / Quail 等）・他 IDE（VS Code / Cursor 等）** | Linux / macOS / Windows | IDE 非依存のネイティブ **`arb-tray` + `arb-cli` + MCP** で全機能を利用可能（`arb-<OS>-<arch>.zip`） |
 
 ## 使う
 
 配布物は [Releases](https://github.com/shinma06/android-replay-buffer/releases) にあります。`early` は `develop` の最新ビルド（プレリリース）です。
 
-- `arb-v2-<OS>-<arch>.zip`: `arbd` / `arb-cli` / `arb-tray` と導入手順（Linux・macOS・Windows）
+- `arb-<OS>-<arch>.zip`: `arbd` / `arb-cli` / `arb-tray` と導入手順（Linux・macOS・Windows）
 - `arb-ide-plugin-<version>.zip`: Android Studio の `Settings → Plugins → 歯車 → Install Plugin from Disk...` で導入
 
-署名なしの配布物を初めて起動するときの OS 側の確認は [`first-run-os-permissions.md`](docs/v2/testing/first-run-os-permissions.md) を参照してください。
+署名なしの配布物を初めて起動するときの OS 側の確認は [`first-run-os-permissions.md`](docs/testing/first-run-os-permissions.md) を参照してください。
 
 ## 開発する
 
@@ -61,4 +61,4 @@ cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-
 
 CI（`.github/workflows/ci.yml`）は `test`（Linux の全検証）と `os-parity (macos-latest)` / `os-parity (windows-latest)`（Rust ワークスペースと ide-plugin の OS 同等性）を実行します。`develop` への push で `early` を更新し、`main` 上のタグ `vX.Y.Z` で正式版を公開します（`release.yml`）。
 
-テストが通ることは、実機・IDE での受入済みを意味しません。未検証の項目は検証記録（`docs/v2/verifications/`）に理由付きで残します。進め方は [AGENTS.md](AGENTS.md) を参照してください。
+テストが通ることは、実機・IDE での受入済みを意味しません。未検証の項目は検証記録（`docs/verifications/`）に理由付きで残します。進め方は [AGENTS.md](AGENTS.md) を参照してください。

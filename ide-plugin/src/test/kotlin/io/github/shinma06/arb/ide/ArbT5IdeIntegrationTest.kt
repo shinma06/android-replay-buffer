@@ -374,7 +374,7 @@ class ArbT5IdeIntegrationTest {
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"))
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"))
         assertTrue(xml.contains("io.github.shinma06.arb.LaunchTray"))
-        assertTrue(xml.contains("Android Replay Buffer (v2) について"))
+        assertTrue(xml.contains("Android Replay Buffer について"))
 
         val studio = ArbStudioController(
             onScrub = {},

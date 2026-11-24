@@ -41,7 +41,7 @@ verifies:
      - `preferred_serial` 設定済みで切断された場合 → 他端末がオンラインでも決して別端末へ切り替えず `WaitingForPreferredDevice` で再接続待機。
    - Wi-Fi ADB シリアル検証（`192.168.1.50:5555`、`[fe80::1]:5555`、`[fe80::1%wlan0]:5555`、`adb-R3CN1234-AbCdEf._adb-tls-connect._tcp` を許可し、空白・制御文字・シェルメタ文字・非 ASCII・`..`・先頭 `-`・括弧不整合・括弧外の `%` を拒否）を `arb-core` / `arbd` / `arb-cli` / `client-core` で 1:1 に統一（同一テストベクタで Rust / Kotlin 双方を検証）。
    - Running Devices ミラーリング HW エンコーダ競合の誠実な診断：`arbd/src/live_adb.rs` で `scrcpy-server` の `stderr`（8 KiB 上限バッファ）を収集し、`MediaCodec` / `Configure failed` / `RESOURCE_EXHAUSTED` / `ERROR_INSUFFICIENT_RESOURCES` 等を検出した場合に Running Devices ミラーリングとの H.264 HW エンコーダ競合の可能性および対処（`video_max_size=1024` または `logs_only` モード）を明示。
-   - `docs/v2/testing/work-device-smoke-checklist.md` に Running Devices 同時録画・Wi-Fi ADB・複数端末自動切替禁止の 30 秒実機確認項目を追記。
+   - `docs/testing/work-device-smoke-checklist.md` に Running Devices 同時録画・Wi-Fi ADB・複数端末自動切替禁止の 30 秒実機確認項目を追記。
 
 4. **`screenshot_dir_override` ＆ `save.screenshot(output_dir)`**
    - `ArbConfig.screenshot_dir_override`（絶対パス・`..` 拒否・`data_dir` 内部状態ファイル上書き拒否）および `save.screenshot` の `output_dir` パラメータ（`output_path` と排他）を追加。保存先解決順：`output_path` → `output_dir` → `screenshot_dir_override` → `output_dir_override` → `<data_dir>/screenshots`。
@@ -77,5 +77,5 @@ Trail #105 に登録し、すべて回帰テスト（修正前に失敗するこ
 
 ## 3. 明示的な未検証項目（Unverified）
 
-- **物理 Android 実機での Running Devices ミラーリング同時録画・Wi-Fi ADB 実機接続**: 実機固有のベンダー別 H.264 HW エンコーダ上限や職場ネットワークでの mDNS TLS 接続は、単体・実 `arbd` E2E・モック検証済みとし、実機確認は `docs/v2/testing/work-device-smoke-checklist.md`（項目 7・8）にて後日実施する。
+- **物理 Android 実機での Running Devices ミラーリング同時録画・Wi-Fi ADB 実機接続**: 実機固有のベンダー別 H.264 HW エンコーダ上限や職場ネットワークでの mDNS TLS 接続は、単体・実 `arbd` E2E・モック検証済みとし、実機確認は `docs/testing/work-device-smoke-checklist.md`（項目 7・8）にて後日実施する。
 - **Linux / Windows ホストでの実ランタイム動作**: ローカル検証は macOS arm64 で実施。Linux / Windows 3-OS パリティは GitHub Actions `v2 CI`（全 7 ジョブ）で確認する。

@@ -19,7 +19,7 @@ use std::io::{ErrorKind, Read, Write};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Supported `scrcpy-server` version deployed by ARB v2.
+/// Supported `scrcpy-server` version deployed by ARB.
 pub const SCRCPY_SERVER_VERSION: &str = "5.0.1";
 
 /// Leading dummy handshake byte transmitted on the first `scrcpy` forward socket.

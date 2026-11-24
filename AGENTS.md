@@ -1,13 +1,13 @@
 # Android Replay Buffer (ARB)
 
-Records the last moments of an Android device's screen, logcat, taps and timing, and saves them on demand. Rust core daemon (`arbd`) + CLI/MCP (`arb-cli`) + tray (`arb-tray`), an Android `device-agent`, and a Compose/Jewel Android Studio plugin (`ide-plugin`) share one daemon and one save path. Product facts: `docs/v2/` (REQ / SPEC / VER, checked by `sara`).
+Records the last moments of an Android device's screen, logcat, taps and timing, and saves them on demand. Rust core daemon (`arbd`) + CLI/MCP (`arb-cli`) + tray (`arb-tray`), an Android `device-agent`, and a Compose/Jewel Android Studio plugin (`ide-plugin`) share one daemon and one save path. Product facts: `docs/` (REQ / SPEC / VER, checked by `sara`).
 
 ## Layout
 
 - `core/` — Rust workspace (`arbd`, `arb-cli`, `arb-tray`, `arb-core`, `arb-os`, `arb-adb`, `arb-media`, `arb-storage`) and `core/scripts/` (verify, license check, packaging, player matrix).
 - `device-agent/` — on-device companion (`build.sh`, host protocol tests).
 - `ide-plugin/` — Kotlin Gradle build: `client-core` (pure client library) + the IDE plugin (Compose/Jewel).
-- `docs/v2/` — requirements, specs, verification records, testing plans. `docs/v2/sara.toml` is the traceability root.
+- `docs/` — requirements, specs, verification records, testing plans. `docs/sara.toml` is the traceability root.
 - `fixtures/` — read-only legacy schema 3/4 bundle fixtures. `third-party/scrcpy/` — pinned Apache-2.0 scrcpy-server and the audio patch.
 - `.github/workflows/` — `ci.yml` (checks + `early` prerelease), `release.yml` (stable tag release).
 
@@ -39,7 +39,7 @@ Entire Trails drive the change; GitHub runs CI and publishes releases. Always pa
 
 - Zero GPL/AGPL dependencies (`core/scripts/check-licenses.py`). Third-party code must be permissively licensed and recorded in the relevant `NOTICE`.
 - Behaviour is identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations selected at a single OS-detection point (`arb-os`, `HostOs` in `client-core`); callers never branch on the OS. Tests must not skip by OS unless they exercise a truly OS-only facility.
-- GUI, CLI and MCP behaviour stays identical; a change to one surface updates the others and the relevant `docs/v2/` spec.
+- GUI, CLI and MCP behaviour stays identical; a change to one surface updates the others and the relevant `docs/` spec.
 - Legacy schema 3/4 bundles are read-only (`arb-storage`); never write or migrate them in place.
 - Do not publish recordings, logcat, raw diagnostics or credentials.
 - User-facing text (PRs, UI, docs) is Japanese; agent-only instructions are English.

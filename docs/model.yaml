@@ -1,4 +1,4 @@
-# ARB v2 lightweight 3-type traceability schema for sara
+# ARB lightweight 3-type traceability schema for sara
 item_types:
   - id: requirement
     display_name: Requirement

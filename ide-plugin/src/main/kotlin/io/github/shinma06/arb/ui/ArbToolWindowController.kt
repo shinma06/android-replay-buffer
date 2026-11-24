@@ -692,7 +692,7 @@ class ArbToolWindowController(
     private fun notifyBalloon(content: String, type: NotificationType = NotificationType.INFORMATION) {
         runCatching {
             NotificationGroupManager.getInstance()
-                .getNotificationGroup("ARB v2")
+                .getNotificationGroup("Android Replay Buffer")
                 .createNotification("Android Replay Buffer", content, type)
                 .notify(project)
         }.onFailure {

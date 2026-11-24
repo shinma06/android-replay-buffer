@@ -15,7 +15,7 @@ import java.nio.file.Path
 @Service(Service.Level.APP)
 @State(
     name = "ArbLocalSettings",
-    storages = [Storage("arb-v2-local.xml")],
+    storages = [Storage("arb-local.xml")],
 )
 class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.State> {
     data class State(

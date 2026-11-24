@@ -18,7 +18,7 @@ pub const ENV_ARB_CACHE_DIR: &str = "ARB_CACHE_DIR";
 /// Environment variable overriding [`ArbPaths::runtime_dir`].
 pub const ENV_ARB_RUNTIME_DIR: &str = "ARB_RUNTIME_DIR";
 
-/// Resolved host directories for ARB v2 persistent data, caches, and runtime files.
+/// Resolved host directories for ARB persistent data, caches, and runtime files.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArbPaths {
     /// Persistent data directory (saved bundles, SQLite catalog, configuration).
@@ -30,7 +30,7 @@ pub struct ArbPaths {
 }
 
 impl ArbPaths {
-    /// Resolves standard ARB v2 host directories using the process environment.
+    /// Resolves standard ARB host directories using the process environment.
     ///
     /// # Errors
     ///
@@ -41,7 +41,7 @@ impl ArbPaths {
         Self::resolve_with_env(|key| std::env::var_os(key))
     }
 
-    /// Resolves ARB v2 host directories using a caller-supplied environment
+    /// Resolves ARB host directories using a caller-supplied environment
     /// lookup function (useful for hermetic unit testing without mutating
     /// process-global environment variables).
     ///

@@ -21,9 +21,9 @@ verifies:
 | --- | --- |
 | `.github/workflows/v2-ci.yml` | `rust-3os-parity`（Ubuntu/macOS/Windows。Linux・Windows は `nasm` を導入し openh264 の x86_64 SIMD を有効化。fmt / clippy `-D warnings` / test / `cargo doc` `-D warnings` / ライセンス検査 / リリースバイナリ `arbd` `arb-cli` `arb-tray` を OS・arch 別にアップロード）、`sara-and-traceability`（`sara check --strict` と REQ 14/14 下流被覆）、`device-agent-host-tests`（固定 android-37.2 + `ProtocolTest: ALL 19 TESTS PASSED`）、`ide-plugin-tests`（`ide-plugin/gradlew` が無ければスキップ。ある場合は `arbd` を併せてビルドし `./gradlew test`） |
 | `core/scripts/devin_verify_player_matrix.py` | 決定論的 FHD30 フィクスチャ生成、または `arb-cli trim [47..=647]` / 既存 MP4 に対し 601 フレーム・0 `edts`/`elst`・faststart・負 PTS/DTS 0・先頭/末尾 PNG を検査し JSON/Markdown レポート出力。`--self-test` あり |
-| `docs/v2/testing/devin-multi-os-test-plan.md` | Devin Pro 向け Suite A（OS 基盤）/ B（性能バー）/ C（プレイヤー・GUI 動画）と提出形式 |
-| `docs/v2/testing/work-device-smoke-checklist.md` | 約 2 分の職場実機スモーク 6 項目 |
-| `docs/v2/testing/first-run-os-permissions.md` | 有料署名なし方針（REQ-06）に沿った Gatekeeper / SmartScreen 案内 |
+| `docs/testing/devin-multi-os-test-plan.md` | Devin Pro 向け Suite A（OS 基盤）/ B（性能バー）/ C（プレイヤー・GUI 動画）と提出形式 |
+| `docs/testing/work-device-smoke-checklist.md` | 約 2 分の職場実機スモーク 6 項目 |
+| `docs/testing/first-run-os-permissions.md` | 有料署名なし方針（REQ-06）に沿った Gatekeeper / SmartScreen 案内 |
 
 ## 2. 検証済み・未検証
 

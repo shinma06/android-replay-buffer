@@ -60,7 +60,7 @@ tasks.withType<KotlinJvmCompile>().configureEach {
 
 intellijPlatform {
     pluginConfiguration {
-        name = "Android Replay Buffer (v2)"
+        name = "Android Replay Buffer"
         version = project.version.toString()
         ideaVersion {
             sinceBuild = "262.9437.185"

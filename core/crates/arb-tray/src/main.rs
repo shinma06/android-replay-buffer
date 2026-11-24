@@ -5,7 +5,7 @@
 )]
 
 //! Lightweight cross-OS menu bar / system tray client (`arb-tray`) for Android Replay Buffer
-//! (ARB) v2, wired exclusively to `arbd` over local IPC (`SPEC-01`, `SPEC-03`).
+//! (ARB), wired exclusively to `arbd` over local IPC (`SPEC-01`, `SPEC-03`).
 //!
 //! `arb-tray` performs zero direct ring/catalog/media file writes: all capture/save/bundle
 //! mutations are JSON-RPC 2.0 calls dispatched to `arbd` by [`controller::TrayController`].
@@ -118,7 +118,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
 
 fn print_help() {
     println!(
-        "arb-tray {} — Android Replay Buffer v2 menu bar / system tray client\n\n\
+        "arb-tray {} — Android Replay Buffer menu bar / system tray client\n\n\
 OPTIONS:\n  \
   --data-dir <DIR>          Override ARB_DATA_DIR\n  \
   --cache-dir <DIR>         Override ARB_CACHE_DIR\n  \

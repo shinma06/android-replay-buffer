@@ -3,7 +3,7 @@ name = "arb-media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GPL-free media engine for ARB v2 (pure-Rust ISO-BMFF avc1 mux/demux, VideoCodecBackend, frame-accurate zero-elst trim, GOP-LRU playback)."
+description = "GPL-free media engine for Android Replay Buffer (ARB) (pure-Rust ISO-BMFF avc1 mux/demux, VideoCodecBackend, frame-accurate zero-elst trim, GOP-LRU playback)."
 
 [dependencies]
 arb-core.workspace = true

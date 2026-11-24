@@ -1,4 +1,4 @@
-//! Validated, schema-versioned user configuration (`config.json`) for ARB v2.
+//! Validated, schema-versioned user configuration (`config.json`) for ARB.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};

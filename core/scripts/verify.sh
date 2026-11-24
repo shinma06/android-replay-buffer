@@ -27,10 +27,10 @@ echo "==> [4/6] license check (GPL/AGPL-free guard)"
 python3 "${CORE_DIR}/scripts/check-licenses.py" --manifest-path "${CORE_DIR}/Cargo.toml"
 
 echo "==> [5/6] sara check --strict"
-(cd "${REPO_ROOT}" && "${SARA_BIN}" check --strict -c docs/v2/sara.toml)
+(cd "${REPO_ROOT}" && "${SARA_BIN}" check --strict -c docs/sara.toml)
 
 echo "==> [6/6] REQ -> downstream SPEC coverage check"
-(cd "${REPO_ROOT}" && "${SARA_BIN}" report matrix --format json -c docs/v2/sara.toml) | python3 -c '
+(cd "${REPO_ROOT}" && "${SARA_BIN}" report matrix --format json -c docs/sara.toml) | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 reqs = {r["source_id"] for r in data.get("rows", []) if r.get("source_type") == "Requirement"}

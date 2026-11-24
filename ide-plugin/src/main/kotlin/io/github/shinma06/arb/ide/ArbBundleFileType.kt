@@ -50,7 +50,7 @@ object ArbBundleDetector {
     }
 
     /**
-     * Detects whether a local filesystem file [path] is a valid ARB v2 or Legacy bundle manifest.
+     * Detects whether a local filesystem file [path] is a valid ARB or Legacy bundle manifest.
      */
     fun detectPath(path: Path): DetectedKind? {
         if (!Files.isRegularFile(path)) return null
@@ -62,7 +62,7 @@ object ArbBundleDetector {
     }
 
     /**
-     * Detects whether an IntelliJ [VirtualFile] is a valid ARB v2 or Legacy bundle manifest.
+     * Detects whether an IntelliJ [VirtualFile] is a valid ARB or Legacy bundle manifest.
      */
     fun detectVirtualFile(file: VirtualFile, prefixChars: CharSequence? = null): DetectedKind? {
         if (file.isDirectory) return null
@@ -126,7 +126,7 @@ object ArbBundleDetector {
             val hasArbStructure = obj.has("streams") || obj.has("provenance") || obj.has("epochs")
             return schemaVer == 2 && hasBundleId && hasArbStructure
         }
-        // Prefix-truncated large manifest fallback: check mandatory ARB v2 top-level keys.
+        // Prefix-truncated large manifest fallback: check mandatory ARB manifest top-level keys.
         return jsonText.contains("\"schema_version\"") &&
             Regex(""""schema_version"\s*:\s*2\b""").containsMatchIn(jsonText) &&
             jsonText.contains("\"bundle_id\"") &&
@@ -194,7 +194,7 @@ object ArbBundleDetector {
 }
 
 /**
- * Custom [FileType] identifying recognized ARB v2 (`manifest.json`) and Legacy (`replay.json` /
+ * Custom [FileType] identifying recognized ARB (`manifest.json`) and Legacy (`replay.json` /
  * `session.json`) bundle manifests so opening them launches the ARB Integrated Studio.
  */
 object ArbBundleFileType : FileType {
@@ -202,7 +202,7 @@ object ArbBundleFileType : FileType {
 
     override fun getDisplayName(): String = "ARB バンドル"
 
-    override fun getDescription(): String = "Android Replay Buffer (v2) バンドルマニフェスト"
+    override fun getDescription(): String = "Android Replay Buffer バンドルマニフェスト"
 
     override fun getDefaultExtension(): String = ""
 
