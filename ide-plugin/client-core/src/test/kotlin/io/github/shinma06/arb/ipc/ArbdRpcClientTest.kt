@@ -156,7 +156,7 @@ class ArbdRpcClientTest {
             val err = assertFailsWith<IOException> {
                 client.callRaw("system.status", JsonObject())
             }
-            assertTrue(err.message.orEmpty().contains("timed out"))
+            assertTrue(err.message.orEmpty().contains("timed out after 60 ms"), err.message)
         } finally {
             client.close()
         }
