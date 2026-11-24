@@ -705,6 +705,13 @@ struct Bundle {
     leases: u8,
 }
 
+/// A `.staging-*` directory; `arb_marker` mirrors the ownership marker that
+/// `remove_stale_staging_sibling` checks before deleting anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct StagingDir {
+    arb_marker: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct S2State {
     writers: [bool; 2],
@@ -715,8 +722,11 @@ struct S2State {
     job: Option<Job>,
     bundle: Option<Bundle>,
     gc_marked: bool,
-    legacy_intact: bool,
-    nonarb_staging_intact: bool,
+    /// Legacy schema 3/4 bundle: unmanaged, already trashed past the grace period and
+    /// lease-free, i.e. the worst case GC must still never purge.
+    legacy: Bundle,
+    /// A non-ARB `.staging-*` directory in the save destination (no ARB ownership marker).
+    foreign_staging: Option<StagingDir>,
     just_recovered: bool,
     // ghost violation flags (set by the transition at the moment the rule is broken)
     pinned_evicted: bool,
@@ -767,12 +777,22 @@ impl S2State {
         )
     }
     fn purge_allowed(&self) -> bool {
-        self.bundle.is_some_and(|b| {
-            b.managed
-                && b.state == BState::Trashed
-                && self.clock.saturating_sub(b.trashed_at) >= GRACE_STEPS
-                && b.leases == 0
-        }) && self.active_jobs() == 0
+        self.bundle.is_some_and(|b| self.purge_allowed_for(&b))
+    }
+    /// GC eligibility of one catalog row (`Catalog::gc_trashed`): managed, non-legacy,
+    /// trashed past the grace period, lease-free, and no active job.
+    fn purge_allowed_for(&self, b: &Bundle) -> bool {
+        b.managed
+            && b.state == BState::Trashed
+            && self.clock.saturating_sub(b.trashed_at) >= GRACE_STEPS
+            && b.leases == 0
+            && self.active_jobs() == 0
+    }
+    /// Orphan staging sweep: only directories carrying the ARB ownership marker are removed.
+    fn sweep_staging(dir: &mut Option<StagingDir>) {
+        if dir.is_some_and(|d| d.arb_marker) {
+            *dir = None;
+        }
     }
     fn release_pins(&mut self, pins: u8) {
         for (slot, chunk) in self.chunks.iter_mut().enumerate() {
@@ -787,6 +807,7 @@ impl S2State {
     /// release non-durable and terminal pins.
     fn recover(&mut self) {
         self.writers = [false; 2];
+        Self::sweep_staging(&mut self.foreign_staging);
         self.gc_marked = false;
         if let Some(mut j) = self.job {
             j.staging = None;
@@ -827,8 +848,13 @@ impl Model for S2Model {
             job: None,
             bundle: None,
             gc_marked: false,
-            legacy_intact: true,
-            nonarb_staging_intact: true,
+            legacy: Bundle {
+                state: BState::Trashed,
+                managed: false,
+                trashed_at: 0,
+                leases: 0,
+            },
+            foreign_staging: Some(StagingDir { arb_marker: false }),
             just_recovered: false,
             pinned_evicted: false,
             durable_job_lost: false,
@@ -1103,6 +1129,10 @@ impl Model for S2Model {
                     b.state = BState::Purged;
                     n.bundle = Some(b);
                 }
+                // The same sweep enumerates every trashed row, including the legacy bundle.
+                if s.purge_allowed_for(&s.legacy) {
+                    n.legacy.state = BState::Purged;
+                }
                 if n.bundle.is_some_and(|b| b.state == BState::Purged)
                     && s.bundle.is_some_and(|b| b.state != BState::Purged)
                     && !s.purge_allowed()
@@ -1166,7 +1196,9 @@ impl Model for S2Model {
             ),
             Property::always(
                 "S2 legacy and non-ARB staging untouched",
-                |_: &S2Model, s: &S2State| s.legacy_intact && s.nonarb_staging_intact,
+                |_: &S2Model, s: &S2State| {
+                    s.legacy.state != BState::Purged && s.foreign_staging.is_some()
+                },
             ),
             Property::always(
                 "S2 no ARB staging after crash recovery",
