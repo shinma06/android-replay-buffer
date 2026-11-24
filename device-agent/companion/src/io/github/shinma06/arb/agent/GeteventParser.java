@@ -15,6 +15,13 @@ public final class GeteventParser {
     /** PROTOCOL.md section 3.8: {@code raw_line} is capped at 256 UTF-8 bytes (never mid-codepoint). */
     public static final int MAX_RAW_LINE_UTF8_BYTES = 256;
     private static final Pattern ADD_DEVICE_PATTERN = Pattern.compile("^add device \\d+:\\s*(/dev/input/\\S+)");
+    /** {@code getevent -p} event-type section header, e.g. {@code ABS (0003): <first entry>}. */
+    private static final Pattern SECTION_HEADER_PATTERN =
+            Pattern.compile("^([A-Z]+)\\s*\\(([0-9a-fA-F]{4})\\):\\s*(.*)$");
+    /** One absolute-axis definition: {@code <axis label or hex code>  : value 0, min 0, max 1079, ...}. */
+    private static final Pattern ABS_AXIS_PATTERN = Pattern.compile("^(\\S+)\\s*:\\s*value\\b.*$");
+    /** Device metadata lines ({@code name:}, {@code events:}, {@code input props:}) end a section. */
+    private static final Pattern METADATA_PATTERN = Pattern.compile("^[a-z][a-z ]*:.*$");
     // Matches both multi-device lines: "[  123.456789] /dev/input/event2: EV_ABS  ABS_MT_POSITION_X  00000123"
     // and single-device lines:         "[  123.456789] EV_ABS  ABS_MT_POSITION_X  00000123"
     private static final Pattern EVENT_LINE_PATTERN = Pattern.compile(
@@ -58,7 +65,10 @@ public final class GeteventParser {
 
     /**
      * Discovers all multi-touch input device paths reporting both {@code ABS_MT_POSITION_X}
-     * and {@code ABS_MT_POSITION_Y} in {@code getevent -lp} output.
+     * and {@code ABS_MT_POSITION_Y} in {@code getevent -lp} output. Only axis definitions inside a
+     * device's {@code ABS (0003)} section count, and only by exact token (the label, or the hex
+     * code {@code 0035} / {@code 0036} when unlabelled): a key code, a vendor / product id or an
+     * axis range that merely contains those digits is not a touch axis.
      */
     public static Set<String> discoverTouchDevices(String geteventLpOutput) {
         Set<String> devices = new LinkedHashSet<>();
@@ -68,6 +78,7 @@ public final class GeteventParser {
         String currentDevice = null;
         boolean hasMtX = false;
         boolean hasMtY = false;
+        boolean inAbsSection = false;
 
         String[] lines = geteventLpOutput.split("\\r?\\n");
         for (String line : lines) {
@@ -79,13 +90,30 @@ public final class GeteventParser {
                 currentDevice = m.group(1);
                 hasMtX = false;
                 hasMtY = false;
+                inAbsSection = false;
                 continue;
             }
-            if (currentDevice != null) {
-                if (line.contains("ABS_MT_POSITION_X") || line.contains("0035")) {
+            if (currentDevice == null) {
+                continue;
+            }
+            String body = line.trim();
+            Matcher header = SECTION_HEADER_PATTERN.matcher(body);
+            if (header.matches()) {
+                inAbsSection = "ABS".equals(header.group(1)) || "0003".equals(header.group(2));
+                body = header.group(3);
+            } else if (!ABS_AXIS_PATTERN.matcher(body).matches() && METADATA_PATTERN.matcher(body).matches()) {
+                inAbsSection = false;
+                continue;
+            }
+            if (!inAbsSection) {
+                continue;
+            }
+            Matcher axis = ABS_AXIS_PATTERN.matcher(body);
+            if (axis.matches()) {
+                String token = axis.group(1);
+                if ("ABS_MT_POSITION_X".equals(token) || "0035".equals(token)) {
                     hasMtX = true;
-                }
-                if (line.contains("ABS_MT_POSITION_Y") || line.contains("0036")) {
+                } else if ("ABS_MT_POSITION_Y".equals(token) || "0036".equals(token)) {
                     hasMtY = true;
                 }
             }

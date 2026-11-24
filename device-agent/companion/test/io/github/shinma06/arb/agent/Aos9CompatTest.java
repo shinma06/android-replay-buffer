@@ -30,6 +30,9 @@ public final class Aos9CompatTest {
         testM10Legacy24ByteHeadersStrictlyEmitUnknownUidNeverSystem1000();
         testM11StatsProbeChildDestroyedAndReapedOnStopMidLine();
         testM11StatsProbeTimeoutDestroysHungChildAndRecoversStatsLoop();
+        testGeteventDiscoveryMatchesOnlyAbsAxisTokens();
+        testInputDiscoveryProbeIsDestroyedAndReapedOnStop();
+        testInputDiscoveryProbeTimeoutDestroysHungChild();
         System.out.println("Aos9CompatTest: ALL " + passed + " TESTS PASSED");
     }
 
@@ -326,6 +329,104 @@ public final class Aos9CompatTest {
      * mid-line until {@link #destroyForcibly()} / {@link #destroy()} or {@code InputStream.close()}
      * is invoked, modeling a stuck {@code logcat -S} / {@code logcat -g} pipe.
      */
+    /**
+     * P1-8: touch discovery must match {@code ABS_MT_POSITION_X/Y} (or their unlabelled codes
+     * {@code 0035}/{@code 0036}) only as axis definitions of an {@code ABS (0003)} section. The old
+     * substring check also accepted key codes, ids and axis ranges containing those digits.
+     */
+    private static void testGeteventDiscoveryMatchesOnlyAbsAxisTokens() {
+        String lp = "add device 1: /dev/input/event1\n"
+                + "  bus:      0003\n"
+                + "  vendor    0035\n"
+                + "  product   0036\n"
+                + "  name:     \"usb-keyboard\"\n"
+                + "  events:\n"
+                + "    KEY (0001): 0034  0035  0036  0037\n"
+                + "                0038  0039\n"
+                + "add device 2: /dev/input/event2\n"
+                + "  name:     \"gamepad\"\n"
+                + "  events:\n"
+                + "    ABS (0003): ABS_X                 : value 0, min 0, max 10035, fuzz 0, flat 0, resolution 0\n"
+                + "                ABS_Y                 : value 0, min 0, max 20036, fuzz 0, flat 0, resolution 0\n"
+                + "  input props:\n"
+                + "    <none>\n"
+                + "add device 3: /dev/input/event3\n"
+                + "  name:     \"sec_touchscreen\"\n"
+                + "  events:\n"
+                + "    KEY (0001): BTN_TOUCH\n"
+                + "    ABS (0003): ABS_MT_SLOT           : value 0, min 0, max 9, fuzz 0, flat 0, resolution 0\n"
+                + "                ABS_MT_POSITION_X     : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0\n"
+                + "                ABS_MT_POSITION_Y     : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0\n"
+                + "  input props:\n"
+                + "    INPUT_PROP_DIRECT\n"
+                + "add device 4: /dev/input/event4\n"
+                + "  name:     \"unlabelled_touch\"\n"
+                + "  events:\n"
+                + "    ABS (0003): 002f  : value 0, min 0, max 9, fuzz 0, flat 0, resolution 0\n"
+                + "                0035  : value 0, min 0, max 1439, fuzz 0, flat 0, resolution 0\n"
+                + "                0036  : value 0, min 0, max 3119, fuzz 0, flat 0, resolution 0\n"
+                + "add device 5: /dev/input/event5\n"
+                + "  name:     \"half_touch\"\n"
+                + "  events:\n"
+                + "    ABS (0003): ABS_MT_POSITION_X     : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0\n"
+                + "    MSC (0004): 0035\n"
+                + "                0036\n";
+        java.util.Set<String> devices = GeteventParser.discoverTouchDevices(lp);
+        assertEq(2, devices.size(), "only the two real multi-touch panels");
+        assertTrue(devices.contains("/dev/input/event3"), "labelled touchscreen");
+        assertTrue(devices.contains("/dev/input/event4"), "unlabelled 0035/0036 axes");
+        assertTrue(!devices.contains("/dev/input/event1"), "key codes / ids 0035, 0036 are not touch axes");
+        assertTrue(!devices.contains("/dev/input/event2"), "axis ranges 10035 / 20036 are not touch axes");
+        assertTrue(!devices.contains("/dev/input/event5"), "an MSC code 0036 is not ABS_MT_POSITION_Y");
+        passed++;
+    }
+
+    /**
+     * P1-8: the {@code getevent -lp} discovery child is tracked like the stream child, so stop()
+     * destroys it (unblocking a mid-line read) and the worker thread exits; it is always reaped.
+     */
+    private static void testInputDiscoveryProbeIsDestroyedAndReapedOnStop() throws Exception {
+        BlockingMidLineProcess fakeLp = new BlockingMidLineProcess(
+                "add device 1: /dev/input/event1\n  name:".getBytes(StandardCharsets.UTF_8), true);
+        ByteArrayOutputStream wireOut = new ByteArrayOutputStream();
+        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(wireOut);
+        InputWorker worker = new InputWorker(writer, fixedClock(), new StreamHealthTracker(), cmd -> fakeLp, 30_000L);
+        worker.start();
+        try {
+            assertTrue(fakeLp.blockedMidRead.await(5, TimeUnit.SECONDS), "discovery probe blocked mid-line");
+            worker.stop();
+            assertTrue(worker.awaitTerminated(5_000L), "input worker thread exits after stop()");
+            assertTrue(fakeLp.destroyedForcibly.get(), "discovery child destroyForcibly()'d on stop()");
+            assertTrue(fakeLp.stdoutClosed.get(), "discovery child stdout closed");
+            assertTrue(fakeLp.reaped.get(), "discovery child reaped");
+        } finally {
+            worker.stop();
+            writer.closeQuietly();
+        }
+        passed++;
+    }
+
+    /** P1-8: a hung discovery probe is force-killed after its timeout instead of blocking forever. */
+    private static void testInputDiscoveryProbeTimeoutDestroysHungChild() throws Exception {
+        BlockingMidLineProcess hungLp = new BlockingMidLineProcess(new byte[0], true);
+        ByteArrayOutputStream wireOut = new ByteArrayOutputStream();
+        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(wireOut);
+        InputWorker worker = new InputWorker(writer, fixedClock(), new StreamHealthTracker(), cmd -> hungLp, 200L);
+        try {
+            long t0 = System.nanoTime();
+            String out = worker.runGeteventLp();
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+            assertEq("", out, "timed-out discovery yields no devices");
+            assertTrue(elapsedMs < 5_000L, "discovery returned after its timeout (" + elapsedMs + " ms)");
+            assertTrue(hungLp.destroyedForcibly.get(), "hung discovery child destroyForcibly()'d");
+            assertTrue(hungLp.reaped.get(), "hung discovery child reaped");
+        } finally {
+            worker.stop();
+            writer.closeQuietly();
+        }
+        passed++;
+    }
+
     private static final class BlockingMidLineProcess extends Process {
         private final byte[] initialBytes;
         private final boolean blockAfterInitial;

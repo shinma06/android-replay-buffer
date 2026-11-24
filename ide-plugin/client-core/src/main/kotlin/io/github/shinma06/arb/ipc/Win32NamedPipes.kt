@@ -104,9 +104,18 @@ internal object Win32NamedPipes : WindowsPipeOpener {
 
     private fun Any?.asSegment(): MemorySegment = this as MemorySegment
 
-    /** The process token user's SID bytes (`TokenUser`), the identity `arbd` sets as pipe owner. */
+    @Volatile
+    private var cachedUserSid: ByteArray? = null
+
+    /**
+     * The process token user's SID bytes (`TokenUser`), the identity `arbd` sets as pipe owner.
+     * A process's token user never changes, so the first successful lookup is cached.
+     */
     @Throws(IOException::class)
-    fun currentUserSid(): ByteArray {
+    fun currentUserSid(): ByteArray =
+        (cachedUserSid ?: queryCurrentUserSid().also { cachedUserSid = it }).copyOf()
+
+    private fun queryCurrentUserSid(): ByteArray {
         val a = api()
         Arena.ofConfined().use { arena ->
             val state = arena.allocate(a.captureLayout)

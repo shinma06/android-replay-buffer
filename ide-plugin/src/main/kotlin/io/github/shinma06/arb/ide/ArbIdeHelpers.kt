@@ -9,10 +9,6 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
  * Pure, headless-testable helper resolving screenshot output destinations:
@@ -23,9 +19,6 @@ import java.util.Locale
  *   falls back to `null` (`output_dir`).
  */
 object ArbScreenshotDestinationResolver {
-    private val FILE_STAMP: DateTimeFormatter =
-        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT).withZone(ZoneOffset.UTC)
-
     data class Resolution(
         val directory: Path?,
         val inheritedFromLogcat: Boolean,
@@ -107,33 +100,6 @@ object ArbScreenshotDestinationResolver {
         )
         return res.directory?.toAbsolutePath()?.normalize()?.toString()
     }
-
-    /**
-     * Resolves the concrete PNG output file path for `save.screenshot`, or `null` to let `arbd`
-     * save into its configured `output_dir`.
-     */
-    fun resolveOutputFilePath(
-        project: Project?,
-        localSettings: ArbLocalSettingsState? = ArbLocalSettingsState.getInstanceOrNull(),
-        now: Instant = Instant.now(),
-        logcatLocationProvider: () -> String? = { LogcatScreenshotSettings.saveLocationOrNull() },
-        logcatDirectoryResolver: (Project?, String) -> Path? = { proj, loc ->
-            LogcatScreenshotSettings.resolveDirectoryOrNull(proj, loc)
-        },
-    ): String? {
-        val inherit = localSettings?.screenshotInheritLogcat ?: true
-        val customDir = localSettings?.customScreenshotDir.orEmpty()
-        val res = resolveDirectory(
-            project = project,
-            inheritLogcat = inherit,
-            customScreenshotDir = customDir,
-            logcatLocationProvider = logcatLocationProvider,
-            logcatDirectoryResolver = logcatDirectoryResolver,
-        )
-        val dir = res.directory ?: return null
-        val fileName = "arb-screenshot-${FILE_STAMP.format(now)}.png"
-        return dir.resolve(fileName).toAbsolutePath().normalize().toString()
-    }
 }
 
 /**
@@ -143,7 +109,7 @@ object ArbScreenshotDestinationResolver {
 object ArbCliMcpPathResolver {
     private val prettyGson = GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create()
 
-    fun cliExecutableName(os: HostOs): String = if (os == HostOs.WINDOWS) "arb-cli.exe" else "arb-cli"
+    fun cliExecutableName(os: HostOs): String = os.executableName("arb-cli")
 
     /**
      * Resolves the bundled `<pluginDir>/native/<os>-<arch>/arb-cli[.exe]` path, falling back to

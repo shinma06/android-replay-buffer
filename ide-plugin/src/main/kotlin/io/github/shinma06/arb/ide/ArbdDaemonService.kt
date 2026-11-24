@@ -14,10 +14,12 @@ import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.SystemHelloResponse
 import io.github.shinma06.arb.state.CaptureBarReducer
 import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.ui.CaptureToggleState
 import io.github.shinma06.arb.ui.toToolbarSnapshot
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
@@ -40,7 +42,11 @@ data class ArbToolbarDaemonSnapshot(
     val selectedDeviceSerial: String? = null,
     val disabledDeviceHint: String? = null,
     val captureConnected: Boolean = true,
-)
+) {
+    /** OFF / ON・待機中 / ON・REC, by the same rule as the Tool Window ([CaptureToggleState.of]). */
+    val captureToggleState: CaptureToggleState
+        get() = CaptureToggleState.of(active = captureActive, armed = captureEnabled, connected = captureConnected)
+}
 
 /**
  * Listener notified immediately when user settings (`config.update`), custom `arbd` binary
@@ -78,6 +84,14 @@ open class ArbdDaemonService internal constructor(
     private val processManager: ArbdProcessManager,
     private val trayBinaryResolver: () -> Path? = { processManager.resolveTrayBinary() },
     private val trayProcessStarter: (Path, Map<String, String>) -> Process = ::defaultStartTrayProcess,
+    /** IDE-local "show tray" setting ([ArbLocalSettingsState.trayEnabled]) read by the supervisor. */
+    private val trayEnabledSetting: () -> Boolean = { ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled ?: false },
+    /** Parent PID of a live process (the IDE that owns another `arb-tray`); injectable for tests. */
+    private val parentPidOf: (Long) -> Long? = { pid ->
+        ProcessHandle.of(pid).flatMap { it.parent() }.map { it.pid() }.orElse(null)
+    },
+    /** Opens the shared connection (adopting or spawning `arbd`); injectable for tests. */
+    private val connector: () -> ArbdProcessManager.ConnectedDaemon = { processManager.connectOrSpawn() },
 ) : Disposable {
     constructor() : this(
         ArbdProcessManager(
@@ -119,17 +133,27 @@ open class ArbdDaemonService internal constructor(
     var cachedConfig: ArbConfig = ArbConfig()
         private set
 
-    @Volatile
-    var cachedCaptureActive: Boolean = false
-        private set
-
-    @Volatile
-    var cachedCaptureEnabled: Boolean = false
-        private set
-
+    /**
+     * Single immutable toolbar state: every reader sees one consistent snapshot, and
+     * [cachedCaptureActive] / [cachedCaptureEnabled] are derived from it, never stored apart.
+     */
     @Volatile
     var cachedToolbarSnapshot: ArbToolbarDaemonSnapshot = ArbToolbarDaemonSnapshot()
         private set
+    private val toolbarSnapshotLock = Any()
+
+    val cachedCaptureActive: Boolean
+        get() = cachedToolbarSnapshot.captureActive
+
+    val cachedCaptureEnabled: Boolean
+        get() = cachedToolbarSnapshot.captureEnabled
+
+    /**
+     * PID and parent PID of the other `arb-tray` our own launch yielded to (it held the single-
+     * instance lock), remembered while it lives so its exit can be told apart: owner IDE gone ->
+     * take the tray over; owner IDE still alive -> the user quit that tray, do not resurrect it.
+     */
+    private var yieldedTrayHolder: Pair<Long, Long?>? = null
 
     private val toolbarProbeRunning = AtomicBoolean()
     @Volatile private var lastToolbarProbeNanos: Long? = null
@@ -204,6 +228,18 @@ open class ArbdDaemonService internal constructor(
         synchronized(lock) {
             closeClientLocked()
             lastHello = null
+            // A new binary is a new upgrade target; re-arm the once-per-session identity upgrade
+            // and move an idle managed daemon onto it now (a busy one switches on its next start).
+            processManager.resetIdentityUpgrade()
+            if (!disposed) {
+                runCatching { processManager.restartManagedDaemonIfIdle() }
+                    .onFailure { logger.warn("ARB arbd restart after binary change failed: ${it.message}", it) }
+                    .getOrNull()
+                    ?.let { connected ->
+                        client = connected.client
+                        lastHello = connected.hello
+                    }
+            }
         }
         bumpActionToolbarRefresh()
         for (listener in listeners) {
@@ -239,35 +275,27 @@ open class ArbdDaemonService internal constructor(
     }
 
     fun updateCachedCaptureActive(active: Boolean) {
-        updateCachedCaptureState(active = active, enabled = cachedCaptureEnabled)
+        updateToolbarSnapshot { it.copy(probed = true, daemonConnected = true, captureActive = active) }
     }
 
     fun updateCachedCaptureState(active: Boolean, enabled: Boolean) {
-        val changed = cachedCaptureActive != active ||
-            cachedCaptureEnabled != enabled ||
-            cachedToolbarSnapshot.captureActive != active ||
-            cachedToolbarSnapshot.captureEnabled != enabled
-        cachedCaptureActive = active
-        cachedCaptureEnabled = enabled
-        cachedToolbarSnapshot = cachedToolbarSnapshot.copy(
-            probed = true,
-            daemonConnected = true,
-            captureActive = active,
-            captureEnabled = enabled,
-        )
-        if (changed) {
-            bumpActionToolbarRefresh()
+        updateToolbarSnapshot {
+            it.copy(probed = true, daemonConnected = true, captureActive = active, captureEnabled = enabled)
         }
     }
 
     fun updateCachedToolbarSnapshot(snapshot: ArbToolbarDaemonSnapshot) {
-        val changed = cachedToolbarSnapshot != snapshot ||
-            cachedCaptureActive != snapshot.captureActive ||
-            cachedCaptureEnabled != snapshot.captureEnabled
-        cachedCaptureActive = snapshot.captureActive
-        cachedCaptureEnabled = snapshot.captureEnabled
         lastToolbarProbeNanos = System.nanoTime()
-        cachedToolbarSnapshot = snapshot
+        updateToolbarSnapshot { snapshot }
+    }
+
+    /** Publishes one new immutable toolbar snapshot (read-modify-write is atomic). */
+    private fun updateToolbarSnapshot(transform: (ArbToolbarDaemonSnapshot) -> ArbToolbarDaemonSnapshot) {
+        val changed = synchronized(toolbarSnapshotLock) {
+            val previous = cachedToolbarSnapshot
+            cachedToolbarSnapshot = transform(previous)
+            cachedToolbarSnapshot != previous
+        }
         if (changed) {
             bumpActionToolbarRefresh()
         }
@@ -301,7 +329,10 @@ open class ArbdDaemonService internal constructor(
         if (supervisorStarted.compareAndSet(false, true)) {
             runCatching {
                 supervisor.scheduleWithFixedDelay(
-                    { if (!disposed) ensureDaemonRunning() },
+                    {
+                        if (!disposed) ensureDaemonRunning()
+                        if (!disposed) superviseTray()
+                    },
                     SUPERVISOR_INTERVAL_SECONDS,
                     SUPERVISOR_INTERVAL_SECONDS,
                     TimeUnit.SECONDS,
@@ -336,6 +367,56 @@ open class ArbdDaemonService internal constructor(
     }
 
     /**
+     * Supervisor step for the opt-in tray (P0-3): when [trayEnabledSetting] is on and the
+     * `arb-tray` this IDE launched has exited, decide from `arb-tray.lock` (which holds the PID of
+     * the last owner) whether to launch it again:
+     * - our tray was the owner (or no owner is on record) -> it was quit from its own menu or
+     *   failed: respect that until the setting is toggled or the IDE restarts;
+     * - another live tray owns it -> we yielded (several IDE windows); remember it and its owner;
+     * - that owner is gone and its parent (the IDE that launched it) is gone too -> the other IDE
+     *   closed: take the tray over. If that parent still lives, the user quit it: do not resurrect.
+     */
+    internal fun superviseTray() {
+        if (disposed || !runCatching(trayEnabledSetting).getOrDefault(false)) return
+        synchronized(trayLock) {
+            val own = managedTrayProcess ?: return
+            if (own.isAlive || disposed) return
+            val holder = readTrayLockPid()
+            when {
+                // No other owner on record (or it was ours): nothing was yielded, nothing to take over.
+                holder == null || holder == own.pid() -> forgetManagedTrayLocked()
+                isAlive(holder) -> {
+                    if (yieldedTrayHolder?.first != holder) yieldedTrayHolder = holder to parentPidOf(holder)
+                }
+                else -> {
+                    val ownerIde = yieldedTrayHolder?.takeIf { it.first == holder }?.second
+                    if (ownerIde != null && isAlive(ownerIde)) {
+                        forgetManagedTrayLocked()
+                    } else {
+                        yieldedTrayHolder = null
+                        runCatching { launchBundledTray() }
+                            .onFailure { logger.warn("ARB arb-tray takeover failed: ${it.message}", it) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun forgetManagedTrayLocked() {
+        runCatching { managedTrayStdin?.close() }
+        managedTrayProcess = null
+        managedTrayStdin = null
+        managedTrayBinaryPath = null
+        yieldedTrayHolder = null
+    }
+
+    private fun readTrayLockPid(): Long? = runCatching {
+        Files.readString(processManager.paths.trayLockFile()).trim().toLongOrNull()
+    }.getOrNull()
+
+    private fun isAlive(pid: Long): Boolean = ProcessHandle.of(pid).map { it.isAlive }.orElse(false)
+
+    /**
      * Stops the parent-bound `arbd` this IDE launched (never one it merely connected to). Returns
      * `true` when a managed daemon was present.
      */
@@ -358,6 +439,7 @@ open class ArbdDaemonService internal constructor(
         }
         managedTrayProcess = null
         managedTrayBinaryPath = null
+        yieldedTrayHolder = null
         val trayBin = trayBinaryResolver()
             ?: throw IOException("同梱の arb-tray バイナリが見つかりません。")
         val daemonBin = runCatching { processManager.resolveDaemonBinary() }.getOrNull()
@@ -381,6 +463,7 @@ open class ArbdDaemonService internal constructor(
         managedTrayProcess = null
         managedTrayStdin = null
         managedTrayBinaryPath = null
+        yieldedTrayHolder = null
         if (proc == null) {
             runCatching { stdin?.close() }
             return@synchronized false
@@ -451,18 +534,25 @@ open class ArbdDaemonService internal constructor(
             os = processManager.paths.os,
         )
 
+    /**
+     * Runs [block] on the shared connection (connecting or spawning `arbd` first). After a
+     * transport failure the whole block is replayed once on a fresh connection only when every
+     * request it had already sent is an idempotent read ([isIdempotentRpc]): a mutating or
+     * resource-acquiring call (`bundle.open` lease, `save.*`, `export.*`, ...) may have been
+     * applied by the daemon even though its response was lost, and replaying it would apply it
+     * twice (e.g. a second, orphaned lease). A request whose write failed never reached `arbd`.
+     */
     @Throws(IOException::class)
     open fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {
         check(!disposed)
         val active = ensureConnectedLocked()
+        val sent = ArrayList<String>()
+        active.requestSentListener = { sent += it }
         try {
             block(active)
         } catch (ioe: ArbdIoException) {
-            // R4 S4: a mutating call may already have committed on the daemon — replaying
-            // it could double-apply (trash+restore, duplicate save job, ...). Retry only
-            // idempotent read RPCs after a transport reset.
             closeClientLocked()
-            if (!isIdempotentRpc(ioe.rpcMethod)) {
+            if (!sent.all(::isIdempotentRpc)) {
                 throw ioe
             }
             logger.info("ARB IPC connection reset after IO error: ${ioe.message}")
@@ -473,6 +563,8 @@ open class ArbdDaemonService internal constructor(
             // request may already have committed on the daemon.
             closeClientLocked()
             throw ioe
+        } finally {
+            active.requestSentListener = null
         }
     }
 
@@ -486,7 +578,7 @@ open class ArbdDaemonService internal constructor(
         client?.let { return it }
         // Never (re)spawn arbd once disposed, e.g. from the idempotent-RPC retry in withClient.
         check(!disposed) { "ArbdDaemonService is already disposed" }
-        val connected = processManager.connectOrSpawn()
+        val connected = connector()
         client = connected.client
         lastHello = connected.hello
         return connected.client
@@ -502,11 +594,14 @@ open class ArbdDaemonService internal constructor(
         // Never interrupt (shutdownNow): a running check may be mid-RPC on the shared connection.
         supervisor.shutdown()
         trayExecutor.shutdown()
+        // Stop the children outside the RPC [lock]: an in-flight call (a 120 s export) would
+        // otherwise hold IDE exit. Stopping `arbd` makes that call fail fast with an IO error.
         runCatching { stopBundledTray() }.onFailure { logger.warn("ARB arb-tray stop failed", it) }
-        synchronized(lock) {
-            runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
-            closeClientLocked()
-        }
+        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
+        // Not under [lock] either: closing the transport makes a still-blocked call return, and
+        // no new connection can be made once [disposed] is set (see ensureConnectedLocked).
+        client?.let { runCatching { it.close() } }
+        client = null
     }
 
     companion object {
@@ -553,10 +648,10 @@ open class ArbdDaemonService internal constructor(
         /**
          * Whether a JSON-RPC `method` is safe to replay after a transport reset (R4 S4):
          * idempotent reads only — `system.*` (except the mutating `system.shutdown`),
-         * `*.list` / `save.list_jobs`, `bundle.open`, lease keep-alive/close,
-         * `timeline.*`, `media.*` and `edit.get_session`. Mutating calls (`save.*`,
-         * `bundle.trash/restore/gc`, `capture.*`, `export.*`, `edit.update_session`) are
-         * never retried.
+         * `*.list` / `save.list_jobs`, lease keep-alive/close, `timeline.*`, `media.*` and
+         * `edit.get_session`. Mutating or resource-acquiring calls (`bundle.open` creates a
+         * lease, `save.*`, `bundle.trash/restore/gc`, `capture.*`, `export.*`,
+         * `edit.update_session`) are never retried.
          */
         internal fun isIdempotentRpc(method: String): Boolean {
             if (method == "system.shutdown" || method == "system.shutdown_for_handover") return false
@@ -564,7 +659,6 @@ open class ArbdDaemonService internal constructor(
                 method == "config.get" ||
                 method.endsWith(".list") ||
                 method.endsWith(".list_jobs") ||
-                method == "bundle.open" ||
                 method == "bundle.lease_renew" ||
                 method == "bundle.close" ||
                 method.startsWith("timeline.") ||

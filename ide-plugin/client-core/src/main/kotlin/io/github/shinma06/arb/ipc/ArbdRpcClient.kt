@@ -102,6 +102,15 @@ class ArbdRpcClient(
     val endpoint: String
         get() = transport.endpoint
 
+    /**
+     * Observer told the JSON-RPC method of every request actually written to the transport. A
+     * caller that replays work after a transport failure uses it to know which requests may
+     * already have reached (and been applied by) `arbd`; a request whose write failed is never
+     * reported because it cannot have been processed.
+     */
+    @Volatile
+    var requestSentListener: ((method: String) -> Unit)? = null
+
     // ---------------- System ----------------
 
     fun systemHello(verifyProtocolVersion: Boolean = true): SystemHelloResponse {
@@ -389,6 +398,7 @@ class ArbdRpcClient(
         }
         val rawLine = try {
             transport.writeLine(envelopeGson.toJson(req))
+            requestSentListener?.invoke(method)
             readResponseLine(timeoutMs)
                 ?: throw IOException("arbd closed IPC connection before responding to '$method'")
         } catch (e: IOException) {

@@ -126,7 +126,7 @@ class ArbdProcessManagerTest {
         val resolvedTray = mgr.resolveTrayBinary()
         assertEquals(bundledArbd, resolvedArbd)
         assertEquals(bundledTray, resolvedTray)
-        if (HostOs.detect() != HostOs.WINDOWS) {
+        if (HostOs.detect().usesExecuteBit) {
             assertTrue(Files.isExecutable(resolvedArbd!!), "bundled arbd must be marked executable on Unix")
             assertTrue(Files.isExecutable(resolvedTray!!), "bundled arb-tray must be marked executable on Unix")
         }

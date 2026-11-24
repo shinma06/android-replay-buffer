@@ -4,12 +4,13 @@ package io.github.shinma06.arb.ipc
  * Single OS and CPU architecture detection point for `ide-plugin`.
  * Callers select per-OS path/IPC implementations through [HostOs] instead of branching ad hoc.
  */
-enum class HostOs(val bundleSlug: String, val executableExtension: String) {
-    MACOS("macos", ""),
-    LINUX("linux", ""),
-    WINDOWS("windows", ".exe");
+enum class HostOs(val bundleSlug: String, val executableExtension: String, val usesExecuteBit: Boolean) {
+    MACOS("macos", "", usesExecuteBit = true),
+    LINUX("linux", "", usesExecuteBit = true),
+    WINDOWS("windows", ".exe", usesExecuteBit = false);
 
-    fun daemonExecutableName(): String = "arbd$executableExtension"
+    /** Host file name of the executable [base] (`arbd` -> `arbd.exe` on Windows). */
+    fun executableName(base: String): String = "$base$executableExtension"
 
     companion object {
         fun detect(osName: String = System.getProperty("os.name").orEmpty()): HostOs {

@@ -366,7 +366,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
             editor.updateViewerState { it.copy(showTapOverlay = false) }
             otherWrite.countDown()
             slowWriter.join(5_000)
-            assertFalse(editor.updateViewerState { it }!!.showTapOverlay)
+            assertFalse(editor.studioController.viewerState!!.showTapOverlay)
 
             // Verify real VFR PTS map is active on PlaybackController (frame 1 = 5.000s, NOT average ~0.53s!).
             assertEquals(0L, ctrl.frameRelativePtsNs(0L))

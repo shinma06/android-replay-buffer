@@ -126,7 +126,7 @@ class ArbdInPlaceUpgradeIntegrationTest {
         val built = discovery.resolveDaemonBinary()
         assertNotNull(built, "arbd binary not found. Run `cargo build --manifest-path core/Cargo.toml -p arbd` first.")
 
-        val oldBin = tmp.resolve("old-plugin").resolve("arbd" + if (HostOs.detect() == HostOs.WINDOWS) ".exe" else "")
+        val oldBin = tmp.resolve("old-plugin").resolve(HostOs.detect().executableName("arbd"))
         val newBin = tmp.resolve("new-plugin").resolve(oldBin.fileName.toString())
         for (dest in listOf(oldBin, newBin)) {
             Files.createDirectories(dest.parent)

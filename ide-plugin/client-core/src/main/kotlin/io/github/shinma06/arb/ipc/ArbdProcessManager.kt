@@ -74,6 +74,34 @@ class ArbdProcessManager(
     /** Claims the single per-session identity-based auto-upgrade; `false` if already spent. */
     fun tryClaimIdentityUpgrade(): Boolean = identityUpgradeClaimed.compareAndSet(false, true)
 
+    /** Re-arms the identity-based auto-upgrade, e.g. after the `arbd` binary setting changed. */
+    fun resetIdentityUpgrade() = identityUpgradeClaimed.set(false)
+
+    /**
+     * Applies a changed `arbd` binary setting: when the managed daemon of this JVM runs another
+     * executable than [resolveDaemonBinary] and is idle (no save job, no crash auto-save in
+     * flight), it is stopped and the resolved binary started. A busy or foreign daemon is left
+     * alone (the setting applies on the next start). Returns the new connection, or `null` when
+     * nothing was restarted.
+     */
+    @Throws(IOException::class)
+    fun restartManagedDaemonIfIdle(startupTimeout: Duration = DEFAULT_STARTUP_TIMEOUT): ConnectedDaemon? {
+        val managed = managedDaemonProcess() ?: return null
+        val target = resolveDaemonBinary() ?: return null
+        val runningExe = managed.info().command().map { Paths.get(it) }.orElse(null)
+        if (runningExe != null && runCatching { Files.isSameFile(runningExe, target) }.getOrDefault(false)) return null
+        val endpoint = paths.ipcEndpoint()
+        val idle = runCatching {
+            ArbdRpcClient.connect(endpoint, os).use { rpc ->
+                val status = rpc.takeIf { it.systemHello(verifyProtocolVersion = false).pid == managed.pid() }?.systemStatus()
+                status != null && status.activeSaveJobs == 0L && status.crashAutosave?.inFlight != true
+            }
+        }.getOrDefault(false)
+        if (!idle) return null
+        stopManagedDaemon()
+        return spawnAndAwaitHello(target, endpoint, startupTimeout)
+    }
+
     /**
      * Identity-based auto-upgrade decision for a probed daemon: `true` (and the per-session
      * restart claimed) when [bundledBinary] differs from the running daemon per
@@ -109,12 +137,12 @@ class ArbdProcessManager(
             return ensureUnixExecutable(customCandidate)
         }
 
-        resolveBundledBinary(os.daemonExecutableName())?.let { return it }
+        resolveBundledBinary(os.executableName("arbd"))?.let { return it }
 
         val devStart = searchRoot ?: Paths.get("").toAbsolutePath()
-        findDevBinary(devStart, os.daemonExecutableName())?.let { return ensureUnixExecutable(it) }
+        findDevBinary(devStart, os.executableName("arbd"))?.let { return ensureUnixExecutable(it) }
 
-        findOnPath(os.daemonExecutableName())?.let { return it }
+        findOnPath(os.executableName("arbd"))?.let { return it }
 
         return null
     }
@@ -141,7 +169,7 @@ class ArbdProcessManager(
 
     /** Resolves `arb-tray[.exe]` from bundled plugin dir, dev build, or `PATH`. */
     fun resolveTrayBinary(): Path? {
-        val exeName = if (os == HostOs.WINDOWS) "arb-tray.exe" else "arb-tray"
+        val exeName = os.executableName("arb-tray")
         resolveBundledBinary(exeName)?.let { return it }
         val devStart = searchRoot ?: Paths.get("").toAbsolutePath()
         findDevBinary(devStart, exeName)?.let { return ensureUnixExecutable(it) }
@@ -179,7 +207,7 @@ class ArbdProcessManager(
      * with a minimal `PATH` (`/usr/bin:/bin`).
      */
     fun resolveAdbBinary(): Path? {
-        val exeName = if (os == HostOs.WINDOWS) "adb.exe" else "adb"
+        val exeName = os.executableName("adb")
         env(ENV_ARB_ADB_PATH)?.takeIf { it.isNotBlank() }?.let { raw ->
             val p = Paths.get(raw)
             if (Files.isRegularFile(p)) return p
@@ -233,7 +261,7 @@ class ArbdProcessManager(
     fun connectOrSpawn(startupTimeout: Duration = DEFAULT_STARTUP_TIMEOUT): ConnectedDaemon {
         val endpoint = paths.ipcEndpoint()
         val resolvedBinary = resolveDaemonBinary()
-        val bundledBinary = resolveBundledBinary(os.daemonExecutableName())
+        val bundledBinary = resolveBundledBinary(os.executableName("arbd"))
 
         // Only auto-upgrade when the bundled binary is what a respawn would actually launch;
         // otherwise a custom/env binary older than the bundled one would loop restart forever.
@@ -260,9 +288,13 @@ class ArbdProcessManager(
                 return spawnAndAwaitHello(upgradeBin, endpoint, startupTimeout)
             }
             ProbeResult.NotRunning -> {
+                // A live managed daemon that does not answer yet is still starting (slow disk,
+                // antivirus scan) or its pipe is momentarily busy: wait for it. Respawning would
+                // close its stdin and stop a healthy `arbd` (an IOException retries next tick).
+                managedDaemonProcess()?.let { return waitForHello(endpoint, startupTimeout, it) }
                 val binary = resolvedBinary
                     ?: throw IOException(
-                        "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.daemonExecutableName()}.",
+                        "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.executableName("arbd")}.",
                     )
                 return spawnAndAwaitHello(binary, endpoint, startupTimeout)
             }
@@ -278,21 +310,7 @@ class ArbdProcessManager(
         val rpc = connected.client
         val oldProcess = ProcessHandle.of(connected.hello.pid).orElse(null)
         try {
-            val accepted = if (identityUpgrade && (!parentBound || connected.hello.parentBound)) {
-                rpc.systemShutdown().ok
-            } else {
-                try {
-                    rpc.shutdownForHandover().ok
-                } catch (e: ArbdRpcException) {
-                    if (!e.isMethodNotFound) throw e
-                    if (!identityUpgrade) return connected
-                    // Pre-M2 bundled daemon: preserve G-M9 updates, but defer known active saves.
-                    val status = rpc.systemStatus()
-                    if (status.activeSaveJobs != 0L || status.crashAutosave?.inFlight == true) return connected
-                    rpc.systemShutdown().ok
-                }
-            }
-            if (!accepted) return connected
+            if (!requestHandoverShutdown(rpc, identityUpgrade)) return connected
         } catch (e: Exception) {
             rpc.close()
             throw e
@@ -311,6 +329,26 @@ class ArbdProcessManager(
     }
 
     /**
+     * Asks the daemon on [rpc] to exit for a replacement without ever interrupting a save:
+     * `system.shutdown_for_handover` lets `arbd` refuse atomically while a save, crash auto-save
+     * or parent-bound owner is active (`ok = false`, the replacement is deferred). Only a daemon
+     * predating that RPC (`MethodNotFound`) falls back, for an [identityUpgrade], to the legacy
+     * status check followed by `system.shutdown`. Returns `true` once the daemon accepted.
+     */
+    internal fun requestHandoverShutdown(rpc: ArbdRpcClient, identityUpgrade: Boolean): Boolean = try {
+        rpc.shutdownForHandover().ok
+    } catch (e: ArbdRpcException) {
+        if (!e.isMethodNotFound) throw e
+        if (!identityUpgrade) {
+            false
+        } else {
+            // Pre-M2 daemon: preserve G-M9 updates, but defer known active saves.
+            val status = rpc.systemStatus()
+            status.activeSaveJobs == 0L && status.crashAutosave?.inFlight != true && rpc.systemShutdown().ok
+        }
+    }
+
+    /**
      * Gracefully shuts down any currently running `arbd` (even an older build lacking newer RPCs)
      * and spawns the currently resolved `arbd` binary, waiting until `system.hello` succeeds.
      */
@@ -318,9 +356,11 @@ class ArbdProcessManager(
     fun restartDaemon(startupTimeout: Duration = DEFAULT_STARTUP_TIMEOUT): ConnectedDaemon {
         val binary = resolveDaemonBinary()
             ?: throw IOException(
-                "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.daemonExecutableName()}.",
+                "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.executableName("arbd")}.",
             )
         val endpoint = paths.ipcEndpoint()
+        // An explicit restart is the one place that stops this JVM's managed daemon on purpose.
+        stopManagedDaemon()
         stopRunningDaemonBestEffort(endpoint)
         return spawnAndAwaitHello(binary, endpoint, startupTimeout)
     }
@@ -446,11 +486,13 @@ class ArbdProcessManager(
             return pb.start().also { it.outputStream.close() }
         }
         return synchronized(managedLock) {
-            // A previous managed daemon is being replaced (stale / restart): let it go.
-            runCatching { managedDaemonStdin?.close() }
+            // Start first: a failed start must leave the previous managed daemon running.
             val process = pb.start()
+            val replacedStdin = managedDaemonStdin
             managedDaemonProcess = process
             managedDaemonStdin = process.outputStream
+            // The replaced managed daemon (stale / restart) is released only now.
+            runCatching { replacedStdin?.close() }
             process
         }
     }
@@ -603,7 +645,7 @@ class ArbdProcessManager(
         // Only repair the bundled plugin files; never chmod user-supplied env/Settings paths.
         val nativeRoot = pluginDir?.toAbsolutePath()?.normalize()
         val isBundled = nativeRoot != null && path.toAbsolutePath().normalize().startsWith(nativeRoot)
-        if (isBundled && os != HostOs.WINDOWS && Files.isRegularFile(path) && !Files.isExecutable(path)) {
+        if (isBundled && os.usesExecuteBit && Files.isRegularFile(path) && !Files.isExecutable(path)) {
             runCatching { path.toFile().setExecutable(true, true) }
         }
         return path
