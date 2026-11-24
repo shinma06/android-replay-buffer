@@ -42,7 +42,7 @@ GitHub Actions の `release-gate.yml`（CI 経由）run **`45506749411`** は `b
 | G-M6 macOS 実機デスクトップ | 条件付き（受入条件の相違 3 件を明記） | §6 |
 | G-M7 Windows 実 GUI | 合格 | §7 |
 | G-M8 `release.yml` ドライラン・クロス監査・オーナー GO | **保留**（準備項目は完了、オーナーの最終 GO は未取得） | §8 |
-| G-M9 v2 → v2 アップグレード・親付きライフサイクル | 合格 | §9 |
+| G-M9 v2 → v2 アップグレード・親付きライフサイクル | 合格（U5 の実旧版は Windows と macOS ローカルのみ。Linux は同一ハッシュ例外） | §9 |
 
 ## 3. G-M3: 3 OS の配布 ZIP コールドインストールとクリーン実行
 
@@ -123,8 +123,20 @@ G-M8 の合格基準は、他ゲートが同一コミットで緑であること
 
 ## 9. G-M9: v2 → v2 アップグレードと親付きライフサイクル
 
-- 3 OS の GHA で U1〜U5 を確認: 異なる `arbd` ハッシュへのホットスワップ、pin 済みの失敗ジョブの retry / retarget、T-6H 以前の 5 カラム `timeline.sqlite`、`arbd` の再起動を跨ぐ `arb-tray` の再接続（3 OS の `upgrade` セクションは Linux・macOS・Windows とも 52 チェックで合格）。
-- 実際の履歴リリース `24d4702 → b9d6300` のアップグレードを macOS で確認。
+**U5（公開済みの旧リリースからの実アップグレード）の範囲**。GHA run `45506749411` は、直前に公開した `early`（`b17df280` と同じコミットから 23:02Z に公開）を旧版として取得した。このため旧版と候補版の `arbd` が同一ハッシュになる OS がある。
+
+| 環境 | 旧版 `arbd` と候補版 `arbd` | U5 の扱い |
+| --- | --- | --- |
+| Linux（GHA） | 同一（`be29b54f859a`）。`--allow-same-previous-arbd` で通過 | 同一 SHA-256 は U5 の合格基準を満たさない。実際に異なる旧版からの更新は **未確認**。U1〜U4 は `build_id` を別ハッシュにして `system.shutdown` → 新 `arbd` への置換を強制する試験で確認 |
+| macOS（GHA） | 同一（`493da85fa90f`）。同じ例外で通過 | 同上 |
+| Windows（GHA） | 異なる（旧 `fa88e80c8f5a`、新 `8d0b2c00ccf6`）。「実際のアップグレード」として通過 | 実旧版からの U5 を確認 |
+| macOS（ローカル、`b9d63000`） | 実際の履歴リリース `2.0.0-dev.24d4702` の ZIP → `b9d6300` | 異なる `arbd` ハッシュへの置換、カタログ・設定・旧タイムラインの保持、pin 済みジョブの retry / retarget、トレイの再接続を確認 |
+
+実旧版からの U5 は、Windows（GHA）と macOS（ローカル、`b9d63000`）で確認した。Linux は次のリリース候補で、旧版と候補版の `arbd` が異なる `early` を取得できた時点で再検証する。
+
+そのほかの確認:
+
+- 3 OS の GHA で、`build_id` を別ハッシュにしたホットスワップ、T-6H 以前の 5 カラム `timeline.sqlite`、`arbd` の再起動を跨ぐ `arb-tray` の再接続を確認した（`upgrade` セクションは 3 OS とも 52 チェックで合格）。
 - 親 JVM の `SIGKILL` に相当する終了を macOS（`arbd` 53.5 ms、`arb-tray` 12.9 ms）と素の Ubuntu 22.04（99.3 ms）で実測した。詳細は VER-33。
 
 ## 10. 5 層 PDD の概要
@@ -143,6 +155,7 @@ G-M8 の合格基準は、他ゲートが同一コミットで緑であること
 
 - 物理 USB 端末（Android 9 / API 28、Android 13 以上の OEM `MediaCodec`、実機の画面パネル・音声、Running Devices の物理ミラーリング）。手順は `docs/testing/work-device-smoke-checklist.md`。
 - 署名なし配布の初回起動時の OS 警告（macOS Gatekeeper、Windows SmartScreen）。手順は `docs/testing/first-run-os-permissions.md`。
+- Linux での、旧版と候補版の `arbd` が異なる公開済みリリースからの U5（§9）。
 - 物理的な電源断でのディスク fsync の耐久性と、複数 IDE を同時に使う実 GUI の負荷試験。
 - 本記録のとおり、Windows と Linux の GUI は CI と Devin の VM 上での確認であり、実機デスクトップではない。macOS 実機の確認は `b9d63000` で、`b17df280` ではローカルで再実行していない（差分は CI・ビルド補助のみ）。
 
