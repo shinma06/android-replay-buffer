@@ -30,10 +30,10 @@ RPC_EXCLUDED: dict[str, str] = {}
 # Strings in client sources that look like RPC names but are not.
 CLIENT_NON_RPC = {"timeline.sqlite"}
 
-OS_CFG = re.compile(r"cfg!?\((?:[^()]*\()?\s*(?:target_os|unix|windows)\b")
+OS_CFG = re.compile(r"\bcfg(?:_attr)?!?\(.*\b(?:target_os|target_family|unix|windows)\b")
 CORE_IMPURE = re.compile(
     r"\bstd::(?:fs|net|process|thread)\b|\bSystemTime\b|\bInstant\b|"
-    r"cfg!?\((?:[^()]*\()?\s*(?:target_os|unix|windows)\b"
+    r"\bcfg(?:_attr)?!?\(.*\b(?:target_os|target_family|unix|windows)\b"
 )
 RPC_NAME = re.compile(r'"((?:system|config|device|capture|save|bundle|timeline|edit|export|media)\.[a-z_]+)"')
 
@@ -91,7 +91,7 @@ def rs1_dag() -> None:
     meta = json.loads(subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--no-deps",
          "--manifest-path", str(CORE / "Cargo.toml")],
-        check=True, capture_output=True, text=True).stdout)
+        check=True, capture_output=True, text=True, encoding="utf-8").stdout)
     deps = {p["name"]: {d["name"] for d in p["dependencies"] if d["kind"] is None}
             for p in meta["packages"]}
     extra = deps.get("arb-core", set()) - {"serde", "serde_json", "thiserror"}
