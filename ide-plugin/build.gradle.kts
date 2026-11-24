@@ -1,3 +1,6 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask.FailureLevel
+import org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
@@ -34,6 +37,8 @@ dependencies {
         // Compose/Jewel bundled with the IDE (intellij.platform.compose and intellij.platform.jewel.*).
         @Suppress("UnstableApiUsage")
         composeUI()
+        // IntelliJ Plugin Verifier CLI (`verifyPlugin`).
+        pluginVerifier()
     }
 
     testImplementation(kotlin("test-junit5"))
@@ -55,6 +60,10 @@ tasks.withType<KotlinJvmCompile>().configureEach {
         jvmTarget.set(JvmTarget.JVM_25)
         languageVersion.set(KotlinVersion.KOTLIN_2_4)
         apiVersion.set(KotlinVersion.KOTLIN_2_4)
+        // Do not synthesise bridge overrides for @Deprecated / @Experimental default methods of platform
+        // Kotlin interfaces (ToolWindowFactory.isApplicable / getAnchor / getIcon ...): the plugin only
+        // implements what it declares, so Plugin Verifier reports nothing the code does not really use.
+        jvmDefault.set(JvmDefaultMode.NO_COMPATIBILITY)
     }
 }
 
@@ -66,6 +75,28 @@ intellijPlatform {
             sinceBuild = "262.9437.185"
             untilBuild = "262.*"
         }
+    }
+
+    pluginVerification {
+        // G-M2: verify the exact IDE the plugin targets (Android Studio Rabbit 2026.2.2.8 = AI-262.*).
+        ides {
+            create(IntelliJPlatformType.AndroidStudio, "2026.2.2.8")
+        }
+        // Compatibility problems (missing class/method/field/extension point), internal /
+        // override-only / non-extendable API usage, broken plugin descriptors, missing dependencies
+        // and plugin structure warnings all fail the build. Only deprecated / experimental API usage
+        // is reported without failing: the one remaining use is the experimental
+        // `VirtualFilePreCloseCheck` extension point (unsaved-trim guard in ArbBundlePreCloseCheck),
+        // which has no stable replacement. Re-evaluate it on every Android Studio bump.
+        failureLevel = listOf(
+            FailureLevel.COMPATIBILITY_PROBLEMS,
+            FailureLevel.INTERNAL_API_USAGES,
+            FailureLevel.OVERRIDE_ONLY_API_USAGES,
+            FailureLevel.NON_EXTENDABLE_API_USAGES,
+            FailureLevel.PLUGIN_STRUCTURE_WARNINGS,
+            FailureLevel.MISSING_DEPENDENCIES,
+            FailureLevel.INVALID_PLUGIN,
+        )
     }
 }
 
@@ -115,6 +146,11 @@ tasks.prepareSandbox {
                 unix("rwxr-xr-x")
             }
         }
+    }
+    // G-M1: dual license + third-party notices travel with every plugin ZIP.
+    from(rootProject.projectDir.parentFile) {
+        include("LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md")
+        into("${pluginName.get()}/licenses")
     }
     val agentSrc = arbDeviceAgentDir
     if (agentSrc != null && agentSrc.isDirectory) {

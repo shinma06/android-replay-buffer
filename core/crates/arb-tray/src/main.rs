@@ -31,6 +31,7 @@ struct CliOptions {
     headless_smoke: bool,
     poll_interval: Duration,
     help: bool,
+    version: bool,
 }
 
 impl Default for CliOptions {
@@ -43,6 +44,7 @@ impl Default for CliOptions {
             headless_smoke: false,
             poll_interval: controller::DEFAULT_POLL_INTERVAL,
             help: false,
+            version: false,
         }
     }
 }
@@ -111,6 +113,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 opts.help = true;
                 i += 1;
             }
+            "-V" | "--version" => {
+                opts.version = true;
+                i += 1;
+            }
             other => return Err(format!("unknown option `{other}` (run with --help)")),
         }
     }
@@ -127,6 +133,7 @@ OPTIONS:\n  \
   --auto-start              Auto-spawn sibling arbd if not running\n  \
   --poll-interval-ms <N>    Status poll interval in milliseconds (default 1000)\n  \
   --headless-smoke          Connect, run one status/menu-build cycle, print JSON, exit 0\n  \
+  -V, --version             Print the arb-tray version\n  \
   -h, --help                Show this help",
         env!("CARGO_PKG_VERSION")
     );
@@ -183,6 +190,10 @@ fn main() -> ExitCode {
 
     if opts.help {
         print_help();
+        return ExitCode::SUCCESS;
+    }
+    if opts.version {
+        println!("arb-tray {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
@@ -283,5 +294,14 @@ mod tests {
         let args: Vec<String> = ["--help"].into_iter().map(str::to_owned).collect();
         let opts = parse_args(&args).expect("help must parse");
         assert!(opts.help);
+    }
+
+    #[test]
+    fn version_flag_is_recognized() {
+        for flag in ["--version", "-V"] {
+            let args: Vec<String> = [flag].into_iter().map(str::to_owned).collect();
+            let opts = parse_args(&args).expect("version must parse");
+            assert!(opts.version);
+        }
     }
 }

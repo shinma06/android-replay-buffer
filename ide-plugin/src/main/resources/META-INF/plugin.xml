@@ -3,16 +3,30 @@
     <name>Android Replay Buffer</name>
     <vendor url="https://github.com/shinma06/android-replay-buffer">shinma06</vendor>
     <description><![CDATA[
+        Android Replay Buffer records the last moments of an Android device (screen, logcat, taps and timing)
+        through the local arbd daemon and saves them on demand.<br/><br/>
         Android Replay Buffer は、ローカル常駐デーモン arbd と IPC / 共有メモリ（SHM）で連携する
         薄い Android Studio / IntelliJ IDEA プラグインです。
         直前の画面録画・logcat・タッチ入力の保存、失敗保存のリカバリ（再試行・保存先変更・破棄）、
         記録バンドルおよび旧形式（Legacy RO）フォルダの閲覧、フレーム単位トリム・共有用 MP4・PNG 出力を提供します。
     ]]></description>
+    <change-notes><![CDATA[
+        <ul>
+            <li>Android Studio Rabbit（2026.2）向けの Compose / Jewel UI でバンドルの閲覧・トリム・共有 MP4 / PNG 出力ができます。<br/>
+                Compose / Jewel UI for Android Studio Rabbit (2026.2): browse bundles, trim frames, export share MP4 / PNG.</li>
+            <li>Running Devices と ARB ツールウィンドウから、直前の保存・ログのみ保存・スクリーンショットを実行できます。タップとスワイプを焼き込んだ共有 MP4（share-taps.mp4）も書き出せます。<br/>
+                Save, logs-only save and screenshots from Running Devices and the ARB tool window; share-taps.mp4 burns taps and swipes into the video.</li>
+            <li>arbd / arb-cli / arb-tray と端末側 DEX を同梱した自己完結 ZIP です。ライセンスは MIT OR Apache-2.0（licenses/ を参照）。<br/>
+                Self-contained ZIP with arbd / arb-cli / arb-tray and the device DEX jars. Licensed MIT OR Apache-2.0 (see licenses/).</li>
+        </ul>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.compose</depends>
-    <depends optional="true">org.jetbrains.android</depends>
-    <depends optional="true">com.intellij.modules.java</depends>
+    <!-- Optional: Android Studio's Running Devices toolbar group (arb-android.xml) and Java PSI source
+         jumps (arb-java.xml). The IDE loads each file only when its dependency is present. -->
+    <depends optional="true" config-file="arb-android.xml">org.jetbrains.android</depends>
+    <depends optional="true" config-file="arb-java.xml">com.intellij.modules.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Android Replay Buffer" displayType="BALLOON" isLogByDefault="true"/>
@@ -80,25 +94,5 @@
                 description="バージョン情報、arbd 接続状態、OSS ライセンス情報を表示します">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-
-        <group id="io.github.shinma06.arb.RunningDevices">
-            <separator/>
-            <action id="io.github.shinma06.arb.RunningDevices.ToggleCapture"
-                    class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
-                    icon="AllIcons.Actions.Restart"
-                    text="ARB: キャプチャ開始 / 停止"
-                    description="arbd のライブキャプチャを開始または停止します"/>
-            <action id="io.github.shinma06.arb.RunningDevices.Save"
-                    class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
-                    icon="AllIcons.Actions.MenuSaveall"
-                    text="ARB: 直前の記録を保存"
-                    description="設定された秒数と既定アクションに従って直前の記録を保存します"/>
-            <action id="io.github.shinma06.arb.RunningDevices.Screenshot"
-                    class="io.github.shinma06.arb.ide.ArbScreenshotAction"
-                    icon="AllIcons.FileTypes.Image"
-                    text="ARB: スクリーンショットを保存"
-                    description="対象端末の現在画面を PNG として即時保存します"/>
-            <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
-        </group>
     </actions>
 </idea-plugin>

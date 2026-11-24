@@ -39,6 +39,7 @@ import io.github.shinma06.arb.state.SyncedEventRow
 import io.github.shinma06.arb.state.TimelineViewerState
 import androidx.compose.ui.graphics.toArgb
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -615,11 +616,11 @@ class ArbT6dUiGlueAuditTest {
     // ---------------- Part 2 audit regressions ----------------
 
     @Test
-    fun settingsPreservesCaptureModeDeviceSerialAndScreenshotOverrideAndEditsCaptureMode() {
+    fun settingsPreservesCaptureModeDeviceSerialAndScreenshotOverrideAndEditsCaptureMode(@TempDir shots: Path) {
         val baseline = ArbConfig(
             captureMode = CaptureMode.LOGS_ONLY,
             deviceSerial = "R3CN1234567",
-            screenshotDirOverride = "/abs/cli-shots",
+            screenshotDirOverride = shots.toString(),
         )
         var written: Pair<ArbConfig, ArbSettingsDraft>? = null
         val configurable = ArbSettingsConfigurable(
