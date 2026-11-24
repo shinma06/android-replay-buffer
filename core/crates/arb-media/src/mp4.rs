@@ -2409,6 +2409,10 @@ fn walk_atom_children(
 mod atom_io_tests {
     use super::*;
     use std::io;
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn sparse_large_mdat_reads_only_headers() {
         use std::io::Write as _;
@@ -2440,6 +2444,10 @@ mod atom_io_tests {
         assert_eq!(reader.bytes, 24);
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn trim_preserves_inband_param_sets_across_multi_config_segments() {
         use crate::codec::{
@@ -2490,5 +2498,84 @@ mod atom_io_tests {
         let f2 = codec.decode_frame(&track, 2, PixelFormat::Yuv420p).unwrap();
         assert_eq!((f2.width, f2.height), (96, 64));
         assert!(f2.data[0].abs_diff(180) <= 4, "frame 2 luma {}", f2.data[0]);
+    }
+}
+
+/// Layer-3 PDD (M2): pure in-memory MP4 parser checks that also run under Miri
+/// (`cargo +nightly miri test -p arb-media --lib mp4::`), so UB in the slice/offset
+/// arithmetic is detected without filesystem I/O.
+#[cfg(test)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    reason = "generated parser inputs mirror the box field names"
+)]
+mod miri_pure_tests {
+    use proptest::prelude::*;
+
+    use super::{
+        AvccConfig, ParamSetMode, avcc_sample_to_annexb, checked_entry_count, iter_boxes,
+        parse_stsc, parse_stsz, parse_stts,
+    };
+
+    fn full_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = u32::try_from(8 + body.len())
+            .expect("len")
+            .to_be_bytes()
+            .to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn m2_well_formed_tables_parse_exactly() {
+        // stts: version/flags + 1 entry of (3 samples, delta 512).
+        let stts = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 2, 0];
+        assert_eq!(parse_stts(&stts, 3).expect("stts"), vec![512, 512, 512]);
+        // stsc: 1 entry (first_chunk 1, 2 samples/chunk, desc 1).
+        let stsc = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1];
+        assert_eq!(parse_stsc(&stsc).expect("stsc")[0].0, 1);
+        // stsz: per-sample sizes 4 and 6.
+        let stsz = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 6];
+        assert_eq!(parse_stsz(&stsz, 64).expect("stsz"), vec![4, 6]);
+        let mut nested = full_box(b"free", &[1, 2, 3]);
+        nested.extend(full_box(b"skip", &[]));
+        let boxes = iter_boxes(&nested).expect("boxes");
+        assert_eq!(boxes.len(), 2);
+        assert!(checked_entry_count(&[0; 8], u32::MAX, 0, 4, "m2").is_err());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn m2_random_bytes_never_panic_and_stay_in_bounds(
+            data in prop::collection::vec(any::<u8>(), 0..96),
+            max_samples in 0usize..8,
+            file_len in 0u64..256,
+            nls in 0usize..6,
+        ) {
+            if let Ok(boxes) = iter_boxes(&data) {
+                let total: usize = boxes.iter().map(|(_, p)| p.len() + 8).sum();
+                prop_assert!(total <= data.len());
+            }
+            if let Ok(d) = parse_stts(&data, max_samples) {
+                prop_assert!(d.len() <= max_samples);
+            }
+            if let Ok(e) = parse_stsc(&data) {
+                prop_assert!(e.windows(2).all(|w| w[0].0 < w[1].0));
+            }
+            let _ = parse_stsz(&data, file_len);
+            let cfg = AvccConfig { raw_avcc: Vec::new(), nal_length_size: nls, sps: vec![vec![0x67]], pps: vec![vec![0x68]] };
+            for mode in [ParamSetMode::Omit, ParamSetMode::Prepend, ParamSetMode::PrependIfMissing] {
+                let mut out = Vec::new();
+                avcc_sample_to_annexb(&data, &cfg, mode, &mut out);
+            }
+        }
     }
 }

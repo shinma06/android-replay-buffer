@@ -169,7 +169,7 @@ fn hypot(dx: f64, dy: f64) -> f64 {
     clippy::as_conversions,
     reason = "usize widens losslessly to u128 on supported hosts"
 )]
-fn decimate(samples: &[TouchPoint], cap: usize) -> Vec<TouchPoint> {
+pub(crate) fn decimate(samples: &[TouchPoint], cap: usize) -> Vec<TouchPoint> {
     if samples.len() <= cap || cap <= 1 {
         return samples.to_vec();
     }
@@ -297,5 +297,20 @@ mod tests {
         let result = classify_stroke(&samples, 10.0);
         assert_eq!(result.kind, GestureKind::Swipe);
         assert_eq!(result.path.len(), 2);
+    }
+
+    /// Complements Kani K7 (finite samples only): non-finite coordinates never panic and
+    /// always classify as a tap, for single-sample and multi-sample strokes alike.
+    #[test]
+    fn non_finite_samples_classify_as_taps_without_panicking() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let single = classify_stroke(&[pt(bad, bad, 7)], 10.0);
+            assert_eq!(single.kind, GestureKind::Tap);
+            assert_eq!(single.path, Vec::new());
+            assert_eq!(single.end_t_offset_ns, 7);
+            let multi = classify_stroke(&[pt(0.0, 0.0, 0), pt(500.0, bad, 9)], 10.0);
+            assert_eq!(multi.kind, GestureKind::Tap, "non-finite sample => tap");
+            assert_eq!(multi.path, Vec::new());
+        }
     }
 }

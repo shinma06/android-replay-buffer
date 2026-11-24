@@ -15,6 +15,8 @@
 //! - [`playback`]: External [`playback::FilmstripCache`], bounded [`playback::GopLruCache`],
 //!   latest-wins [`playback::ScrubController`], and [`playback::PresentationClock`].
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![deny(unsafe_code)]
 pub mod audio;
 pub mod audio_decode;
 pub mod burn_in;
@@ -52,6 +54,9 @@ pub use crate::mux_av::{AvMuxReport, mux_share_mp4};
 
 #[cfg(test)]
 mod r2_regression_tests;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 /// Returns the crate identifier alongside the underlying domain schema version.
 pub const fn crate_info() -> (&'static str, u32) {

@@ -126,12 +126,19 @@ class ArbdRpcClientTest {
                     okResponse(3, """{"ok":true}"""),
                 ),
             )
+            private val closed = CountDownLatch(1)
             override fun writeLine(jsonLine: String) = Unit
             override fun readLine(): String? {
-                Thread.sleep(180)
+                if (responses.size == 1) {
+                    // The normal RPC's reply arrives only after the client gives up and closes,
+                    // so a stalled runner cannot let it slip in before the 60ms deadline.
+                    closed.await(10, TimeUnit.SECONDS)
+                } else {
+                    Thread.sleep(180)
+                }
                 return responses.removeFirstOrNull()
             }
-            override fun close() = Unit
+            override fun close() = closed.countDown()
         }
         val client = ArbdRpcClient(
             transport = slowTransport,
@@ -149,7 +156,7 @@ class ArbdRpcClientTest {
             val err = assertFailsWith<IOException> {
                 client.callRaw("system.status", JsonObject())
             }
-            assertTrue(err.message.orEmpty().contains("timed out"))
+            assertTrue(err.message.orEmpty().contains("timed out after 60 ms"), err.message)
         } finally {
             client.close()
         }

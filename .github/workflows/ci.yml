@@ -187,6 +187,8 @@ jobs:
         run: cargo doc --manifest-path core/Cargo.toml --workspace --no-deps
       - name: License check
         run: python3 core/scripts/check-licenses.py --manifest-path core/Cargo.toml
+      - name: Architecture structural guards (RS-1..RS-5)
+        run: python3 core/scripts/check-architecture.py
       - name: Helper script self-tests
         run: |
           python3 core/scripts/devin_verify_player_matrix.py --self-test

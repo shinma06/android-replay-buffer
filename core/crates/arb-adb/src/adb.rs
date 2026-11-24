@@ -118,7 +118,11 @@ pub enum AdbError {
 
 /// Returns the platform-specific `adb` executable filename (`adb.exe` on Windows, `adb` elsewhere).
 pub const fn adb_executable_name() -> &'static str {
-    if cfg!(windows) { "adb.exe" } else { "adb" }
+    if std::env::consts::EXE_SUFFIX.is_empty() {
+        "adb"
+    } else {
+        "adb.exe"
+    }
 }
 
 /// Resolves the host `adb` binary in priority order:
@@ -1633,15 +1637,18 @@ enum LiveMsg {
 }
 
 /// Pumps `read` on a dedicated thread until EOF/error, stamping each completion with
-/// the shared host clock immediately after the read returns.
+/// the shared host clock immediately after the read returns. Returns `false` when the OS
+/// refuses to create the thread, so the caller records an explicit stream end instead of
+/// panicking inside the library.
+#[must_use]
 fn spawn_live_reader<T: 'static, E: 'static>(
     name: &str,
     tx: SyncSender<LiveMsg>,
     clock: SharedClock,
     mut read: impl FnMut() -> Result<Option<T>, E> + Send + 'static,
     wrap: fn(i64, Result<Option<T>, E>) -> LiveMsg,
-) {
-    let spawned = thread::Builder::new()
+) -> bool {
+    thread::Builder::new()
         .name(format!("arb-live-{name}"))
         .spawn(move || {
             loop {
@@ -1652,9 +1659,8 @@ fn spawn_live_reader<T: 'static, E: 'static>(
                     break;
                 }
             }
-        });
-    // Thread creation only fails on OS resource exhaustion; the session cannot work then.
-    spawned.expect("failed to spawn live AdbSessionSource reader thread");
+        })
+        .is_ok()
 }
 
 /// Zero-sized marker keeping the transport type parameters (always `Send + Sync`).
@@ -1732,11 +1738,8 @@ where
     A: Read + Send + 'static,
 {
     /// Creates an [`AdbSessionSource`] from arbitrary [`Read`] transports and a host clock
-    /// provider, and immediately starts one reader thread per present transport.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the OS refuses to create a reader thread.
+    /// provider, and immediately starts one reader thread per present transport. A reader
+    /// thread the OS refuses to create is reported as an explicit stream end (gap).
     pub fn new(
         serial: impl Into<String>,
         companion: C,
@@ -1752,34 +1755,34 @@ where
         let audio_eof = audio.is_none();
 
         let mut companion = companion;
-        spawn_live_reader(
+        let companion_spawned = spawn_live_reader(
             "companion",
             tx.clone(),
             Arc::clone(&clock),
             move || WireFrame::read_from(&mut companion, DEFAULT_MAX_PAYLOAD_LEN),
             LiveMsg::Companion,
         );
-        if let Some(mut video_reader) = video {
+        let video_spawned = video.is_none_or(|mut video_reader| {
             spawn_live_reader(
                 "video",
                 tx.clone(),
                 Arc::clone(&clock),
                 move || video_reader.read_next(),
                 LiveMsg::Video,
-            );
-        }
-        if let Some(mut audio_reader) = audio {
+            )
+        });
+        let audio_spawned = audio.is_none_or(|mut audio_reader| {
             spawn_live_reader(
                 "audio",
                 tx.clone(),
                 Arc::clone(&clock),
                 move || audio_reader.read_next(),
                 LiveMsg::Audio,
-            );
-        }
+            )
+        });
         drop(tx);
 
-        Self {
+        let mut source = Self {
             rx,
             supervisor: SessionSupervisor::new(serial, supervisor_config),
             timeline: ClockTimeline::new(timeline_config),
@@ -1794,7 +1797,21 @@ where
             last_liveness_kind: None,
             shutdown_handles: Vec::new(),
             _transports: std::marker::PhantomData,
+        };
+        if companion_spawned && video_spawned && audio_spawned {
+            return source;
         }
+        let pc_cont_ns = stamp(&source.clock);
+        if !companion_spawned {
+            source.on_companion_end(pc_cont_ns, "companion_reader_spawn_failed");
+        }
+        if !video_spawned {
+            source.on_media_end(StreamId::Video, pc_cont_ns, "video_reader_spawn_failed");
+        }
+        if !audio_spawned {
+            source.on_media_end(StreamId::Audio, pc_cont_ns, "audio_reader_spawn_failed");
+        }
+        source
     }
 }
 

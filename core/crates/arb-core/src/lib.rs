@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![forbid(unsafe_code)]
 
 //! Pure domain logic for Android Replay Buffer (ARB).
@@ -16,6 +17,9 @@ pub mod legacy;
 pub mod selection;
 pub mod state;
 pub mod time;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 /// Schema version for ARB immutable saved bundles.
 pub const BUNDLE_SCHEMA_VERSION: u32 = 2;

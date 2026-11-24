@@ -719,18 +719,7 @@ fn build_stbl(
     let mut off_p = Vec::with_capacity(4 + table.chunk_offsets.len() * 8);
     off_p.extend_from_slice(&chunk_total.to_be_bytes());
     for rel in &table.chunk_offsets {
-        let absolute = base_offset
-            .checked_add(*rel)
-            .ok_or_else(|| MediaError::InvalidContainer("chunk offset overflow".to_owned()))?;
-        match mode {
-            ChunkOffsetMode::Co64 => off_p.extend_from_slice(&absolute.to_be_bytes()),
-            ChunkOffsetMode::Stco32 => {
-                let off32 = u32::try_from(absolute).map_err(|_| {
-                    MediaError::InvalidContainer("stco offset exceeds u32::MAX".to_owned())
-                })?;
-                off_p.extend_from_slice(&off32.to_be_bytes());
-            }
-        }
+        encode_chunk_offset(base_offset, *rel, mode, &mut off_p)?;
     }
     let offsets = match mode {
         ChunkOffsetMode::Co64 => full_box_wrap(*b"co64", 0, 0, &off_p)?,
@@ -875,6 +864,37 @@ fn build_share_moov(
 // Writing
 // ---------------------------------------------------------------------------------------------
 
+/// Appends one absolute chunk offset (`base_offset + rel`) to an `stco`/`co64` payload.
+fn encode_chunk_offset(
+    base_offset: u64,
+    rel: u64,
+    mode: ChunkOffsetMode,
+    out: &mut Vec<u8>,
+) -> Result<(), MediaError> {
+    let absolute = base_offset
+        .checked_add(rel)
+        .ok_or_else(|| MediaError::InvalidContainer("chunk offset overflow".to_owned()))?;
+    match mode {
+        ChunkOffsetMode::Co64 => out.extend_from_slice(&absolute.to_be_bytes()),
+        ChunkOffsetMode::Stco32 => {
+            let off32 = u32::try_from(absolute).map_err(|_| {
+                MediaError::InvalidContainer("stco offset exceeds u32::MAX".to_owned())
+            })?;
+            out.extend_from_slice(&off32.to_be_bytes());
+        }
+    }
+    Ok(())
+}
+
+/// Whether the file end (`ftyp + mdat header + payload + moov_len`) or any relative chunk
+/// offset can exceed `u32::MAX`, forcing 64-bit `co64` chunk offsets.
+fn needs_co64(max_rel_offset: u64, end_without_moov: Option<u64>, moov_len: u64) -> bool {
+    max_rel_offset > u64::from(u32::MAX)
+        || end_without_moov
+            .and_then(|end| end.checked_add(moov_len))
+            .is_none_or(|end| end > u64::from(u32::MAX))
+}
+
 /// Chooses `stco` vs `co64` and builds the final faststart `moov` box with absolute chunk offsets.
 ///
 /// Decides `Co64` up front whenever `total_payload` or any chunk's relative offset already exceeds
@@ -897,8 +917,7 @@ fn layout_share_moov(
     let min_end_without_moov = ftyp_len
         .checked_add(mdat_header_len)
         .and_then(|n| n.checked_add(total_payload));
-    let needs_co64_upfront = max_rel_offset > u64::from(u32::MAX)
-        || min_end_without_moov.is_none_or(|end| end > u64::from(u32::MAX));
+    let needs_co64_upfront = needs_co64(max_rel_offset, min_end_without_moov, 0);
 
     // `moov` length depends only on the offset width, not on the offset values.
     let (mode, sized) = if needs_co64_upfront {
@@ -910,8 +929,7 @@ fn layout_share_moov(
         let probe = build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Stco32)?;
         let probe_len = u64::try_from(probe.len())
             .map_err(|_| MediaError::InvalidContainer("moov length exceeds u64::MAX".to_owned()))?;
-        let probe_end = min_end_without_moov.and_then(|end| end.checked_add(probe_len));
-        if probe_end.is_none_or(|end| end > u64::from(u32::MAX)) {
+        if needs_co64(max_rel_offset, min_end_without_moov, probe_len) {
             (
                 ChunkOffsetMode::Co64,
                 build_share_moov(vplan, aplan, 0, ChunkOffsetMode::Co64)?,
@@ -1056,6 +1074,77 @@ fn write_checked(
     }
     writer.write_all(data)?;
     Ok(())
+}
+
+/// Layer-1 PDD (K9c): pure chunk-offset layout arithmetic for the share muxer.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{ChunkOffsetMode, encode_chunk_offset, needs_co64};
+
+    #[kani::proof]
+    fn k9_encode_chunk_offset_never_truncates() {
+        let (base, rel): (u64, u64) = (kani::any(), kani::any());
+        let mode = if kani::any() {
+            ChunkOffsetMode::Co64
+        } else {
+            ChunkOffsetMode::Stco32
+        };
+        let mut out = Vec::new();
+        let r = encode_chunk_offset(base, rel, mode, &mut out);
+        let exact = u128::from(base) + u128::from(rel);
+        match mode {
+            ChunkOffsetMode::Co64 => {
+                assert_eq!(
+                    r.is_ok(),
+                    exact <= u128::from(u64::MAX),
+                    "co64 overflow ⇒ Err"
+                );
+                if r.is_ok() {
+                    let v = u64::from_be_bytes([
+                        out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7],
+                    ]);
+                    assert_eq!(u128::from(v), exact);
+                }
+            }
+            ChunkOffsetMode::Stco32 => {
+                assert_eq!(
+                    r.is_ok(),
+                    exact <= u128::from(u32::MAX),
+                    "stco > u32::MAX ⇒ Err"
+                );
+                if r.is_ok() {
+                    let v = u32::from_be_bytes([out[0], out[1], out[2], out[3]]);
+                    assert_eq!(u128::from(v), exact);
+                }
+            }
+        }
+        if r.is_err() {
+            assert!(out.is_empty(), "failed encode writes nothing");
+        }
+    }
+
+    #[kani::proof]
+    fn k9_stco_chosen_only_when_every_offset_fits() {
+        let (ftyp, mdat_hdr, total, moov): (u64, u64, u64, u64) =
+            (kani::any(), kani::any(), kani::any(), kani::any());
+        // Up to two video chunks and one audio chunk, all inside the payload.
+        let offs: [u64; 3] = [kani::any(), kani::any(), kani::any()];
+        kani::assume(offs.iter().all(|&o| o <= total));
+        let max_rel = offs[0].max(offs[1]).max(offs[2]);
+        let end = ftyp
+            .checked_add(mdat_hdr)
+            .and_then(|n| n.checked_add(total));
+        if !needs_co64(max_rel, end, moov) {
+            let base = ftyp + moov + mdat_hdr;
+            for o in offs {
+                let mut out = Vec::new();
+                assert!(
+                    encode_chunk_offset(base, o, ChunkOffsetMode::Stco32, &mut out).is_ok(),
+                    "stco layout never needs an offset above u32::MAX"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

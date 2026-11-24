@@ -13,5 +13,9 @@ thiserror = "2"
 [dev-dependencies]
 proptest = "1"
 
+[features]
+# PDD Layer 1: also run the Kani harnesses that do not finish within the CI timebox.
+kani-extended = []
+
 [lints]
 workspace = true

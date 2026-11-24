@@ -1,0 +1,110 @@
+name: PDD Kani / Miri
+
+# Layer-1 (Kani) and Layer-3 Miri proof suites. Too slow for every push, so they run weekly,
+# on demand, from other workflows, and when a `develop` push touches the proofs themselves;
+# they never replace the required `ci.yml` checks. `schedule` and `workflow_dispatch` only
+# see this file once it is on the default branch (`main`), so the `push` trigger is what
+# runs the suite for proof changes integrated into `develop` before a release.
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: '0 3 * * 0'
+  push:
+    branches: [develop]
+    paths:
+      - '.github/workflows/pdd-kani.yml'
+      - 'core/crates/*/src/kani_proofs.rs'
+      - 'core/crates/arb-os/src/shm.rs'
+      - 'core/crates/arb-media/src/mp4.rs'
+      - 'core/crates/arb-media/src/mux_av.rs'
+      - 'core/crates/arb-adb/src/wire.rs'
+      - 'core/crates/arbd/src/touch_calibration.rs'
+      - 'core/crates/arb-core/src/**'
+
+concurrency:
+  group: pdd-kani-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: arb-core
+            group: K1-K7
+          - crate: arb-os
+            group: K8
+          - crate: arb-adb
+            group: K9-wire
+          - crate: arb-media
+            group: K9-mp4
+    name: kani (${{ matrix.crate }} ${{ matrix.group }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM (OpenH264 build)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: cargo kani (${{ matrix.crate }})
+        working-directory: core
+        # `-Z stubbing`: parser harnesses replace `format!` rendering and `f64::hypot` (see
+        # the `kani_proofs` module docs). Harnesses gated behind `kani-extended` are skipped.
+        run: cargo kani -p ${{ matrix.crate }} -Z stubbing
+
+  # Harnesses that did not verify within five minutes locally (docs/proofs/tcb-axioms.md §3).
+  # Informational only: a timeout here is recorded, never a failed workflow.
+  kani-extended:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [arb-core, arb-media, arbd]
+    name: kani-extended (${{ matrix.crate }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM (OpenH264 build)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: cargo kani --features kani-extended (${{ matrix.crate }})
+        working-directory: core
+        run: >-
+          cargo kani -p ${{ matrix.crate }} --features kani-extended -Z stubbing
+          -Z unstable-options --harness-timeout 15m
+
+  miri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly + Miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
+      - name: M1 arb-os shm RingView
+        working-directory: core
+        run: "cargo +nightly miri test -p arb-os --lib shm::"
+      - name: M2 arb-core
+        working-directory: core
+        env:
+          PROPTEST_CASES: '8'
+        run: cargo +nightly miri test -p arb-core --lib
+      - name: M2 arb-media mp4
+        working-directory: core
+        env:
+          PROPTEST_CASES: '8'
+        run: "cargo +nightly miri test -p arb-media --lib mp4::"

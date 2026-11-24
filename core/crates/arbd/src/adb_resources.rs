@@ -73,7 +73,7 @@ impl SessionResources {
         out.write_all(&serde_json::to_vec(self)?)?;
         out.sync_all()?;
         drop(out);
-        fs::rename(tmp, dest)?;
+        arb_os::fs::replace_file(&tmp, &dest)?;
         arb_os::fs::fsync_dir(dir)?;
         Ok(())
     }

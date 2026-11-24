@@ -312,18 +312,13 @@ impl ShmFrameRingWriter {
                 reason: "slot_capacity must be greater than zero".to_owned(),
             });
         }
-        let aligned_slot_stride =
-            align_up(slot_capacity, CACHE_LINE_BYTES).ok_or_else(|| OsError::InvalidArgument {
-                name: "slot_capacity",
-                reason: "slot_capacity alignment overflowed usize".to_owned(),
-            })?;
-        let total_size = aligned_slot_stride
-            .checked_mul(SHM_SLOT_COUNT)
-            .and_then(|s| s.checked_add(HEADER_REGION_BYTES))
-            .ok_or_else(|| OsError::InvalidArgument {
-                name: "slot_capacity",
-                reason: "total shared-memory ring size overflowed usize".to_owned(),
-            })?;
+        let ShmLayout {
+            aligned_slot_stride,
+            total_bytes: total_size,
+        } = compute_layout(slot_capacity).ok_or_else(|| OsError::InvalidArgument {
+            name: "slot_capacity",
+            reason: "total shared-memory ring size overflowed usize".to_owned(),
+        })?;
         let total_size_u64 = u64::try_from(total_size).map_err(|_| OsError::InvalidArgument {
             name: "slot_capacity",
             reason: "total shared-memory ring size overflowed u64".to_owned(),
@@ -583,16 +578,12 @@ impl ShmFrameRingReader {
             });
         }
 
-        let aligned_slot_stride =
-            align_up(slot_capacity, CACHE_LINE_BYTES).ok_or_else(|| OsError::InvalidShmRing {
-                reason: "aligned slot stride overflowed usize".to_owned(),
-            })?;
-        let required_len = aligned_slot_stride
-            .checked_mul(SHM_SLOT_COUNT)
-            .and_then(|s| s.checked_add(HEADER_REGION_BYTES))
-            .ok_or_else(|| OsError::InvalidShmRing {
-                reason: "expected ring byte size overflowed usize".to_owned(),
-            })?;
+        let ShmLayout {
+            aligned_slot_stride,
+            total_bytes: required_len,
+        } = compute_layout(slot_capacity).ok_or_else(|| OsError::InvalidShmRing {
+            reason: "expected ring byte size overflowed usize".to_owned(),
+        })?;
         if mmap.len() < required_len {
             return Err(OsError::InvalidShmRing {
                 reason: format!(
@@ -975,6 +966,35 @@ impl AtomicPayload<'_> {
     }
 }
 
+/// Byte layout of a shared-memory frame ring: header region followed by
+/// [`SHM_SLOT_COUNT`] cache-line aligned payload slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShmLayout {
+    aligned_slot_stride: usize,
+    total_bytes: usize,
+}
+
+/// Computes the ring layout for `slot_capacity` payload bytes per slot, or
+/// `None` when the capacity is zero or any size overflows `usize`.
+const fn compute_layout(slot_capacity: usize) -> Option<ShmLayout> {
+    if slot_capacity == 0 {
+        return None;
+    }
+    let Some(aligned_slot_stride) = align_up(slot_capacity, CACHE_LINE_BYTES) else {
+        return None;
+    };
+    let Some(slots) = aligned_slot_stride.checked_mul(SHM_SLOT_COUNT) else {
+        return None;
+    };
+    let Some(total_bytes) = slots.checked_add(HEADER_REGION_BYTES) else {
+        return None;
+    };
+    Some(ShmLayout {
+        aligned_slot_stride,
+        total_bytes,
+    })
+}
+
 const fn align_up(value: usize, align: usize) -> Option<usize> {
     let rem = value % align;
     if rem == 0 {
@@ -1047,7 +1067,7 @@ fn publish_shm_file(
 ) -> Result<(), OsError> {
     // POSIX rename atomically swaps the directory entry; existing readers keep
     // their mapped old inode intact without ever encountering SIGBUS.
-    fs::rename(tmp_path, final_path).map_err(|source| OsError::Fs {
+    crate::fs::replace_file(tmp_path, final_path).map_err(|source| OsError::Fs {
         operation: "publish_shm_file",
         path: final_path.to_path_buf(),
         source,
@@ -1082,7 +1102,7 @@ fn publish_shm_file(
         // the reader's view valid until it drops.
         let seq = TMP_SHM_SEQ.fetch_add(1, Ordering::Relaxed);
         let retired = parent.join(format!(".{file_name}.retired.{}.{seq}", std::process::id()));
-        fs::rename(final_path, &retired).map_err(|source| OsError::Fs {
+        crate::fs::replace_file(final_path, &retired).map_err(|source| OsError::Fs {
             operation: "retire_existing_shm_file",
             path: final_path.to_path_buf(),
             source,
@@ -1091,7 +1111,7 @@ fn publish_shm_file(
         let _ = fs::remove_file(&retired);
     }
 
-    fs::rename(tmp_path, final_path).map_err(|source| OsError::Fs {
+    crate::fs::replace_file(tmp_path, final_path).map_err(|source| OsError::Fs {
         operation: "publish_shm_file",
         path: final_path.to_path_buf(),
         source,
@@ -1133,6 +1153,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn round_trip_1080p_bgra_triple_buffer_and_approximate_transitions() {
         const WIDTH: u32 = 1920;
@@ -1247,6 +1271,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn concurrent_writer_and_reader_never_observe_torn_frames() {
         const WIDTH: u32 = 320;
@@ -1344,6 +1372,10 @@ mod tests {
     /// H6: the writer laps the *entire* 3-slot ring while the reader is halfway
     /// through copying a slot. The interrupted attempt must be discarded and the
     /// retry must return the newest frame intact (never a torn mix).
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn writer_wrapping_whole_ring_mid_copy_never_returns_torn_frame() {
         const WIDTH: u32 = 64;
@@ -1398,6 +1430,10 @@ mod tests {
 
     /// H6: when the writer keeps lapping the reader on every attempt, the reader
     /// reports stale/contended data as an error instead of a torn frame.
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn writer_lapping_every_attempt_yields_contention_error_not_torn_frame() {
         const FRAME_BYTES: usize = 16 * 16 * 4;
@@ -1559,6 +1595,10 @@ mod tests {
 
     /// H6: the atomic payload path round-trips every length class (empty word
     /// region, tail-only, word-only, word + tail) byte-exactly.
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn atomic_payload_round_trips_all_tail_lengths() {
         let tmp = TestShmDir::new("tail-lengths");
@@ -1588,6 +1628,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn shm_validates_pixel_formats_and_rejects_oversized_frames() {
         assert_eq!(PixelFormat::Nv12.required_buffer_bytes(1, 1, 1), None);
@@ -1628,6 +1672,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem/mmap I/O is unsupported under Miri isolation"
+    )]
     #[test]
     fn recreate_ring_at_same_path_never_invalidates_existing_mapped_reader() {
         let tmp = TestShmDir::new("recreate-no-sigbus");
@@ -1730,5 +1778,275 @@ mod tests {
             .expect("new frame must be present");
         assert_eq!(meta2.frame_index, 99, "new reader frame_index mismatch");
         assert_eq!(buf2, new_pixels, "new reader pixels mismatch");
+    }
+
+    fn m1_fields(generation: u64, len: usize) -> super::SlotFieldsSnapshot {
+        super::SlotFieldsSnapshot {
+            generation,
+            frame_index: i64::try_from(generation).expect("i64"),
+            boottime_ns: 0,
+            width: 1,
+            height: 1,
+            stride: 4,
+            pixel_format: PixelFormat::Rgba8.to_raw(),
+            payload_len: u32::try_from(len).expect("len"),
+            flags: 0,
+        }
+    }
+
+    /// M1 (Miri): the atomic payload copy round-trips every word/tail length class
+    /// over a 64-byte aligned heap slot, never touching bytes past `len`.
+    #[test]
+    fn m1_atomic_payload_round_trips_boundary_lengths() {
+        let alloc = SharedRingAlloc::new(24);
+        let payload_ptr =
+            super::slot_payload_ptr(alloc.view.base, 0, alloc.view.aligned_slot_stride);
+        for len in [0_usize, 1, 7, 8, 9, 15, 16, 17] {
+            let src: Vec<u8> = (0..len)
+                .map(|b| u8::try_from((b * 31 + len) % 256).expect("byte"))
+                .collect();
+            // SAFETY: slot 0 payload is a live, 64-byte aligned region of 24 >= len bytes.
+            let view = unsafe { super::AtomicPayload::new(payload_ptr, len) };
+            view.store_from(&src);
+            let mut dst = vec![0_u8; len];
+            view.load_into(&mut dst, &mut || {});
+            assert_eq!(dst, src, "len={len}");
+        }
+    }
+
+    /// M1 (Miri): heap-backed ring publish/read across the boundary lengths, including a
+    /// payload filling the slot exactly up to its unaligned tail; payloads shorter than the
+    /// 1x1 RGBA requirement are rejected instead of decoded.
+    #[test]
+    fn m1_heap_ring_round_trips_boundary_lengths_and_full_tail() {
+        const CAP: usize = 17;
+        let alloc = SharedRingAlloc::new(CAP);
+        let view = alloc.view;
+        let mut buf = Vec::new();
+        for (i, len) in [0_usize, 1, 7, 8, 9, 15, 16, 17].into_iter().enumerate() {
+            let generation = u64::try_from(i + 1).expect("gen");
+            let pixels: Vec<u8> = (0..len)
+                .map(|b| u8::try_from((b * 31 + i) % 256).expect("byte"))
+                .collect();
+            let slot = u8::try_from(i % 3).expect("slot");
+            // SAFETY: single writer over the initialized allocation, slot < 3, len <= CAP.
+            unsafe { view.publish_slot(slot, &m1_fields(generation, len), &pixels) };
+            // SAFETY: `view` describes the live allocation owned by `alloc`.
+            let read = unsafe { view.read_latest(&mut buf, || {}) };
+            if len < 4 {
+                assert!(
+                    matches!(read, Err(OsError::InvalidShmRing { .. })),
+                    "len={len}: {read:?}"
+                );
+                continue;
+            }
+            let meta = read.expect("read").expect("published frame");
+            assert_eq!(meta.generation, generation);
+            assert_eq!(buf, pixels, "len={len}");
+        }
+    }
+
+    /// M1 (Miri): one writer and two readers over the same allocation across many
+    /// generations; Miri's data-race detector checks every overlapping access.
+    #[test]
+    fn m1_one_writer_two_readers_multi_generation_is_race_free() {
+        const CAP: usize = 17;
+        const GENERATIONS: u64 = if cfg!(miri) { 24 } else { 2_000 };
+        let alloc = Arc::new(SharedRingAlloc::new(CAP));
+        let done = Arc::new(AtomicBool::new(false));
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let alloc = Arc::clone(&alloc);
+                let done = Arc::clone(&done);
+                thread::spawn(move || {
+                    let view = alloc.view;
+                    let mut buf = Vec::new();
+                    let mut last = 0_u64;
+                    while !done.load(Ordering::Acquire) {
+                        // SAFETY: `view` describes the allocation kept alive by `alloc`.
+                        match unsafe { view.read_latest(&mut buf, || {}) } {
+                            Ok(Some(meta)) => {
+                                let fill = u8::try_from(meta.generation % 251).expect("byte");
+                                assert!(buf.iter().all(|&b| b == fill), "torn frame");
+                                assert!(meta.generation >= last, "generation went backwards");
+                                last = meta.generation;
+                            }
+                            Ok(None) => {}
+                            Err(OsError::InvalidShmRing { reason })
+                                if reason == super::SEQLOCK_CONTENTION => {}
+                            Err(other) => panic!("unexpected read error: {other:?}"),
+                        }
+                        thread::yield_now();
+                    }
+                })
+            })
+            .collect();
+        let view = alloc.view;
+        for generation in 1..=GENERATIONS {
+            let len = 4 + usize::try_from(generation % 14).expect("len");
+            let frame = vec![u8::try_from(generation % 251).expect("byte"); len];
+            let slot = u8::try_from((generation - 1) % 3).expect("slot");
+            // SAFETY: single writer, slot < 3, len <= CAP.
+            unsafe { view.publish_slot(slot, &m1_fields(generation, len), &frame) };
+            thread::yield_now();
+        }
+        done.store(true, Ordering::Release);
+        for r in readers {
+            r.join().expect("reader must not panic");
+        }
+    }
+}
+
+/// Layer-1 PDD (K8): bounded model checking of SHM sizing and layout arithmetic.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        CACHE_LINE_BYTES, HEADER_REGION_BYTES, PixelFormat, RING_HEADER_BYTES, SHM_SLOT_COUNT,
+        SLOT_HEADER_BYTES, align_up, compute_layout,
+    };
+
+    fn any_format() -> PixelFormat {
+        match kani::any::<u8>() % 4 {
+            0 => PixelFormat::Bgra8,
+            1 => PixelFormat::Rgba8,
+            2 => PixelFormat::Rgb24,
+            _ => PixelFormat::Nv12,
+        }
+    }
+
+    /// Reference row count and minimum row bytes for `fmt`, in exact `u128` arithmetic.
+    fn reference(fmt: PixelFormat, w: u32, h: u32) -> (u128, u128) {
+        let min_row = match fmt {
+            PixelFormat::Bgra8 | PixelFormat::Rgba8 => u128::from(w) * 4,
+            PixelFormat::Rgb24 => u128::from(w) * 3,
+            PixelFormat::Nv12 => u128::from(w.div_ceil(2)) * 2,
+        };
+        let rows = match fmt {
+            PixelFormat::Nv12 => u128::from(h) + u128::from(h.div_ceil(2)),
+            _ => u128::from(h),
+        };
+        (min_row, rows)
+    }
+
+    /// Full `u32` width/stride domain with heights up to 2^16 (every real frame, 8K
+    /// included): proving two unbounded 64-bit multipliers equivalent is SAT-hard and did not
+    /// finish locally. Exactness for heights in (2^16, 2^31] is therefore not machine-checked;
+    /// the `u64` overflow edge, reachable only above 2^31 rows, is pinned by
+    /// `k8_required_buffer_bytes_rejects_u64_overflow`.
+    #[kani::proof]
+    fn k8_required_buffer_bytes_exact_or_none() {
+        let fmt = any_format();
+        let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
+        kani::assume(h <= 1 << 16);
+        let (min_row, rows) = reference(fmt, w, h);
+        let r = fmt.required_buffer_bytes(w, h, stride);
+        assert_eq!(
+            r.is_none(),
+            w == 0 || h == 0 || u128::from(stride) < min_row,
+            "None iff zero dimension or undersized stride (no overflow below 2^31 rows)"
+        );
+        if let Some(len) = r {
+            assert_eq!(
+                len as u128,
+                u128::from(stride) * rows,
+                "exact total, no truncation"
+            );
+        }
+    }
+
+    /// The only overflowing shapes: rows x stride above `u64::MAX` (NV12 with h > 2^31 and a
+    /// near-`u32::MAX` stride) is rejected, while the largest packed RGBA frame still fits.
+    #[kani::proof]
+    fn k8_required_buffer_bytes_rejects_u64_overflow() {
+        let w: u32 = kani::any();
+        kani::assume(w >= 1 && u64::from(w) * 4 <= u64::from(u32::MAX));
+        assert_eq!(
+            PixelFormat::Nv12.required_buffer_bytes(w, u32::MAX, u32::MAX),
+            None,
+            "NV12 rows x stride overflows u64"
+        );
+        let rgba = PixelFormat::Rgba8.required_buffer_bytes(w, u32::MAX, u32::MAX);
+        assert_eq!(
+            rgba.map(|n| n as u128),
+            Some(u128::from(u32::MAX) * u128::from(u32::MAX)),
+            "(2^32-1)^2 still fits in u64"
+        );
+    }
+
+    /// Every pixel (and both NV12 chroma bytes) of an accepted frame lies inside the buffer.
+    ///
+    /// `k8_required_buffer_bytes_exact_or_none` proves `len == stride * rows`, so byte
+    /// `row * stride + col` is in bounds exactly when `row < rows` and `col < stride`. This
+    /// harness proves those two linear facts over the full `u32` domain (heights included);
+    /// asking CBMC for the symbolic product `y * stride` directly did not finish (nonlinear
+    /// 64-bit arithmetic). Together the two harnesses cover every frame up to 2^16 rows.
+    #[kani::proof]
+    fn k8_required_buffer_bytes_covers_every_pixel() {
+        let fmt = any_format();
+        let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
+
+        if fmt.required_buffer_bytes(w, h, stride).is_none() {
+            return;
+        }
+        let (x, y): (u32, u32) = (kani::any(), kani::any());
+        kani::assume(x < w && y < h);
+        let (_, rows) = reference(fmt, w, h);
+        let (x, y, s) = (u128::from(x), u128::from(y), u128::from(stride));
+        assert!(y < rows, "row in bounds");
+        match fmt {
+            PixelFormat::Bgra8 | PixelFormat::Rgba8 => assert!(x * 4 + 3 < s),
+            PixelFormat::Rgb24 => assert!(x * 3 + 2 < s),
+            PixelFormat::Nv12 => {
+                assert!(x < s, "luma in bounds");
+                assert!(u128::from(h) + y / 2 < rows, "chroma row in bounds");
+                assert!((x / 2) * 2 + 1 < s, "U and V bytes in bounds");
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn k8_align_up_exact() {
+        let value: usize = kani::any();
+        let align = [1usize, 2, 8, CACHE_LINE_BYTES, 4096][usize::from(kani::any::<u8>() % 5)];
+        match align_up(value, align) {
+            Some(r) => {
+                assert!(r >= value && r % align == 0 && r - value < align);
+            }
+            None => assert!(value > usize::MAX - (align - 1)),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn k8_compute_layout_slots_disjoint_and_aligned() {
+        let cap: usize = kani::any();
+        let Some(l) = compute_layout(cap) else {
+            assert!(
+                cap == 0
+                    || align_up(cap, CACHE_LINE_BYTES)
+                        .and_then(|s| s.checked_mul(SHM_SLOT_COUNT))
+                        .and_then(|s| s.checked_add(HEADER_REGION_BYTES))
+                        .is_none()
+            );
+            return;
+        };
+        assert!(l.aligned_slot_stride >= cap && l.aligned_slot_stride % CACHE_LINE_BYTES == 0);
+        assert_eq!(HEADER_REGION_BYTES % CACHE_LINE_BYTES, 0);
+        let mut prev_end = HEADER_REGION_BYTES;
+        let mut i = 0;
+        while i < SHM_SLOT_COUNT {
+            let hdr = RING_HEADER_BYTES + i * SLOT_HEADER_BYTES;
+            assert!(hdr % CACHE_LINE_BYTES == 0 && hdr + SLOT_HEADER_BYTES <= HEADER_REGION_BYTES);
+            let payload = HEADER_REGION_BYTES + i * l.aligned_slot_stride;
+            assert!(payload % CACHE_LINE_BYTES == 0, "payload 64-byte aligned");
+            assert!(payload >= prev_end, "slots disjoint");
+            prev_end = payload + cap;
+            assert!(prev_end <= l.total_bytes, "slot inside mapping");
+            i += 1;
+        }
+        assert_eq!(
+            HEADER_REGION_BYTES + SHM_SLOT_COUNT * l.aligned_slot_stride,
+            l.total_bytes
+        );
     }
 }

@@ -6,6 +6,8 @@
 //! [`arb_os::ipc::LocalIpcStream`] transport against a mock `arbd` server; the binary and any
 //! future GUI/CLI frontends are the only other intended callers.
 
+#![deny(unsafe_code)]
+
 pub mod controller;
 pub mod instance;
 #[cfg(feature = "native-tray")]

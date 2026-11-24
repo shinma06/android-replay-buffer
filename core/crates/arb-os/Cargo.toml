@@ -27,5 +27,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_WindowsProgramming",
 ] }
 
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
 [lints]
 workspace = true
