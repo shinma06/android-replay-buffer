@@ -41,6 +41,12 @@ data class SystemHelloResponse(
     val daemonVersion: String,
     val buildId: String? = null,
     val binaryMtimeSecs: Long? = null,
+    /**
+     * `true` when the daemon runs with `--exit-on-stdin-eof` and so exits together with the live
+     * parent holding its stdin pipe (parent-bound lifecycle). `false` on standalone and older
+     * daemons.
+     */
+    val parentBound: Boolean = false,
 )
 
 enum class CaptureMode(val wire: String) {

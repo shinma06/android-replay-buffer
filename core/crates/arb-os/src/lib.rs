@@ -6,6 +6,7 @@
 //!   single-instance locks, and PID liveness checks,
 //! - [`ipc`]: local control-plane IPC (Unix Domain Sockets / Windows Named Pipes)
 //!   with length-bounded NDJSON framing,
+//! - [`parent_watch`]: parent-bound lifecycle (exit when the parent closes our stdin pipe),
 //! - [`shm`]: triple-buffered shared-memory frame ring for high-FPS video delivery,
 //! - [`paths`]: standard OS data, cache, and runtime directory resolution.
 
@@ -13,6 +14,7 @@ pub mod clock;
 pub mod error;
 pub mod fs;
 pub mod ipc;
+pub mod parent_watch;
 pub mod paths;
 pub mod shm;
 

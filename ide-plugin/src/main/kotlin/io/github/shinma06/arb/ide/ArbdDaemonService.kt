@@ -25,6 +25,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
 
 /**
  * Snapshot of live daemon + device state used by Running Devices & Tools Menu toolbar actions
@@ -55,8 +56,23 @@ interface ArbDaemonStateListener {
 
 /**
  * Application-level service owning the thin IPC connection to the local `arbd` daemon.
- * Lazily spawns `arbd` (resolving bundled `<pluginPath>/native/<os>-<arch>/arbd` +
+ * Spawns `arbd` (resolving bundled `<pluginPath>/native/<os>-<arch>/arbd` +
  * `<pluginPath>/device-agent` DEX JARs + `ARB_ADB_PATH`) and verifies `system.hello`.
+ *
+ * Lifecycle (parent-bound to Android Studio — "Studio alive => running, Studio gone => not
+ * running"):
+ * - [ensureParentBoundLifecycleStarted] (called off-EDT by [ArbStartupActivity] when the first
+ *   project opens, and by a light supervisor afterwards) starts `arbd --exit-on-stdin-eof` without
+ *   waiting for the Tool Window, so `capture_enabled` recording resumes right after Studio starts.
+ *   An unbound `arbd` left by an older plugin / `arb-cli` is replaced; one bound to a live parent
+ *   is reused (see [ArbdProcessManager]).
+ * - The opt-in `arb-tray` ([ArbLocalSettingsState.trayEnabled]) is launched as
+ *   `arb-tray --exit-on-stdin-eof` with its stdin pipe held open; turning the setting off stops
+ *   only `arb-tray`.
+ * - Both children read EOF on stdin the moment this JVM dies (exit, crash, `kill -9`), so neither
+ *   can outlive Studio. On a normal exit / plugin unload [dispose] stops `arb-tray`, then `arbd`
+ *   (`system.shutdown` + stdin close, escalating to `destroy` / `destroyForcibly`), then drops the
+ *   IPC connection. Being an application service, closing one of several projects never stops it.
  */
 @Service(Service.Level.APP)
 open class ArbdDaemonService internal constructor(
@@ -70,6 +86,7 @@ open class ArbdDaemonService internal constructor(
             pluginDir = resolveInstalledPluginPath(),
             customBinaryProvider = { ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPathOrNull() },
             ideAndroidSdkProvider = { resolveIdeAndroidSdkPath() },
+            parentBound = true,
         ),
     )
 
@@ -85,7 +102,15 @@ open class ArbdDaemonService internal constructor(
     private var client: ArbdRpcClient? = null
 
     private var managedTrayProcess: Process? = null
+
+    /** Strong reference to `arb-tray`'s stdin write end: closing it quits the parent-bound tray. */
+    private var managedTrayStdin: java.io.OutputStream? = null
     private var managedTrayBinaryPath: Path? = null
+
+    private val supervisorStarted = AtomicBoolean()
+    private val supervisor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "arbd-parent-bound-supervisor").apply { isDaemon = true }
+    }
 
     @Volatile
     var lastHello: SystemHelloResponse? = null
@@ -265,8 +290,47 @@ open class ArbdDaemonService internal constructor(
     }
 
     /**
-     * Launches the bundled `arb-tray` menu-bar / system-tray app under plugin-managed lifecycle
-     * ownership (idempotent while already running; `arb-tray` also guards single-instance lock).
+     * Starts (or adopts) the parent-bound `arbd` now, without waiting for any UI, and keeps it
+     * running while Studio lives: a supervisor re-checks every [SUPERVISOR_INTERVAL_SECONDS] s and
+     * respawns `arbd` if it stopped (crash, tray "Stop Daemon && Quit", or the other IDE that owned
+     * a shared daemon exited). Blocking; call off-EDT. Failures are logged, never thrown.
+     */
+    open fun ensureParentBoundLifecycleStarted() {
+        if (disposed) return
+        ensureDaemonRunning()
+        if (supervisorStarted.compareAndSet(false, true)) {
+            runCatching {
+                supervisor.scheduleWithFixedDelay(
+                    { if (!disposed) ensureDaemonRunning() },
+                    SUPERVISOR_INTERVAL_SECONDS,
+                    SUPERVISOR_INTERVAL_SECONDS,
+                    TimeUnit.SECONDS,
+                )
+            }
+        }
+    }
+
+    private fun ensureDaemonRunning() {
+        try {
+            // `system.hello` is idempotent: a dead connection reconnects through connectOrSpawn,
+            // which spawns (or adopts) the parent-bound daemon.
+            withClient { it.systemHello(verifyProtocolVersion = false) }
+        } catch (e: Exception) {
+            if (!disposed) logger.warn("ARB arbd parent-bound start failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Stops the parent-bound `arbd` this IDE launched (never one it merely connected to). Returns
+     * `true` when a managed daemon was present.
+     */
+    open fun stopManagedDaemon(): Boolean = processManager.stopManagedDaemon()
+
+    /**
+     * Launches the bundled `arb-tray` as `arb-tray --exit-on-stdin-eof` under plugin-managed,
+     * parent-bound lifecycle ownership (idempotent while already running; `arb-tray` also guards
+     * its single-instance lock). Its stdin pipe stays open until [stopBundledTray] or JVM death.
+     * No `--auto-start`: the IDE owns `arbd`, so the tray never spawns an unbound daemon.
      */
     @Throws(IOException::class)
     open fun launchBundledTray(): Path = synchronized(trayLock) {
@@ -285,6 +349,7 @@ open class ArbdDaemonService internal constructor(
         val env = processManager.buildDaemonEnvironment(daemonBin)
         val proc = trayProcessStarter(trayBin, env)
         managedTrayProcess = proc
+        managedTrayStdin = proc.outputStream
         managedTrayBinaryPath = trayBin
         trayBin
     }
@@ -296,20 +361,29 @@ open class ArbdDaemonService internal constructor(
     open fun stopBundledTray(): Boolean = synchronized(trayLock) {
         // Held until the old process has exited: a launch queued right behind this stop must not
         // start while the old `arb-tray` still owns its single-instance lock (it would just exit).
-        val proc = managedTrayProcess ?: return@synchronized false
+        val proc = managedTrayProcess
+        val stdin = managedTrayStdin
         managedTrayProcess = null
+        managedTrayStdin = null
         managedTrayBinaryPath = null
-        if (proc.isAlive) {
+        if (proc == null) {
+            runCatching { stdin?.close() }
+            return@synchronized false
+        }
+        // Parent-bound quit first: EOF on stdin makes `arb-tray` exit through its own quit path.
+        runCatching { stdin?.close() }
+        if (proc.isAlive && !waitForExit(proc, TRAY_STOP_TIMEOUT_MS)) {
             runCatching { proc.destroy() }
-            val exited = runCatching { proc.waitFor(TRAY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
-                .getOrDefault(false)
-            if (!exited && proc.isAlive) {
+            if (!waitForExit(proc, TRAY_STOP_TIMEOUT_MS)) {
                 runCatching { proc.destroyForcibly() }
-                runCatching { proc.waitFor(TRAY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+                waitForExit(proc, TRAY_STOP_TIMEOUT_MS)
             }
         }
         true
     }
+
+    private fun waitForExit(proc: Process, timeoutMs: Long): Boolean =
+        runCatching { proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS) }.getOrDefault(!proc.isAlive)
 
     /**
      * Synchronizes the plugin-managed `arb-tray` process with [enabled] (`true` -> launch
@@ -339,6 +413,16 @@ open class ArbdDaemonService internal constructor(
 
     internal fun restoreTrayAtStartup(enabled: () -> Boolean) = submitTrayWork {
         if (enabled()) syncTrayState(true)
+    }
+
+    /**
+     * Startup sequence run by [ArbStartupActivity] (off-EDT): start the parent-bound `arbd` first
+     * — regardless of [ArbLocalSettingsState.trayEnabled] — then restore the tray if it is enabled,
+     * so the tray connects to the IDE-owned daemon instead of finding none.
+     */
+    internal fun startParentBoundLifecycle(trayEnabled: () -> Boolean): Future<*>? {
+        ensureParentBoundLifecycleStarted()
+        return restoreTrayAtStartup(trayEnabled)
     }
 
     internal fun isManagedTrayRunningForTest(): Boolean = synchronized(trayLock) {
@@ -385,6 +469,8 @@ open class ArbdDaemonService internal constructor(
 
     private fun ensureConnectedLocked(): ArbdRpcClient {
         client?.let { return it }
+        // Never (re)spawn arbd once disposed, e.g. from the idempotent-RPC retry in withClient.
+        check(!disposed) { "ArbdDaemonService is already disposed" }
         val connected = processManager.connectOrSpawn()
         client = connected.client
         lastHello = connected.hello
@@ -398,22 +484,34 @@ open class ArbdDaemonService internal constructor(
 
     override fun dispose() {
         disposed = true
+        // Never interrupt (shutdownNow): a running check may be mid-RPC on the shared connection.
+        supervisor.shutdown()
         trayExecutor.shutdown()
-        stopBundledTray()
+        runCatching { stopBundledTray() }.onFailure { logger.warn("ARB arb-tray stop failed", it) }
+        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
         disconnect()
+        // A connect that was already in flight when `disposed` flipped may have spawned a new
+        // managed daemon; `disconnect()` waited for it, so this second stop catches it.
+        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
     }
 
     companion object {
         const val PLUGIN_ID: String = "io.github.shinma06.android-replay-buffer"
         private const val TRAY_STOP_TIMEOUT_MS: Long = 1_500L
+        internal const val SUPERVISOR_INTERVAL_SECONDS: Long = 10L
 
+        /** `arb-tray` command line for the parent-bound, IDE-owned tray. */
+        internal fun trayCommand(trayBin: Path): List<String> =
+            listOf(trayBin.toAbsolutePath().toString(), ArbdProcessManager.FLAG_EXIT_ON_STDIN_EOF)
+
+        /** Starts the tray with its stdin pipe left open (the caller keeps `outputStream`). */
         private fun defaultStartTrayProcess(trayBin: Path, env: Map<String, String>): Process {
-            val pb = ProcessBuilder(listOf(trayBin.toAbsolutePath().toString(), "--auto-start"))
+            val pb = ProcessBuilder(trayCommand(trayBin))
                 .redirectInput(ProcessBuilder.Redirect.PIPE)
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
             pb.environment().putAll(env)
-            return pb.start().also { it.outputStream.close() }
+            return pb.start()
         }
 
         internal fun resolveInstalledPluginPath(): Path? = runCatching {

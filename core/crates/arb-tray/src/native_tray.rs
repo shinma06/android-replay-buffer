@@ -26,11 +26,13 @@
 //! a different action, bundle, or job.
 
 use std::collections::HashMap;
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use arb_os::parent_watch::spawn_parent_watch;
 use arb_os::paths::ArbPaths;
 use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -45,6 +47,23 @@ use crate::rpc::{AutoStartMode, RpcClient};
 /// Identical on all OSes (R4 M3): updates/clicks are channel-driven, so this only bounds
 /// worst-case UI latency — it never drives `arbd` polling itself.
 const UI_TICK: Duration = Duration::from_millis(100);
+
+/// After the parent closes our stdin (`--exit-on-stdin-eof`), how long the UI loop gets to act
+/// on `QuitNow` before the watcher exits the process itself. Covers a UI thread stuck in OS menu
+/// tracking (macOS keeps the run loop in tracking mode while the menu is open), so a dead parent
+/// can never leave a tray behind holding `arb-tray.lock`; the OS releases the lock on exit.
+pub const PARENT_GONE_QUIT_GRACE: Duration = Duration::from_millis(1_500);
+
+/// How [`run`] binds the tray process to its launcher and whether it shows an icon.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrayRunOptions {
+    /// Parent-bound lifecycle (`--exit-on-stdin-eof`): quit when stdin reaches EOF, i.e. when
+    /// the parent holding the stdin pipe (Android Studio) exits, crashes or closes it.
+    pub exit_on_stdin_eof: bool,
+    /// Run the `arbd` status worker without a native tray icon (`--headless`): no tray host or
+    /// GUI session is needed, so CI and diagnostics can drive the real process lifecycle.
+    pub headless: bool,
+}
 
 /// Side length of the rasterized tray icon in physical pixels: the macOS menu bar draws status
 /// items at 18-22 pt, so 44 px gives a crisp `@2x` Retina bitmap (Windows / Linux hosts scale it
@@ -382,6 +401,28 @@ trait TrayBackend {
     fn set_tooltip(&mut self, tooltip: &str);
     /// `true` while the user has the tray menu open (macOS menu tracking).
     fn menu_is_tracking(&self) -> bool;
+}
+
+/// Icon-less backend for `--headless`: accepts every render without touching the OS.
+#[derive(Debug, Default)]
+struct HeadlessBackend;
+
+impl TrayBackend for HeadlessBackend {
+    fn create(
+        &mut self,
+        _items: &[ModelMenuItem],
+        _icon: &IconImage,
+        _tooltip: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn apply_in_place(&mut self, _updates: &[InPlaceUpdate]) {}
+    fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) {}
+    fn set_icon(&mut self, _icon: &IconImage) {}
+    fn set_tooltip(&mut self, _tooltip: &str) {}
+    fn menu_is_tracking(&self) -> bool {
+        false
+    }
 }
 
 /// One live native menu node, mirroring the model tree for in-place updates.
@@ -916,13 +957,28 @@ pub fn run(
     paths: ArbPaths,
     auto_start: AutoStartMode,
     poll_interval: Duration,
+    options: TrayRunOptions,
 ) -> Result<(), String> {
     let (command_tx, command_rx) = mpsc::channel::<TrayCommand>();
     let (update_tx, update_rx) = mpsc::channel::<TrayUpdate>();
+    if options.exit_on_stdin_eof {
+        spawn_parent_quit_watch(
+            io::stdin(),
+            update_tx.clone(),
+            PARENT_GONE_QUIT_GRACE,
+            || std::process::exit(0),
+        )?;
+    }
     thread::Builder::new()
         .name("arb-tray-ipc".to_owned())
         .spawn(move || ipc_worker(paths, auto_start, poll_interval, command_rx, update_tx))
         .map_err(|err| format!("failed to spawn arb-tray IPC worker thread: {err}"))?;
+
+    if options.headless {
+        let mut ui = TrayUi::new(HeadlessBackend);
+        ui.render(&TrayViewState::offline())?;
+        return run_polling_loop(ui, &command_tx, &update_rx);
+    }
 
     let mut ui = TrayUi::new(NativeBackend::new());
     ui.render(&TrayViewState::offline())?;
@@ -977,11 +1033,36 @@ fn run_with_event_loop(
     })
 }
 
-/// Linux / BSD: the `ksni` backend manages its own D-Bus worker thread, so no event loop is
-/// required here — just a plain update/click drain loop on the current thread.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn run_polling_loop(
-    mut ui: TrayUi<NativeBackend>,
+/// Parent-bound quit (`--exit-on-stdin-eof`): when `reader` (stdin) reaches EOF, send `QuitNow`
+/// to the UI loop — the same exit path as "Stop Daemon && Quit" — then, if the process is still
+/// alive after `grace`, call `force_exit` so a UI stuck in OS menu tracking cannot outlive the
+/// parent.
+fn spawn_parent_quit_watch<R, F>(
+    reader: R,
+    update_tx: mpsc::Sender<TrayUpdate>,
+    grace: Duration,
+    force_exit: F,
+) -> Result<(), String>
+where
+    R: Read + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
+    spawn_parent_watch("arb-tray-parent-watch", reader, move |gone| {
+        eprintln!("[arb-tray] parent gone ({gone:?}); quitting");
+        let _ = update_tx.send(TrayUpdate::QuitNow);
+        thread::sleep(grace);
+        eprintln!("[arb-tray] UI loop did not quit within {grace:?}; exiting now");
+        force_exit();
+    })
+    .map(drop)
+    .map_err(|err| format!("failed to spawn arb-tray parent watch thread: {err}"))
+}
+
+/// Linux / BSD (and `--headless` on every OS): the `ksni` backend manages its own D-Bus worker
+/// thread, so no event loop is required here — just a plain update/click drain loop on the
+/// current thread.
+fn run_polling_loop<B: TrayBackend>(
+    mut ui: TrayUi<B>,
     command_tx: &mpsc::Sender<TrayCommand>,
     update_rx: &mpsc::Receiver<TrayUpdate>,
 ) -> Result<(), String> {
@@ -1258,6 +1339,63 @@ mod tests {
             rgb_at(&render_badge_icon(TrayBadge::StoragePressure), 35, 35),
             [255, 59, 48],
             "storage pressure dot is red"
+        );
+    }
+
+    #[test]
+    fn parent_pipe_eof_sends_quit_now_then_force_exits_only_after_the_grace() {
+        use std::io::Write;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (reader, mut writer) = std::io::pipe().expect("anonymous pipe");
+        let (update_tx, update_rx) = mpsc::channel::<TrayUpdate>();
+        let forced = Arc::new(AtomicBool::new(false));
+        let forced_flag = Arc::clone(&forced);
+        spawn_parent_quit_watch(reader, update_tx, Duration::from_millis(400), move || {
+            forced_flag.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn parent watch");
+
+        writer.write_all(b"alive").expect("parent keep-alive write");
+        assert!(
+            update_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a live parent must not quit the tray"
+        );
+
+        drop(writer);
+        let update = update_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("parent EOF must reach the UI loop within 2 s");
+        let mut ui = TrayUi::new(FakeBackend::default());
+        assert_eq!(
+            apply_update(&mut ui, update),
+            Some(0),
+            "parent EOF must take the QuitNow exit path with code 0"
+        );
+        assert!(
+            !forced.load(Ordering::SeqCst),
+            "the fallback exit must wait for the grace period"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !forced.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            forced.load(Ordering::SeqCst),
+            "a UI loop that never quits must be force-exited after the grace period"
+        );
+    }
+
+    #[test]
+    fn headless_backend_renders_without_a_tray_host() {
+        let mut ui = TrayUi::new(HeadlessBackend);
+        ui.render(&TrayViewState::offline())
+            .expect("headless render never needs a tray host");
+        assert_eq!(
+            apply_update(&mut ui, TrayUpdate::QuitNow),
+            Some(0),
+            "headless mode quits through the same QuitNow path"
         );
     }
 

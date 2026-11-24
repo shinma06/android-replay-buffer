@@ -4,6 +4,7 @@ import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.SystemHelloResponse
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -13,6 +14,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -20,6 +22,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * lazily spawns `arbd` when its local IPC endpoint is absent, transparently auto-upgrades stale
  * `arbd` instances lacking required RPCs or older than the bundled plugin binary, and verifies the
  * `system.hello` protocol handshake (`SPEC-01`, `SPEC-03`).
+ *
+ * Parent-bound lifecycle ([parentBound] `= true`, always used by the IDE plugin): `arbd` is
+ * launched with `--exit-on-stdin-eof` and this JVM keeps the write end of its stdin pipe for as
+ * long as it lives, so the kernel stops `arbd` whenever the IDE exits, crashes or is killed. A
+ * running daemon that is not parent-bound (an older plugin's, `arb-cli --auto-start`'s, or one a
+ * user started by hand) is replaced by a parent-bound one; a daemon already bound to a live parent
+ * (this IDE, or another running IDE) is used as is. [stopManagedDaemon] stops the daemon this JVM
+ * launched.
  */
 class ArbdProcessManager(
     val paths: ArbPaths = ArbPaths.resolve(),
@@ -30,7 +40,33 @@ class ArbdProcessManager(
     private val env: (String) -> String? = System::getenv,
     private val customBinaryProvider: () -> Path? = { null },
     private val ideAndroidSdkProvider: () -> Path? = { null },
+    /** Launch `arbd` with `--exit-on-stdin-eof` and hold its stdin pipe (see class KDoc). */
+    val parentBound: Boolean = false,
 ) {
+    private val managedLock = Any()
+
+    /**
+     * `true` once a configured `arbd` refused `--exit-on-stdin-eof` (a build older than the
+     * parent-bound lifecycle, e.g. a custom binary in Settings): for the rest of the session it is
+     * launched without the flag and a running daemon is no longer replaced for being unbound, so
+     * such a binary keeps working instead of failing or restarting on every reconnect.
+     */
+    private val parentBoundUnsupported = AtomicBoolean(false)
+
+    /** The `arbd` this JVM launched parent-bound; its stdin pipe is [managedDaemonStdin]. */
+    private var managedDaemonProcess: Process? = null
+
+    /**
+     * Strong reference to the write end of [managedDaemonProcess]'s stdin. Never closed while the
+     * daemon is wanted: closing it (or this JVM dying) is what stops a parent-bound `arbd`.
+     */
+    private var managedDaemonStdin: OutputStream? = null
+
+    /** The live parent-bound `arbd` this JVM launched, or `null`. */
+    fun managedDaemonProcess(): Process? = synchronized(managedLock) {
+        managedDaemonProcess?.takeIf { it.isAlive }
+    }
+
     /**
      * Loop guard: identity-based (same-path mtime / `build_id`) auto-upgrade restarts `arbd` at most
      * once per IDE session. A failing replacement (e.g. an unkillable stale daemon or a clock skew
@@ -211,41 +247,34 @@ class ArbdProcessManager(
         // otherwise a custom/env binary older than the bundled one would loop restart forever.
         val upgradeTarget = bundledBinary?.takeIf { it == resolvedBinary }
         when (val probe = probeRunningDaemon(endpoint, upgradeTarget)) {
-            is ProbeResult.Healthy -> return probe.connected
+            is ProbeResult.Healthy -> {
+                if (!parentBound || parentBoundUnsupported.get() || probe.connected.hello.parentBound ||
+                    resolvedBinary == null
+                ) {
+                    return probe.connected
+                }
+                // Not bound to any live parent: it would outlive this IDE. Replace it with a
+                // parent-bound daemon so "IDE closed => arbd stopped" always holds.
+                runCatching { probe.connected.client.close() }
+                stopRunningDaemonBestEffort(endpoint)
+                return spawnAndAwaitHello(resolvedBinary, endpoint, startupTimeout)
+            }
             is ProbeResult.Stale -> {
                 val upgradeBin = resolvedBinary
                     ?: throw IOException(
                         "Running arbd is incompatible (${probe.reason}) and no newer arbd binary was found.",
                     )
                 stopRunningDaemonBestEffort(endpoint)
-                val process = spawnDaemon(upgradeBin)
-                return waitForHello(endpoint, startupTimeout, process)
+                return spawnAndAwaitHello(upgradeBin, endpoint, startupTimeout)
             }
             ProbeResult.NotRunning -> {
                 val binary = resolvedBinary
                     ?: throw IOException(
                         "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.daemonExecutableName()}.",
                     )
-                val process = spawnDaemon(binary)
-                return waitForHello(endpoint, startupTimeout, process)
+                return spawnAndAwaitHello(binary, endpoint, startupTimeout)
             }
         }
-    }
-
-    /** Launches the bundled `arb-tray` menu-bar / system-tray app with zero terminal setup. */
-    @Throws(IOException::class)
-    fun launchBundledTray(): Path {
-        val trayBin = resolveTrayBinary()
-            ?: throw IOException("同梱の arb-tray バイナリが見つかりません。")
-        ensureUnixExecutable(trayBin)
-        val daemonBin = resolveDaemonBinary()
-        val pb = ProcessBuilder(listOf(trayBin.toAbsolutePath().toString(), "--auto-start"))
-            .redirectInput(ProcessBuilder.Redirect.PIPE)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-        pb.environment().putAll(buildDaemonEnvironment(daemonBin))
-        pb.start().also { it.outputStream.close() }
-        return trayBin
     }
 
     /**
@@ -260,8 +289,24 @@ class ArbdProcessManager(
             )
         val endpoint = paths.ipcEndpoint()
         stopRunningDaemonBestEffort(endpoint)
+        return spawnAndAwaitHello(binary, endpoint, startupTimeout)
+    }
+
+    /**
+     * Spawns [binary] and waits for `system.hello`. A parent-bound launch that dies with a
+     * failure exit before answering is retried once without `--exit-on-stdin-eof` (see
+     * [parentBoundUnsupported]).
+     */
+    private fun spawnAndAwaitHello(binary: Path, endpoint: String, startupTimeout: Duration): ConnectedDaemon {
         val process = spawnDaemon(binary)
-        return waitForHello(endpoint, startupTimeout, process)
+        return try {
+            waitForHello(endpoint, startupTimeout, process)
+        } catch (e: IOException) {
+            val refusedFlag = parentBound && !parentBoundUnsupported.get() && !process.isAlive && process.exitValue() != 0
+            if (!refusedFlag) throw e
+            parentBoundUnsupported.set(true)
+            waitForHello(endpoint, startupTimeout, spawnDaemon(binary))
+        }
     }
 
     private fun stopRunningDaemonBestEffort(endpoint: String) {
@@ -347,13 +392,73 @@ class ArbdProcessManager(
             "--runtime-dir",
             paths.runtimeDir.toAbsolutePath().toString(),
         )
-        val pb = ProcessBuilder(cmd)
+        val bound = parentBound && !parentBoundUnsupported.get()
+        val pb = ProcessBuilder(if (bound) cmd + FLAG_EXIT_ON_STDIN_EOF else cmd)
             .redirectInput(ProcessBuilder.Redirect.PIPE)
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .redirectError(ProcessBuilder.Redirect.DISCARD)
         pb.environment().putAll(buildDaemonEnvironment(binary))
-        return pb.start().also { it.outputStream.close() }
+        if (!bound) {
+            return pb.start().also { it.outputStream.close() }
+        }
+        return synchronized(managedLock) {
+            // A previous managed daemon is being replaced (stale / restart): let it go.
+            runCatching { managedDaemonStdin?.close() }
+            val process = pb.start()
+            managedDaemonProcess = process
+            managedDaemonStdin = process.outputStream
+            process
+        }
     }
+
+    /**
+     * Stops the parent-bound `arbd` this JVM launched: `system.shutdown` (bounded by
+     * [shutdownRpcTimeoutMs], sent only if the endpoint still answers with that daemon's PID) plus
+     * closing its stdin pipe — either one alone takes the daemon's clean shutdown path — then waits
+     * up to [exitTimeoutMs] and escalates to `destroy()` / `destroyForcibly()`. Daemons this JVM
+     * did not launch are never touched. Returns `true` when a managed daemon was present.
+     */
+    fun stopManagedDaemon(
+        shutdownRpcTimeoutMs: Long = MANAGED_SHUTDOWN_RPC_TIMEOUT_MS,
+        exitTimeoutMs: Long = MANAGED_EXIT_TIMEOUT_MS,
+    ): Boolean {
+        val (process, stdin) = synchronized(managedLock) {
+            val taken = managedDaemonProcess to managedDaemonStdin
+            managedDaemonProcess = null
+            managedDaemonStdin = null
+            taken
+        }
+        if (process == null) {
+            runCatching { stdin?.close() }
+            return false
+        }
+        if (process.isAlive) {
+            requestShutdownOf(process.pid(), shutdownRpcTimeoutMs)
+        }
+        runCatching { stdin?.close() }
+        if (!waitForExit(process, exitTimeoutMs)) {
+            runCatching { process.destroy() }
+            if (!waitForExit(process, MANAGED_DESTROY_TIMEOUT_MS)) {
+                runCatching { process.destroyForcibly() }
+                waitForExit(process, MANAGED_DESTROY_TIMEOUT_MS)
+            }
+        }
+        return true
+    }
+
+    private fun requestShutdownOf(pid: Long, timeoutMs: Long) {
+        runCatching {
+            val transport = LocalIpcTransport.connect(paths.ipcEndpoint(), os)
+            ArbdRpcClient(transport, readTimeoutMs = timeoutMs, longRunningReadTimeoutMs = timeoutMs).use { rpc ->
+                if (rpc.systemHello(verifyProtocolVersion = false).pid == pid) {
+                    rpc.systemShutdown()
+                }
+            }
+        }
+    }
+
+    private fun waitForExit(process: Process, timeoutMs: Long): Boolean =
+        runCatching { process.waitFor(timeoutMs, TimeUnit.MILLISECONDS) }.getOrDefault(!process.isAlive)
 
     @Throws(IOException::class)
     fun waitForHello(
@@ -493,6 +598,12 @@ class ArbdProcessManager(
         const val ENV_ARB_ADB_PATH: String = "ARB_ADB_PATH"
         val DEFAULT_STARTUP_TIMEOUT: Duration = Duration.ofSeconds(5)
         private const val POLL_INTERVAL_MS: Long = 50L
+
+        /** `arbd` / `arb-tray` flag: exit when the parent closes the stdin pipe. */
+        const val FLAG_EXIT_ON_STDIN_EOF: String = "--exit-on-stdin-eof"
+        const val MANAGED_SHUTDOWN_RPC_TIMEOUT_MS: Long = 1_500L
+        const val MANAGED_EXIT_TIMEOUT_MS: Long = 2_000L
+        private const val MANAGED_DESTROY_TIMEOUT_MS: Long = 1_500L
 
         /**
          * Returns `true` when the bundled plugin `arbd` should replace the running daemon:

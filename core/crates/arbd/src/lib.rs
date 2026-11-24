@@ -128,6 +128,7 @@ pub struct DaemonConfig {
     /// One-shot fault injection switches (all off by default; used by the E2E suite).
     pub faults: Arc<FaultInjection>,
     ring_policy_overridden: bool,
+    parent_bound: bool,
 }
 
 impl DaemonConfig {
@@ -141,7 +142,17 @@ impl DaemonConfig {
             screenshot_provider: SharedScreenshotProvider::adb_default(),
             faults: Arc::new(FaultInjection::default()),
             ring_policy_overridden: false,
+            parent_bound: false,
         }
+    }
+
+    /// Marks this daemon as parent-bound (`--exit-on-stdin-eof`): it exits when the parent that
+    /// holds its stdin pipe dies, and reports `parent_bound: true` in `system.hello` so clients
+    /// can tell a daemon owned by a live parent (another IDE) from an unmanaged one.
+    #[must_use]
+    pub const fn bound_to_parent(mut self) -> Self {
+        self.parent_bound = true;
+        self
     }
 
     /// Installs shared [`FaultInjection`] switches (deterministic crash/failure tests).
@@ -217,6 +228,7 @@ struct DaemonState {
     endpoint: PathBuf,
     build_id: Option<String>,
     binary_mtime_secs: Option<u64>,
+    parent_bound: bool,
 }
 
 /// Computes an optional `(build_id, binary_mtime_secs)` fingerprint of the currently running
@@ -512,6 +524,7 @@ impl DaemonState {
                 daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
                 build_id: self.build_id.clone(),
                 binary_mtime_secs: self.binary_mtime_secs,
+                parent_bound: self.parent_bound,
             })?),
             "system.status" => self.handle_system_status(),
             "system.shutdown" => Ok(json!({ "ok": true })),
@@ -1656,6 +1669,7 @@ impl DaemonServer {
             endpoint,
             build_id,
             binary_mtime_secs,
+            parent_bound: config.parent_bound,
         });
 
         state.lock_capture()?.crash_daemon = Arc::downgrade(&state);
