@@ -18,7 +18,7 @@ verifies:
 
 - **ワイヤプロトコル仕様**: [PROTOCOL.md](../../device-agent/PROTOCOL.md)（20 byte Little-Endian 固定ヘッダ `magic="AR"`, `version=1`, `stream_id`, `msg_type`, `flags`, `reserved`, `seq: u32`, `payload_len: u64`、全 9 メッセージペイロード、および Apache-2.0 `scrcpy-server-v5.0.1` トンネルフレーミングを定義）。
 - **軽量 DEX コンパニオン (`device-agent/companion/`)**: 純 Java（min API 24・外部実行時依存 0）。`device-agent/build.sh` により `arb-companion.dex.jar`（22,324 bytes）を決定論的に生成。
-- **Apache-2.0 `scrcpy-server-v5.0.1` ＋ パッチ済み `AudioRecordReader` 再利用**: `device-agent/build.sh --with-scrcpy-audio` が `plugin/src/main/resources/replay/deps/scrcpy-server-v5.0.1` の SHA-256（`764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536`）を照合し、初フレーム PTS 修正済み `AudioRecordReader` を `classes.dex` として結合した `replay-scrcpy-audio.dex.jar`（735,101 bytes）を生成（ライセンス表記: [NOTICE.md](../../device-agent/NOTICE.md)）。
+- **Apache-2.0 `scrcpy-server-v5.0.1` ＋ パッチ済み `AudioRecordReader` 再利用**: `device-agent/build.sh --with-scrcpy-audio` が `third-party/scrcpy/scrcpy-server-v5.0.1` の SHA-256（`764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536`）を照合し、初フレーム PTS 修正済み `AudioRecordReader` を `classes.dex` として結合した `replay-scrcpy-audio.dex.jar`（735,101 bytes）を生成（ライセンス表記: [NOTICE.md](../../device-agent/NOTICE.md)）。
 - **純 Java ホスト単体テスト (`ProtocolTest`)**: 13/13 PASS（20 byte ヘッダ符号化・復号、異常 magic 拒否、ストリーム別単調連番、全 9 メッセージの往復検証、`logger_entry` 20/24/28 byte ヘッダ解析、`logcat -S` 統計・`Unverified`/`Verified`/`OverflowDetected` 判定、`getevent -lp`/`-lt` 解析）。
 
 ## 2. ローカル Android API 37 エミュレータ（`arb_api37_arm64`）ライブ実測結果

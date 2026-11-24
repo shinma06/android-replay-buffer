@@ -49,7 +49,7 @@ class ArbT5IdeIntegrationTest {
         assertEquals(ArbBundleDetector.DetectedKind.V2_MANIFEST, ArbBundleDetector.detectPath(v2Manifest))
 
         val legacyReplay = repoRoot().resolve(
-            "plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface/replay.json",
+            "fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface/replay.json",
         )
         assertTrue(Files.isRegularFile(legacyReplay), "Legacy Schema-4 fixture must exist")
         assertEquals(ArbBundleDetector.DetectedKind.LEGACY_SCHEMA4_REPLAY, ArbBundleDetector.detectPath(legacyReplay))

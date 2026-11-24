@@ -1,34 +1,62 @@
 name: Release
+# 正式版: main 上のタグ vX.Y.Z で、3 OS の自己完結配布 ZIP と IDE プラグイン ZIP を GitHub Release に添付する。
+# develop の early プレリリースは ci.yml の `early` ジョブが担当する。この workflow はブランチ push では動かない。
 on:
   push:
     tags: ['v*.*.*']
 permissions:
-  contents: write
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
 jobs:
-  release:
+  verify-tag:
+    name: verify tag is on main
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require the tag on main
+      - name: Require SemVer tag on main
         run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not a valid SemVer tag (expected vX.Y.Z)"
+            exit 1
+          fi
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  bundle-linux:
+    name: bundle (Linux + IDE plugin)
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nasm
+        run: sudo apt-get update && sudo apt-get install -y nasm
       - uses: actions/setup-java@v6.1.0
         with:
           distribution: temurin
           java-version: '27'
       - uses: gradle/actions/setup-gradle@v6.4.0
-      - name: Prepare pinned Android build API
-        shell: bash
+      - uses: Swatinem/rust-cache@v2.7.8
+        with:
+          workspaces: core
+      - name: Prepare pinned Android SDK (android-37.2 + runner build-tools)
         run: |
           set -euo pipefail
           sdk_dir="$(mktemp -d "$RUNNER_TEMP/replay-android-sdk.XXXXXX")"
           archive="$sdk_dir/platform-37.2_r01.zip"
-          trap 'rm -f "$archive"' EXIT
           curl --fail --location --max-time 120 --output "$archive" \
             https://dl.google.com/android/repository/platform-37.2_r01.zip
           echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum -c -
@@ -36,10 +64,123 @@ jobs:
           jar="$sdk_dir/platforms/android-37.2/android.jar"
           unzip -p "$archive" android-37.2/android.jar > "$jar"
           echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum -c -
+          rm -f "$archive"
+          runner_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ln -s "$runner_sdk/build-tools" "$sdk_dir/build-tools"
           echo "ANDROID_HOME=$sdk_dir" >> "$GITHUB_ENV"
-      - name: Build plugin
-        run: plugin/gradlew -p plugin --no-daemon check buildPlugin verifyPluginStructure -PpluginVersion="${GITHUB_REF_NAME#v}"
+      - name: Build device-agent DEX jars
+        run: |
+          set -euo pipefail
+          ./device-agent/build.sh --with-scrcpy-audio 2>&1 | tee device-agent-build.log
+          grep -q "ProtocolTest: ALL 19 TESTS PASSED" device-agent-build.log
+      - name: Build release binaries
+        run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+      - name: Build IDE plugin
+        working-directory: ide-plugin
+        env:
+          ARB_DAEMON_BIN: ${{ github.workspace }}/core/target/release/arbd
+          RELEASE_VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: ./gradlew test buildPlugin --no-daemon "-PpluginVersion=${RELEASE_VERSION}"
+      - name: Package Linux bundle
+        env:
+          RELEASE_VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --target-os linux \
+            --arch "$RUNNER_ARCH" \
+            --version "$RELEASE_VERSION" \
+            --bin-dir core/target/release \
+            --device-agent-dir device-agent/build \
+            --out-dir dist
+          cp "ide-plugin/build/distributions/arb-ide-plugin-${RELEASE_VERSION}.zip" dist/
+          ls -lh dist
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-Linux
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 3
+
+  bundle-native:
+    name: bundle (${{ matrix.os }})
+    needs: verify-tag
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nasm (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2.7.8
+        with:
+          workspaces: core
+      - name: Build release binaries
+        run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+      - name: Package bundle
+        env:
+          RELEASE_VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --target-os "$RUNNER_OS" \
+            --arch "$RUNNER_ARCH" \
+            --version "$RELEASE_VERSION" \
+            --bin-dir core/target/release \
+            --out-dir dist \
+            --allow-missing-ide-plugin \
+            --allow-missing-device-agent
+          ls -lh dist
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-${{ runner.os }}
+          path: dist/arb-v2-*.zip
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: publish GitHub Release
+    needs: [verify-tag, bundle-linux, bundle-native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: release-*
+          path: raw-dist
+          merge-multiple: true
+      - name: Assemble universal 3-OS release artifacts
+        env:
+          RELEASE_VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --assemble-release \
+            --version "$RELEASE_VERSION" \
+            --input-dir raw-dist \
+            --out-dir dist
+          ls -lh dist
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" plugin/build/distributions/*.zip --verify-tag --generate-notes
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -lh dist
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --verify-tag --generate-notes

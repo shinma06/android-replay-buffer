@@ -1,42 +1,46 @@
-# Android Replay Buffer
+# Android Replay Buffer (ARB)
 
-Android Studio plugin (`plugin/`) that keeps the last moments of an Android device's screen, logcat and timing and saves them on demand. The bundled `replay` CLI shares the plugin's settings, buffer and save path. Product facts: `docs/project.md`, `docs/requirements.md`, `docs/plugin-design.md`, `docs/design/`.
+Records the last moments of an Android device's screen, logcat, taps and timing, and saves them on demand. Rust core daemon (`arbd`) + CLI/MCP (`arb-cli`) + tray (`arb-tray`), an Android `device-agent`, and a Compose/Jewel Android Studio plugin (`ide-plugin`) share one daemon and one save path. Product facts: `docs/v2/` (REQ / SPEC / VER, checked by `sara`).
 
-## Work
+## Layout
 
-Entire Trails drive the change; GitHub runs CI and publishes releases. Always pass `--repo gh/shinma06/android-replay-buffer` to `entire trail` commands: in Devin, `origin` goes through a proxy URL that Entire cannot map to this repository.
-
-- Tasks are trails, not GitHub Issues. One task → one branch `devin/<slug>` from `develop` → one trail. Existing Issues are background only: when a change achieves one's purpose or makes it unnecessary, comment why and close it.
-- Push the branch to `origin`, then `entire trail create --branch <branch> --base develop --title "<type>: <日本語の要約>" --body "<目的と変更の要約>"`.
-- `entire trail ci-pr <n>` opens a draft GitHub PR titled with the branch name. Edit its title to the trail title and write the change summary in its body (keep the `<!-- entire-shadow-pr -->` marker), then `entire trail ready <n>` so reviews and CI `test` run.
-- Review: `codex review --base develop` (uses `OPENAI_API_KEY`) is primary; post each real issue to the trail with `entire trail finding add`. The findings gate waits until the current head has a review, so when there are no findings, add one `--severity low` finding saying so and resolve it. If Codex cannot run (quota, outage), have a separate Devin session review the diff and post its findings the same way. (`entire review` asks for human approval on every push because Devin's git `user.email` differs from the commit author.)
-- Before merging, fix real findings and resolve the rest with a reason, both in `entire trail finding list <n>` and in GitHub PR review threads (the `develop` ruleset requires resolved threads).
-- Merge with `entire trail merge <n>` once its gates (findings, `test` and `os-parity` checks, up to date) pass. Never `--force`. No human approval is needed for `develop`. Entire merges with a merge commit, so the `develop` ruleset allows merge commits (and squash). Do not merge on GitHub instead.
-- After the merge, close the trail with `entire trail update <n> --status closed`; merged trails otherwise stay open. Only planned or in-progress work stays open.
-- Child Devin sessions cannot log in to Entire (service accounts are not allowed in `gh/` mirror projects), so they implement, test and push, and the parent session runs the `entire trail` commands.
-- `main` is stable, `develop` is latest. Keep merging finished trails into `develop`; `early` always tracks it. Release `develop` → `main` by `docs/release.md`: SemVer, the CI ZIP of the `develop` head must pass the VM IDE/emulator acceptance in `docs/verification/vm-acceptance.md` (no human device check), merge the release PR, tag `vX.Y.Z` on `main`, then bump `devBaseVersion` on `develop`. Report what was verified and what was not (USB device, macOS/Windows IDE).
-- The `early` prerelease follows `develop`: the CI `early` job (after `test` and both `os-parity` jobs pass on a `develop` push) moves the `early` tag to that commit and replaces its asset with the CI ZIP (`X.Y.Z-dev.<commit>`). It stays a prerelease, never Latest, and needs no VM acceptance. Do not edit `early` by hand; a superseded run skips itself.
-- Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
+- `core/` — Rust workspace (`arbd`, `arb-cli`, `arb-tray`, `arb-core`, `arb-os`, `arb-adb`, `arb-media`, `arb-storage`) and `core/scripts/` (verify, license check, packaging, player matrix).
+- `device-agent/` — on-device companion (`build.sh`, host protocol tests).
+- `ide-plugin/` — Kotlin Gradle build: `client-core` (pure client library) + the IDE plugin (Compose/Jewel).
+- `docs/v2/` — requirements, specs, verification records, testing plans. `docs/v2/sara.toml` is the traceability root.
+- `fixtures/` — read-only legacy schema 3/4 bundle fixtures. `third-party/scrcpy/` — pinned Apache-2.0 scrcpy-server and the audio patch.
+- `.github/workflows/` — `ci.yml` (checks + `early` prerelease), `release.yml` (stable tag release).
 
 ## Build and test
 
-Needs JDK 27 (`JAVA_HOME`) and Android platform `android-37.2` under `ANDROID_HOME` (both provided by the Devin blueprint).
-
 ```bash
-python3 scripts/workflow/plugin_check.py              # tests + plugin ZIP + structure check (what CI runs)
-python3 scripts/workflow/plugin_check.py --tests-only # faster loop
+./core/scripts/verify.sh                                   # fmt, clippy -D warnings, test, license (zero GPL/AGPL), sara --strict, REQ coverage
+./device-agent/build.sh --with-scrcpy-audio                # needs ANDROID_HOME with android-37.2 + build-tools
+cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+(cd ide-plugin && ./gradlew test buildPlugin)              # needs JDK 27; bundles core/target/release + device-agent/build when present
 ```
 
-Passing tests does not mean IDE/device acceptance; say which was verified.
+Passing tests does not mean IDE/device acceptance; say which was verified and which was not (USB device, macOS/Windows IDE, emulator).
+
+## Work
+
+Entire Trails drive the change; GitHub runs CI and publishes releases. Always pass `--repo gh/shinma06/android-replay-buffer` to `entire trail` commands when `origin` goes through a proxy.
+
+- Tasks are trails. One task → one branch → one trail, created with `entire trail create --branch <branch> --base <base> --title "<type>: <日本語の要約>" --body "..."`. Active feature integration targets `v2-develop`; `develop` is the integration line, `main` is stable.
+- `entire trail ci-pr <n>` opens a draft PR; retitle it to the trail title, keep the `<!-- entire-shadow-pr -->` marker, write the summary, then `entire trail ready <n>`.
+- Review with `codex review --base <base>`; post real issues with `entire trail finding add` (when none, add one `--severity low` finding saying so and resolve it). Fix real findings and resolve the rest with a reason, in both `entire trail finding list <n>` and the GitHub review threads.
+- Merge with `entire trail merge <n>` once gates pass (findings, required checks, up to date). Never `--force`. Merge on Entire, not on GitHub. Afterwards close the trail with `entire trail update <n> --status closed`.
+- Required CI check names are fixed by repository rulesets: `test`, `os-parity (macos-latest)`, `os-parity (windows-latest)`. Do not rename those jobs.
+- `early` follows `develop` (CI `early` job); never edit it by hand. Stable releases are tags `vX.Y.Z` on `main` (SemVer) after VM IDE/emulator acceptance.
+- Support floor: Android 9 (API 28)+ core guaranteed (API 28–29 degrade audio cleanly to `audio=false` / `Unavailable`), Android 11 (API 30)+ recommended for audio capture/playback, API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
+- Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
 ## Rules
 
-- 旧運用（Omil、PM、受入ゲート、lease、handoff 等）の記述は根拠にしない。
-- Follow `docs/verification/README.md`: CI `test` / `os-parity` permit develop integration; record unobservable VM/device checks as unverified with reasons, not blockers. Only main promotion requires VM acceptance.
-- `docs/cli.md` is the CLI contract. Any CLI change updates `docs/cli.md`, `replay --help`, `plugin/src/main/cli/README.txt` and `docs/mcp.md` together, and GUI, CLI and MCP behaviour stays identical.
+- Zero GPL/AGPL dependencies (`core/scripts/check-licenses.py`). Third-party code must be permissively licensed and recorded in the relevant `NOTICE`.
+- Behaviour is identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations selected at a single OS-detection point (`arb-os`, `HostOs` in `client-core`); callers never branch on the OS. Tests must not skip by OS unless they exercise a truly OS-only facility.
+- GUI, CLI and MCP behaviour stays identical; a change to one surface updates the others and the relevant `docs/v2/` spec.
+- Legacy schema 3/4 bundles are read-only (`arb-storage`); never write or migrate them in place.
 - Do not publish recordings, logcat, raw diagnostics or credentials.
-- Behaviour must be identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations (`PosixSaveHandles` / `WindowsSaveHandles`, `PosixPrivateFiles` / `WindowsPrivateFiles`) chosen by the single OS-detection point `core/HostPlatform.kt`; callers never branch on the OS. Every change must pass the CI `test` and `os-parity` (macOS, Windows) jobs. Tests must not skip by OS unless they exercise a truly OS-only facility.
-- User-facing text (Issues, PRs, UI, docs) is Japanese; agent-only instructions are English.
-- Entire records Devin sessions. In every new worktree run `entire-agent-devin bootstrap --checkpoint-repo shinma06/entire-checkpoints`; checkpoints must only go to the private `checkpoints` remote, never `origin`. Bootstrap selects the git-refs checkpoint backend so parallel sessions on different VMs can all push. A push to `origin` does not upload them, so after each push run `entire checkpoint list --outgoing --json | python3 -c "import sys,json;print(' '.join(c['checkpoint_id']+'@'+c['commit'] for c in json.load(sys.stdin).get('checkpoints',[])))" | xargs -r entire checkpoint push`. To pick up earlier work, run `entire checkpoint explain <id>` with the `Entire-Checkpoint` trailer of its commits.
-
-The previous multi-agent operation is preserved; see `docs/legacy-ops/README.md`.
+- User-facing text (PRs, UI, docs) is Japanese; agent-only instructions are English.
+- Entire records agent sessions. In every new worktree run `entire-agent-devin bootstrap --checkpoint-repo shinma06/entire-checkpoints` (Devin) so checkpoints go only to the private `checkpoints` remote, never `origin`. After each push upload them: `entire checkpoint list --outgoing --json | python3 -c "import sys,json;print(' '.join(c['checkpoint_id']+'@'+c['commit'] for c in json.load(sys.stdin).get('checkpoints',[])))" | xargs -r entire checkpoint push`. To pick up earlier work, run `entire checkpoint explain <id>` with the `Entire-Checkpoint` trailer of its commits.

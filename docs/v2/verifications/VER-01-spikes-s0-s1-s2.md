@@ -21,7 +21,7 @@ verifies:
 ## 1. Spike S0: 既存リポジトリ読取専用監査（`develop` @ `4acbc01`、`main` @ `6c84530` / `v0.2.0`）
 
 - **旧保存フォーマット確定**:
-  - Schema 4（`develop`）: `replay-<yyyyMMdd-HHmmss>-<manual|crash>[-logs]-<8hex>`、`replay.json`（`schema: 4`）、`video.mp4`、`video-frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`、任意 `touches.jsonl`。具体フィクスチャ `plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface/` を確認。
+  - Schema 4（`develop`）: `replay-<yyyyMMdd-HHmmss>-<manual|crash>[-logs]-<8hex>`、`replay.json`（`schema: 4`）、`video.mp4`、`video-frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`、任意 `touches.jsonl`。具体フィクスチャ `fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface/` を確認。
   - Schema 3（`main` / `v0.2.0`）: `replay-<UTC-ISO>-<UUID>`、`session.json`、`video-001.mp4`、`frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`。
 - **端末キャプチャ基盤確認**: `scrcpy-server-v5.0.1`（Apache 2.0）＋ `AudioRecordReader.java` パッチ、`app_process` 起動、API >= 33 での `audio_source=playback audio_dup=true`（API 36 エミュレータ実測中央値 ~97 ms 遅延）。
 - **Entire / CI 構成確認**: `.entire/settings.json` が専用リモート `shinma06/entire-checkpoints` を指定（`origin` へはプッシュしない運用）。

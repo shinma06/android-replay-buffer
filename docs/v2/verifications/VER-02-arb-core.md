@@ -38,7 +38,7 @@ OS / DB / ADB / メディアコーデック依存ゼロの純粋 Rust クレー�
    - `BundleLifecycleState::can_purge`（`Trashed && active_leases == 0 && active_jobs == 0` でのみ許可）。
    - `RingEvictionPlanner::plan`（空き容量下限割れで即座に `StopStoragePressure`、Pin 済み・書込中チャンクは絶対に Evict しないことを `proptest` で検証）。
 5. **`arb_core::legacy`（Schema 3 / Schema 4 読取専用パーサ）**:
-   - 実リポジトリフィクスチャ `plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface/`（`replay.json`, `video-frames.jsonl`, `logcat-device.jsonl`, `logcat-app.jsonl`, `touches.jsonl`）の読取専用統合テスト。
+   - 実リポジトリフィクスチャ `fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface/`（`replay.json`, `video-frames.jsonl`, `logcat-device.jsonl`, `logcat-app.jsonl`, `touches.jsonl`）の読取専用統合テスト。
    - 合成 Schema 3（`session.json`, `video-001.mp4`, `frames.jsonl`, `logcat-*.jsonl`）、Schema 4 ログ単体保存（`-logs` / `LOGS_ONLY`）、未知オプション JSON フィールド許容、文字列化 64bit 時刻および `Long.MAX_VALUE`（`9223372036854775807`）番兵値のデコードを検証。
 
 ## 2. ゲート実行結果（`./core/scripts/verify.sh`）
