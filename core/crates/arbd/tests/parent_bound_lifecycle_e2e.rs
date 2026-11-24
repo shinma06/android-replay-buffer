@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// The task contract: a dead parent stops `arbd` within 2 s.
-const PARENT_GONE_EXIT_BUDGET: Duration = Duration::from_secs(2);
+const PARENT_GONE_EXIT_BUDGET: Duration = Duration::from_secs(1);
 
 fn hermetic_paths(tmp: &TempDir) -> ArbPaths {
     ArbPaths {
@@ -154,7 +154,7 @@ fn parent_pipe_eof_shuts_arbd_down_cleanly_and_frees_the_next_start() {
     // Parent death: the kernel closes the write end; here the test drops it.
     drop(stdin);
     let (exit, elapsed) = wait_exit(&mut daemon, PARENT_GONE_EXIT_BUDGET)
-        .expect("arbd must exit within 2 s after the parent pipe closes");
+        .expect("arbd must exit within 1 s after the parent pipe closes");
     assert_eq!(
         exit.code(),
         Some(0),

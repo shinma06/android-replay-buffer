@@ -635,13 +635,12 @@ class Isolated:
         cmd = [self.bin("arb-cli"), *(["--json"] if json_flag else []), *args]
         return run_proc(cmd, env=self.env, timeout=timeout)
 
-    def spawn(self, name: str, *args: Any, logname: str | None = None) -> subprocess.Popen[bytes]:
+    def spawn(self, name: str, *args: Any, logname: str | None = None, stdin: int = subprocess.DEVNULL) -> subprocess.Popen[bytes]:
         Isolated._log_counter += 1
         stem = f"{self.root.name}-{logname or name}-{Isolated._log_counter}"
         self.last_logs = (self.work / f"{stem}.stdout.log", self.work / f"{stem}.stderr.log")
-        out = open(self.last_logs[0], "wb")
-        err = open(self.last_logs[1], "wb")
-        proc = subprocess.Popen([str(self.bin(name)), *[str(a) for a in args]], env=self.env, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
+        with self.last_logs[0].open("wb") as out, self.last_logs[1].open("wb") as err:
+            proc = subprocess.Popen([str(self.bin(name)), *map(str, args)], env=self.env, stdout=out, stderr=err, stdin=stdin)
         self.procs.append(proc)
         return proc
 
@@ -804,6 +803,33 @@ def stage_fixture(fixtures: Path, name: str, dest: Path) -> tuple[Path, dict[str
 # --------------------------------------------------------------------------------------------
 # section 3: cold start / IPC
 # --------------------------------------------------------------------------------------------
+
+def section_parent_bound(report: Report, iso: Isolated) -> None:
+    with report.section("parent-bound", "配布バイナリの親パイプ閉鎖") as sec:
+        tray = iso.spawn("arb-tray", "--headless", "--exit-on-stdin-eof", stdin=subprocess.PIPE)
+        daemon = iso.spawn("arbd", "--exit-on-stdin-eof", stdin=subprocess.PIPE)
+        try:
+            if not sec.check("親付き arbd の起動", iso.wait_ready(30)):
+                return
+            hello = status_hello(iso)
+            sec.check("応答した arbd の PID と親監視", hello.get("pid") == daemon.pid and hello.get("parent_bound") is True)
+            deadline = time.monotonic() + 5
+            while not (iso.runtime / "arb-tray.lock").exists() and tray.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            sec.check("トレイがロックを取得して生存", tray.poll() is None and (iso.runtime / "arb-tray.lock").exists())
+            assert daemon.stdin is not None and tray.stdin is not None
+            daemon.stdin.close()
+            sec.check("トレイ生存中に arbd が EOF で正常終了", daemon.wait(timeout=1) == 0 and tray.poll() is None)
+            tray.stdin.close()
+            sec.check("トレイが EOF で正常終了", tray.wait(timeout=2) == 0)
+        finally:
+            for proc in (daemon, tray):
+                if proc.stdin:
+                    proc.stdin.close()
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+
 
 def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> None:
     with report.section("cold-start-ipc", "コールド起動と IPC / CLI") as sec:
@@ -1861,6 +1887,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.static_only:
             iso = Isolated(ctx["root"], work, bundle_os)
             section_launchers(report, ctx, iso)
+            section_parent_bound(report, iso)
             section_cold_start(report, ctx, iso)
             host["core_version"] = ctx.get("core_version")
             fixtures = None

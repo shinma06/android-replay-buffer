@@ -219,6 +219,7 @@ open class ArbdDaemonService internal constructor(
     @Throws(IOException::class)
     fun restartDaemon(): SystemHelloResponse {
         val hello = synchronized(lock) {
+            check(!disposed) { "ArbdDaemonService is already disposed" }
             closeClientLocked()
             lastHello = null
             val connected = processManager.restartDaemon()
@@ -313,7 +314,13 @@ open class ArbdDaemonService internal constructor(
         try {
             // `system.hello` is idempotent: a dead connection reconnects through connectOrSpawn,
             // which spawns (or adopts) the parent-bound daemon.
-            withClient { it.systemHello(verifyProtocolVersion = false) }
+            withClient { rpc ->
+                val hello = rpc.systemHello(verifyProtocolVersion = false)
+                if (processManager.parentBound && !hello.parentBound && processManager.managedDaemonProcess()?.pid() != hello.pid) {
+                    // Re-probe separately so a busy daemon retains its client and viewport leases.
+                    processManager.connectOrSpawn().client.close()
+                }
+            }
         } catch (e: Exception) {
             if (!disposed) logger.warn("ARB arbd parent-bound start failed: ${e.message}", e)
         }
@@ -487,11 +494,10 @@ open class ArbdDaemonService internal constructor(
         supervisor.shutdown()
         trayExecutor.shutdown()
         runCatching { stopBundledTray() }.onFailure { logger.warn("ARB arb-tray stop failed", it) }
-        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
-        disconnect()
-        // A connect that was already in flight when `disposed` flipped may have spawned a new
-        // managed daemon; `disconnect()` waited for it, so this second stop catches it.
-        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
+        synchronized(lock) {
+            runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
+            closeClientLocked()
+        }
     }
 
     companion object {
@@ -544,7 +550,7 @@ open class ArbdDaemonService internal constructor(
          * never retried.
          */
         internal fun isIdempotentRpc(method: String): Boolean {
-            if (method == "system.shutdown") return false
+            if (method == "system.shutdown" || method == "system.shutdown_for_handover") return false
             return method.startsWith("system.") ||
                 method == "config.get" ||
                 method.endsWith(".list") ||

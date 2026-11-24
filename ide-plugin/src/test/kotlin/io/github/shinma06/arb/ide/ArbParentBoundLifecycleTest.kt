@@ -114,6 +114,7 @@ class ArbParentBoundLifecycleTest {
             h.service.dispose()
         }
         // Studio exit: both children gone, cleanly.
+        kotlin.test.assertFailsWith<IllegalStateException> { h.service.restartDaemon() }
         val d = assertNotNull(daemon)
         assertTrue(d.waitFor(3, TimeUnit.SECONDS), "dispose() must stop the managed arbd")
         assertEquals(0, d.exitValue(), "arbd stops through its clean shutdown path")

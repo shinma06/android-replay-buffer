@@ -45,14 +45,6 @@ class ArbdProcessManager(
 ) {
     private val managedLock = Any()
 
-    /**
-     * `true` once a configured `arbd` refused `--exit-on-stdin-eof` (a build older than the
-     * parent-bound lifecycle, e.g. a custom binary in Settings): for the rest of the session it is
-     * launched without the flag and a running daemon is no longer replaced for being unbound, so
-     * such a binary keeps working instead of failing or restarting on every reconnect.
-     */
-    private val parentBoundUnsupported = AtomicBoolean(false)
-
     /** The `arbd` this JVM launched parent-bound; its stdin pipe is [managedDaemonStdin]. */
     private var managedDaemonProcess: Process? = null
 
@@ -248,15 +240,32 @@ class ArbdProcessManager(
         val upgradeTarget = bundledBinary?.takeIf { it == resolvedBinary }
         when (val probe = probeRunningDaemon(endpoint, upgradeTarget)) {
             is ProbeResult.Healthy -> {
-                if (!parentBound || parentBoundUnsupported.get() || probe.connected.hello.parentBound ||
+                if (!parentBound || probe.connected.hello.parentBound || managedDaemonProcess()?.pid() == probe.connected.hello.pid ||
                     resolvedBinary == null
                 ) {
                     return probe.connected
                 }
-                // Not bound to any live parent: it would outlive this IDE. Replace it with a
-                // parent-bound daemon so "IDE closed => arbd stopped" always holds.
-                runCatching { probe.connected.client.close() }
-                stopRunningDaemonBestEffort(endpoint)
+                val connected = probe.connected
+                val oldProcess = ProcessHandle.of(connected.hello.pid).orElse(null)
+                try {
+                    if (!connected.client.shutdownForHandover().ok) return connected
+                } catch (e: ArbdRpcException) {
+                    if (e.isMethodNotFound) return connected
+                    connected.client.close()
+                    throw e
+                } catch (e: IOException) {
+                    connected.client.close()
+                    throw e
+                }
+                connected.client.close()
+                if (oldProcess != null && oldProcess.isAlive) {
+                    try {
+                        oldProcess.onExit().get(startupTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                    } catch (e: java.util.concurrent.TimeoutException) {
+                        throw IOException("Timed out waiting for arbd handover", e)
+                    }
+                }
+                tryConnectAndHello(endpoint)?.let { return it }
                 return spawnAndAwaitHello(resolvedBinary, endpoint, startupTimeout)
             }
             is ProbeResult.Stale -> {
@@ -292,20 +301,30 @@ class ArbdProcessManager(
         return spawnAndAwaitHello(binary, endpoint, startupTimeout)
     }
 
-    /**
-     * Spawns [binary] and waits for `system.hello`. A parent-bound launch that dies with a
-     * failure exit before answering is retried once without `--exit-on-stdin-eof` (see
-     * [parentBoundUnsupported]).
-     */
     private fun spawnAndAwaitHello(binary: Path, endpoint: String, startupTimeout: Duration): ConnectedDaemon {
         val process = spawnDaemon(binary)
         return try {
             waitForHello(endpoint, startupTimeout, process)
         } catch (e: IOException) {
-            val refusedFlag = parentBound && !parentBoundUnsupported.get() && !process.isAlive && process.exitValue() != 0
-            if (!refusedFlag) throw e
-            parentBoundUnsupported.set(true)
-            waitForHello(endpoint, startupTimeout, spawnDaemon(binary))
+            if (!parentBound || process.isAlive || process.exitValue() == 0 || !rejectsParentFlag(binary)) throw e
+            waitForHello(endpoint, startupTimeout, spawnDaemon(binary, bound = false))
+        }
+    }
+
+    // Probe the parser without starting a daemon. Lock contention and runtime failures must
+    // never downgrade the lifecycle of this or a later launch.
+    private fun rejectsParentFlag(binary: Path): Boolean {
+        val probe = ProcessBuilder(binary.toString(), FLAG_EXIT_ON_STDIN_EOF, "--version")
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        return try {
+            probe.waitFor(2, TimeUnit.SECONDS) && probe.exitValue() != 0 &&
+                probe.errorStream.bufferedReader().use { it.readText().trim() } ==
+                "arbd error: unknown argument `$FLAG_EXIT_ON_STDIN_EOF`"
+        } finally {
+            probe.destroyForcibly()
+            probe.errorStream.close()
+            probe.outputStream.close()
         }
     }
 
@@ -377,7 +396,9 @@ class ArbdProcessManager(
     }.getOrNull()
 
     @Throws(IOException::class)
-    fun spawnDaemon(binary: Path): Process {
+    fun spawnDaemon(binary: Path): Process = spawnDaemon(binary, bound = parentBound)
+
+    private fun spawnDaemon(binary: Path, bound: Boolean): Process {
         ensureUnixExecutable(binary)
         Files.createDirectories(paths.dataDir)
         Files.createDirectories(paths.cacheDir)
@@ -392,13 +413,12 @@ class ArbdProcessManager(
             "--runtime-dir",
             paths.runtimeDir.toAbsolutePath().toString(),
         )
-        val bound = parentBound && !parentBoundUnsupported.get()
         val pb = ProcessBuilder(if (bound) cmd + FLAG_EXIT_ON_STDIN_EOF else cmd)
             .redirectInput(ProcessBuilder.Redirect.PIPE)
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .redirectError(ProcessBuilder.Redirect.DISCARD)
         pb.environment().putAll(buildDaemonEnvironment(binary))
-        if (!bound) {
+        if (!parentBound) {
             return pb.start().also { it.outputStream.close() }
         }
         return synchronized(managedLock) {
@@ -526,7 +546,9 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            if (shouldRestartForIdentity(runningExe, bundledBinary, hello)) {
+            if ((!parentBound || managedDaemonProcess()?.pid() == hello.pid) &&
+                shouldRestartForIdentity(runningExe, bundledBinary, hello)
+            ) {
                 runCatching { client.close() }
                 return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})")
             }

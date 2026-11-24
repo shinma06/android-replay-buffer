@@ -120,6 +120,9 @@ class ArbdRpcClient(
     fun systemShutdown(): ShutdownResponse =
         call("system.shutdown", JsonObject(), ShutdownResponse::class.java)
 
+    internal fun shutdownForHandover(): ShutdownResponse =
+        call("system.shutdown_for_handover", JsonObject(), ShutdownResponse::class.java)
+
     // ---------------- Persisted Config (T-1) ----------------
 
     fun configGet(): ConfigResponse =

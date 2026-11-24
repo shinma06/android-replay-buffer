@@ -62,6 +62,56 @@ class ArbdParentBoundLifecycleTest {
         runCatching { handle.onExit().get(timeoutMs, TimeUnit.MILLISECONDS) }.isSuccess || !handle.isAlive
 
     @Test
+    fun startupFailureDoesNotDisableParentBindingOnTheNextLaunch(@TempDir tmp: Path) {
+        val paths = hermeticPaths(tmp)
+        val ide = manager(paths, parentBound = true)
+        val invalidCatalog = Files.createDirectories(paths.dataDir.resolve("catalog.sqlite"))
+        kotlin.test.assertFailsWith<java.io.IOException> { ide.connectOrSpawn() }
+        Files.delete(invalidCatalog)
+        val connected = ide.connectOrSpawn()
+        try {
+            assertTrue(connected.hello.parentBound)
+        } finally {
+            connected.client.close()
+            ide.stopManagedDaemon()
+        }
+    }
+
+    @Test
+    fun siblingTrayDoesNotInheritTheDaemonWriter(@TempDir tmp: Path) {
+        val paths = hermeticPaths(tmp)
+        val ide = manager(paths, parentBound = true)
+        val binary = assertNotNull(ide.resolveDaemonBinary())
+        val tray = ProcessBuilder(
+            assertNotNull(ide.resolveTrayBinary()).toString(), "--headless", "--exit-on-stdin-eof",
+            "--runtime-dir", paths.runtimeDir.toString(), "--cache-dir", paths.cacheDir.toString(),
+            "--data-dir", paths.dataDir.toString(),
+        ).redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        val daemon = ide.connectOrSpawn(Duration.ofSeconds(10))
+        val owner = assertNotNull(daemon.spawnedProcess)
+        try {
+            daemon.client.close()
+            val sibling = tray.start()
+            try {
+                val contender = manager(paths, parentBound = true).spawnDaemon(binary)
+                assertTrue(contender.waitFor(5, TimeUnit.SECONDS))
+                assertNotEquals(0, contender.exitValue())
+                owner.outputStream.close()
+                assertTrue(owner.waitFor(1, TimeUnit.SECONDS))
+                assertEquals(0, owner.exitValue())
+                assertTrue(sibling.isAlive)
+                sibling.outputStream.close()
+                assertTrue(sibling.waitFor(2, TimeUnit.SECONDS))
+                assertEquals(0, sibling.exitValue())
+            } finally {
+                sibling.destroyForcibly()
+            }
+        } finally {
+            owner.destroyForcibly()
+        }
+    }
+
+    @Test
     fun closingOnlyTheHeldStdinPipeStopsRealArbdAndFreesTheNextStart(@TempDir tmp: Path) {
         val paths = hermeticPaths(tmp)
         val ide = manager(paths, parentBound = true)

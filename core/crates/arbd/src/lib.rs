@@ -24,7 +24,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -221,6 +221,7 @@ struct DaemonState {
     screenshot_provider: SharedScreenshotProvider,
     crash_autosave_status: Mutex<CrashAutoSaveStatusView>,
     crash_autosave_gate: Mutex<CrashAutoSaveGate>,
+    handover_gate: RwLock<()>,
     crash_jobs: std::sync::atomic::AtomicUsize,
     crash_tx: Mutex<Option<mpsc::Sender<PendingSave>>>,
     faults: Arc<FaultInjection>,
@@ -506,6 +507,21 @@ impl DaemonState {
     }
 
     fn dispatch(&self, method: &str, params: Value) -> Result<Value, DaemonError> {
+        if method == "system.shutdown_for_handover" {
+            let Ok(_idle) = self.handover_gate.try_write() else {
+                return Ok(json!({ "ok": false }));
+            };
+            let idle = !self.parent_bound && self.crash_jobs.load(Ordering::Acquire) == 0;
+            if idle {
+                self.trigger_shutdown();
+            }
+            return Ok(json!({ "ok": idle }));
+        }
+        let _request = (!method.starts_with("system.")).then(|| {
+            self.handover_gate
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
         // R3 S11: once shutdown started, only `system.*` is served, so no client can start a
         // capture or open a viewport after the subsystems were cleaned up.
         if self.is_shutting_down() && !method.starts_with("system.") {
@@ -1662,6 +1678,7 @@ impl DaemonServer {
             screenshot_provider: config.screenshot_provider,
             crash_autosave_status: Mutex::new(initial_crash_status),
             crash_autosave_gate: Mutex::new(CrashAutoSaveGate::new()),
+            handover_gate: RwLock::new(()),
             crash_jobs: std::sync::atomic::AtomicUsize::new(0),
             crash_tx: Mutex::new(Some(crash_tx)),
             faults: config.faults,
@@ -1979,6 +1996,13 @@ fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
 }
 
 fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &CrashAutoSaveNotice) {
+    let _admission = state
+        .handover_gate
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
+    if state.is_shutting_down() {
+        return;
+    }
     let cfg = state
         .user_config
         .lock()
@@ -2281,6 +2305,28 @@ mod supervisor_hardening_tests {
             cache_dir: tmp.path().join("c"),
             runtime_dir: tmp.path().join("r"),
         }
+    }
+
+    #[test]
+    fn handover_waits_for_requests_and_queued_crash_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let state = &server.state;
+        let request = state.handover_gate.read().unwrap();
+        let handover = || {
+            state
+                .dispatch("system.shutdown_for_handover", json!({}))
+                .unwrap()["ok"]
+                .clone()
+        };
+        assert_eq!(handover(), false);
+        state.crash_jobs.store(1, Ordering::Release);
+        drop(request);
+        assert_eq!(handover(), false);
+        state.crash_jobs.store(0, Ordering::Release);
+        assert_eq!(handover(), true);
+        assert!(state.dispatch("save.trigger", json!({})).is_err());
+        server.shutdown();
     }
 
     #[test]
