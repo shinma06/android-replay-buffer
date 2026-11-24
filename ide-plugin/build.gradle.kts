@@ -43,6 +43,8 @@ dependencies {
 
     testImplementation(kotlin("test-junit5"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
+    // Layer-4 PDD architecture rules (Apache-2.0); test classpath only, never in the plugin ZIP.
+    testImplementation("com.lemonappdev:konsist:0.17.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
 }
 
