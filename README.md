@@ -1,8 +1,8 @@
-# Android Replay Buffer (ARB) v2
+# Android Replay Buffer (ARB)
 
 Android 端末の画面・logcat・タップ・時刻情報を常時バッファし、不具合を見つけた瞬間の「直近 N 秒」をバンドルとして保存する開発者向けツールです。Android Studio（IntelliJ）プラグイン、CLI、MCP サーバー、トレイが同じ常駐デーモンと同じ保存処理を共有し、GUI・CLI・MCP の挙動は同一です。
 
-ARB v2 は Rust コア・Android 端末エージェント・Compose / Jewel プラグインの 3 層で構成されます。製品の要件・仕様・検証記録は [`docs/v2/`](docs/v2/) にあります。
+Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント・Compose / Jewel プラグインの 3 層で構成されます。製品の要件・仕様・検証記録は [`docs/v2/`](docs/v2/) にあります。
 
 ## 構成
 
@@ -12,10 +12,27 @@ ARB v2 は Rust コア・Android 端末エージェント・Compose / Jewel プ�
 | [`device-agent/`](device-agent/) | 端末側 Companion（Java、`arb-companion.dex.jar`）と、パッチ済み scrcpy 音声取得 DEX |
 | [`ide-plugin/`](ide-plugin/) | Android Studio / IntelliJ プラグイン（Kotlin、Compose / Jewel）。`arbd` / `arb-cli` / `arb-tray` と DEX を同梱した自己完結 ZIP（zsh 不要） |
 | [`docs/v2/`](docs/v2/) | 要件（REQ）・仕様（SPEC）・検証記録（VER）。[`sara`](https://crates.io/crates/sara-cli) でトレーサビリティを検査 |
-| [`fixtures/`](fixtures/) | 旧スキーマ（schema 3/4）バンドルの読み取り専用互換テスト用フィクスチャ |
+| [`fixtures/`](fixtures/) | 旧形式の保存済みバンドル（schema 3/4）に対する読み取り専用互換テスト用フィクスチャ |
 | [`third-party/scrcpy/`](third-party/scrcpy/) | Apache-2.0 の scrcpy-server v5.0.1（SHA-256 固定）と音声取得パッチ |
 
-保存済みバンドルは v2 形式（schema 2）です。旧形式（schema 3 `session.json` / schema 4 `replay.json`）のバンドルは、`arb-storage` が**読み取り専用**で開きます（書き換えません）。
+標準の保存バンドル形式（schema 2）に加え、旧形式の保存済みバンドル（schema 3 `session.json` / schema 4 `replay.json`）は `arb-storage` が**読み取り専用**で開きます（書き換えません）。
+
+## サポート対象（Support Matrix）
+
+### Android OS
+
+| 区分 | 対象バージョン | 利用できる機能 |
+| --- | --- | --- |
+| **最小サポート（コア機能保証）** | **Android 9（API 28）以上** | 画面録画・logcat・タップ・スクリーンショット・クラッシュ自動保存・画面遷移スパン（`am_*` / `wm_*`）・アプリ別ログ・トリム・MCP（API 28〜29 では端末音声を自動的に `audio=false` / `Unavailable` へフォールバック） |
+| **推奨（全機能）** | **Android 11（API 30）以上** | 上記すべて + 端末音声キャプチャ・音声付き A/V 再生・音声付き `share.mp4` 出力 |
+| **非サポート** | **Android 8.1（API 27）以下** | 動作保証外（接続時に非ブロッキング警告を表示） |
+
+### Android Studio プラグイン / 他 IDE
+
+| 区分 | 対象環境 | 利用方法 |
+| --- | --- | --- |
+| **Android Studio プラグイン対応** | **Android Studio Rabbit（2026.2 / IntelliJ Platform `262.9437.185`〜`262.*`）** | 現行安定版の IntelliJ / Java 25 + JetBrains Jewel `composeUI()` 世代に追従。`arb-ide-plugin-<version>.zip` を導入 |
+| **旧 Android Studio（Panda / Quail 等）・他 IDE（VS Code / Cursor 等）** | Linux / macOS / Windows | IDE 非依存のネイティブ **`arb-tray` + `arb-cli` + MCP** で全機能を利用可能（`arb-v2-<OS>-<arch>.zip`） |
 
 ## 使う
 

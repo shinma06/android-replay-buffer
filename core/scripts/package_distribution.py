@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import os
 import platform
+import re
 import stat
 import sys
 import tempfile
@@ -28,6 +29,8 @@ from typing import Sequence
 BINARIES = ("arbd", "arb-cli", "arb-tray")
 DEVICE_AGENT_JARS = ("arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar")
 ZIP_TIMESTAMP = (2026, 11, 23, 0, 0, 0)
+REQUIRED_RELEASE_OSES = ("linux", "macos", "windows")
+BUNDLE_ZIP_RE = re.compile(r"^arb-v2-(linux|macos|windows)-([a-z0-9_]+)\.zip$")
 
 
 def normalize_os(raw: str | None) -> str:
@@ -231,7 +234,7 @@ def render_readme_trial(
     plugin_line = (
         f"- `{plugin_zip_name}`: Android Studio プラグイン（`Settings -> Plugins -> 歯車 -> Install Plugin from Disk...`）"
         if plugin_zip_name
-        else "- `arb-ide-plugin-*.zip`: CI の `ide-plugin-tests` アーティファクトまたは `./gradlew buildPlugin` で生成"
+        else "- `arb-ide-plugin-*.zip`: GitHub Releases / CI の `test` アーティファクト、または `(cd ide-plugin && ./gradlew buildPlugin)` で生成"
     )
     agent_line = (
         "- `device-agent/*.dex.jar`: 端末常駐コンパニオンおよび音声取得用 DEX JAR（同梱済み）"
@@ -478,6 +481,157 @@ def build_distribution_zip(
     return zip_path
 
 
+def assemble_universal_release(
+    *,
+    input_dir: Path,
+    out_dir: Path,
+    version: str,
+    permissions_doc_path: Path,
+) -> list[Path]:
+    """Assemble a universal 3-OS zero-zsh plugin ZIP and symmetric 3-OS bundles.
+
+    Reads per-OS `arb-v2-<os>-<arch>.zip` bundles and a base `arb-ide-plugin-*.zip`
+    found recursively under `input_dir`, merges all 3 OS native binaries + both
+    `device-agent/*.dex.jar` files into one universal `arb-ide-plugin-<version>.zip`,
+    and rebuilds every `arb-v2-<os>-<arch>.zip` with `device-agent/*.dex.jar`,
+    the universal plugin ZIP, and fresh `SHA256SUMS.txt`.
+    """
+    if not input_dir.is_dir():
+        raise FileNotFoundError(f"missing release input directory: {input_dir}")
+
+    base_plugins: list[Path] = []
+    os_bundles: dict[tuple[str, str], Path] = {}
+    for candidate in sorted(input_dir.rglob("*.zip")):
+        name = candidate.name
+        if name.startswith("arb-ide-plugin-"):
+            base_plugins.append(candidate)
+            continue
+        match = BUNDLE_ZIP_RE.match(name)
+        if match:
+            key = (match.group(1), match.group(2))
+            if key in os_bundles:
+                raise ValueError(f"duplicate OS bundle for {key[0]}-{key[1]}: {os_bundles[key]} and {candidate}")
+            os_bundles[key] = candidate
+
+    if len(base_plugins) != 1:
+        raise ValueError(f"expected exactly 1 base arb-ide-plugin-*.zip in {input_dir}, found {base_plugins}")
+    base_plugin_zip = base_plugins[0]
+
+    present_oses = {os_name for os_name, _ in os_bundles}
+    missing_oses = [o for o in REQUIRED_RELEASE_OSES if o not in present_oses]
+    if missing_oses:
+        raise FileNotFoundError(
+            f"missing required OS bundle(s) in {input_dir}: {', '.join(missing_oses)} "
+            f"(found: {', '.join(f'{o}-{a}' for o, a in sorted(os_bundles)) or 'none'})"
+        )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    universal_plugin_zip = out_dir / f"arb-ide-plugin-{version}.zip"
+
+    with tempfile.TemporaryDirectory(prefix="arb-assemble-release-") as tmp_str:
+        tmp = Path(tmp_str)
+        extracted_bins: dict[tuple[str, str], Path] = {}
+        agent_dir = tmp / "device-agent"
+        agent_dir.mkdir(parents=True)
+
+        # Extract native binaries and any device-agent DEX jars from per-OS bundles.
+        for (target_os, arch), bundle_path in sorted(os_bundles.items()):
+            stem = f"arb-v2-{target_os}-{arch}"
+            bin_dir = tmp / "bins" / f"{target_os}-{arch}"
+            bin_dir.mkdir(parents=True)
+            with zipfile.ZipFile(bundle_path, "r") as zf:
+                names = set(zf.namelist())
+                for bin_name in BINARIES:
+                    fname = binary_filename(bin_name, target_os)
+                    entry = f"{stem}/bin/{fname}"
+                    if entry not in names:
+                        raise FileNotFoundError(f"missing {entry} in {bundle_path}")
+                    (bin_dir / fname).write_bytes(zf.read(entry))
+                for jar_name in DEVICE_AGENT_JARS:
+                    entry = f"{stem}/device-agent/{jar_name}"
+                    if entry in names and not (agent_dir / jar_name).is_file():
+                        (agent_dir / jar_name).write_bytes(zf.read(entry))
+            extracted_bins[(target_os, arch)] = bin_dir
+
+        # Fallback: also check base plugin ZIP for device-agent DEX jars.
+        with zipfile.ZipFile(base_plugin_zip, "r") as bzf:
+            base_names = bzf.namelist()
+            if not base_names:
+                raise ValueError(f"base plugin ZIP is empty: {base_plugin_zip}")
+            plugin_root = base_names[0].split("/", 1)[0]
+            if not plugin_root:
+                raise ValueError(f"could not determine plugin root folder in {base_plugin_zip}")
+            for jar_name in DEVICE_AGENT_JARS:
+                entry = f"{plugin_root}/device-agent/{jar_name}"
+                if entry in base_names and not (agent_dir / jar_name).is_file():
+                    (agent_dir / jar_name).write_bytes(bzf.read(entry))
+
+            missing_jars = [j for j in DEVICE_AGENT_JARS if not (agent_dir / j).is_file()]
+            if missing_jars:
+                raise FileNotFoundError(f"missing required device-agent DEX jar(s): {', '.join(missing_jars)}")
+
+            # Build universal 3-OS zero-zsh plugin ZIP atomically.
+            tmp_plugin = out_dir / f".arb-ide-plugin-{version}.zip.tmp.{os.getpid()}"
+            skip_prefixes = (f"{plugin_root}/native/", f"{plugin_root}/device-agent/")
+            seen_entries: set[str] = set()
+            try:
+                with zipfile.ZipFile(tmp_plugin, mode="w", compression=zipfile.ZIP_DEFLATED) as dst:
+                    for info in bzf.infolist():
+                        if info.filename.startswith(skip_prefixes):
+                            continue
+                        if info.filename in seen_entries:
+                            continue
+                        seen_entries.add(info.filename)
+                        new_info = zipfile.ZipInfo(filename=info.filename, date_time=info.date_time)
+                        new_info.compress_type = info.compress_type
+                        new_info.external_attr = info.external_attr
+                        new_info.create_system = info.create_system
+                        dst.writestr(new_info, bzf.read(info.filename))
+
+                    for jar_name in DEVICE_AGENT_JARS:
+                        write_zip_entry(
+                            dst,
+                            f"{plugin_root}/device-agent/{jar_name}",
+                            (agent_dir / jar_name).read_bytes(),
+                            executable=False,
+                        )
+
+                    for (target_os, arch), bin_dir in sorted(extracted_bins.items()):
+                        is_unix = target_os != "windows"
+                        slug = f"{target_os}-{arch}"
+                        for bin_name in BINARIES:
+                            fname = binary_filename(bin_name, target_os)
+                            write_zip_entry(
+                                dst,
+                                f"{plugin_root}/native/{slug}/{fname}",
+                                (bin_dir / fname).read_bytes(),
+                                executable=is_unix,
+                            )
+
+                os.replace(tmp_plugin, universal_plugin_zip)
+            finally:
+                if tmp_plugin.exists():
+                    tmp_plugin.unlink(missing_ok=True)
+
+        outputs: list[Path] = [universal_plugin_zip]
+        for (target_os, arch), bin_dir in sorted(extracted_bins.items()):
+            archive = build_distribution_zip(
+                target_os=target_os,
+                arch=arch,
+                version=version,
+                bin_dir=bin_dir,
+                plugin_zip=universal_plugin_zip,
+                device_agent_dir=agent_dir,
+                permissions_doc_path=permissions_doc_path,
+                out_dir=out_dir,
+                allow_missing_ide_plugin=False,
+                allow_missing_device_agent=False,
+            )
+            outputs.append(archive)
+
+    return outputs
+
+
 def run_self_test(repo_root: Path) -> int:
     permissions_doc = repo_root / "docs" / "v2" / "testing" / "first-run-os-permissions.md"
     if not permissions_doc.is_file():
@@ -570,9 +724,107 @@ def run_self_test(repo_root: Path) -> int:
         assert 'ErrorActionPreference = "Continue"' in ps_text, "PS probes must not run under Stop"
         assert "$stale" not in ps_text, "PS launcher must not kill foreign arbd"
 
+        # Verify universal 3-OS release assembly (CI early + release.yml publish path).
+        raw_release = tmp / "raw-release"
+        (raw_release / "Linux").mkdir(parents=True)
+        (raw_release / "macOS").mkdir(parents=True)
+        (raw_release / "Windows").mkdir(parents=True)
+
+        linux_only_plugin = raw_release / "Linux" / "arb-ide-plugin-2.0.0-dev.abcdef0.zip"
+        with zipfile.ZipFile(linux_only_plugin, "w", compression=zipfile.ZIP_DEFLATED) as pz:
+            write_zip_entry(pz, "arb-ide-plugin/lib/plugin.jar", b"stub-plugin-jar", executable=False)
+            for name in BINARIES:
+                write_zip_entry(
+                    pz,
+                    f"arb-ide-plugin/native/linux-x86_64/{name}",
+                    f"stub-{name}-linux".encode("utf-8"),
+                    executable=True,
+                )
+            for jar in DEVICE_AGENT_JARS:
+                write_zip_entry(
+                    pz,
+                    f"arb-ide-plugin/device-agent/{jar}",
+                    (agent_dir / jar).read_bytes(),
+                    executable=False,
+                )
+
+        build_distribution_zip(
+            target_os="linux",
+            arch="x86_64",
+            version="2.0.0-dev.abcdef0",
+            bin_dir=tmp / "bin-linux",
+            plugin_zip=linux_only_plugin,
+            device_agent_dir=agent_dir,
+            permissions_doc_path=permissions_doc,
+            out_dir=raw_release / "Linux",
+        )
+        build_distribution_zip(
+            target_os="macos",
+            arch="arm64",
+            version="dev-abcdef0",
+            bin_dir=tmp / "bin-macos",
+            plugin_zip=None,
+            device_agent_dir=None,
+            permissions_doc_path=permissions_doc,
+            out_dir=raw_release / "macOS",
+            allow_missing_ide_plugin=True,
+            allow_missing_device_agent=True,
+        )
+        build_distribution_zip(
+            target_os="windows",
+            arch="x86_64",
+            version="dev-abcdef0",
+            bin_dir=tmp / "bin-windows",
+            plugin_zip=None,
+            device_agent_dir=None,
+            permissions_doc_path=permissions_doc,
+            out_dir=raw_release / "Windows",
+            allow_missing_ide_plugin=True,
+            allow_missing_device_agent=True,
+        )
+
+        assembled_dir = tmp / "assembled"
+        assembled = assemble_universal_release(
+            input_dir=raw_release,
+            out_dir=assembled_dir,
+            version="2.0.0-dev.abcdef0",
+            permissions_doc_path=permissions_doc,
+        )
+        assert len(assembled) == 4, f"expected 4 release archives, got {assembled}"
+        uni_plugin = assembled_dir / "arb-ide-plugin-2.0.0-dev.abcdef0.zip"
+        assert uni_plugin.is_file(), "missing assembled universal plugin ZIP"
+        with zipfile.ZipFile(uni_plugin, "r") as uzf:
+            unames = uzf.namelist()
+            assert len(unames) == len(set(unames)), f"duplicate entries in universal plugin ZIP: {unames}"
+            assert "arb-ide-plugin/lib/plugin.jar" in unames
+            for jar in DEVICE_AGENT_JARS:
+                assert f"arb-ide-plugin/device-agent/{jar}" in unames
+            for target_os, arch, _ in matrix:
+                for name in BINARIES:
+                    rel = f"arb-ide-plugin/native/{target_os}-{arch}/{binary_filename(name, target_os)}"
+                    assert rel in unames, f"missing {rel} in universal plugin ZIP"
+                    if target_os != "windows":
+                        mode = (uzf.getinfo(rel).external_attr >> 16) & 0o777
+                        assert mode == 0o755, f"expected 0755 on {rel}, got {oct(mode)}"
+
+        for target_os, arch, _ in matrix:
+            stem = f"arb-v2-{target_os}-{arch}"
+            bzip = assembled_dir / f"{stem}.zip"
+            assert bzip.is_file(), f"missing assembled bundle {bzip}"
+            with zipfile.ZipFile(bzip, "r") as bzf:
+                bnames = set(bzf.namelist())
+                assert f"{stem}/{uni_plugin.name}" in bnames, f"missing universal plugin in {bzip}"
+                for jar in DEVICE_AGENT_JARS:
+                    assert f"{stem}/device-agent/{jar}" in bnames, f"missing {jar} in {bzip}"
+                readme = bzf.read(f"{stem}/README-TRIAL.md").decode("utf-8")
+                assert "2.0.0-dev.abcdef0" in readme
+                for line in bzf.read(f"{stem}/SHA256SUMS.txt").decode("utf-8").splitlines():
+                    digest, rel = line.split("  ", 1)
+                    assert sha256_bytes(bzf.read(rel)) == digest, f"checksum mismatch for {rel} in {bzip}"
+
         print(
             "package_distribution.py --self-test: OK "
-            "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, POSIX modes, UTF-8 docs, SHA256SUMS)"
+            "(verified linux-x86_64, macos-arm64, windows-x86_64 archives, universal 3-OS plugin assembly, POSIX modes, UTF-8 docs, SHA256SUMS)"
         )
     return 0
 
@@ -585,6 +837,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--self-test",
         action="store_true",
         help="Run cross-OS packaging self-test across linux, macos, and windows fixtures.",
+    )
+    parser.add_argument(
+        "--assemble-release",
+        action="store_true",
+        help="Assemble universal 3-OS plugin ZIP and symmetric 3-OS bundles from CI/release artifacts.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=None,
+        help="Input directory containing per-OS arb-v2-*.zip bundles and base arb-ide-plugin-*.zip (for --assemble-release).",
     )
     parser.add_argument("--target-os", default=None, help="Target OS (linux, macos, windows).")
     parser.add_argument("--arch", default=None, help="Target architecture (arm64, x86_64).")
@@ -609,6 +872,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.self_test:
         return run_self_test(repo_root)
 
+    permissions_doc = repo_root / "docs" / "v2" / "testing" / "first-run-os-permissions.md"
+    if args.assemble_release:
+        if args.input_dir is None:
+            parser.error("--assemble-release requires --input-dir")
+        version = args.version or detect_version(repo_root)
+        out_dir = args.out_dir or (repo_root / "dist")
+        outputs = assemble_universal_release(
+            input_dir=args.input_dir,
+            out_dir=out_dir,
+            version=version,
+            permissions_doc_path=permissions_doc,
+        )
+        for path in outputs:
+            print(f"Assembled {path} ({path.stat().st_size} bytes)")
+        return 0
+
     target_os = normalize_os(args.target_os)
     arch = normalize_arch(args.arch)
     version = args.version or detect_version(repo_root)
@@ -616,7 +895,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     plugin_zip = resolve_plugin_zip(args.plugin_zip, repo_root)
     device_agent_dir = args.device_agent_dir or (repo_root / "device-agent" / "build")
     out_dir = args.out_dir or (repo_root / "dist")
-    permissions_doc = repo_root / "docs" / "v2" / "testing" / "first-run-os-permissions.md"
 
     archive = build_distribution_zip(
         target_os=target_os,

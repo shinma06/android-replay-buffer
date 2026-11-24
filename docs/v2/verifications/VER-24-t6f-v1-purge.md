@@ -48,8 +48,8 @@ verifies:
 | --- | --- | --- |
 | `ci.yml`（push / PR: `main` `develop` `v2-develop`） | `test`（Ubuntu） | `core/scripts/verify.sh` 6 ゲート（fmt / clippy / test / ライセンス / `sara check --strict` / REQ カバレッジ）、`cargo doc`、補助スクリプト自己テスト、`device-agent/build.sh --with-scrcpy-audio`（`ProtocolTest: ALL 19 TESTS PASSED`）、`./gradlew test buildPlugin` とプラグイン ZIP 内容検査、Linux バンドル作成 |
 | 同上 | `os-parity (macos-latest)` / `os-parity (windows-latest)` | Rust ワークスペースの fmt / clippy / test / doc / ライセンス検査 / 自己テスト / リリースバイナリ、macOS は ide-plugin 全テスト、Windows は `:client-core:test`、OS 別バンドル作成 |
-| 同上 | `early`（`develop` への push のみ） | 3 OS バンドルとプラグイン ZIP で `early` プレリリースを置き換え |
-| `release.yml`（タグ `vX.Y.Z` のみ） | `verify-tag` → `bundle-linux` / `bundle-native` → `publish` | タグが `main` 上にあることを確認し、3 OS バンドルとプラグイン ZIP を GitHub Release に添付 |
+| 同上 | `early`（`develop` への push のみ、`shinma06/android-replay-buffer` 本流限定） | `package_distribution.py --assemble-release` で 3 OS ネイティブ同梱のユニバーサルプラグイン ZIP と `device-agent/*.dex.jar` 同梱の対称 3 OS バンドルを組み立てて `early` プレリリースを置き換え |
+| `release.yml`（タグ `vX.Y.Z` のみ） | `verify-tag` → `bundle-linux` / `bundle-native` → `publish` | SemVer タグ形式と `main` 祖先性を確認し、`--assemble-release` でユニバーサル 3 OS プラグイン ZIP と対称 3 OS バンドルを GitHub Release に添付 |
 
 `v2-ci.yml` の 7 チェック（`rust-3os-parity` ×3、`sara-and-traceability`、`device-agent-host-tests`、`ide-plugin-tests`、`ide-plugin client-core tests (Windows)`）の検証内容は、`test` と `os-parity` が重複なく包含する。これにより同一コミットで CI が二重に走らない。`release.yml` はブランチ push（`v2-develop` を含む）では起動しない。
 

@@ -1,4 +1,4 @@
-# Android Replay Buffer (ARB) v2
+# Android Replay Buffer (ARB)
 
 Records the last moments of an Android device's screen, logcat, taps and timing, and saves them on demand. Rust core daemon (`arbd`) + CLI/MCP (`arb-cli`) + tray (`arb-tray`), an Android `device-agent`, and a Compose/Jewel Android Studio plugin (`ide-plugin`) share one daemon and one save path. Product facts: `docs/v2/` (REQ / SPEC / VER, checked by `sara`).
 
@@ -26,12 +26,13 @@ Passing tests does not mean IDE/device acceptance; say which was verified and wh
 
 Entire Trails drive the change; GitHub runs CI and publishes releases. Always pass `--repo gh/shinma06/android-replay-buffer` to `entire trail` commands when `origin` goes through a proxy.
 
-- Tasks are trails. One task → one branch → one trail, created with `entire trail create --branch <branch> --base <base> --title "<type>: <日本語の要約>" --body "..."`. v2 work targets `v2-develop`; `develop` is the integration line, `main` is stable.
+- Tasks are trails. One task → one branch → one trail, created with `entire trail create --branch <branch> --base <base> --title "<type>: <日本語の要約>" --body "..."`. Active feature integration targets `v2-develop`; `develop` is the integration line, `main` is stable.
 - `entire trail ci-pr <n>` opens a draft PR; retitle it to the trail title, keep the `<!-- entire-shadow-pr -->` marker, write the summary, then `entire trail ready <n>`.
 - Review with `codex review --base <base>`; post real issues with `entire trail finding add` (when none, add one `--severity low` finding saying so and resolve it). Fix real findings and resolve the rest with a reason, in both `entire trail finding list <n>` and the GitHub review threads.
 - Merge with `entire trail merge <n>` once gates pass (findings, required checks, up to date). Never `--force`. Merge on Entire, not on GitHub. Afterwards close the trail with `entire trail update <n> --status closed`.
 - Required CI check names are fixed by repository rulesets: `test`, `os-parity (macos-latest)`, `os-parity (windows-latest)`. Do not rename those jobs.
 - `early` follows `develop` (CI `early` job); never edit it by hand. Stable releases are tags `vX.Y.Z` on `main` (SemVer) after VM IDE/emulator acceptance.
+- Support floor: Android 9 (API 28)+ core guaranteed (API 28–29 degrade audio cleanly to `audio=false` / `Unavailable`), Android 11 (API 30)+ recommended for audio capture/playback, API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
 ## Rules

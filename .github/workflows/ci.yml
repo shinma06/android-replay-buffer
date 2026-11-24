@@ -1,5 +1,5 @@
 name: CI
-# Android Replay Buffer (ARB) v2: Rust core / device-agent / ide-plugin の検証と配布物ビルド。
+# Android Replay Buffer (ARB): Rust core / device-agent / ide-plugin の検証と配布物ビルド。
 # ブランチ保護が要求するチェック名は `test` / `os-parity (macos-latest)` / `os-parity (windows-latest)`。
 # job の `name:` を変えるとルールセットを満たせなくなるため、改名しないこと。
 on:
@@ -88,8 +88,11 @@ jobs:
           echo "plugin_version=${base}-dev.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: ./gradlew test buildPlugin (self-contained zero-zsh plugin ZIP)
         working-directory: ide-plugin
+        env:
+          ARB_DAEMON_BIN: ${{ github.workspace }}/core/target/release/arbd
+          PLUGIN_VERSION: ${{ steps.version.outputs.plugin_version }}
         # ../core/target/release と ../device-agent/build を自動検出して同梱する。
-        run: ./gradlew test buildPlugin --no-daemon -PpluginVersion=${{ steps.version.outputs.plugin_version }}
+        run: ./gradlew test buildPlugin --no-daemon "-PpluginVersion=${PLUGIN_VERSION}"
       - name: Verify plugin ZIP contents
         run: |
           python3 - <<'PY'
@@ -109,12 +112,14 @@ jobs:
           print(f"Verified self-contained zero-zsh plugin ZIP: {zips[0]}")
           PY
       - name: Package self-contained Linux bundle
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.plugin_version }}
         run: |
           set -euo pipefail
           python3 core/scripts/package_distribution.py \
             --target-os linux \
-            --arch "${{ runner.arch }}" \
-            --version "${{ steps.version.outputs.plugin_version }}" \
+            --arch "$RUNNER_ARCH" \
+            --version "$PLUGIN_VERSION" \
             --bin-dir core/target/release \
             --device-agent-dir device-agent/build \
             --out-dir dist
@@ -188,8 +193,8 @@ jobs:
       - name: Resolve arbd binary
         run: |
           exe=""
-          if [ "${{ runner.os }}" = "Windows" ]; then exe=".exe"; fi
-          echo "ARB_DAEMON_BIN=${{ github.workspace }}/core/target/release/arbd${exe}" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          echo "ARB_DAEMON_BIN=${GITHUB_WORKSPACE}/core/target/release/arbd${exe}" >> "$GITHUB_ENV"
       - name: ide-plugin tests (macOS - full)
         if: runner.os == 'macOS'
         working-directory: ide-plugin
@@ -202,10 +207,11 @@ jobs:
       - name: Package self-contained distribution ZIP
         run: |
           set -euo pipefail
+          base="$(sed -n 's/^devBaseVersion=//p' ide-plugin/gradle.properties)"
           python3 core/scripts/package_distribution.py \
-            --target-os "${{ runner.os }}" \
-            --arch "${{ runner.arch }}" \
-            --version "dev-${GITHUB_SHA::7}" \
+            --target-os "$RUNNER_OS" \
+            --arch "$RUNNER_ARCH" \
+            --version "${base}-dev.${GITHUB_SHA::7}" \
             --bin-dir core/target/release \
             --out-dir dist \
             --allow-missing-ide-plugin \
@@ -231,7 +237,7 @@ jobs:
   early:
     name: early
     needs: [test, os-parity]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && github.repository == 'shinma06/android-replay-buffer'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -247,7 +253,10 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Replace the early prerelease with the develop CI artifacts
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Replace the early prerelease with assembled 3-OS universal CI artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -256,16 +265,24 @@ jobs:
             echo "develop moved to $current; skipping superseded $SHA"
             exit 0
           fi
+          raw="$RUNNER_TEMP/early-raw"
           dist="$RUNNER_TEMP/early"
-          mkdir -p "$dist"
+          mkdir -p "$raw" "$dist"
           for os in Linux macOS Windows; do
-            gh run download "$RUN_ID" -n "dist-$os-$SHA" -D "$dist/$os"
+            gh run download "$RUN_ID" -n "dist-$os-$SHA" -D "$raw/$os"
           done
+          base="$(sed -n 's/^devBaseVersion=//p' ide-plugin/gradle.properties)"
+          ver="${base}-dev.${SHA:0:7}"
+          python3 core/scripts/package_distribution.py \
+            --assemble-release \
+            --version "$ver" \
+            --input-dir "$raw" \
+            --out-dir "$dist"
           shopt -s nullglob
-          zips=("$dist"/*/*.zip)
-          [ "${#zips[@]}" -ge 4 ] || { echo "expected at least 4 ZIPs (3 bundles + plugin), found ${#zips[@]}"; exit 1; }
-          plugin_zips=("$dist"/Linux/arb-ide-plugin-*-dev."${SHA:0:7}".zip)
-          [ "${#plugin_zips[@]}" -eq 1 ] || { echo "expected one plugin ZIP, found ${#plugin_zips[@]}"; exit 1; }
+          zips=("$dist"/*.zip)
+          [ "${#zips[@]}" -ge 4 ] || { echo "expected at least 4 ZIPs (3 bundles + universal plugin), found ${#zips[@]}"; exit 1; }
+          plugin_zips=("$dist"/arb-ide-plugin-"${ver}".zip)
+          [ "${#plugin_zips[@]}" -eq 1 ] || { echo "expected one universal plugin ZIP, found ${#plugin_zips[@]}"; exit 1; }
           names=()
           for z in "${zips[@]}"; do names+=("$(basename "$z")"); done
           dups="$(printf '%s\n' "${names[@]}" | sort | uniq -d)"
@@ -273,7 +290,7 @@ jobs:
           gh release upload early "${zips[@]}" --clobber
           notes="$RUNNER_TEMP/early-notes.md"
           {
-            echo "# Android Replay Buffer v2 early"
+            echo "# Android Replay Buffer early"
             echo
             echo "\`develop\` の最新の開発版です。Linux・macOS・WindowsのCIは通っていますが、VMでのIDE・エミュレータ受入はしていません。正式版は [Latest](https://github.com/$GH_REPO/releases/latest) を使ってください。"
             echo
