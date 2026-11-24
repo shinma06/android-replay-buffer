@@ -1,6 +1,7 @@
 package io.github.shinma06.arb.ipc
 
 import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.IPC_PROTOCOL_VERSION
 import io.github.shinma06.arb.model.SystemHelloResponse
 import java.io.File
 import java.io.IOException
@@ -44,6 +45,8 @@ class ArbdProcessManager(
     val parentBound: Boolean = false,
 ) {
     private val managedLock = Any()
+    private val handoverOwner = java.util.UUID.randomUUID().toString()
+    private var lifecycleClosed = false
 
     /** The `arbd` this JVM launched parent-bound; its stdin pipe is [managedDaemonStdin]. */
     private var managedDaemonProcess: Process? = null
@@ -81,8 +84,8 @@ class ArbdProcessManager(
      * Applies a changed `arbd` binary setting: when the managed daemon of this JVM runs another
      * executable than [resolveDaemonBinary] and is idle (no save job, no crash auto-save in
      * flight), it is stopped and the resolved binary started. A busy or foreign daemon is left
-     * alone (the setting applies on the next start). Returns the new connection, or `null` when
-     * nothing was restarted.
+     * alone. Returns the connection after handover (or to the busy daemon when deferred),
+     * or null if there is no managed daemon to move.
      */
     @Throws(IOException::class)
     fun restartManagedDaemonIfIdle(startupTimeout: Duration = DEFAULT_STARTUP_TIMEOUT): ConnectedDaemon? {
@@ -91,15 +94,12 @@ class ArbdProcessManager(
         val runningExe = managed.info().command().map { Paths.get(it) }.orElse(null)
         if (runningExe != null && runCatching { Files.isSameFile(runningExe, target) }.getOrDefault(false)) return null
         val endpoint = paths.ipcEndpoint()
-        val idle = runCatching {
-            ArbdRpcClient.connect(endpoint, os).use { rpc ->
-                val status = rpc.takeIf { it.systemHello(verifyProtocolVersion = false).pid == managed.pid() }?.systemStatus()
-                status != null && status.activeSaveJobs == 0L && status.crashAutosave?.inFlight != true
-            }
-        }.getOrDefault(false)
-        if (!idle) return null
-        stopManagedDaemon()
-        return spawnAndAwaitHello(target, endpoint, startupTimeout)
+        val connected = tryConnectAndHello(endpoint) ?: return null
+        if (connected.hello.pid != managed.pid()) {
+            connected.client.close()
+            return null
+        }
+        return replaceConnectedDaemon(connected, target, startupTimeout, identityUpgrade = false)
     }
 
     /**
@@ -281,11 +281,12 @@ class ArbdProcessManager(
                     ?: throw IOException(
                         "Running arbd is incompatible (${probe.reason}) and no newer arbd binary was found.",
                     )
-                probe.connected?.let {
-                    return replaceConnectedDaemon(it, upgradeBin, startupTimeout, identityUpgrade = true)
+                val next = replaceConnectedDaemon(probe.connected, upgradeBin, startupTimeout, probe.identityUpgrade)
+                if (!probe.identityUpgrade && next === probe.connected) {
+                    next.client.close()
+                    throw IOException("Incompatible arbd cannot hand over safely: ${probe.reason}")
                 }
-                stopRunningDaemonBestEffort(endpoint)
-                return spawnAndAwaitHello(upgradeBin, endpoint, startupTimeout)
+                return next
             }
             ProbeResult.NotRunning -> {
                 // A live managed daemon that does not answer yet is still starting (slow disk,
@@ -310,7 +311,9 @@ class ArbdProcessManager(
         val rpc = connected.client
         val oldProcess = ProcessHandle.of(connected.hello.pid).orElse(null)
         try {
-            if (!requestHandoverShutdown(rpc, identityUpgrade)) return connected
+            val owner = handoverOwner.takeIf { managedDaemonProcess()?.pid() == connected.hello.pid }
+            if (connected.hello.parentBound && owner == null) return connected
+            if (!requestHandoverShutdown(rpc, owner)) return connected
         } catch (e: Exception) {
             rpc.close()
             throw e
@@ -330,27 +333,18 @@ class ArbdProcessManager(
 
     /**
      * Asks the daemon on [rpc] to exit for a replacement without ever interrupting a save:
-     * `system.shutdown_for_handover` lets `arbd` refuse atomically while a save, crash auto-save
-     * or parent-bound owner is active (`ok = false`, the replacement is deferred). Only a daemon
-     * predating that RPC (`MethodNotFound`) falls back, for an [identityUpgrade], to the legacy
-     * status check followed by `system.shutdown`. Returns `true` once the daemon accepted.
+     * `system.shutdown_for_handover` lets `arbd` refuse atomically while a save or crash auto-save
+     * is active. Older daemons cannot reserve admission after a status read, so defer.
      */
-    internal fun requestHandoverShutdown(rpc: ArbdRpcClient, identityUpgrade: Boolean): Boolean = try {
-        rpc.shutdownForHandover().ok
+    internal fun requestHandoverShutdown(rpc: ArbdRpcClient, owner: String? = null): Boolean = try {
+        rpc.shutdownForHandover(owner).ok
     } catch (e: ArbdRpcException) {
         if (!e.isMethodNotFound) throw e
-        if (!identityUpgrade) {
-            false
-        } else {
-            // Pre-M2 daemon: preserve G-M9 updates, but defer known active saves.
-            val status = rpc.systemStatus()
-            status.activeSaveJobs == 0L && status.crashAutosave?.inFlight != true && rpc.systemShutdown().ok
-        }
+        false
     }
 
     /**
-     * Gracefully shuts down any currently running `arbd` (even an older build lacking newer RPCs)
-     * and spawns the currently resolved `arbd` binary, waiting until `system.hello` succeeds.
+     * Requests an idle handover and spawns the currently resolved `arbd` binary, waiting until `system.hello` succeeds.
      */
     @Throws(IOException::class)
     fun restartDaemon(startupTimeout: Duration = DEFAULT_STARTUP_TIMEOUT): ConnectedDaemon {
@@ -359,10 +353,17 @@ class ArbdProcessManager(
                 "Could not locate arbd binary. Set $ENV_ARB_DAEMON_PATH or build core/target/debug/${os.executableName("arbd")}.",
             )
         val endpoint = paths.ipcEndpoint()
-        // An explicit restart is the one place that stops this JVM's managed daemon on purpose.
-        stopManagedDaemon()
-        stopRunningDaemonBestEffort(endpoint)
-        return spawnAndAwaitHello(binary, endpoint, startupTimeout)
+        val running = tryConnectAndHello(endpoint, verifyProtocolVersion = false)
+        if (running == null) {
+            if (managedDaemonProcess() != null) throw IOException("Managed arbd is not ready for restart")
+            return spawnAndAwaitHello(binary, endpoint, startupTimeout)
+        }
+        val next = replaceConnectedDaemon(running, binary, startupTimeout, identityUpgrade = false)
+        if (next === running) {
+            running.client.close()
+            throw IOException("arbd は保存中、別の IDE が所有中、または安全な再起動に未対応です。")
+        }
+        return next
     }
 
     private fun spawnAndAwaitHello(binary: Path, endpoint: String, startupTimeout: Duration): ConnectedDaemon {
@@ -392,73 +393,6 @@ class ArbdProcessManager(
         }
     }
 
-    private fun stopRunningDaemonBestEffort(endpoint: String) {
-        var existingPid: Long? = null
-        // 1. Ask the running daemon to exit cleanly via JSON-RPC `system.shutdown`.
-        try {
-            ArbdRpcClient.connect(endpoint, os).use { rpc ->
-                existingPid = runCatching { rpc.systemHello(verifyProtocolVersion = false).pid }.getOrNull()
-                runCatching { rpc.systemShutdown() }
-            }
-        } catch (_: Exception) {
-            // Already stopped or non-responsive; fall through to lockfile check.
-        }
-
-        if (existingPid == null && isEndpointReachable(endpoint)) {
-            existingPid = readLockfilePid()
-        }
-
-        // 2. Wait briefly for the old daemon to release its IPC endpoint / exit.
-        val gracefulDeadline = Instant.now().plus(Duration.ofMillis(2_000))
-        while (Instant.now().isBefore(gracefulDeadline)) {
-            val pidStillAlive = existingPid?.let { pid ->
-                ProcessHandle.of(pid).map { it.isAlive }.orElse(false)
-            } ?: false
-            if (!pidStillAlive && !isEndpointReachable(endpoint)) {
-                return
-            }
-            runCatching { Thread.sleep(POLL_INTERVAL_MS) }
-        }
-
-        // 3. Fallback: terminate the stale daemon PID politely (SIGTERM on Unix / destroy on Windows).
-        existingPid?.let { pid ->
-            if (pid != ProcessHandle.current().pid()) {
-                ProcessHandle.of(pid).ifPresent { handle ->
-                    // Never signal a PID that is not arbd (stale lockfile PID reuse).
-                    if (isArbdProcess(handle)) {
-                        runCatching { handle.destroy() }
-                    }
-                }
-            }
-        }
-        val terminateDeadline = Instant.now().plus(Duration.ofMillis(1_500))
-        while (Instant.now().isBefore(terminateDeadline)) {
-            if (!isEndpointReachable(endpoint)) {
-                return
-            }
-            runCatching { Thread.sleep(POLL_INTERVAL_MS) }
-        }
-    }
-
-    private fun isArbdProcess(handle: ProcessHandle): Boolean {
-        val command = handle.info().command().orElse(null) ?: return false
-        val name = runCatching { Paths.get(command).fileName.toString() }.getOrNull() ?: return false
-        return name.removeSuffix(".exe").equals("arbd", ignoreCase = true)
-    }
-
-    private fun isEndpointReachable(endpoint: String): Boolean = try {
-        ArbdRpcClient.connect(endpoint, os).use { true }
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun readLockfilePid(): Long? = runCatching {
-        val lockFile = paths.runtimeDir.resolve("arbd.lock")
-        if (!Files.isRegularFile(lockFile)) return@runCatching null
-        val digits = Files.readString(lockFile).filter { it.isDigit() }
-        digits.toLongOrNull()
-    }.getOrNull()
-
     @Throws(IOException::class)
     fun spawnDaemon(binary: Path): Process = spawnDaemon(binary, bound = parentBound)
 
@@ -482,10 +416,12 @@ class ArbdProcessManager(
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .redirectError(ProcessBuilder.Redirect.DISCARD)
         pb.environment().putAll(buildDaemonEnvironment(binary))
+        if (bound) pb.environment()["ARB_HANDOVER_OWNER"] = handoverOwner
         if (!parentBound) {
             return pb.start().also { it.outputStream.close() }
         }
         return synchronized(managedLock) {
+            check(!lifecycleClosed) { "IDE lifecycle already ended" }
             // Start first: a failed start must leave the previous managed daemon running.
             val process = pb.start()
             val replacedStdin = managedDaemonStdin
@@ -495,6 +431,12 @@ class ArbdProcessManager(
             runCatching { replacedStdin?.close() }
             process
         }
+    }
+
+    /** Prevents a pending startup from publishing a new child after IDE disposal. */
+    fun closeLifecycle() {
+        synchronized(managedLock) { lifecycleClosed = true }
+        stopManagedDaemon()
     }
 
     /**
@@ -574,7 +516,7 @@ class ArbdProcessManager(
 
     private sealed interface ProbeResult {
         data class Healthy(val connected: ConnectedDaemon) : ProbeResult
-        data class Stale(val reason: String, val connected: ConnectedDaemon? = null) : ProbeResult
+        data class Stale(val reason: String, val connected: ConnectedDaemon, val identityUpgrade: Boolean = false) : ProbeResult
         data object NotRunning : ProbeResult
     }
 
@@ -582,22 +524,17 @@ class ArbdProcessManager(
         var client: ArbdRpcClient? = null
         return try {
             client = ArbdRpcClient.connect(endpoint, os)
-            val hello = try {
-                client.systemHello(verifyProtocolVersion = true)
-            } catch (e: IOException) {
-                runCatching { client.close() }
-                if (e.message?.contains("protocol version", ignoreCase = true) == true) {
-                    return ProbeResult.Stale(e.message ?: "protocol mismatch")
-                }
-                return ProbeResult.NotRunning
+            val hello = client.systemHello(verifyProtocolVersion = false)
+            val connected = ConnectedDaemon(client, hello)
+            if (hello.protocolVersion != IPC_PROTOCOL_VERSION) {
+                return ProbeResult.Stale("protocol version ${hello.protocolVersion}", connected)
             }
             // Probe `config.get` to catch older arbd builds lacking T-1+ RPCs (-32601).
             try {
                 client.configGet()
             } catch (rpc: ArbdRpcException) {
                 if (rpc.isMethodNotFound) {
-                    runCatching { client.close() }
-                    return ProbeResult.Stale("method not found: config.get")
+                    return ProbeResult.Stale("method not found: config.get", connected)
                 }
             } catch (_: IOException) {
                 // hello already succeeded: a busy daemon (read timeout) is not absent, but the
@@ -612,9 +549,8 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            val connected = ConnectedDaemon(client, hello)
             if (hasPendingBundledUpgrade(runningExe, bundledBinary, hello)) {
-                return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})", connected)
+                return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})", connected, identityUpgrade = true)
             }
             ProbeResult.Healthy(connected)
         } catch (_: Exception) {
@@ -624,16 +560,16 @@ class ArbdProcessManager(
     }
 
     internal fun hasPendingBundledUpgrade(runningExe: Path?, bundledBinary: Path?, hello: SystemHelloResponse): Boolean {
-        val foreignParent = parentBound && hello.parentBound && managedDaemonProcess()?.pid() != hello.pid
+        val foreignParent = hello.parentBound && managedDaemonProcess()?.pid() != hello.pid
         return !foreignParent && !identityUpgradeAttempted &&
             shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs, hello.buildId)
     }
 
-    private fun tryConnectAndHello(endpoint: String): ConnectedDaemon? {
+    private fun tryConnectAndHello(endpoint: String, verifyProtocolVersion: Boolean = true): ConnectedDaemon? {
         var client: ArbdRpcClient? = null
         return try {
             client = ArbdRpcClient.connect(endpoint, os)
-            val hello = client.systemHello(verifyProtocolVersion = true)
+            val hello = client.systemHello(verifyProtocolVersion)
             ConnectedDaemon(client = client, hello = hello, spawnedProcess = null)
         } catch (_: Exception) {
             runCatching { client?.close() }

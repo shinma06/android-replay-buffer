@@ -236,8 +236,7 @@ open class ArbdDaemonService internal constructor(
                     .onFailure { logger.warn("ARB arbd restart after binary change failed: ${it.message}", it) }
                     .getOrNull()
                     ?.let { connected ->
-                        client = connected.client
-                        lastHello = connected.hello
+                        publishConnection(connected)
                     }
             }
         }
@@ -259,8 +258,7 @@ open class ArbdDaemonService internal constructor(
             closeClientLocked()
             lastHello = null
             val connected = processManager.restartDaemon()
-            client = connected.client
-            lastHello = connected.hello
+            publishConnection(connected)
             runCatching { connected.client.configGet().config }.getOrNull()?.let { cfg ->
                 cachedConfig = cfg
             }
@@ -347,17 +345,15 @@ open class ArbdDaemonService internal constructor(
             // which spawns (or adopts) the parent-bound daemon.
             withClient { rpc ->
                 val hello = rpc.systemHello(verifyProtocolVersion = false)
-                if (processManager.parentBound && !hello.parentBound &&
-                    processManager.managedDaemonProcess()?.pid() != hello.pid
-                ) {
-                    // Re-probe separately so a busy daemon retains its client and viewport leases.
-                    val next = processManager.connectOrSpawn()
+                val owned = processManager.managedDaemonProcess()?.pid() == hello.pid
+                if (processManager.parentBound && (owned || !hello.parentBound)) {
+                    // Retry deferred Settings and bundled upgrades when the last save has finished.
+                    val next = processManager.restartManagedDaemonIfIdle() ?: processManager.connectOrSpawn()
                     if (next.hello.pid == hello.pid) {
                         next.client.close()
                     } else {
                         closeClientLocked()
-                        client = next.client
-                        lastHello = next.hello
+                        publishConnection(next)
                     }
                 }
             }
@@ -390,7 +386,7 @@ open class ArbdDaemonService internal constructor(
                 }
                 else -> {
                     val ownerIde = yieldedTrayHolder?.takeIf { it.first == holder }?.second
-                    if (ownerIde != null && isAlive(ownerIde)) {
+                    if (ownerIde == null || isAlive(ownerIde)) {
                         forgetManagedTrayLocked()
                     } else {
                         yieldedTrayHolder = null
@@ -540,7 +536,7 @@ open class ArbdDaemonService internal constructor(
      * request it had already sent is an idempotent read ([isIdempotentRpc]): a mutating or
      * resource-acquiring call (`bundle.open` lease, `save.*`, `export.*`, ...) may have been
      * applied by the daemon even though its response was lost, and replaying it would apply it
-     * twice (e.g. a second, orphaned lease). A request whose write failed never reached `arbd`.
+     * twice (e.g. a second, orphaned lease). A failed write can still have delivered the request.
      */
     @Throws(IOException::class)
     open fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {
@@ -579,9 +575,20 @@ open class ArbdDaemonService internal constructor(
         // Never (re)spawn arbd once disposed, e.g. from the idempotent-RPC retry in withClient.
         check(!disposed) { "ArbdDaemonService is already disposed" }
         val connected = connector()
+        publishConnection(connected)
+        return connected.client
+    }
+
+    private fun publishConnection(connected: ArbdProcessManager.ConnectedDaemon) {
         client = connected.client
         lastHello = connected.hello
-        return connected.client
+        // Publish before checking: dispose either sees this transport or has already run.
+        if (disposed) {
+            connected.client.close()
+            client = null
+            lastHello = null
+            throw IllegalStateException("ArbdDaemonService is already disposed")
+        }
     }
 
     private fun closeClientLocked() {
@@ -597,7 +604,7 @@ open class ArbdDaemonService internal constructor(
         // Stop the children outside the RPC [lock]: an in-flight call (a 120 s export) would
         // otherwise hold IDE exit. Stopping `arbd` makes that call fail fast with an IO error.
         runCatching { stopBundledTray() }.onFailure { logger.warn("ARB arb-tray stop failed", it) }
-        runCatching { stopManagedDaemon() }.onFailure { logger.warn("ARB arbd stop failed", it) }
+        runCatching { processManager.closeLifecycle() }.onFailure { logger.warn("ARB arbd stop failed", it) }
         // Not under [lock] either: closing the transport makes a still-blocked call return, and
         // no new connection can be made once [disposed] is set (see ensureConnectedLocked).
         client?.let { runCatching { it.close() } }
@@ -645,26 +652,16 @@ open class ArbdDaemonService internal constructor(
             sdkDir?.toPath()
         }.getOrNull()
 
-        /**
-         * Whether a JSON-RPC `method` is safe to replay after a transport reset (R4 S4):
-         * idempotent reads only — `system.*` (except the mutating `system.shutdown`),
-         * `*.list` / `save.list_jobs`, lease keep-alive/close, `timeline.*`, `media.*` and
-         * `edit.get_session`. Mutating or resource-acquiring calls (`bundle.open` creates a
-         * lease, `save.*`, `bundle.trash/restore/gc`, `capture.*`, `export.*`,
-         * `edit.update_session`) are never retried.
-         */
-        internal fun isIdempotentRpc(method: String): Boolean {
-            if (method == "system.shutdown" || method == "system.shutdown_for_handover") return false
-            return method.startsWith("system.") ||
-                method == "config.get" ||
-                method.endsWith(".list") ||
-                method.endsWith(".list_jobs") ||
-                method == "bundle.lease_renew" ||
-                method == "bundle.close" ||
-                method.startsWith("timeline.") ||
-                method.startsWith("media.") ||
-                method == "edit.get_session"
-        }
+        /** Only these known operations may be repeated after losing a transport response. */
+        private val replayableMethods = setOf(
+            "system.hello", "system.status", "config.get", "device.list", "bundle.list",
+            "save.list_jobs", "bundle.lease_renew", "bundle.close", "edit.get_session",
+            "timeline.summary", "timeline.overview", "timeline.query_logs", "timeline.query_taps",
+            "timeline.discontinuities", "timeline.crashes", "timeline.screens",
+            "media.filmstrip", "media.inspect_frames", "media.decode_audio_pcm",
+        )
+
+        internal fun isIdempotentRpc(method: String): Boolean = method in replayableMethods
 
         fun getInstance(): ArbdDaemonService =
             ApplicationManager.getApplication().getService(ArbdDaemonService::class.java)

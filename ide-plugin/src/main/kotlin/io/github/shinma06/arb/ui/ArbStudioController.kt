@@ -678,14 +678,7 @@ class ArbStudioController(
         const val UNKNOWN_DEVICE_LABEL: String = "端末不明"
 
         /**
-         * Maps a recorded tap coordinate onto canvas pixels inside [drawRect], or `null` when it
-         * cannot be placed faithfully (drawn nowhere rather than pinned to an edge):
-         * - known display size ([displayW] x [displayH] > 0): the coordinate is always physical
-         *   display pixels, so `(1, 1)` lands at the top-left — never read as normalized. Beyond
-         *   the display (e.g. a raw evdev axis value) or an orientation mismatch between display
-         *   and video is unmappable, matching arbd's `inspect_export` mapping.
-         * - unknown display size (legacy bundles): `0.0..1.0` on both axes is normalized,
-         *   anything else is video pixels and must lie inside the video frame.
+         * Mirrors arb-core's map_touch_to_frame before scaling frame pixels to the canvas.
          */
         fun mapTapToCanvasPoint(
             tapX: Double,
@@ -698,20 +691,16 @@ class ArbStudioController(
         ): Pair<Int, Int>? {
             if (!tapX.isFinite() || !tapY.isFinite() || tapX < 0.0 || tapY < 0.0) return null
             if (videoW <= 0 || videoH <= 0) return null
-            val dw = displayW?.takeIf { it > 0 }
-            val dh = displayH?.takeIf { it > 0 }
-            val (normX, normY) = if (dw != null && dh != null) {
-                if (videoW != videoH && dw != dh && (dw < dh) != (videoW < videoH)) return null
-                if (tapX > dw || tapY > dh) return null
-                tapX / dw to tapY / dh
-            } else if (tapX <= 1.0 && tapY <= 1.0) {
-                tapX to tapY
-            } else {
-                if (tapX >= videoW || tapY >= videoH) return null
-                tapX / videoW to tapY / videoH
+            val (dw, dh) = when {
+                displayW == null && displayH == null -> 1 to 1
+                displayW != null && displayW > 0 && displayH != null && displayH > 0 -> displayW to displayH
+                else -> return null
             }
-            val cx = drawRect.x + (normX.coerceIn(0.0, 1.0) * drawRect.width).toInt()
-            val cy = drawRect.y + (normY.coerceIn(0.0, 1.0) * drawRect.height).toInt()
+            if (tapX > dw || tapY > dh) return null
+            val frameX = (tapX / dw * videoW).coerceAtMost(videoW - 1.0)
+            val frameY = (tapY / dh * videoH).coerceAtMost(videoH - 1.0)
+            val cx = drawRect.x + (frameX * drawRect.width / videoW).toInt()
+            val cy = drawRect.y + (frameY * drawRect.height / videoH).toInt()
             return cx to cy
         }
     }

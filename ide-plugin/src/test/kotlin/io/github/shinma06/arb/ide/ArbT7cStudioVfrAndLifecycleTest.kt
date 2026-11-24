@@ -410,6 +410,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
             )
         } finally {
             editor.dispose()
+            kotlin.test.assertNull(editor.audioPlayerForTest())
             awaitCondition(msg = "viewport should close on dispose") {
                 transport.methodsCalled.contains("media.close_viewport")
             }

@@ -69,8 +69,15 @@ import javax.swing.JComponent
  * screenshot override), and 1-click CLI / MCP path & JSON copy state.
  */
 class ArbSettingsFormModel(
-    val bundledCliPath: String?,
+    bundledCliPath: String?,
 ) {
+    var bundledCliPath by mutableStateOf(bundledCliPath)
+        private set
+
+    fun updateCliPath(path: String?) {
+        bundledCliPath = path
+        cliPathReadOnlyText.setTextAndPlaceCursorAtEnd(path ?: CLI_PATH_UNAVAILABLE_TEXT)
+    }
     val saveWindowText = TextFieldState(ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toString())
     val ringBudgetAmountText = TextFieldState("1.5")
     var ringBudgetUnit by mutableStateOf(StorageSizeUnit.GIB)
@@ -313,8 +320,9 @@ class ArbSettingsConfigurable internal constructor(
 
     /** Creates the pure form model and runs initial load without instantiating Compose/Skiko. */
     internal fun createFormModel(): ArbSettingsFormModel {
-        val created = ArbSettingsFormModel(bundledCliPath = cliPathProvider())
+        val created = ArbSettingsFormModel(bundledCliPath = null)
         form = created
+        backgroundUi.run(cliPathProvider) { path -> if (form === created) created.updateCliPath(path) }
         reset()
         return created
     }
@@ -519,11 +527,14 @@ class ArbSettingsConfigurable internal constructor(
 
     /** Opens the chooser at the current path, resolving that VFS entry off the EDT first. */
     private fun chooseFile(descriptor: FileChooserDescriptor, target: TextFieldState, onChosen: () -> Unit) {
+        val owner = form ?: return
         val current = target.text.toString().trim()
         backgroundUi.run(
             work = { current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) } },
             onEdt = { initial ->
+                if (form !== owner || project?.isDisposed == true) return@run
                 FileChooser.chooseFile(descriptor, project, initial) { selected ->
+                    if (form !== owner) return@chooseFile
                     target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
                     onChosen()
                 }

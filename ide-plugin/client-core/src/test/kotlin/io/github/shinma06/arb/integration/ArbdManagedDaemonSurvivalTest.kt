@@ -64,6 +64,23 @@ class ArbdManagedDaemonSurvivalTest {
         }
     }
 
+    @Test
+    fun foreignRestartLeavesTheOwnerRunning(@TempDir tmp: Path) {
+        val paths = ArbPaths(tmp.resolve("data"), tmp.resolve("cache"), tmp.resolve("run"))
+        val owner = ArbdProcessManager(paths = paths, searchRoot = repoRoot(), parentBound = true)
+        val other = ArbdProcessManager(paths = paths, searchRoot = repoRoot(), parentBound = true)
+        try {
+            val original = owner.connectOrSpawn()
+            original.client.use { rpc ->
+                assertFailsWith<IOException> { other.restartDaemon().client.close() }
+                assertEquals(original.hello.pid, rpc.systemHello(false).pid)
+            }
+        } finally {
+            other.stopManagedDaemon()
+            owner.stopManagedDaemon()
+        }
+    }
+
     /** A replacement that fails to start must not take the running managed daemon down with it. */
     @Test
     fun failedSpawnKeepsTheRunningManagedDaemon(@TempDir tmp: Path) {

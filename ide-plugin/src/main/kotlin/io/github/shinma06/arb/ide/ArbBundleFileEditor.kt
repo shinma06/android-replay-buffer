@@ -666,8 +666,10 @@ class ArbBundleFileEditor internal constructor(
                 runCatching { player.close() }
                 return@Runnable
             }
-            attachedAudioPlayer = player
             controller.attachAudioPlayer(player, effectiveAvOffsetMs)
+            synchronized(lifecycleLock) {
+                if (!disposed && ownedPlaybackController === controller) attachedAudioPlayer = player
+            }
         }
         try {
             audioDecodeWorker.submit(task)
@@ -1003,6 +1005,7 @@ class ArbBundleFileEditor internal constructor(
             disposed = true
             ctrl = ownedPlaybackController
             ownedPlaybackController = null
+            attachedAudioPlayer = null
             reader = ownedShmReader
             ownedShmReader = null
             vpId = ownedViewportId
@@ -1010,7 +1013,6 @@ class ArbBundleFileEditor internal constructor(
             lease = ownedLeaseController
             ownedLeaseController = null
         }
-        attachedAudioPlayer = null
         // Graceful shutdown only: `shutdownNow()` would interrupt a worker blocked inside the
         // shared app-level IPC client, closing its interruptible SocketChannel for every ARB view.
         // Queued tasks bail out on `disposed` (see [submitWork]).

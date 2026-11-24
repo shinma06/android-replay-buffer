@@ -103,10 +103,7 @@ class ArbdRpcClient(
         get() = transport.endpoint
 
     /**
-     * Observer told the JSON-RPC method of every request actually written to the transport. A
-     * caller that replays work after a transport failure uses it to know which requests may
-     * already have reached (and been applied by) `arbd`; a request whose write failed is never
-     * reported because it cannot have been processed.
+     * Called before writing a frame. A transport error can occur after delivery.
      */
     @Volatile
     var requestSentListener: ((method: String) -> Unit)? = null
@@ -129,8 +126,8 @@ class ArbdRpcClient(
     fun systemShutdown(): ShutdownResponse =
         call("system.shutdown", JsonObject(), ShutdownResponse::class.java)
 
-    internal fun shutdownForHandover(): ShutdownResponse =
-        call("system.shutdown_for_handover", JsonObject(), ShutdownResponse::class.java)
+    internal fun shutdownForHandover(owner: String? = null): ShutdownResponse =
+        call("system.shutdown_for_handover", JsonObject().apply { owner?.let { addProperty("owner", it) } }, ShutdownResponse::class.java)
 
     // ---------------- Persisted Config (T-1) ----------------
 
@@ -397,8 +394,8 @@ class ArbdRpcClient(
             add("params", params)
         }
         val rawLine = try {
-            transport.writeLine(envelopeGson.toJson(req))
             requestSentListener?.invoke(method)
+            transport.writeLine(envelopeGson.toJson(req))
             readResponseLine(timeoutMs)
                 ?: throw IOException("arbd closed IPC connection before responding to '$method'")
         } catch (e: IOException) {

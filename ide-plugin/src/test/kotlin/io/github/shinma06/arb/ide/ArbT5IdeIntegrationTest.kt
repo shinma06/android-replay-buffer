@@ -397,22 +397,12 @@ class ArbT5IdeIntegrationTest {
         assertEquals(240, scaledX)
         assertEquals(532, scaledY)
 
-        val (legacyX, legacyY) = assertNotNull(ArbStudioController.mapTapToCanvasPoint(
-            tapX = 230.0,
-            tapY = 512.0,
-            drawRect = drawRect,
-            videoW = 460,
-            videoH = 1024,
-            displayW = null,
-            displayH = null,
-        ))
-        assertEquals(240, legacyX)
-        assertEquals(532, legacyY)
-
-        // Orientation mismatch or out-of-bounds raw evdev coordinate must be skipped (never edge-clamped)
+        // Mirror arb-core gesture::map_touch_to_frame, including partially missing geometry.
         fun map(x: Double, y: Double, videoW: Int = 460, videoH: Int = 1024, displayW: Int? = 1080, displayH: Int? = 2400) =
             ArbStudioController.mapTapToCanvasPoint(x, y, drawRect, videoW, videoH, displayW, displayH)
-        assertNull(map(500.0, 500.0, videoW = 1024, videoH = 460))
+        assertNotNull(map(500.0, 500.0, videoW = 1024, videoH = 460))
+        assertNull(map(0.5, 0.5, displayW = null))
+        assertNull(map(0.5, 0.5, displayH = 0))
         assertNull(map(4000.0, 1200.0))
         assertNull(map(-1.0, 10.0), "negative coordinates are unmappable")
         assertNotNull(map(540.0, 1200.0))
@@ -431,15 +421,15 @@ class ArbT5IdeIntegrationTest {
         assertEquals(10 to 20, map(0.0, 0.0, 1080, 2400))
         assertEquals(10 to 20, map(1.0, 1.0, 1080, 2400), "physical (1,1) is the top-left corner")
         assertEquals(10 to 20, map(2.0, 2.0, 1080, 2400))
-        assertEquals(10 + 460 to 20 + 1024, map(1080.0, 2400.0, 1080, 2400))
+        assertEquals(10 + 459 to 20 + 1023, map(1080.0, 2400.0, 1080, 2400))
         // Monotonic in x: 0 <= 1 <= 2 never jumps to the far edge.
         val xs = listOf(0.0, 0.5, 1.0, 2.0, 3.0).map { assertNotNull(map(it, 100.0, 1080, 2400)).first }
         assertEquals(xs.sorted(), xs)
 
-        // Unknown display size (legacy): 0..1 is normalized, other values are video pixels.
-        assertEquals(10 + 460 to 20 + 1024, map(1.0, 1.0, null, null))
+        // Unknown display size (legacy): only normalized coordinates are defined.
+        assertEquals(10 + 459 to 20 + 1023, map(1.0, 1.0, null, null))
         assertEquals(10 + 230 to 20 + 512, map(0.5, 0.5, null, null))
-        assertEquals(10 + 230 to 20 + 512, map(230.0, 512.0, null, null))
+        assertNull(map(230.0, 512.0, null, null))
         assertNull(map(16000.0, 16000.0, null, null), "raw evdev values are skipped, never edge-clamped")
         assertNull(map(Double.NaN, 1.0, 1080, 2400))
     }

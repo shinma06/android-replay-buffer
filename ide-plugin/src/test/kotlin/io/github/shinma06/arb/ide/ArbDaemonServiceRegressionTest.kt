@@ -72,7 +72,10 @@ class ArbDaemonServiceRegressionTest {
                     val req = JsonParser.parseString(jsonLine).asJsonObject
                     val method = req.get("method").asString
                     when (val reply = script(index, method)) {
-                        Reply.WriteFails -> throw IOException("broken pipe")
+                        Reply.WriteFails -> {
+                            received += method
+                            throw IOException("flush failed after delivery")
+                        }
                         Reply.LostResponse -> {
                             received += method
                             responses += LOST
@@ -121,6 +124,18 @@ class ArbDaemonServiceRegressionTest {
     }
 
     @Test
+    fun lostViewportReplyDoesNotOpenAnotherViewport(@TempDir tmp: Path) {
+        val daemon = FakeDaemon { connection, _ -> if (connection == 0) Reply.LostResponse else Reply.Ok() }
+        val service = serviceFor(daemon, tmp)
+        try {
+            assertFailsWith<ArbdIoException> { service.withClient { it.callRaw("media.open_viewport") } }
+            assertEquals(listOf("media.open_viewport"), daemon.received)
+        } finally {
+            service.dispose()
+        }
+    }
+
+    @Test
     fun aBlockThatAlreadyOpenedALeaseIsNotReplayedWhenALaterReadFails(@TempDir tmp: Path) {
         val daemon = FakeDaemon { connection, method ->
             if (connection == 0 && method == "timeline.query_taps") Reply.LostResponse else Reply.Ok()
@@ -140,7 +155,7 @@ class ArbDaemonServiceRegressionTest {
     }
 
     @Test
-    fun idempotentReadsAndNeverSentRequestsAreRetriedOnAFreshConnection(@TempDir tmp: Path) {
+    fun readsRetryButAnAmbiguousSaveWriteNeverReplays(@TempDir tmp: Path) {
         val daemon = FakeDaemon { connection, method ->
             when {
                 connection == 0 && method == "timeline.summary" -> Reply.LostResponse
@@ -152,15 +167,40 @@ class ArbDaemonServiceRegressionTest {
         try {
             service.withClient { it.callRaw("timeline.summary", JsonObject()) }
             assertEquals(listOf("timeline.summary", "timeline.summary"), daemon.received)
-            // The write failed: `arbd` never saw the request, so a fresh connection may send it.
-            service.withClient { it.callRaw("save.trigger", JsonObject()) }
+            // A write error cannot tell whether the server received the frame.
+            assertFailsWith<ArbdIoException> { service.withClient { it.callRaw("save.trigger", JsonObject()) } }
             assertEquals(listOf("timeline.summary", "timeline.summary", "save.trigger"), daemon.received)
-            assertEquals(3, daemon.connections)
+            assertEquals(2, daemon.connections)
             assertFalse(ArbdDaemonService.isIdempotentRpc("bundle.open"))
             assertTrue(ArbdDaemonService.isIdempotentRpc("bundle.close"))
         } finally {
             service.dispose()
         }
+    }
+
+    @Test
+    fun disposalDuringConnectRejectsLateConnection(@TempDir tmp: Path) {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val resume = java.util.concurrent.CountDownLatch(1)
+        val service = ArbdDaemonService(
+            processManager = ArbdProcessManager(paths = hermeticPaths(tmp)),
+            connector = {
+                entered.countDown()
+                check(resume.await(10, TimeUnit.SECONDS))
+                FakeDaemon { _, _ -> Reply.Ok() }.connect()
+            },
+        )
+        val result = java.util.concurrent.CompletableFuture.supplyAsync {
+            runCatching { service.withClient { true } }
+        }
+        try {
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            service.dispose()
+        } finally {
+            resume.countDown()
+        }
+        assertTrue(result.get(10, TimeUnit.SECONDS).isFailure)
+        assertFalse(service.isConnected())
     }
 
     // ---------------------------------------------------------------- dispose (C7 / P1-6)
@@ -291,7 +331,6 @@ class ArbDaemonServiceRegressionTest {
 
             b.service.syncTrayState(true)
             assertTrue(b.trays.single().waitFor(5, TimeUnit.SECONDS))
-            b.service.superviseTray()
 
             a.service.syncTrayState(false) // tray A is quit; IDE A (this live JVM) keeps running
             assertTrue(trayA.waitFor(5, TimeUnit.SECONDS))
@@ -373,12 +412,14 @@ class ArbDaemonServiceRegressionTest {
     fun screenshotDestinationIsResolvedOffTheEdtAndAppliedAfterwards() {
         val pending = ArrayList<() -> Unit>()
         var resolved = 0
+        var cliLookups = 0
         val configurable = ArbSettingsConfigurable(
             project = null,
             daemonConfigReader = { ArbConfig() },
             daemonConfigWriter = { _, _ -> ArbConfig() },
             localBinaryReader = { "" },
             localBinaryWriter = {},
+            cliPathProvider = { cliLookups++; "/tools/arb-cli" },
             screenshotStatusResolver = { _, _ ->
                 resolved++
                 "Logcat 継承先: /shots"
@@ -390,6 +431,7 @@ class ArbDaemonServiceRegressionTest {
             },
         )
         val form = configurable.createFormModel()
+        assertEquals(0, cliLookups, "CLI discovery must run in background")
         assertEquals(0, resolved, "reset() must not read Studio's screenshot settings on the calling (EDT) thread")
         assertEquals("", form.screenshotStatusText)
         pending.toList().forEach { it() }
