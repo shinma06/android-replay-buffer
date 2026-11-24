@@ -26,7 +26,7 @@ Passing tests does not mean IDE/device acceptance; say which was verified and wh
 
 Entire Trails drive the change; GitHub runs CI and publishes releases. Always pass `--repo gh/shinma06/android-replay-buffer` to `entire trail` commands when `origin` goes through a proxy.
 
-- Tasks are trails. One task → one branch → one trail, created with `entire trail create --branch <branch> --base <base> --title "<type>: <日本語の要約>" --body "..."`. Active feature integration targets `v2-develop`; `develop` is the integration line, `main` is stable.
+- Tasks are trails. One task → one branch → one trail, created with `entire trail create --branch <branch> --base <base> --title "<type>: <日本語の要約>" --body "..."`. `develop` is the integration line, `main` is stable.
 - `entire trail ci-pr <n>` opens a draft PR; retitle it to the trail title, keep the `<!-- entire-shadow-pr -->` marker, write the summary, then `entire trail ready <n>`.
 - Review with `codex review --base <base>`; post real issues with `entire trail finding add` (when none, add one `--severity low` finding saying so and resolve it). Fix real findings and resolve the rest with a reason, in both `entire trail finding list <n>` and the GitHub review threads.
 - Merge with `entire trail merge <n>` once gates pass (findings, required checks, up to date). Never `--force`. Merge on Entire, not on GitHub. Afterwards close the trail with `entire trail update <n> --status closed`.

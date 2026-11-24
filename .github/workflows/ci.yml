@@ -4,9 +4,9 @@ name: CI
 # job の `name:` を変えるとルールセットを満たせなくなるため、改名しないこと。
 on:
   push:
-    branches: [main, develop, v2-develop]
+    branches: [main, develop]
   pull_request:
-    branches: [main, develop, v2-develop]
+    branches: [main, develop]
   workflow_dispatch:
 permissions:
   contents: read
@@ -237,9 +237,7 @@ jobs:
   early:
     name: early
     needs: [test, os-parity]
-    # Note: the `v2-develop` arm (`v2-early`) is temporary for work-PC testing and will be
-    # removed once `v2-develop` is formally promoted into `develop`.
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/v2-develop') && github.repository == 'shinma06/android-replay-buffer'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && github.repository == 'shinma06/android-replay-buffer'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -263,21 +261,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Map branch -> rolling prerelease tag strictly (remove v2-develop arm on promotion to develop).
-          case "$BRANCH_NAME" in
-            develop)
-              TAG="early"
-              TITLE="Android Replay Buffer early"
-              ;;
-            v2-develop)
-              TAG="v2-early"
-              TITLE="Android Replay Buffer early (v2-develop)"
-              ;;
-            *)
-              echo "unsupported rolling prerelease branch: $BRANCH_NAME" >&2
-              exit 1
-              ;;
-          esac
+          # develop だけがローリング prerelease `early` を公開する。
+          TAG="early"
+          TITLE="Android Replay Buffer early"
           current="$(gh api "repos/$GH_REPO/git/ref/heads/$BRANCH_NAME" -q .object.sha)"
           if [ "$current" != "$SHA" ]; then
             echo "$BRANCH_NAME moved to $current; skipping superseded $SHA"
