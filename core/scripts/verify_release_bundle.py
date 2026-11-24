@@ -1939,7 +1939,7 @@ def prepare_old_release(report: Report, ctx: dict[str, Any], args: argparse.Name
 
 
 def distinct_old_release(sec: Section, old_root: Path, work_dir: Path, bundle_os: str) -> Path | None:
-    """Copies the previous release and appends a marker to its `arbd`.
+    """Copies the previous release and gives its `arbd` a different file hash.
 
     arbd's build_id is `<version>:sha256:<digest of its own executable>`, so the copy reports a
     different build_id from the candidate while running the identical code. The launcher then has
@@ -1949,13 +1949,18 @@ def distinct_old_release(sec: Section, old_root: Path, work_dir: Path, bundle_os
     shutil.copytree(old_root, distinct)
     arbd = distinct / "bin" / exe("arbd", bundle_os)
     before = sha256_file(arbd)
-    with arbd.open("ab") as fh:
-        fh.write(b"\nARB-GATE-DISTINCT-PREVIOUS-BUILD\n")
     signed = True
-    if bundle_os == "macos" and arbd.read_bytes()[:4] in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
-        resigned = run_proc(["codesign", "--force", "--sign", "-", arbd], timeout=60)
-        signed = resigned.rc == 0
-        sec.check("distinct previous arbd re-signed ad hoc (macOS)", signed, resigned.err.strip()[:200])
+    if bundle_os == "macos":
+        # Appending to a Mach-O breaks its signature (strict validation fails), so keep the layout and
+        # only re-sign ad hoc under another identifier: the code is unchanged, the file hash is not.
+        resigned = run_proc(["codesign", "--force", "--sign", "-", "--identifier", "arb-gate-distinct-previous-build", arbd], timeout=60)
+        verified = run_proc(["codesign", "--verify", "--strict", arbd], timeout=60) if resigned.rc == 0 else resigned
+        signed = resigned.rc == 0 and verified.rc == 0
+        sec.check("distinct previous arbd re-signed ad hoc and passes strict validation (macOS)", signed, (resigned.err + verified.err).strip()[:200])
+    else:
+        # ELF and PE loaders ignore trailing bytes.
+        with arbd.open("ab") as fh:
+            fh.write(b"\nARB-GATE-DISTINCT-PREVIOUS-BUILD\n")
     after = sha256_file(arbd)
     sec.notes["old_arbd_distinct_sha256"] = after
     sec.check("distinct previous arbd has a different SHA-256 from the candidate", signed and after != before, f"{before[:12]} -> {after[:12]}")
