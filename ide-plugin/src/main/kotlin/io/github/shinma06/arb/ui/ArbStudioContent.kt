@@ -1590,7 +1590,9 @@ private fun MultiTrackTimelineCanvas(
                             null
                         }
                         if (endFrame != null) {
-                            val ex = frameToX(endFrame, s.frameCount).coerceAtLeast(tx + tapR)
+                            // Minimum visible span width (6dp) so even a very fast/short swipe
+                            // still reads as a bar rather than collapsing into a single pin.
+                            val ex = frameToX(endFrame, s.frameCount).coerceAtLeast(tx + 6.dp.toPx())
                             drawRoundRect(
                                 color = cyan,
                                 topLeft = Offset(tx, pinY - swipeBarHeight / 2f),
