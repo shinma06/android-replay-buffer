@@ -42,7 +42,7 @@ GitHub Actions の `release-gate.yml`（CI 経由）run **`45506749411`** は `b
 | G-M6 macOS 実機デスクトップ | 条件付き（受入条件の相違 3 件を明記） | §6 |
 | G-M7 Windows 実 GUI | 合格 | §7 |
 | G-M8 `release.yml` ドライラン・クロス監査・オーナー GO | **保留**（準備項目は完了、オーナーの最終 GO は未取得） | §8 |
-| G-M9 v2 → v2 アップグレード・親付きライフサイクル | 合格（U5 の実旧版は Windows と macOS ローカルのみ。Linux は同一ハッシュ例外） | §9 |
+| G-M9 v2 → v2 アップグレード・親付きライフサイクル | **部分合格**（U1〜U4 は 3 OS で合格。U5 は Windows と macOS ローカルで合格、Linux は同一ハッシュ例外のため保留） | §9 |
 
 ## 3. G-M3: 3 OS の配布 ZIP コールドインストールとクリーン実行
 
@@ -132,7 +132,7 @@ G-M8 の合格基準は、他ゲートが同一コミットで緑であること
 | Windows（GHA） | 異なる（旧 `fa88e80c8f5a`、新 `8d0b2c00ccf6`）。「実際のアップグレード」として通過 | 実旧版からの U5 を確認 |
 | macOS（ローカル、`b9d63000`） | 実際の履歴リリース `2.0.0-dev.24d4702` の ZIP → `b9d6300` | 異なる `arbd` ハッシュへの置換、カタログ・設定・旧タイムラインの保持、pin 済みジョブの retry / retarget、トレイの再接続を確認 |
 
-実旧版からの U5 は、Windows（GHA）と macOS（ローカル、`b9d63000`）で確認した。Linux は次のリリース候補で、旧版と候補版の `arbd` が異なる `early` を取得できた時点で再検証する。
+実旧版からの U5 は、Windows（GHA）と macOS（ローカル、`b9d63000`）で確認した。**Linux の U5 は未達で、G-M9 を完了にするための必須の残作業**とする（§11）。
 
 そのほかの確認:
 
@@ -151,11 +151,17 @@ G-M8 の合格基準は、他ゲートが同一コミットで緑であること
 | 4 Konsist / 構造ガード | Konsist 6/6、`check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | 5 TCB 台帳 | 外部公理 12 件（TCB-01〜TCB-12）と、各公理の未検証境界を記録 |
 
-## 11. 未確認の境界（任意の人手・実機での追加確認）
+## 11. 残作業と未確認の境界
+
+### 必須の残作業（`main` 昇格前に完了させる）
+
+- **Linux の U5**: 旧版と候補版の `arbd` が異なる公開済みリリース（`early` が次の `develop` コミットで更新された後、またはタグ付きの前リリース）の ZIP を `--upgrade-from-zip` に渡し、`--allow-same-previous-arbd` なしで通す（§9）。あわせて、昇格 PR のコミットで G-M1〜G-M9 を再実行する（`docs/testing/main-release-gate.md` の昇格 PR チェックリスト 3）。
+- オーナーの最終 GO（G-M8、§8）。
+
+### 任意の人手・実機での追加確認
 
 - 物理 USB 端末（Android 9 / API 28、Android 13 以上の OEM `MediaCodec`、実機の画面パネル・音声、Running Devices の物理ミラーリング）。手順は `docs/testing/work-device-smoke-checklist.md`。
 - 署名なし配布の初回起動時の OS 警告（macOS Gatekeeper、Windows SmartScreen）。手順は `docs/testing/first-run-os-permissions.md`。
-- Linux での、旧版と候補版の `arbd` が異なる公開済みリリースからの U5（§9）。
 - 物理的な電源断でのディスク fsync の耐久性と、複数 IDE を同時に使う実 GUI の負荷試験。
 - 本記録のとおり、Windows と Linux の GUI は CI と Devin の VM 上での確認であり、実機デスクトップではない。macOS 実機の確認は `b9d63000` で、`b17df280` ではローカルで再実行していない（差分は CI・ビルド補助のみ）。
 
