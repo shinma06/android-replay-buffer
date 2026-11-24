@@ -1,0 +1,66 @@
+name: PDD Kani / Miri
+
+# Layer-1 (Kani) and Layer-3 Miri proof suites. Too slow for every push, so they run weekly,
+# on demand, and from other workflows; they never replace the required `ci.yml` checks.
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: '0 3 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: arb-core
+            group: K1-K7
+          - crate: arb-os
+            group: K8
+          - crate: arb-adb
+            group: K9-wire
+          - crate: arbd
+            group: K6-axis
+          - crate: arb-media
+            group: K9-mp4
+    name: kani (${{ matrix.crate }} ${{ matrix.group }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM (OpenH264 build)
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: cargo kani (${{ matrix.crate }})
+        working-directory: core
+        run: cargo kani -p ${{ matrix.crate }}
+
+  miri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly + Miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
+      - name: M1 arb-os shm RingView
+        working-directory: core
+        run: cargo +nightly miri test -p arb-os --lib shm::
+      - name: M2 arb-core
+        working-directory: core
+        env:
+          PROPTEST_CASES: '8'
+        run: cargo +nightly miri test -p arb-core --lib
+      - name: M2 arb-media mp4
+        working-directory: core
+        env:
+          PROPTEST_CASES: '8'
+        run: cargo +nightly miri test -p arb-media --lib mp4::
