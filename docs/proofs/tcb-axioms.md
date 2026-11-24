@@ -34,7 +34,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 
 K8 と K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。
 
-- K8: 二つの 64 ビット乗算器の同値性と `y * stride` の非線形境界を一度に解かせる形は 13 分経っても終わらなかった。`exact_or_none`（高さ 2^12 以下で `len == stride * rows`）、`rejects_u64_overflow`（溢れる唯一の形）、`covers_every_pixel`（`row < rows` と `col < stride` の線形な事実）に分け、三つを合わせて元の性質を導く。
+- K8: 二つの 64 ビット乗算器の同値性と `y * stride` の非線形境界を一度に解かせる形は 13 分経っても終わらなかった。`exact_or_none`（高さ 2^16 以下で `len == stride * rows`）、`rejects_u64_overflow`（溢れる唯一の形）、`covers_every_pixel`（全 `u32` 域での `row < rows` と `col < stride` の線形な事実）に分け、三つを合わせて 8K を含む高さ 2^16 以下の全フレームで元の性質を導く。高さ 2^16〜2^31 の厳密値は機械検証していない。
 - K9 のパーサ: エラー文の `format!` が記号整数を十進文字列にする処理（64 ビット除算のループ）で CBMC が止まるため、`#[kani::stub(std::fmt::format, ...)]` で文字列生成だけを空文字に置き換える。`Ok`/`Err` の判定と境界検査はすべて本番コードのまま検証する。
 
 ### 2.2 Layer 2: Stateright（`core/crates/arbd/tests/pdd_stateright_models.rs`）
@@ -85,7 +85,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | crate | 結果 | ハーネスごとの検証時間 |
 |---|---|---|
 | `arb-core` | 16 / 16 成功 | K1 8 本 0.3〜1.1 秒、K2 `n1` 18.5 秒、K3 `pc_sync` 3.5 秒・`elapsed` 0.7 秒、K5 `every_table_edge` 6.0 秒・`bundle_lifecycle` 0.07 秒、K6 `physical_one_pixel` 1.1 秒、K7 `empty_and_single` 0.2 秒・`touch_slop` 0.1 秒 |
-| `arb-os` | 5 / 5 成功 | K8 各 0.06〜2.0 秒 |
+| `arb-os` | 5 / 5 成功 | K8 各 0.06〜4.8 秒 |
 | `arb-adb` | 2 / 2 成功 | K9 wire 3.3 秒・5.7 秒 |
 | `arb-media` | 5 / 5 成功 | K9 `ticks_exact_ts_1` 28.3 秒、`iter_boxes` 22.2 秒、`checked_entry_count` 1.0 秒、mux_av 5.2 秒・1.5 秒 |
 
@@ -103,7 +103,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 
 | 層 | 結果 |
 |---|---|
-| Stateright | S1 一意状態 1,016,640（総 7,330,826、2.2 秒）、S2 71,028（557,161、0.3 秒）、S3 16,590（78,470、0.1 秒）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」は、GC 判定から `managed` を外す変異、staging 清掃から所有者印の確認を外す変異のどちらでも反例が出ることを確かめた |
+| Stateright | S1 一意状態 1,016,640（総 7,330,826、2.2 秒）、S2 71,028（557,161、0.3 秒）、S3 16,590（78,470、0.1 秒）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」と「物理削除は管理下・非レガシーのみ」は、GC 判定から形式（`!legacy`）を外す変異、場所（`managed`）を外す変異、staging 清掃から所有者印の確認を外す変異のいずれでも反例が出ることを確かめた |
 | Proptest | G1〜G7 は `cargo test --workspace` で全件成功（既定試行回数） |
 | Miri | M1 `arb-os shm::` 5 件成功・FS/mmap の 7 件は除外（109 秒）、M2 `arb-core` 70 件成功（`PROPTEST_CASES=8`、24 秒）、M2 `arb-media mp4::` 2 件成功・FS の 2 件は除外（23 秒）。未定義動作・データ競合の報告なし |
 | Konsist | `ArchitectureKonsistTest` 6 件成功（KON-1〜KON-5 と走査範囲の確認）。`buildPlugin` の配布 ZIP に `konsist` も JUnit などのテスト専用 JAR も含まれない |

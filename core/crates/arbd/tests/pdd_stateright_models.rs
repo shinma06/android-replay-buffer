@@ -700,7 +700,10 @@ enum BState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Bundle {
     state: BState,
+    /// Strictly inside `managed_bundles_root` (`is_strictly_inside_managed_root`).
     managed: bool,
+    /// Legacy schema 3/4 (`format_version != V2`), independent of the location.
+    legacy: bool,
     trashed_at: u8,
     leases: u8,
 }
@@ -722,8 +725,8 @@ struct S2State {
     job: Option<Job>,
     bundle: Option<Bundle>,
     gc_marked: bool,
-    /// Legacy schema 3/4 bundle: unmanaged, already trashed past the grace period and
-    /// lease-free, i.e. the worst case GC must still never purge.
+    /// Legacy schema 3/4 bundle inside the managed root, already trashed past the grace
+    /// period and lease-free: only the format check keeps GC away from it.
     legacy: Bundle,
     /// A non-ARB `.staging-*` directory in the save destination (no ARB ownership marker).
     foreign_staging: Option<StagingDir>,
@@ -779,10 +782,12 @@ impl S2State {
     fn purge_allowed(&self) -> bool {
         self.bundle.is_some_and(|b| self.purge_allowed_for(&b))
     }
-    /// GC eligibility of one catalog row (`Catalog::gc_trashed`): managed, non-legacy,
-    /// trashed past the grace period, lease-free, and no active job.
+    /// GC eligibility of one catalog row (`Catalog::gc_trashed`): `is_purgeable_location`
+    /// (v2 format and inside the managed root), trashed past the grace period, lease-free,
+    /// and no active job.
     fn purge_allowed_for(&self, b: &Bundle) -> bool {
-        b.managed
+        !b.legacy
+            && b.managed
             && b.state == BState::Trashed
             && self.clock.saturating_sub(b.trashed_at) >= GRACE_STEPS
             && b.leases == 0
@@ -850,7 +855,8 @@ impl Model for S2Model {
             gc_marked: false,
             legacy: Bundle {
                 state: BState::Trashed,
-                managed: false,
+                managed: true,
+                legacy: true,
                 trashed_at: 0,
                 leases: 0,
             },
@@ -1040,6 +1046,7 @@ impl Model for S2Model {
                 n.bundle = Some(Bundle {
                     state: BState::Active,
                     managed: j.managed,
+                    legacy: false,
                     trashed_at: 0,
                     leases: 0,
                 });

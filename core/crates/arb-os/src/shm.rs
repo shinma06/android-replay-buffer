@@ -1928,15 +1928,16 @@ mod kani_proofs {
         (min_row, rows)
     }
 
-    /// Full `u32` width/stride domain with the height bounded: proving two unbounded 64-bit
-    /// multipliers equivalent is SAT-hard and did not finish within the CI timebox, while a
-    /// 12-bit height keeps the multiplier small. The `u64` overflow edge, reachable only for
-    /// heights above 2^31, is pinned by `k8_required_buffer_bytes_rejects_u64_overflow`.
+    /// Full `u32` width/stride domain with heights up to 2^16 (every real frame, 8K
+    /// included): proving two unbounded 64-bit multipliers equivalent is SAT-hard and did not
+    /// finish locally. Exactness for heights in (2^16, 2^31] is therefore not machine-checked;
+    /// the `u64` overflow edge, reachable only above 2^31 rows, is pinned by
+    /// `k8_required_buffer_bytes_rejects_u64_overflow`.
     #[kani::proof]
     fn k8_required_buffer_bytes_exact_or_none() {
         let fmt = any_format();
         let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
-        kani::assume(h <= 1 << 12);
+        kani::assume(h <= 1 << 16);
         let (min_row, rows) = reference(fmt, w, h);
         let r = fmt.required_buffer_bytes(w, h, stride);
         assert_eq!(
@@ -1976,13 +1977,14 @@ mod kani_proofs {
     ///
     /// `k8_required_buffer_bytes_exact_or_none` proves `len == stride * rows`, so byte
     /// `row * stride + col` is in bounds exactly when `row < rows` and `col < stride`. This
-    /// harness proves those two linear facts over the full `u32` domain; asking CBMC for the
-    /// symbolic product `y * stride` directly did not finish (nonlinear 64-bit arithmetic).
+    /// harness proves those two linear facts over the full `u32` domain (heights included);
+    /// asking CBMC for the symbolic product `y * stride` directly did not finish (nonlinear
+    /// 64-bit arithmetic). Together the two harnesses cover every frame up to 2^16 rows.
     #[kani::proof]
     fn k8_required_buffer_bytes_covers_every_pixel() {
         let fmt = any_format();
         let (w, h, stride): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
-        kani::assume(h <= 1 << 12);
+
         if fmt.required_buffer_bytes(w, h, stride).is_none() {
             return;
         }
