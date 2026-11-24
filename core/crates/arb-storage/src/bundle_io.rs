@@ -966,7 +966,7 @@ impl BundleReader for V2BundleReader {
              WHERE (?1 IS NULL OR bucket = ?1)
                AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
                AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
-               AND (?5 IS NULL OR seq > ?5)
+               AND seq > ?5
              ORDER BY seq ASC
              LIMIT ?4"
         } else {
@@ -979,7 +979,7 @@ impl BundleReader for V2BundleReader {
              WHERE (?1 IS NULL OR bucket = ?1)
                AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
                AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
-               AND (?5 IS NULL OR seq > ?5)
+               AND seq > ?5
              ORDER BY seq ASC
              LIMIT ?4"
         };
@@ -995,7 +995,7 @@ impl BundleReader for V2BundleReader {
                     range.start_ns,
                     range.end_ns,
                     limit_i64,
-                    after_seq.map(|seq| i64::try_from(seq).unwrap_or(i64::MAX))
+                    after_seq.map_or(-1, |seq| i64::try_from(seq).unwrap_or(i64::MAX))
                 ],
                 |row| {
                     Ok(RawLogSqlRow {

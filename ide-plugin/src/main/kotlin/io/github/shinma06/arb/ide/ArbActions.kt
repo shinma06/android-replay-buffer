@@ -244,13 +244,16 @@ private fun executeSetCaptureState(project: Project?, desiredActive: Boolean) {
                     }
                     if (!armed) attempt.getOrThrow()
                     val started = attempt.getOrNull()
-                    if (started != null) {
+                    if (started?.started == true) {
                         service.updateCachedCaptureState(active = true, enabled = armed)
                         service.notifyCatalogChanged()
                         ArbNotifications.notifyInfo(
                             project,
                             "キャプチャを ON・REC（取得中）にしました (端末: ${started.serial})。",
                         )
+                    } else if (!armed) {
+                        service.updateCachedCaptureState(active = false, enabled = false)
+                        ArbNotifications.notifyInfo(project, "キャプチャを開始できませんでした。端末の接続を確認してください。")
                     } else {
                         service.updateCachedCaptureState(active = false, enabled = true)
                         service.notifyCatalogChanged()

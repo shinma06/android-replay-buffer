@@ -183,7 +183,7 @@ fun ArbStudioContent(controller: ArbStudioController) {
         }
 
         // Conditional Error Strip
-        controller.errorMessage?.let { err ->
+        (controller.timelineWarnings + listOfNotNull(controller.errorMessage)).forEach { err ->
             ArbSoftBanner(
                 background = ArbJewelPalette.recRedSoft(),
                 accent = ArbJewelPalette.recRed(),

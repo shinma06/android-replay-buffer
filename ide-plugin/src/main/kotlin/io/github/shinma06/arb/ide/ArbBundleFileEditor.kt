@@ -21,7 +21,6 @@ import io.github.shinma06.arb.model.LeaseHolderKind
 import io.github.shinma06.arb.model.LogRecord
 import io.github.shinma06.arb.model.QueryBucket
 import io.github.shinma06.arb.model.StreamStatus
-import io.github.shinma06.arb.model.TimeAlignment
 import io.github.shinma06.arb.playback.AudioSink
 import io.github.shinma06.arb.playback.AudioSyncPlayer
 import io.github.shinma06.arb.playback.FrameSeekResult
@@ -136,7 +135,7 @@ class ArbBundleFileEditor internal constructor(
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onRangeChanged = { inFrame, outFrame, playhead ->
             trimCloseState.onRangeAdjusted(inFrame, outFrame)
-            state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
+            updateViewerState { it.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead) }
             submitWork {
                 runCatching {
                     val ctrl = currentPlaybackController()
@@ -178,7 +177,7 @@ class ArbBundleFileEditor internal constructor(
         onResetFullRange = { applyResetFullRange() },
         onTrashOriginalToggled = { enabled ->
             trashOriginalRequested = enabled
-            state = state?.let { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
+            updateViewerState { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
         },
         onRevealInFinder = { path ->
             ArbNotifications.openPathInFileManager(path)
@@ -289,6 +288,11 @@ class ArbBundleFileEditor internal constructor(
 
     internal fun audioPlayerForTest(): AudioSyncPlayer? = attachedAudioPlayer
 
+    @Synchronized
+    internal fun updateViewerState(transform: (TimelineViewerState) -> TimelineViewerState): TimelineViewerState? {
+        return state?.let(transform)?.also { state = it }
+    }
+
     private fun currentPlaybackController(): PlaybackController? = synchronized(lifecycleLock) {
         ownedPlaybackController
     }
@@ -382,7 +386,7 @@ class ArbBundleFileEditor internal constructor(
                 val initialPlayhead = existingSession?.playheadFrameIndex ?: 0L
                 trimCloseState.initialize(frameCount, initialIn, initialOut)
 
-                val initialState = TimelineViewerState(
+                var initialState = TimelineViewerState(
                     bundleId = opened.bundleId,
                     path = opened.path,
                     format = opened.format,
@@ -395,7 +399,6 @@ class ArbBundleFileEditor internal constructor(
                     inFrameIndex = initialIn,
                     outFrameIndex = initialOut,
                 )
-                state = initialState
 
                 val fallbackAvOffsetMs = opened.summary.streams.audio?.avOffsetMs ?: 0L
                 val hasAudioTrack = opened.summary.audioPath != null ||
@@ -433,6 +436,7 @@ class ArbBundleFileEditor internal constructor(
                         autoRunLoop = autoRunPlaybackLoop,
                         onPlaybackError = { err -> logger.debug("ARB playback error", err) },
                     )
+                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs)
                     ctrl.addStateListener { pb ->
                         publishEdt {
                             if (!disposed) {
@@ -459,6 +463,7 @@ class ArbBundleFileEditor internal constructor(
                     }
                 }
 
+                state = initialState
                 publishEdt {
                     if (!disposed) {
                         studioController.renderState(initialState, image = null)
@@ -508,7 +513,7 @@ class ArbBundleFileEditor internal constructor(
                     daemonService.withClient { it.mediaFilmstrip(viewportId) }.entries
                 }.getOrDefault(emptyList())
                 if (!disposed && filmstrip.isNotEmpty()) {
-                    state = state?.copy(filmstrip = filmstrip)
+                    updateViewerState { it.copy(filmstrip = filmstrip) }
                     publishEdt {
                         if (!disposed) {
                             studioController.updateState { it.copy(filmstrip = filmstrip) }
@@ -527,15 +532,18 @@ class ArbBundleFileEditor internal constructor(
             val screens = runCatching {
                 daemonService.withClient { it.timelineScreens(bundleId).screens }
             }.getOrDefault(emptyList())
-            val mainTaps = runCatching {
-                daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = QueryBucket.MAIN, limit = LOG_QUERY_LIMIT).taps }
+            fun loadTaps(bucket: QueryBucket) = runCatching {
+                daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = bucket, limit = LOG_QUERY_LIMIT).taps }
+            }.onFailure {
+                publishEdt {
+                    if (!disposed) studioController.showTimelineWarning("タップを取得できませんでした（${bucket.wire}）。映像再生は継続できます。")
+                }
             }.getOrDefault(emptyList())
-            val unanchoredTaps = runCatching {
-                daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = QueryBucket.UNANCHORED, limit = LOG_QUERY_LIMIT).taps }
-            }.getOrDefault(emptyList())
+            val mainTaps = loadTaps(QueryBucket.MAIN)
+            val unanchoredTaps = loadTaps(QueryBucket.UNANCHORED)
 
             if (disposed) return@submitGuarded
-            state = state?.let {
+            updateViewerState {
                 TimelineViewerReducer.withBucketedRecords(
                     state = it.copy(
                         discontinuities = discontinuities,
@@ -580,7 +588,7 @@ class ArbBundleFileEditor internal constructor(
                 )
                 if (disposed) return@submitGuarded
 
-                state = state?.let {
+                updateViewerState {
                     TimelineViewerReducer.withBucketedRecords(
                         state = it,
                         mainLogs = mainLogs,
@@ -607,84 +615,53 @@ class ArbBundleFileEditor internal constructor(
                 logger.warn("ARB paged log load failed for $bundleId (video remains active)", t)
                 publishEdt {
                     if (!disposed) {
-                        studioController.showError("ログの読み込みに失敗しました（映像再生は継続できます）: ${t.message}")
+                        studioController.showTimelineWarning("ログの読み込みに失敗しました（映像再生は継続できます）: ${t.message}")
                     }
                 }
             }
         }
     }
 
-    /**
-     * Fetches up to [maxLogs] log rows in bounded pages without gaps or duplicates (M2).
-     *
-     * `timeline.query_logs` filters by the row timestamp (`COALESCE(aligned_boottime_ns,
-     * pc_ingest_cont_ns)`, inclusive `start_ns`/`end_ns`) but orders and truncates by `seq`, so a
-     * "last timestamp" cursor would silently skip rows whose `seq` is later but whose timestamp is
-     * earlier than the cursor. Instead each request covers a disjoint closed time window and asks for
-     * `pageSize + 1` rows: a window that returns at most `pageSize` rows is complete; a truncated
-     * window is split (guided by the returned timestamps) into strictly smaller disjoint sub-windows,
-     * earliest first. A window rejected by `arbd`'s 4 MiB IPC frame limit is retried with a halved
-     * page size. Results are merged by `seq` and returned in `seq` order.
-     */
+    /** Follows the same sequence order and limit as a single timeline.query_logs request. */
     internal fun queryLogsPaged(
         bundleId: String,
         bucket: QueryBucket,
         maxLogs: Int = LOG_QUERY_LIMIT,
         packageName: String? = null,
     ): List<LogRecord> {
-        val cap = maxLogs.coerceAtLeast(1)
-        val collected = LinkedHashMap<Long, LogRecord>()
-        var pageSize = initialLogPageSize.coerceIn(1, cap)
-        // Depth-first, earliest window first: the deque head is the next window to fetch.
-        val pending = ArrayDeque<LogWindow>()
-        pending.addFirst(LogWindow(Long.MIN_VALUE, Long.MAX_VALUE))
-        while (pending.isNotEmpty() && collected.size < cap && !disposed) {
-            val window = pending.first()
-            val limit = if (pageSize == 1) 1 else pageSize + 1
+        val rows = mutableListOf<LogRecord>()
+        var pageSize = initialLogPageSize.coerceAtLeast(1)
+        var legacy = false
+        while (rows.size < maxLogs && !disposed) {
+            val cursor = if (legacy) null else rows.lastOrNull()?.seq
+            val limit = if (legacy) pageSize else minOf(pageSize, maxLogs - rows.size)
             val page = try {
                 daemonService.withClient {
-                    it.timelineQueryLogs(
-                        bundleIdOrPath = bundleId,
-                        bucket = bucket,
-                        startNs = window.startNs.takeIf { s -> s != Long.MIN_VALUE },
-                        endNs = window.endNs.takeIf { e -> e != Long.MAX_VALUE },
-                        limit = limit,
-                        afterSeq = window.afterSeq,
-                        packageName = packageName,
-                    ).logs
+                    it.timelineQueryLogs(bundleId, bucket, limit = limit, packageName = packageName, afterSeq = cursor).logs
                 }
             } catch (e: ArbdRpcException) {
-                if (!isResponseTooLargeError(e) || pageSize == 1) throw e
-                pageSize = (pageSize / 2).coerceAtLeast(1)
+                if (!isResponseTooLargeError(e) || limit <= 1) throw e
+                pageSize = (limit / 2).coerceAtLeast(1)
                 continue
             }
-            pending.removeFirst()
-
-            check(window.afterSeq == null || page.all { it.seq > window.afterSeq }) {
-                "ログのページ取得を続けられません。デーモンを更新してください。"
+            if (legacy) {
+                if (page.size == limit && limit < maxLogs) {
+                    publishEdt {
+                        if (!disposed) studioController.showTimelineWarning("旧デーモンの応答上限によりログの先頭 ${page.size} 件を表示しています。")
+                    }
+                }
+                return if (page.size >= rows.size) page else rows
             }
-            if (page.size < limit) {
-                for (record in page) collected.putIfAbsent(record.seq, record)
+            if (cursor != null && page.firstOrNull()?.let { it.seq <= cursor } == true) {
+                // Older daemons ignore after_seq. Request the original bounded result in one call.
+                legacy = true
+                pageSize = maxLogs
                 continue
             }
-            val parts = splitLogWindow(window, page.map(::logCursorTimestampNs))
-            if (parts.isNotEmpty()) {
-                for (part in parts.asReversed()) pending.addFirst(part)
-                continue
-            }
-            // The window is a single timestamp. Continue in the daemon's stable sequence order.
-            for (record in page.take(cap - collected.size)) collected.putIfAbsent(record.seq, record)
-            pending.addFirst(window.copy(afterSeq = page.last().seq))
+            rows.addAll(page)
+            if (page.size < limit) break
         }
-
-        val rows = collected.values.toList()
-        val kept = if (rows.size <= cap) {
-            rows
-        } else {
-            // Windows complete earliest-first, so keep the earliest rows by timestamp.
-            rows.sortedWith(compareBy<LogRecord>({ logCursorTimestampNs(it) }, { it.seq })).take(cap)
-        }
-        return kept.sortedBy { it.seq }
+        return rows
     }
 
     private fun attachDecodedAudioAsync(
@@ -792,8 +769,7 @@ class ArbBundleFileEditor internal constructor(
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
                 val pb = ctrl.state
                 trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
-                val updated = (state ?: current).copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex)
-                state = updated
+                updateViewerState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
                 publishEdt {
                     if (!disposed) {
@@ -816,12 +792,13 @@ class ArbBundleFileEditor internal constructor(
                 ctrl.selectAroundCrash(crashFrame, before, after)
                 val pb = ctrl.state
                 trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
-                val updated = (state ?: current).copy(
-                    inFrameIndex = pb.inFrameIndex,
-                    outFrameIndex = pb.outFrameIndex,
-                    currentFrameIndex = pb.currentFrameIndex,
-                )
-                state = updated
+                updateViewerState {
+                    it.copy(
+                        inFrameIndex = pb.inFrameIndex,
+                        outFrameIndex = pb.outFrameIndex,
+                        currentFrameIndex = pb.currentFrameIndex,
+                    )
+                }
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
                 publishEdt {
                     if (!disposed) {
@@ -844,8 +821,7 @@ class ArbBundleFileEditor internal constructor(
             currentPlaybackController()?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
             trimCloseState.onRangeAdjusted(0L, maxF)
-            val updated = (state ?: current).copy(inFrameIndex = 0L, outFrameIndex = maxF)
-            state = updated
+            val updated = updateViewerState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } ?: return@submitWork
             persistEditSession(0L, maxF, updated.currentFrameIndex)
             publishEdt {
                 if (!disposed) {
@@ -859,8 +835,7 @@ class ArbBundleFileEditor internal constructor(
         val reader = currentShmReader() ?: return
         val frame = reader.readLatest() ?: return
         val image = frame.toBufferedImage()
-        val prev = state ?: return
-        state = TimelineViewerReducer.onFramePublished(prev, frame.meta)
+        updateViewerState { TimelineViewerReducer.onFramePublished(it, frame.meta) } ?: return
         // Full-frame pixel copy happens here on the worker, never on the EDT, and only the newest
         // frame is ever queued (a slow EDT skips stale frames instead of queueing every bitmap).
         val bitmap = ArbStudioController.toImageBitmapOrNull(image)
@@ -892,7 +867,7 @@ class ArbBundleFileEditor internal constructor(
                     packageName = packageName,
                 )
                 if (disposed) return@submitGuarded
-                state = state?.let {
+                updateViewerState {
                     TimelineViewerReducer.withBucketedRecords(it, mainLogs, unanchoredLogs, it.mainTaps, it.unanchoredTaps)
                 }
                 publishEdt {
@@ -967,11 +942,12 @@ class ArbBundleFileEditor internal constructor(
                     originalTrashedBundleId = trashedBundleId,
                     burnTapsApplied = res.burnTapsApplied,
                 )
-                val updated = (state ?: current).copy(
-                    exportCompletion = completion,
-                    lastActionMessage = summaryText,
-                )
-                state = updated
+                updateViewerState {
+                    it.copy(
+                        exportCompletion = completion,
+                        lastActionMessage = summaryText,
+                    )
+                }
                 publishEdt {
                     if (!disposed) {
                         studioController.setExporting(false)
@@ -1021,11 +997,12 @@ class ArbBundleFileEditor internal constructor(
                     bundleId = null,
                     isTrimBundle = false,
                 )
-                val updated = (state ?: current).copy(
-                    exportCompletion = completion,
-                    lastActionMessage = summaryText,
-                )
-                state = updated
+                updateViewerState {
+                    it.copy(
+                        exportCompletion = completion,
+                        lastActionMessage = summaryText,
+                    )
+                }
                 publishEdt {
                     if (!disposed) {
                         studioController.updateState {
@@ -1158,54 +1135,6 @@ class ArbBundleFileEditor internal constructor(
         const val INITIAL_LOG_PAGE_SIZE: Int = 500
         // Matches `arbd`'s `RPC_ERR_RESPONSE_TOO_LARGE` structured error code (-32010).
         const val RPC_ERR_RESPONSE_TOO_LARGE: Int = -32010
-
-        /** Inclusive timestamp bounds and an exclusive sequence cursor for timestamp ties. */
-        internal data class LogWindow(
-            val startNs: Long,
-            val endNs: Long,
-            val afterSeq: Long? = null,
-        )
-
-        /**
-         * Timestamp `timeline.query_logs` filters on: `COALESCE(aligned_boottime_ns, pc_ingest_cont_ns)`
-         * where `aligned_boottime_ns` is the anchored boottime or the bounded minimum.
-         */
-        internal fun logCursorTimestampNs(record: LogRecord): Long = when (val a = record.alignment) {
-            is TimeAlignment.Anchored -> a.boottimeNs
-            is TimeAlignment.Bounded -> a.minBoottimeNs
-            is TimeAlignment.Unanchored -> record.pcIngestContNs
-        }
-
-        /**
-         * Splits a truncated [window] into strictly smaller, disjoint, ordered sub-windows covering it,
-         * guided by the timestamps of the rows it returned. Returns an empty list when the window is a
-         * single timestamp and cannot be narrowed.
-         */
-        internal fun splitLogWindow(window: LogWindow, returnedTs: List<Long>): List<LogWindow> {
-            val lo = window.startNs
-            val hi = window.endNs
-            if (lo >= hi) return emptyList()
-            val ts = returnedTs.filter { it in lo..hi }.sorted()
-            if (ts.isEmpty()) {
-                // Timestamps disagree with the daemon's filter key: fall back to a plain midpoint split.
-                val mid = (lo shr 1) + (hi shr 1) + (lo and hi and 1L)
-                return listOf(LogWindow(lo, mid), LogWindow(mid + 1, hi))
-            }
-            val min = ts.first()
-            val max = ts.last()
-            if (min == max) {
-                return buildList {
-                    if (min > lo) add(LogWindow(lo, min - 1))
-                    add(LogWindow(min, min))
-                    if (min < hi) add(LogWindow(min + 1, hi))
-                }
-            }
-            // Split at the 3/4 quantile so the left part usually fits in one page even when `seq`
-            // order and timestamp order disagree slightly; never at `max`, so both parts shrink.
-            var cut = ts[(ts.size * 3) / 4]
-            if (cut >= max) cut = ts.last { it < max }
-            return listOf(LogWindow(lo, cut), LogWindow(cut + 1, hi))
-        }
 
         internal fun isResponseTooLargeError(e: ArbdRpcException): Boolean =
             e.code == RPC_ERR_RESPONSE_TOO_LARGE ||

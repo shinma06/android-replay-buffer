@@ -195,6 +195,10 @@ pub struct TrayViewState {
 }
 
 impl TrayViewState {
+    fn capture_on(&self) -> bool {
+        self.capture != CaptureStatus::Idle || self.capture_enabled == Some(true)
+    }
+
     /// The crisp "`arbd` is unreachable" view, used whenever a connection attempt fails.
     #[must_use]
     pub const fn offline() -> Self {
@@ -584,6 +588,14 @@ impl TrayMenuEvent {
     /// locally handled events (`QuitTray`, `RevealBundle`).
     #[must_use]
     pub fn to_rpc(&self, capture: CaptureStatus) -> Option<(&'static str, Value)> {
+        self.to_rpc_with_config(capture, None)
+    }
+
+    fn to_rpc_with_config(
+        &self,
+        capture: CaptureStatus,
+        enabled: Option<bool>,
+    ) -> Option<(&'static str, Value)> {
         match self {
             Self::SaveWindow { duration_secs } => {
                 Some(("save.trigger", json!({ "duration_sec": duration_secs })))
@@ -600,7 +612,7 @@ impl TrayMenuEvent {
             Self::RestoreBundle { bundle_id } => {
                 Some(("bundle.restore", json!({ "bundle_id": bundle_id })))
             }
-            Self::ToggleCapture if capture == CaptureStatus::Idle => {
+            Self::ToggleCapture if capture == CaptureStatus::Idle && enabled != Some(true) => {
                 Some(("capture.start", json!({})))
             }
             Self::ToggleCapture => Some(("capture.stop", json!({}))),
@@ -720,14 +732,12 @@ pub fn build_menu(state: &TrayViewState) -> Vec<TrayMenuItem> {
     items.push(TrayMenuItem::separator());
     items.push(build_recent_bundles_section(state));
 
-    let (toggle_label, toggle_enabled) = if state.capture == CaptureStatus::Idle {
-        if state.multiple_devices_need_selection {
-            ("録画を開始（端末を選択してください）", false)
-        } else {
-            ("録画を開始", state.daemon_online)
-        }
-    } else {
+    let (toggle_label, toggle_enabled) = if state.capture_on() {
         ("録画を停止", state.daemon_online)
+    } else if state.multiple_devices_need_selection {
+        ("録画を開始（端末を選択してください）", false)
+    } else {
+        ("録画を開始", state.daemon_online)
     };
     items.push(TrayMenuItem {
         enabled: toggle_enabled,
@@ -1067,11 +1077,13 @@ impl TrayController {
     /// Never panics: `self.client` is populated immediately above whenever it was `None`, and
     /// the preceding `?` already returns on a failed connect.
     pub fn dispatch(&mut self, event: &TrayMenuEvent) -> Result<Option<Value>, RpcClientError> {
-        let capture = self
+        let (capture, enabled) = self
             .last_state
             .as_ref()
-            .map_or(CaptureStatus::Idle, |state| state.capture);
-        let Some((method, params)) = event.to_rpc(capture) else {
+            .map_or((CaptureStatus::Idle, None), |state| {
+                (state.capture, state.capture_enabled)
+            });
+        let Some((method, params)) = event.to_rpc_with_config(capture, enabled) else {
             return Ok(None);
         };
         if self.client.is_none() {
@@ -1905,6 +1917,16 @@ mod tests {
         );
 
         let menu_on = build_menu(&on_wait);
+        assert_eq!(
+            TrayMenuEvent::ToggleCapture
+                .to_rpc_with_config(on_wait.capture, on_wait.capture_enabled),
+            Some(("capture.stop", json!({}))),
+        );
+        assert!(
+            menu_on
+                .iter()
+                .any(|item| item.label == "録画を停止" && item.enabled)
+        );
         assert_eq!(
             menu_on.get(1).map(|item| item.label.as_str()),
             Some("常時録画: ON・待機中"),

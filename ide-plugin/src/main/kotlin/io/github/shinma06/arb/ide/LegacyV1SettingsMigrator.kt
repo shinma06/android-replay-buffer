@@ -8,6 +8,7 @@ import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.StringPatch
+import io.github.shinma06.arb.state.DeviceSelectionPolicy
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
 import java.io.StringReader
@@ -40,7 +41,7 @@ object LegacyV1SettingsMigrator {
     internal const val LEGACY_COMPONENT_NAME: String =
         "io.github.shinma06.replaybuffer.settings.ReplaySettingsStore"
 
-    private val SAFE_SERIAL_REGEX = Regex("^[A-Za-z0-9._:-]{1,256}$")
+
     private const val MAX_WORKSPACE_XML_BYTES: Long = 16L * 1024L * 1024L
 
     sealed interface MigrationResult {
@@ -109,7 +110,7 @@ object LegacyV1SettingsMigrator {
             return MigrationResult.NoLegacySettingsFound
         }
 
-        val parsed = when (val parseOutcome = parseLegacyWorkspaceXml(xmlText)) {
+        val parsed = when (val parseOutcome = parseLegacyWorkspaceXml(xmlText, projectBasePath)) {
             is ParseOutcome.Found -> parseOutcome.settings
             ParseOutcome.NotFound -> return MigrationResult.NoLegacySettingsFound
             is ParseOutcome.Malformed -> {
@@ -160,7 +161,7 @@ object LegacyV1SettingsMigrator {
         data class Malformed(val reason: String) : ParseOutcome
     }
 
-    private fun parseLegacyWorkspaceXml(xmlText: String): ParseOutcome {
+    private fun parseLegacyWorkspaceXml(xmlText: String, projectBasePath: Path): ParseOutcome {
         val doc = try {
             val factory = DocumentBuilderFactory.newInstance().apply {
                 isNamespaceAware = false
@@ -216,7 +217,7 @@ object LegacyV1SettingsMigrator {
         // present component means the v1 default (ReplaySettingsState), not "leave arbd unchanged".
         val saveWindowSecs = (options["retentionSeconds"]?.trim()?.toIntOrNull() ?: V1_DEFAULT_RETENTION_SECS)
             .coerceIn(ArbConfig.MIN_SAVE_WINDOW_SECS, ArbConfig.MAX_SAVE_WINDOW_SECS)
-        val outputDirPatch = options["destination"]?.let(::normalizeValidAbsolutePath)
+        val outputDirPatch = options["destination"]?.let { normalizeValidAbsolutePath(it, projectBasePath) }
             ?.let { OutputDirPatch.Set(it) }
             ?: OutputDirPatch.Unchanged
         val captureMode = when (options["captureMode"]?.trim()?.uppercase()) {
@@ -229,7 +230,7 @@ object LegacyV1SettingsMigrator {
         val crashAutosaveEnabled = parseStrictBoolean(options["autoSaveOnCrash"], default = false)
         val captureEnabled = parseStrictBoolean(options["enabled"], default = false)
         val deviceSerialPatch = options["deviceSerial"]?.trim()
-            ?.takeIf { it.isNotEmpty() && SAFE_SERIAL_REGEX.matches(it) }
+            ?.takeIf { DeviceSelectionPolicy.isValidAdbSerial(it) }
             ?.let { StringPatch.Set(it) }
             ?: StringPatch.Unchanged
 
@@ -237,7 +238,7 @@ object LegacyV1SettingsMigrator {
             options["screenshotUsesCommonDestination"] ?: options["screenshotUsesLogcatDestination"],
             default = true,
         )
-        val customScreenshotDir = options["screenshotDirectory"]?.let(::normalizeValidAbsolutePath)
+        val customScreenshotDir = options["screenshotDirectory"]?.let { normalizeValidAbsolutePath(it, projectBasePath) }
 
         val candidatePatch = ArbConfigPatch(
             saveWindowSecs = saveWindowSecs,
@@ -283,10 +284,16 @@ object LegacyV1SettingsMigrator {
     /** v1 `ReplaySettingsState.retentionSeconds` default. */
     private const val V1_DEFAULT_RETENTION_SECS: Int = 180
 
-    private fun normalizeValidAbsolutePath(raw: String): String? {
+    private fun normalizeValidAbsolutePath(raw: String, projectBasePath: Path): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.indexOf('\u0000') >= 0) return null
-        val path = runCatching { Path.of(trimmed) }.getOrNull() ?: return null
+        val prefix = trimmed.substringBefore('/')
+        val expanded = when (prefix) {
+            "\$PROJECT_DIR\$" -> projectBasePath.toString() + trimmed.removePrefix(prefix)
+            "\$USER_HOME\$" -> System.getProperty("user.home") + trimmed.removePrefix(prefix)
+            else -> trimmed
+        }
+        val path = runCatching { Path.of(expanded) }.getOrNull() ?: return null
         if (!path.isAbsolute) return null
         return path.normalize().toString()
     }

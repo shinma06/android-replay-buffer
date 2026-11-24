@@ -152,6 +152,13 @@ class ArbStudioController(
     var exportProgressLabel: String by mutableStateOf("書き出し中...")
         private set
 
+    var timelineWarnings by mutableStateOf(emptySet<String>())
+        private set
+
+    fun showTimelineWarning(message: String) {
+        timelineWarnings = timelineWarnings + message
+    }
+
     var errorMessage: String? by mutableStateOf(null)
         private set
 

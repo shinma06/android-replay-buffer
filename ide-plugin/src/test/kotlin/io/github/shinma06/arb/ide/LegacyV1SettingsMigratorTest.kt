@@ -62,21 +62,21 @@ class LegacyV1SettingsMigratorTest {
     @Test
     fun migratesPopulatedV1WorkspaceXmlReadOnlyAndIgnoresDroppedFields(@TempDir tmp: Path) {
         val destDir = tmp.resolve("legacy-replays").toAbsolutePath().normalize()
-        val shotDir = tmp.resolve("legacy-shots").toAbsolutePath().normalize()
+        val shotDir = Path.of(System.getProperty("user.home"), "legacy-shots").toAbsolutePath().normalize()
         val xmlContent = """
             <?xml version="1.0" encoding="UTF-8"?>
             <project version="4">
               <component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore">
                 <option name="enabled" value="true" />
                 <option name="retentionSeconds" value="240" />
-                <option name="destination" value="$destDir" />
+                <option name="destination" value="${'$'}PROJECT_DIR${'$'}/legacy-replays" />
                 <option name="captureMode" value="LOG_ONLY" />
                 <option name="autoSaveOnCrash" value="true" />
                 <option name="screenshotUsesCommonDestination" value="false" />
-                <option name="screenshotDirectory" value="$shotDir" />
+                <option name="screenshotDirectory" value="${'$'}USER_HOME${'$'}/legacy-shots" />
                 <option name="videoQuality" value="LIGHTWEIGHT" />
                 <option name="recordAudio" value="true" />
-                <option name="deviceSerial" value="PIXEL-9-USB" />
+                <option name="deviceSerial" value="[::1]:5555" />
                 <option name="appSelection" value="MANUAL" />
                 <option name="manualPackage" value="com.example.legacy" />
                 <option name="showTouches" value="true" />
@@ -108,7 +108,7 @@ class LegacyV1SettingsMigratorTest {
         assertEquals(true, patch.audioEnabled)
         assertEquals(true, patch.crashAutosaveEnabled)
         assertEquals(true, patch.captureEnabled)
-        assertEquals(StringPatch.Set("PIXEL-9-USB"), patch.deviceSerial)
+        assertEquals(StringPatch.Set("[::1]:5555"), patch.deviceSerial)
 
         assertFalse(localSettings.screenshotInheritLogcat)
         assertEquals(shotDir.toString(), localSettings.customScreenshotDir)

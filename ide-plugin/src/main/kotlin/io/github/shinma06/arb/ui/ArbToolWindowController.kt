@@ -433,7 +433,7 @@ class ArbToolWindowController(
                     }
                     // Without always-on support the start itself is the whole toggle: surface its error.
                     if (!armed) attempt.getOrThrow()
-                    attempt.isSuccess
+                    attempt.getOrNull()?.started == true
                 } else {
                     false
                 }

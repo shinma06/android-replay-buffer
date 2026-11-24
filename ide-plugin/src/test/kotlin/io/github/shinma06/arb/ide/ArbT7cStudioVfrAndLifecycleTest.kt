@@ -347,15 +347,33 @@ class ArbT7cStudioVfrAndLifecycleTest {
 
         try {
             awaitCondition(msg = "PlaybackController and AudioSyncPlayer should attach") {
-                editor.playbackControllerForTest() != null && editor.audioPlayerForTest() != null
+                editor.playbackControllerForTest() != null && editor.audioPlayerForTest() != null && editor.studioController.viewerState != null
             }
             val ctrl = assertNotNull(editor.playbackControllerForTest())
             val audio = assertNotNull(editor.audioPlayerForTest())
+
+            val entered = CountDownLatch(1)
+            val otherWrite = CountDownLatch(1)
+            val slowWriter = Thread {
+                editor.updateViewerState {
+                    entered.countDown()
+                    otherWrite.await(200, TimeUnit.MILLISECONDS)
+                    it.copy(lastActionMessage = "loaded")
+                }
+            }
+            slowWriter.start()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            editor.updateViewerState { it.copy(showTapOverlay = false) }
+            otherWrite.countDown()
+            slowWriter.join(5_000)
+            assertFalse(editor.updateViewerState { it }!!.showTapOverlay)
 
             // Verify real VFR PTS map is active on PlaybackController (frame 1 = 5.000s, NOT average ~0.53s!).
             assertEquals(0L, ctrl.frameRelativePtsNs(0L))
             assertEquals(5_000_000_000L, ctrl.frameRelativePtsNs(1L))
             assertEquals(5_000_000_000L + 9L * step30FpsNs, ctrl.frameRelativePtsNs(10L))
+
+            assertEquals(5_000L, editor.studioController.viewerState!!.frameToRelativeMs(1))
 
             // Start playback from frame 0 on virtual clock: must hold frame 0 through 4.9s, then move at 5.0s!
             ctrl.play()
@@ -519,7 +537,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
                 "timeline.discontinuities" -> """{"discontinuities":[]}"""
                 "timeline.crashes" -> """{"crashes":[]}"""
                 "timeline.screens" -> """{"screens":[]}"""
-                "timeline.query_taps" -> """{"taps":[]}"""
+                "timeline.query_taps" -> if (params.get("bucket").asString == "main") "${RPC_ERROR_PREFIX}IPC frame limit" else """{"taps":[]}"""
                 "timeline.query_logs" -> {
                     assertTrue(releaseLogsLatch.await(10, TimeUnit.SECONDS))
                     val bucket = params.get("bucket")?.asString
@@ -582,7 +600,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
                 editor.studioController.hasVideo && editor.studioController.frameImageWidth == 2
             }
             assertEquals(0, logQueryCalls.get(), "video opened before any log page completed")
-            assertNull(editor.studioController.errorMessage)
+
 
             // Release log queries and verify all 5,000 1 KiB logs paginate cleanly under 4 MiB cap!
             releaseLogsLatch.countDown()
@@ -598,7 +616,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
             // The pre-fix single 5,000-row request would itself exceed the 4 MiB frame cap.
             val singleShotBytes = allMainLogs.sumOf { it.msg.length + 200 }
             assertTrue(singleShotBytes > fourMiB, "fixture must exceed the 4 MiB cap in one response")
-            assertNull(editor.studioController.errorMessage)
+            assertTrue(editor.studioController.timelineWarnings.any { it.contains("タップ") })
         } finally {
             releaseLogsLatch.countDown()
             editor.dispose()
@@ -612,6 +630,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         val shmPath = writeValidShmFile(tmp.resolve("huge.shm"))
         // 40 rows x 16 KiB each: initial page of 32 (~512 KiB) against a simulated 200 KiB cap forces halving!
         val bigMsg = "X".repeat(16_000)
+        val legacy = AtomicBoolean(false)
         val requestedLimits = CopyOnWriteArrayList<Int>()
         val transport = StubTransport(maxResponseBytes = 200_000) { method, params ->
             when (method) {
@@ -636,7 +655,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
                         val arr = JsonArray()
                         for (seq in 1L..40L) {
                             val ts = 1_000L
-                            if (seq <= (params.get("after_seq")?.asLong ?: 0L)) continue
+                            if (!legacy.get() && seq <= (params.get("after_seq")?.asLong ?: 0L)) continue
                             if (startNs != null && ts < startNs) continue
                             if (endNs != null && ts > endNs) continue
                             if (arr.size() >= limit) break
@@ -687,8 +706,14 @@ class ArbT7cStudioVfrAndLifecycleTest {
             }
             val loaded = assertNotNull(editor.studioController.viewerState).mainLogs
             assertEquals((1L..40L).toList(), loaded.map { it.seq })
-            assertTrue(requestedLimits.any { it == 33 }, "initial request tried pageSize 32 (+1 completeness probe)")
+            assertTrue(requestedLimits.any { it == 32 }, "initial request tried pageSize 32")
             assertTrue(requestedLimits.any { it <= 17 }, "adaptively halved page size after frame-cap error: $requestedLimits")
+
+            legacy.set(true)
+            val partial = editor.queryLogsPaged("huge-lines", io.github.shinma06.arb.model.QueryBucket.MAIN, maxLogs = 40)
+            assertTrue(partial.size in 1..39)
+            assertEquals((1L..partial.size.toLong()).toList(), partial.map { it.seq })
+            assertTrue(editor.studioController.timelineWarnings.any { it.contains("旧デーモン") })
         } finally {
             editor.dispose()
             rpc.close()
@@ -704,12 +729,14 @@ class ArbT7cStudioVfrAndLifecycleTest {
             val ts = if (seq in 100L..140L) 5_000L else (301L - seq) * 10L
             SyntheticLog(seq, ts, "m$seq")
         }
-        val requestedWindows = CopyOnWriteArrayList<Pair<Long?, Long?>>()
+        val legacy = AtomicBoolean(false)
+        val cursors = CopyOnWriteArrayList<Long>()
         val transport = StubTransport { method, params ->
             when (method) {
                 "timeline.query_logs" -> {
-                    requestedWindows += (params.get("start_ns")?.asLong to params.get("end_ns")?.asLong)
-                    val matched = fakeArbdLogQuery(rows, params, params.get("limit").asInt)
+                    params.get("after_seq")?.asLong?.let(cursors::add)
+                    val effective = params.deepCopy().apply { if (legacy.get()) remove("after_seq") }
+                    val matched = fakeArbdLogQuery(rows, effective, params.get("limit").asInt)
                     val arr = JsonArray()
                     for (row in matched) {
                         arr.add(
@@ -756,48 +783,24 @@ class ArbT7cStudioVfrAndLifecycleTest {
         try {
             val loaded = editor.queryLogsPaged("reversed", io.github.shinma06.arb.model.QueryBucket.MAIN, maxLogs = 5_000)
             assertEquals((1L..300L).toList(), loaded.map { it.seq }, "no gaps or duplicates")
-            assertTrue(requestedWindows.size > 1, "must page, got ${requestedWindows.size} requests")
+            assertEquals((16L until 300L step 16).toList(), cursors.toList())
 
-            // Cap: keep the earliest rows by timestamp, still returned in seq order.
+            legacy.set(true)
+            assertEquals((1L..300L).toList(), editor.queryLogsPaged("reversed", io.github.shinma06.arb.model.QueryBucket.MAIN).map { it.seq })
+            legacy.set(false)
+
+            // Cap: keep the same sequence prefix as a single daemon query.
             val capped = editor.queryLogsPaged("reversed", io.github.shinma06.arb.model.QueryBucket.MAIN, maxLogs = 50)
             assertEquals(50, capped.size)
             assertEquals(capped.map { it.seq }.sorted(), capped.map { it.seq })
-            val expectedEarliest = rows.sortedWith(compareBy({ it.tsNs }, { it.seq })).take(50).map { it.seq }.sorted()
-            assertEquals(expectedEarliest, capped.map { it.seq })
+            val expectedPrefix = (1L..50L).toList()
+            assertEquals(expectedPrefix, capped.map { it.seq })
         } finally {
             editor.dispose()
             rpc.close()
             daemonService.dispose()
         }
     }
-
-    @Test
-    fun splitLogWindowAlwaysShrinksAndCoversTheWindow() {
-        val w = ArbBundleFileEditor.Companion.LogWindow(Long.MIN_VALUE, Long.MAX_VALUE)
-        // Unbounded window with no usable timestamps: midpoint split without overflow.
-        val mid = ArbBundleFileEditor.splitLogWindow(w, emptyList())
-        assertEquals(2, mid.size)
-        assertEquals(Long.MIN_VALUE, mid[0].startNs)
-        assertEquals(mid[0].endNs + 1, mid[1].startNs)
-        assertEquals(Long.MAX_VALUE, mid[1].endNs)
-        // Single timestamp inside a wider window: isolate it.
-        val tie = ArbBundleFileEditor.splitLogWindow(ArbBundleFileEditor.Companion.LogWindow(0L, 100L), listOf(50L, 50L, 50L))
-        assertEquals(
-            listOf(
-                ArbBundleFileEditor.Companion.LogWindow(0L, 49L),
-                ArbBundleFileEditor.Companion.LogWindow(50L, 50L),
-                ArbBundleFileEditor.Companion.LogWindow(51L, 100L),
-            ),
-            tie,
-        )
-        // A one-timestamp window cannot be narrowed.
-        assertTrue(ArbBundleFileEditor.splitLogWindow(ArbBundleFileEditor.Companion.LogWindow(50L, 50L), listOf(50L, 50L)).isEmpty())
-        // Mostly-max timestamps: the cut stays below max so both halves shrink.
-        val skew = ArbBundleFileEditor.splitLogWindow(ArbBundleFileEditor.Companion.LogWindow(0L, 100L), listOf(10L, 90L, 90L, 90L, 90L))
-        assertEquals(listOf(ArbBundleFileEditor.Companion.LogWindow(0L, 10L), ArbBundleFileEditor.Companion.LogWindow(11L, 100L)), skew)
-    }
-
-    // ---------------- Item 7: Always-On Background Capture Armed UI ----------------
 
     @Test
     fun alwaysOnCaptureArmingWorksWithZeroDevicesAndDistinguishesAllThreeStates() {
@@ -1149,18 +1152,23 @@ class ArbT7cStudioVfrAndLifecycleTest {
     @Test
     fun toggleFallsBackToDirectCaptureStartWhenDaemonRejectsCaptureEnabled() {
         val captureActive = AtomicBoolean(false)
+        lateinit var service: ArbdDaemonService
+        val rejectedStartCachedActive = LinkedBlockingQueue<Boolean>()
         val startedSerials = CopyOnWriteArrayList<String>()
         val transport = StubTransport { method, params ->
             when (method) {
-                "system.status" -> """{"pid":10,"uptime_ms":100,"capture":{"active":${captureActive.get()},"connected":${captureActive.get()},"serial":"emu-1","storage_pressure_stopped":false,"video_frames":0,"audio_frames":0,"log_records":0,"tap_records":0,"discontinuities":0,"static_hold_events":0},"ring_chunk_count":0,"ring_total_bytes":0,"ring_pinned_chunk_count":0,"buffered_secs":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}}"""
+                "system.status" -> {
+                    if (startedSerials.size == 1) rejectedStartCachedActive.offer(service.cachedCaptureActive)
+                    """{"pid":10,"uptime_ms":100,"capture":{"active":${captureActive.get()},"connected":${captureActive.get()},"serial":"emu-1","storage_pressure_stopped":false,"video_frames":0,"audio_frames":0,"log_records":0,"tap_records":0,"discontinuities":0,"static_hold_events":0},"ring_chunk_count":0,"ring_total_bytes":0,"ring_pinned_chunk_count":0,"buffered_secs":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}}"""
+                }
                 "config.get" -> """{"config":{"config_version":1,"save_window_secs":300,"ring_budget_bytes":1610612736,"min_free_disk_bytes":3221225472,"video_max_size":1920,"video_max_fps":30,"audio_enabled":true,"capture_mode":"video_and_logs","crash_autosave_enabled":true,"crash_autosave_cooldown_secs":15,"ide_default_save_action":"save_and_open"},"config_path":"/tmp/config.json"}"""
                 // Pre-T-7A arbd: ArbConfigPatch has deny_unknown_fields.
                 "config.update" -> "${RPC_ERROR_PREFIX}unknown field `capture_enabled`"
                 "device.list" -> """{"devices":[{"serial":"emu-1","state":"device"}]}"""
                 "capture.start" -> {
                     startedSerials += params.get("serial").asString
-                    captureActive.set(true)
-                    """{"started":true,"serial":"emu-1"}"""
+                    captureActive.set(startedSerials.size > 1)
+                    """{"started":${captureActive.get()},"serial":"emu-1"}"""
                 }
                 "save.list_jobs" -> """{"jobs":[]}"""
                 "bundle.list" -> """{"bundles":[]}"""
@@ -1168,7 +1176,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
             }
         }
         val rpc = ArbdRpcClient(transport)
-        val service = object : ArbdDaemonService() {
+        service = object : ArbdDaemonService() {
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
         }
         val controller = ArbToolWindowController(
@@ -1187,11 +1195,13 @@ class ArbT7cStudioVfrAndLifecycleTest {
             assertEquals(CaptureToggleState.OFF, controller.captureToggleState)
 
             controller.toggleCapture()
+            assertEquals(false, rejectedStartCachedActive.poll(5, TimeUnit.SECONDS))
+            controller.toggleCapture()
             awaitCondition(msg = "toggle must still start capture on an older arbd") {
                 SwingUtilities.invokeAndWait {}
                 controller.captureToggleState == CaptureToggleState.RECORDING
             }
-            assertEquals(listOf("emu-1"), startedSerials.toList())
+            assertEquals(listOf("emu-1", "emu-1"), startedSerials.toList())
             assertFalse(service.cachedCaptureEnabled, "older arbd cannot be armed; only the live capture is ON")
         } finally {
             controller.dispose()
