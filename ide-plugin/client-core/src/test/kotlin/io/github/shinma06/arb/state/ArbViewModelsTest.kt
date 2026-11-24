@@ -331,7 +331,7 @@ class ArbViewModelsTest {
                 discontinuities = 0L,
                 staticHoldEvents = 0L,
                 audioState = io.github.shinma06.arb.model.AudioCaptureState.UNAVAILABLE,
-                audioReason = "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps.",
+                audioReason = "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps.",
             ),
             ringChunkCount = 4L,
             ringTotalBytes = 4096L,
@@ -343,7 +343,7 @@ class ArbViewModelsTest {
         val state = CaptureBarReducer.fromStatus(CaptureBarState(), status)
         assertTrue(state.isRecordingHealthy)
         assertEquals(
-            "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps.",
+            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps.",
             state.audioUnavailableReason,
         )
         assertTrue(state.banners.any { it.detail.contains("API 28") })

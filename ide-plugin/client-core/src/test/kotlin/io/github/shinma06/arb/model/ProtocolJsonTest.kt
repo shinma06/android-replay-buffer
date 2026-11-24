@@ -130,7 +130,7 @@ class ProtocolJsonTest {
               "static_hold_events": 0,
               "ring_write_errors": 0,
               "audio_state": "unavailable",
-              "audio_reason": "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+              "audio_reason": "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps."
             }
         """.trimIndent()
         val parsed = gson.fromJson(aos9Json, CaptureStatusView::class.java)

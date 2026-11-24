@@ -143,8 +143,8 @@ pub enum AudioCaptureState {
     Available,
     /// Audio capture was intentionally disabled (e.g., `audio_enabled=false` or `logs_only`).
     Disabled,
-    /// Audio capture is unavailable on this device (e.g., Android < 11 / API < 30 or API < 33
-    /// playback audio unsupported, or device rejected audio); video + logs + taps continue.
+    /// Audio capture is unavailable on this device (API < 33, where non-muting playback capture
+    /// is unsupported, or the device rejected audio); video + logs + taps continue.
     Unavailable,
 }
 

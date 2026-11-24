@@ -717,7 +717,7 @@ fn supervisor_config_for(cfg: &LiveCaptureConfig) -> SupervisorConfig {
 pub enum PlannedScrcpyAudio {
     /// Audio was disabled by user config or `logs_only` mode (`audio=false`).
     Disabled,
-    /// Detected Android SDK does not support requested audio (`sdk < 30` or `sdk < 33`);
+    /// Detected Android SDK does not support requested non-muting audio (`sdk < 33`);
     /// proactively launch `scrcpy-server` with `audio=false` (single video socket, zero audio wait).
     ProactiveUnavailable {
         /// Detected Android API level (`ro.build.version.sdk` or `Hello.api_level`).
@@ -1128,7 +1128,7 @@ fn collect_scrcpy_stderr<R: BufRead>(mut reader: R, buf: &Mutex<String>) {
     }
 }
 
-/// Launches scrcpy and its reader threads, proactively disabling audio on Android < 11/13
+/// Launches scrcpy and its reader threads, proactively disabling audio below Android 13
 /// (`sdk < 33`, including Android 9 API 28) and degrading cleanly to `audio=false` if a
 /// runtime `audio=true` launch fails during handshake.
 ///
@@ -1254,22 +1254,7 @@ fn launch_scrcpy_with_audio_fallback(
                     snap
                 })
                 .filter(|s| !s.is_empty());
-            let detail = match stderr_note {
-                Some(stderr) => format!(
-                    "Audio capture failed during scrcpy startup ({first_err}; stderr: {stderr}); degraded to video + logs + taps."
-                ),
-                None => format!(
-                    "Audio capture failed during scrcpy startup ({first_err}); degraded to video + logs + taps."
-                ),
-            };
-            ctx.sink
-                .set_audio_status(AudioCaptureState::Unavailable, Some(detail));
-            ctx.sink.push(CaptureEvent::AudioUnavailable {
-                pc_cont_ns: sample_cont_ns(),
-                boot_id: boot_id.to_owned(),
-                status: AudioTunnelStatus::DeviceError,
-            });
-            launch_scrcpy_attempt(
+            let retry = launch_scrcpy_attempt(
                 adb,
                 cfg,
                 guard,
@@ -1280,9 +1265,52 @@ fn launch_scrcpy_with_audio_fallback(
                 boot_id,
                 ctx,
                 scrcpy_stderr,
-            )
+            );
+            // Only blame audio once the audio=false retry has proved video can start.
+            let retry_err = retry.as_ref().err().map(ToString::to_string);
+            let detail = audio_fallback_reason(
+                &first_err.to_string(),
+                stderr_note.as_deref(),
+                retry_err.as_deref(),
+            );
+            ctx.sink
+                .set_audio_status(AudioCaptureState::Unavailable, Some(detail));
+            ctx.sink.push(CaptureEvent::AudioUnavailable {
+                pc_cont_ns: sample_cont_ns(),
+                boot_id: boot_id.to_owned(),
+                status: AudioTunnelStatus::DeviceError,
+            });
+            retry
         }
         Err(err) => Err(err),
+    }
+}
+
+/// Derives the 8-hex-digit `scrcpy-server` `scid` for one launch attempt.
+///
+/// `scrcpy-server` parses `scid` with Java `Integer.parseInt(hex)` and rejects values above
+/// `0x7FFF_FFFF`, so bit 31 is always cleared before the `0x1000_0000` marker is applied.
+fn scrcpy_scid_hex(unix_millis: u64, salt: u32) -> String {
+    let low = u32::try_from(unix_millis & 0xFFFF_FFFF)
+        .unwrap_or(0)
+        .wrapping_add(salt);
+    format!("{:08x}", (low & 0x7FFF_FFFF) | 0x1000_0000)
+}
+
+/// Honest `audio_reason` after an `audio=true` scrcpy launch failed and the `audio=false`
+/// retry finished (`retry_err` is `Some` when the retry failed too).
+fn audio_fallback_reason(first_err: &str, stderr: Option<&str>, retry_err: Option<&str>) -> String {
+    let first = match stderr {
+        Some(stderr) => format!("{first_err}; stderr: {stderr}"),
+        None => first_err.to_owned(),
+    };
+    match retry_err {
+        None => format!(
+            "Audio capture failed during scrcpy startup ({first}); degraded to video + logs + taps."
+        ),
+        Some(retry_err) => format!(
+            "scrcpy-server failed to start with audio=true ({first}) and with audio=false ({retry_err}); no video or audio is captured, logs + taps continue."
+        ),
     }
 }
 
@@ -1305,10 +1333,7 @@ fn launch_scrcpy_attempt(
     let mut media_threads: Vec<JoinHandle<()>> = Vec::new();
     let mut media_sockets: Vec<TcpStream> = Vec::new();
 
-    let scid_low = u32::try_from(current_unix_millis() & 0xFFFF_FFFF)
-        .unwrap_or(0)
-        .wrapping_add(scid_salt);
-    let scid = format!("{:08x}", scid_low | 0x1000_0000);
+    let scid = scrcpy_scid_hex(current_unix_millis(), scid_salt);
     let scrcpy_abstract = format!("scrcpy_{scid}");
     let scrcpy_port = adb.forward_tcp_to_abstract(&cfg.serial, &scrcpy_abstract)?;
     guard.forwarded_ports.push(scrcpy_port);
@@ -2448,7 +2473,7 @@ mod tests {
                 );
                 assert_eq!(
                     reason,
-                    "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+                    "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps."
                 );
             }
             other => panic!("expected ProactiveUnavailable on API 28, got {other:?}"),
@@ -2572,6 +2597,66 @@ mod tests {
         assert!(
             reason.contains("Continuing with video + logs + taps"),
             "reason={reason}"
+        );
+    }
+
+    #[test]
+    fn opus_review_scrcpy_scid_never_exceeds_int_max_for_high_bit_millis() {
+        // scrcpy-server v5.0.1 parses `scid` with `Integer.parseInt(hex)` and rejects values
+        // above 0x7FFFFFFF, so bit 31 of the wall-clock millis must never reach the scid.
+        for (millis, salt) in [
+            (0x0000_0000_u64, 0_u32),
+            (0x0AF9_A1B2, 0),
+            (0x7FFF_FFFF, 1),
+            (0x8000_0000, 0),
+            (0x1_9ABC_DEF0, 0),
+            (0xFFFF_FFFF, 0),
+            (0xFFFF_FFFF, 1),
+        ] {
+            let scid = super::scrcpy_scid_hex(millis, salt);
+            assert_eq!(scid.len(), 8, "scid={scid}");
+            let value = u32::from_str_radix(&scid, 16).expect("hex scid");
+            assert!(
+                value <= 0x7FFF_FFFF,
+                "scid {scid} (millis={millis:#x}, salt={salt}) exceeds Java int range"
+            );
+            assert!(
+                value >= 0x1000_0000,
+                "scid {scid} keeps the 0x10000000 marker"
+            );
+        }
+        assert_ne!(
+            super::scrcpy_scid_hex(0x8000_0000, 0),
+            super::scrcpy_scid_hex(0x8000_0000, 1),
+            "the audio=false retry salt must yield a different scid"
+        );
+    }
+
+    #[test]
+    fn opus_review_audio_fallback_reason_does_not_blame_audio_when_retry_also_fails() {
+        let degraded = super::audio_fallback_reason("handshake eof", Some("audio init"), None);
+        assert!(degraded.contains("Audio capture failed"), "{degraded}");
+        assert!(
+            degraded.contains("degraded to video + logs + taps"),
+            "{degraded}"
+        );
+
+        let both_failed = super::audio_fallback_reason(
+            "handshake eof",
+            Some("MediaCodec busy"),
+            Some("video tunnel timed out"),
+        );
+        assert!(
+            !both_failed.contains("degraded to video"),
+            "video did not start, so the reason must not claim video continues: {both_failed}"
+        );
+        assert!(
+            both_failed.contains("scrcpy-server failed to start"),
+            "{both_failed}"
+        );
+        assert!(
+            both_failed.contains("video tunnel timed out"),
+            "{both_failed}"
         );
     }
 }

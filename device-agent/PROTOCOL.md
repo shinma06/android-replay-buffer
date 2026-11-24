@@ -109,7 +109,7 @@ Sent exactly once immediately after the host connects, before any `Heartbeat` or
 | 4 | `u8` | `boot_id_source` | `0 = KernelProcBootId` (`/proc/sys/kernel/random/boot_id`), `1 = FallbackBootCountBtime` (`boot_count` + `/proc/stat btime`), `2 = FallbackRandomUuid` (last-resort per-process UUID) |
 | 5 | `u8` | `is_emulator` | `1` if emulator heuristics match (`ro.kernel.qemu`/`ro.boot.qemu`/`Build.*`), else `0` |
 | 6 | `u32` | `heartbeat_interval_ms` | Configured heartbeat period in milliseconds (default `300`, clamped to `[100, 5000]`) |
-| 7 | `str16` | `boot_id` | Canonical kernel boot UUID, or `fallback:bc=<boot_count>:btime=<sec>`, or `fallback:random:<uuid>` |
+| 7 | `str16` | `boot_id` | Canonical kernel boot UUID, or `fallback:bc=<boot_count>` (clock-independent; older agents sent `fallback:bc=<boot_count>:btime=<sec>`), or `fallback:btime=<sec>` when `boot_count` is unreadable, or `fallback:random:<uuid>`. The host treats the value as opaque. |
 | 8 | `str16` | `model` | `android.os.Build.MODEL` |
 | 9 | `str16` | `manufacturer` | `android.os.Build.MANUFACTURER` |
 | 10 | `str16` | `agent_version` | Companion semantic version string (e.g., `"0.1.0"`) |

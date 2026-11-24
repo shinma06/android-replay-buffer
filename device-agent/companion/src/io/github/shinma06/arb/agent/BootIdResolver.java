@@ -73,8 +73,8 @@ public final class BootIdResolver {
      * Resolves {@code boot_id} with deterministic fallback order:
      * <ol>
      *   <li>Kernel UUID from {@code /proc/sys/kernel/random/boot_id}</li>
-     *   <li>Deterministic {@code fallback:bc=<boot_count>:btime=<sec>} when either {@code boot_count >= 0}
-     *       or {@code /proc/stat btime > 0}</li>
+     *   <li>Deterministic {@code fallback:bc=<boot_count>} when {@code boot_count >= 0} (clock-independent),
+     *       else {@code fallback:btime=<sec>} when {@code /proc/stat btime > 0}</li>
      *   <li>Last-resort {@code fallback:random:<uuid>} with honest {@code BOOT_ID_FALLBACK_RANDOM_UUID}
      *       source so the host treats reconnect continuity as unverified instead of failing startup.</li>
      * </ol>
@@ -105,9 +105,14 @@ public final class BootIdResolver {
                     "proc_stat_error:" + t.getClass().getSimpleName() + ":" + safe(t.getMessage()));
         }
 
-        if (bootCount >= 0 || btime > 0) {
-            String fallbackId = "fallback:bc=" + bootCount + ":btime=" + btime;
-            return new Result(fallbackId, Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, bootIdDetail);
+        // /proc/stat btime is derived from the wall clock and shifts whenever it is stepped
+        // (NITZ/NTP sync, manual date change) within one boot, so it is only used when
+        // boot_count (boot-scoped, clock-independent) is unavailable.
+        if (bootCount >= 0) {
+            return new Result("fallback:bc=" + bootCount, Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, bootIdDetail);
+        }
+        if (btime > 0) {
+            return new Result("fallback:btime=" + btime, Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, bootIdDetail);
         }
 
         String trimmedReason = safe(bootReason).trim();

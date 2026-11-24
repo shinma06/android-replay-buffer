@@ -3625,7 +3625,7 @@ mod tests {
         assert_eq!(
             view.audio_reason.as_deref(),
             Some(
-                "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+                "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps."
             )
         );
         assert_eq!(view.device_api_warning, None);

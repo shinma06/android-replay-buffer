@@ -51,8 +51,33 @@ public final class Aos9CompatTest {
         BootIdResolver.Result fallbackBc = BootIdResolver.resolve(
                 eaccesBootId, BootIdResolver.DEFAULT_PROC_BOOT_ID, BootIdResolver.DEFAULT_PROC_STAT, 12, "reboot");
         assertEq(Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, fallbackBc.bootIdSource, "EACCES fallback source");
-        assertEq("fallback:bc=12:btime=1712345678", fallbackBc.bootId, "EACCES deterministic fallback id");
+        assertEq("fallback:bc=12", fallbackBc.bootId, "EACCES deterministic fallback id");
         assertTrue(fallbackBc.bootIdDetail.contains("EACCES"), "detail preserves EACCES diagnostic");
+
+        // 2b. /proc/stat btime shifts when the wall clock is stepped (NITZ/NTP, manual date change)
+        //     within the same boot: the boot_count-based id must stay identical so a reconnect is
+        //     never misclassified as DEVICE_REBOOT.
+        BootIdResolver.ProcReader eaccesBootIdClockStepped = new BootIdResolver.ProcReader() {
+            @Override
+            public String readFirstLine(String path) throws IOException {
+                throw new IOException("/proc/sys/kernel/random/boot_id: open failed: EACCES (Permission denied)");
+            }
+
+            @Override
+            public long readProcStatBtime(String path) {
+                return 1712345678L + 3600L;
+            }
+        };
+        BootIdResolver.Result afterClockStep = BootIdResolver.resolve(
+                eaccesBootIdClockStepped, BootIdResolver.DEFAULT_PROC_BOOT_ID, BootIdResolver.DEFAULT_PROC_STAT, 12, "reboot");
+        assertEq(fallbackBc.bootId, afterClockStep.bootId, "fallback id is stable across wall-clock steps");
+        assertEq(Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, afterClockStep.bootIdSource, "clock-step fallback source");
+
+        // 2c. boot_count unreadable -> btime-only fallback (best effort, still deterministic).
+        BootIdResolver.Result btimeOnly = BootIdResolver.resolve(
+                eaccesBootId, BootIdResolver.DEFAULT_PROC_BOOT_ID, BootIdResolver.DEFAULT_PROC_STAT, -1, "reboot");
+        assertEq(Protocol.BOOT_ID_FALLBACK_BOOT_COUNT_BTIME, btimeOnly.bootIdSource, "btime-only fallback source");
+        assertEq("fallback:btime=1712345678", btimeOnly.bootId, "btime-only fallback id");
 
         // 3. Double SELinux EACCES (/proc/sys/kernel/random/boot_id AND /proc/stat) + unreadable boot_count
         //    -> honest random UUID fallback with bootreason diagnostic (never crashes startup!)

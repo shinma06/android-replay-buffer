@@ -22,7 +22,8 @@ pub const AM_CRASH_EVENT_TAG: i32 = 30_039;
 /// Android `events` logcat numeric tag for `am_on_resume_called` (API <= 28) / `wm_on_resume_called` (API 29+).
 pub const WM_ON_RESUME_CALLED_EVENT_TAG: i32 = 30_022;
 
-/// Android `events` logcat numeric tag for `am_focused_activity` (API <= 28) / `wm_set_resumed_activity` (API 29+).
+/// Android `events` logcat numeric tag for `am_focused_activity` (API <= 27) /
+/// `am_set_resumed_activity` (API 28) / `wm_set_resumed_activity` (API 29+).
 pub const WM_RESUMED_ACTIVITY_EVENT_TAG: i32 = 30_043;
 
 /// Android `system_server` UID (`AID_SYSTEM`).
@@ -701,6 +702,7 @@ fn is_system_server_screen_tag(tag: Option<&str>) -> bool {
             "wm_resumed_activity"
                 | "wm_set_resumed_activity"
                 | "am_focused_activity"
+                | "am_set_resumed_activity"
                 | "30043"
                 | "am_resume_activity"
                 | "wm_resume_activity"
@@ -709,6 +711,25 @@ fn is_system_server_screen_tag(tag: Option<&str>) -> bool {
                 | "ActivityManager"
         )
     )
+}
+
+/// `am_on_resume_called` / `wm_on_resume_called` (`30022`) is written from the app's own
+/// process, so any app can emit one naming another app's Activity. When the record's UID
+/// maps to an app package, that UID-authenticated package wins over the self-reported one.
+fn uid_authenticated_component(
+    log: &LogRecord,
+    mut comp: ParsedActivityComponent,
+) -> ParsedActivityComponent {
+    if is_app_resume_event_tag(log.tag.as_deref())
+        && let Some(own) = log
+            .package_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && !matches!(*p, "android" | "system_server"))
+    {
+        own.clone_into(&mut comp.package_name);
+    }
+    comp
 }
 
 fn is_authentic_screen_transition_record(log: &LogRecord) -> bool {
@@ -725,7 +746,8 @@ fn is_authentic_screen_transition_record(log: &LogRecord) -> bool {
 /// (API 28 `am_*`) and Android 10+ (API 29+ `wm_*`) formats:
 /// - `wm_on_resume_called` / `am_on_resume_called` (`30022`): `[TokenOrUser,ComponentName,Reason(,time)]`
 /// - `am_resume_activity` / `wm_resume_activity` (`30007`): `[User,Token,TaskId,ComponentName]`
-/// - `am_focused_activity` / `wm_set_resumed_activity` (`30043`): `[User,ComponentName(,Reason)]`
+/// - `am_focused_activity` (API <= 27) / `am_set_resumed_activity` (API 28) /
+///   `wm_set_resumed_activity` (API 29+) (`30043`): `[User,ComponentName(,Reason)]`
 /// - `wm_resumed_activity` (`30043`): `[User,ComponentName,Reason]` or `[User,Token,ComponentName]`
 /// - `ActivityTaskManager` / `ActivityManager`: `Displayed <ComponentName> ...`
 #[must_use]
@@ -774,12 +796,14 @@ pub fn parse_screen_transition_line(
 
     if matches!(
         trimmed_tag,
-        Some("am_focused_activity" | "wm_set_resumed_activity")
+        Some("am_focused_activity" | "am_set_resumed_activity" | "wm_set_resumed_activity")
     ) || trimmed_msg.starts_with("am_focused_activity:")
+        || trimmed_msg.starts_with("am_set_resumed_activity:")
         || trimmed_msg.starts_with("wm_set_resumed_activity:")
     {
         let body = trimmed_msg
             .strip_prefix("am_focused_activity:")
+            .or_else(|| trimmed_msg.strip_prefix("am_set_resumed_activity:"))
             .or_else(|| trimmed_msg.strip_prefix("wm_set_resumed_activity:"))
             .map_or(trimmed_msg, str::trim);
         let inner = body.strip_prefix('[')?.strip_suffix(']')?;
@@ -904,7 +928,7 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
             continue;
         }
         if let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message) {
-            transitions.push((bt, log.seq, comp));
+            transitions.push((bt, log.seq, uid_authenticated_component(log, comp)));
         }
     }
 
@@ -2641,4 +2665,82 @@ mod tests {
             "app PID log must be attributed via AOS 9 am_on_resume_called"
         );
     }
+
+    #[test]
+    fn opus_review_app_uid_resume_event_cannot_forge_another_apps_screen_package() {
+        let frames = vec![make_frame(0, 10 * SEC), make_frame(1, 20 * SEC)];
+
+        // A third-party app (UID mapped to `com.evil.app`) writes EventLog 30022 naming a
+        // banking Activity: the span must stay attributed to the writer's own package.
+        let mut forged = make_log(
+            1,
+            10 * SEC,
+            "am_on_resume_called",
+            7777,
+            "[0,com.bank.secure.LoginActivity,RESUME_ACTIVITY]",
+        );
+        forged.uid = Some(10_999);
+        forged.package_name = Some("com.evil.app".to_owned());
+
+        // A genuine app whose Activity lives outside its package namespace: the
+        // UID-authenticated package is the real one, not the class's Java package.
+        let mut genuine = make_log(
+            2,
+            15 * SEC,
+            "wm_on_resume_called",
+            5100,
+            "[123,com.work.ui.MainActivity,RESUME_ACTIVITY]",
+        );
+        genuine.uid = Some(10_200);
+        genuine.package_name = Some("com.work.app".to_owned());
+
+        // Unknown / ambiguous (shared) UID: cannot authenticate, keep the parsed component.
+        let mut unmapped = make_log(
+            3,
+            18 * SEC,
+            "am_on_resume_called",
+            6100,
+            "[0,com.shared.app.HomeActivity,RESUME_ACTIVITY]",
+        );
+        unmapped.uid = Some(10_012);
+
+        let spans = extract_screen_spans(&[forged, genuine, unmapped], &frames);
+        assert_eq!(spans.len(), 3, "{spans:?}");
+        assert!(
+            spans.iter().all(|s| s.package_name != "com.bank.secure"),
+            "an app UID must never attribute a screen span to another package: {spans:?}"
+        );
+        assert_eq!(spans[0].package_name, "com.evil.app");
+        assert_eq!(spans[1].package_name, "com.work.app");
+        assert_eq!(spans[1].short_name, "MainActivity");
+        assert_eq!(spans[2].package_name, "com.shared.app");
+    }
+
+    #[test]
+    fn opus_review_aos9_am_set_resumed_activity_text_tag_is_a_system_server_screen_tag() {
+        let frames = vec![make_frame(0, 10 * SEC), make_frame(1, 20 * SEC)];
+        let mut genuine = make_log(
+            1,
+            10 * SEC,
+            "am_set_resumed_activity",
+            1000,
+            "[0,com.work.aos9/.MainActivity,resumeTopActivityInnerLocked]",
+        );
+        genuine.uid = Some(SYSTEM_UID_FOR_TESTS);
+        let mut spoofed = make_log(
+            2,
+            12 * SEC,
+            "am_set_resumed_activity",
+            7777,
+            "[0,com.evil.spoof/.Fake,resumeTopActivityInnerLocked]",
+        );
+        spoofed.uid = Some(10_999);
+
+        let spans = extract_screen_spans(&[genuine, spoofed], &frames);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].package_name, "com.work.aos9");
+        assert_eq!(spans[0].short_name, "MainActivity");
+    }
+
+    const SYSTEM_UID_FOR_TESTS: u32 = super::SYSTEM_UID;
 }

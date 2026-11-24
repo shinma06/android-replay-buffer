@@ -43,7 +43,9 @@ pub const AUDIO_CODEC_ERROR: u32 = 1;
 /// alongside an honest non-blocking diagnostic warning.
 pub const MIN_SUPPORTED_ANDROID_API_LEVEL: u32 = 28;
 
-/// Minimum Android API level required for native `scrcpy-server` audio capture (Android 11 / API 30).
+/// Minimum Android API level at which upstream `scrcpy-server` can capture audio at all
+/// (Android 11 / API 30). ARB only captures audio from [`MIN_AUDIO_PLAYBACK_API_LEVEL`],
+/// because below it capture would mute the device's own playback.
 pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 = 30;
 
 /// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true` (Android 13 / API 33).
@@ -191,17 +193,14 @@ pub fn audio_unavailable_reason_for_api(api_level: u32) -> Option<String> {
     if api_level == 0 {
         return None;
     }
-    if api_level < MIN_AUDIO_SCRCPY_API_LEVEL {
-        return Some(format!(
-            "Audio capture requires Android 11+ (API 30+); detected API {api_level}. Continuing with video + logs + taps."
-        ));
-    }
-    if api_level < MIN_AUDIO_PLAYBACK_API_LEVEL {
-        return Some(format!(
-            "Non-muting playback audio capture requires Android 13+ (API 33+); detected API {api_level}. Continuing with video + logs + taps."
-        ));
-    }
-    None
+    // `scrcpy-server` can capture audio from API 30, but only `audio_source=playback
+    // audio_dup=true` (API 33+) keeps the device's own audio playing, so ARB never captures
+    // audio below API 33 and the reason must not suggest Android 11/12 would.
+    (api_level < MIN_AUDIO_PLAYBACK_API_LEVEL).then(|| {
+        format!(
+            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API {api_level}. Continuing with video + logs + taps."
+        )
+    })
 }
 
 /// Video session metadata header emitted before video packets and on rotation/resize.
@@ -1071,14 +1070,23 @@ mod tests {
 
         let reason_28 = super::audio_unavailable_reason_for_api(28)
             .expect("API 28 must produce a clear diagnostic reason");
+        // Audio is only ever captured on API 33+ (non-muting playback capture), so no reason
+        // may suggest that Android 11/12 (API 30-32) would capture audio.
         assert_eq!(
             reason_28,
-            "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API 28. Continuing with video + logs + taps."
         );
-        let reason_29 = super::audio_unavailable_reason_for_api(29).expect("API 29 reason");
-        assert!(reason_29.contains("API 30+") && reason_29.contains("API 29"));
-        let reason_30 = super::audio_unavailable_reason_for_api(30).expect("API 30 reason");
-        assert!(reason_30.contains("API 33+") && reason_30.contains("API 30"));
+        for api in [24_u32, 28, 29, 30, 31, 32] {
+            let reason = super::audio_unavailable_reason_for_api(api).expect("API < 33 reason");
+            assert!(
+                reason.contains("API 33+") && reason.contains(&format!("detected API {api}.")),
+                "{reason}"
+            );
+            assert!(
+                !reason.contains("Android 11") && !reason.contains("API 30+"),
+                "{reason}"
+            );
+        }
         assert_eq!(super::audio_unavailable_reason_for_api(33), None);
         assert_eq!(super::audio_unavailable_reason_for_api(0), None);
 
