@@ -29,7 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
-use arb_adb::scrcpy::VideoPacketKind;
+use arb_adb::scrcpy::{
+    AudioTunnelStatus, VideoPacketKind, audio_unavailable_reason_for_api,
+    unsupported_android_api_warning,
+};
 use arb_adb::wire::{
     LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload, UNKNOWN_U32,
 };
@@ -65,7 +68,9 @@ use arb_storage::ring::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
-use crate::protocol::{CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse};
+use crate::protocol::{
+    AudioCaptureState, CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse,
+};
 use crate::time_util::{next_id, utc_now_iso8601};
 
 const NANOS_PER_SEC: i64 = 1_000_000_000;
@@ -539,6 +544,9 @@ pub struct CapturePipeline {
     storage_pressure_stopped: bool,
     capture_mode: CaptureMode,
     last_video_error: Option<String>,
+    audio_state: AudioCaptureState,
+    audio_reason: Option<String>,
+    device_api_warning: Option<String>,
     clock_domain: ClockDomain,
     session_generation: u64,
     serial: Option<String>,
@@ -593,6 +601,9 @@ impl CapturePipeline {
             storage_pressure_stopped: false,
             capture_mode: CaptureMode::VideoAndLogs,
             last_video_error: None,
+            audio_state: AudioCaptureState::Unknown,
+            audio_reason: None,
+            device_api_warning: None,
             clock_domain: ClockDomain::Replayed,
             session_generation: 0,
             serial: None,
@@ -750,6 +761,27 @@ impl CapturePipeline {
         }
     }
 
+    /// Records the live audio capture availability state and optional diagnostic reason
+    /// for `system.status`.
+    pub fn set_audio_status_for_session(
+        &mut self,
+        generation: u64,
+        state: AudioCaptureState,
+        reason: Option<String>,
+    ) {
+        if generation == self.session_generation {
+            self.audio_state = state;
+            self.audio_reason = reason;
+        }
+    }
+
+    /// Records or clears a non-blocking device Android API support-floor warning.
+    pub fn set_device_api_warning_for_session(&mut self, generation: u64, warning: Option<String>) {
+        if generation == self.session_generation {
+            self.device_api_warning = warning;
+        }
+    }
+
     fn begin_session_inner(
         &mut self,
         serial: String,
@@ -762,6 +794,13 @@ impl CapturePipeline {
         self.storage_pressure_stopped = false;
         self.capture_mode = capture_mode;
         self.last_video_error = None;
+        self.audio_state = if capture_mode == CaptureMode::LogsOnly {
+            AudioCaptureState::Disabled
+        } else {
+            AudioCaptureState::Unknown
+        };
+        self.audio_reason = None;
+        self.device_api_warning = None;
         self.clock_domain = clock_domain;
         self.serial = Some(serial.clone());
         self.device.serial = serial;
@@ -834,6 +873,9 @@ impl CapturePipeline {
             storage_pressure_stopped: self.storage_pressure_stopped,
             capture_mode: self.capture_mode,
             last_video_error: self.last_video_error.clone(),
+            audio_state: self.audio_state,
+            audio_reason: self.audio_reason.clone(),
+            device_api_warning: self.device_api_warning.clone(),
             video_frames: self.video_frames_seen,
             audio_frames: self.audio_frames_seen,
             log_records: self.log_records_seen,
@@ -962,13 +1004,38 @@ impl CapturePipeline {
 
         let mut should_flush = detected_crash.is_some();
         let approx_bytes = estimate_event_bytes(&event);
+        if self.apply_live_event_state(&event) {
+            should_flush = true;
+        }
 
-        match &event {
+        self.pending_bytes = self.pending_bytes.saturating_add(approx_bytes);
+        self.pending_events.push(event);
+
+        let flushed = if should_flush
+            || self.pending_events.len() >= MAX_BATCH_EVENTS
+            || self.pending_bytes >= MAX_BATCH_BYTES
+        {
+            self.flush_pending_chunk()
+        } else {
+            Ok(())
+        };
+
+        // Notify even when the flush failed: a crash must still be counted and may auto-save.
+        self.notify_detected_crash(detected_crash);
+        flushed
+    }
+
+    fn apply_live_event_state(&mut self, event: &CaptureEvent) -> bool {
+        let mut should_flush = false;
+        match event {
             CaptureEvent::Hello { payload, .. } => {
                 self.connected = true;
                 self.device.model.clone_from(&payload.model);
                 self.device.api_level = payload.api_level;
                 self.device.is_emulator = payload.is_emulator;
+                if self.device_api_warning.is_none() {
+                    self.device_api_warning = unsupported_android_api_warning(payload.api_level);
+                }
                 should_flush = true;
             }
             CaptureEvent::Heartbeat {
@@ -1006,6 +1073,14 @@ impl CapturePipeline {
             }
             CaptureEvent::AudioFrame { .. } => {
                 self.audio_frames_seen += 1;
+                self.audio_state = AudioCaptureState::Available;
+                self.audio_reason = None;
+            }
+            CaptureEvent::AudioUnavailable { status, .. } => {
+                self.audio_state = AudioCaptureState::Unavailable;
+                if self.audio_reason.is_none() {
+                    self.audio_reason = Some(default_audio_unavailable_reason(*status));
+                }
             }
             CaptureEvent::LogRecord { .. } => {
                 self.log_records_seen += 1;
@@ -1034,22 +1109,7 @@ impl CapturePipeline {
             }
             _ => {}
         }
-
-        self.pending_bytes = self.pending_bytes.saturating_add(approx_bytes);
-        self.pending_events.push(event);
-
-        let flushed = if should_flush
-            || self.pending_events.len() >= MAX_BATCH_EVENTS
-            || self.pending_bytes >= MAX_BATCH_BYTES
-        {
-            self.flush_pending_chunk()
-        } else {
-            Ok(())
-        };
-
-        // Notify even when the flush failed: a crash must still be counted and may auto-save.
-        self.notify_detected_crash(detected_crash);
-        flushed
+        should_flush
     }
 
     fn notify_detected_crash(&self, detected_crash: Option<(i64, ParsedAmCrash)>) {
@@ -2793,23 +2853,58 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
     }
 }
 
+fn default_audio_unavailable_reason(status: AudioTunnelStatus) -> String {
+    match status {
+        AudioTunnelStatus::UnavailableApiLevel { api_level, .. } => {
+            audio_unavailable_reason_for_api(api_level).unwrap_or_else(|| {
+                format!(
+                    "Audio capture unavailable on Android API {api_level}. Continuing with video + logs + taps."
+                )
+            })
+        }
+        AudioTunnelStatus::DisabledByDevice => {
+            "Device disabled or refused audio capture (codec_id = 0). Continuing with video + logs + taps."
+                .to_owned()
+        }
+        AudioTunnelStatus::DeviceError => {
+            "Device audio capture failed to initialize. Continuing with video + logs + taps."
+                .to_owned()
+        }
+        _ => "Audio capture unavailable. Continuing with video + logs + taps.".to_owned(),
+    }
+}
+
 fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
     let (tag, message) = decode_log_tag_and_message_raw(payload);
-    // System event tags (`am_crash`, `wm_*`, `ActivityTaskManager`, ...) are only authentic from
-    // system_server (uid 1000). An app that writes its own text or `EventLog` record under one
-    // of them must not be stored under that tag, or `timeline.crashes` / `timeline.screens`
+    // System-server event tags (`am_crash`, `am_focused_activity`, `am_resume_activity`,
+    // `wm_resumed_activity`, `ActivityManager`, `ActivityTaskManager`, ...) are only authentic
+    // from system_server (uid 1000). An app that writes its own text or `EventLog` record under
+    // one of them must not be stored under that tag, or `timeline.crashes` / `timeline.screens`
     // would show forged entries.
-    if matches!(
-        tag.trim(),
+    let trimmed = tag.trim();
+    let is_system_only_tag = matches!(
+        trimmed,
         "am_crash"
             | "30039"
-            | "wm_on_resume_called"
-            | "30022"
+            | "am_focused_activity"
+            | "am_resume_activity"
+            | "wm_resume_activity"
+            | "30007"
             | "wm_resumed_activity"
+            | "wm_set_resumed_activity"
             | "30043"
             | "ActivityTaskManager"
             | "ActivityManager"
-    ) && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
+    );
+    // `am_on_resume_called` / `wm_on_resume_called` (binary events tag 30022) is emitted by
+    // ActivityThread inside the app's own process (app UID), whereas plain text logs under that
+    // tag from a non-system UID are rejected to prevent text-log spoofing.
+    let is_spoofed_text_resume = matches!(
+        trimmed,
+        "wm_on_resume_called" | "am_on_resume_called" | "30022"
+    ) && !payload.is_binary_event();
+    if (is_system_only_tag || is_spoofed_text_resume)
+        && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
     {
         return (format!("app:{tag}"), message);
     }
@@ -3406,6 +3501,171 @@ mod tests {
             pipeline.buffered_secs(),
             3,
             "new session must report only its own buffered span (3s)"
+        );
+    }
+
+    #[test]
+    fn t6e_decode_log_tag_preserves_binary_app_30022_and_blocks_spoofed_aos9_am_tags() {
+        use arb_adb::wire::{LOG_RECORD_FLAG_BINARY_EVENT, LogRecordPayload};
+        use arb_core::analytics::{
+            AM_RESUME_ACTIVITY_EVENT_TAG, WM_ON_RESUME_CALLED_EVENT_TAG,
+            WM_RESUMED_ACTIVITY_EVENT_TAG,
+        };
+
+        let make_text = |uid: u32, tag: &str, msg: &str| {
+            let mut bytes = vec![4u8];
+            bytes.extend_from_slice(tag.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(msg.as_bytes());
+            bytes.push(0);
+            LogRecordPayload {
+                device_read_boottime_ns: 1_000,
+                log_sec: 1,
+                log_nsec: 0,
+                pid: 4200,
+                tid: 4200,
+                lid: 0,
+                uid,
+                hdr_size: 28,
+                priority: 4,
+                record_flags: 0,
+                payload: bytes,
+            }
+        };
+
+        let make_bin = |uid: u32, event_tag: i32, component: &str| {
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&event_tag.to_le_bytes());
+            raw.push(3); // LIST
+            raw.push(3);
+            raw.push(0);
+            raw.extend_from_slice(&0_i32.to_le_bytes());
+            raw.push(2);
+            raw.extend_from_slice(&u32::try_from(component.len()).expect("len").to_le_bytes());
+            raw.extend_from_slice(component.as_bytes());
+            raw.push(2);
+            raw.extend_from_slice(&6_u32.to_le_bytes());
+            raw.extend_from_slice(b"RESUME");
+            LogRecordPayload {
+                device_read_boottime_ns: 1_000,
+                log_sec: 1,
+                log_nsec: 0,
+                pid: 4200,
+                tid: 4200,
+                lid: 2,
+                uid,
+                hdr_size: 28,
+                priority: 0,
+                record_flags: LOG_RECORD_FLAG_BINARY_EVENT,
+                payload: raw,
+            }
+        };
+
+        // Authentic binary 30022 (am_on_resume_called / wm_on_resume_called) from app UID 10200 is preserved!
+        let app_bin_30022 = make_bin(10_200, WM_ON_RESUME_CALLED_EVENT_TAG, "com.work.app.Main");
+        assert_eq!(
+            super::decode_log_tag_and_message(&app_bin_30022).0,
+            "wm_on_resume_called"
+        );
+
+        // Spoofed text log using tag `am_on_resume_called` from app UID 10200 is quarantined with `app:`.
+        let spoof_text_resume = make_text(
+            10_200,
+            "am_on_resume_called",
+            "[0,com.victim.app.Main,RESUME]",
+        );
+        assert_eq!(
+            super::decode_log_tag_and_message(&spoof_text_resume).0,
+            "app:am_on_resume_called"
+        );
+
+        // Spoofed system_server binary/text tags from app UID 10200 are quarantined with `app:`.
+        let spoof_bin_30043 = make_bin(10_200, WM_RESUMED_ACTIVITY_EVENT_TAG, "com.evil/.Main");
+        assert_eq!(
+            super::decode_log_tag_and_message(&spoof_bin_30043).0,
+            "app:wm_resumed_activity"
+        );
+        let spoof_bin_30007 = make_bin(10_200, AM_RESUME_ACTIVITY_EVENT_TAG, "com.evil/.Main");
+        assert_eq!(
+            super::decode_log_tag_and_message(&spoof_bin_30007).0,
+            "app:am_resume_activity"
+        );
+        let sys_bin_30007 = make_bin(1000, AM_RESUME_ACTIVITY_EVENT_TAG, "com.work/.Main");
+        assert_eq!(
+            super::decode_log_tag_and_message(&sys_bin_30007).0,
+            "am_resume_activity"
+        );
+    }
+
+    #[test]
+    fn t6e_capture_pipeline_surfaces_aos9_audio_unavailable_status() {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut pipeline = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .expect("open pipeline");
+        let _ = pipeline.begin_live_session("aos9-dev");
+        pipeline
+            .ingest_event(CaptureEvent::AudioUnavailable {
+                pc_cont_ns: 1_000,
+                boot_id: "boot-1".to_owned(),
+                status: arb_adb::scrcpy::AudioTunnelStatus::UnavailableApiLevel {
+                    api_level: 28,
+                    min_required: 33,
+                },
+            })
+            .expect("ingest AudioUnavailable");
+        let view = pipeline.status_view();
+        assert_eq!(
+            view.audio_state,
+            crate::protocol::AudioCaptureState::Unavailable
+        );
+        assert_eq!(
+            view.audio_reason.as_deref(),
+            Some(
+                "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+            )
+        );
+        assert_eq!(view.device_api_warning, None);
+
+        // API < 28 (e.g. API 27) sets a non-blocking warning without blocking capture.
+        let gen2 = pipeline.begin_live_session("aos8-legacy");
+        pipeline
+            .ingest_event_for_session(
+                gen2,
+                CaptureEvent::Hello {
+                    pc_cont_ns: 2_000,
+                    payload: arb_adb::wire::HelloPayload {
+                        protocol_version: 1,
+                        api_level: 27,
+                        boot_count: 1,
+                        boot_id_source: arb_adb::wire::BootIdSource::KernelProcBootId,
+                        is_emulator: false,
+                        heartbeat_interval_ms: 250,
+                        boot_id: "boot-27".to_owned(),
+                        model: "Legacy".to_owned(),
+                        manufacturer: "OEM".to_owned(),
+                        agent_version: "0.1.0".to_owned(),
+                        boot_id_detail: String::new(),
+                    },
+                    classification: arb_adb::adb::ReconnectClassification::InitialConnection {
+                        boot_id: "boot-27".to_owned(),
+                        boot_id_source: arb_adb::wire::BootIdSource::KernelProcBootId,
+                    },
+                },
+            )
+            .expect("API 27 Hello must not be hard-blocked");
+        let view27 = pipeline.status_view();
+        assert!(view27.active && view27.connected);
+        assert!(
+            view27
+                .device_api_warning
+                .as_deref()
+                .is_some_and(|w| w.contains("API 27")),
+            "API 27 must surface non-blocking warning: {:?}",
+            view27.device_api_warning
         );
     }
 }

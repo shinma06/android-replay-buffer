@@ -37,7 +37,16 @@ pub const AUDIO_CODEC_DISABLED: u32 = 0;
 /// `scrcpy` audio codec sentinel indicating device-side audio initialization error.
 pub const AUDIO_CODEC_ERROR: u32 = 1;
 
-/// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true`.
+/// Official minimum supported Android API level (Android 9 / API 28).
+///
+/// Devices below this floor are NEVER hard-blocked; capture proceeds best-effort with `audio=false`
+/// alongside an honest non-blocking diagnostic warning.
+pub const MIN_SUPPORTED_ANDROID_API_LEVEL: u32 = 28;
+
+/// Minimum Android API level required for native `scrcpy-server` audio capture (Android 11 / API 30).
+pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 = 30;
+
+/// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true` (Android 13 / API 33).
 pub const MIN_AUDIO_PLAYBACK_API_LEVEL: u32 = 33;
 
 /// Maximum permitted H.264 video packet byte length (`16 MiB`).
@@ -162,6 +171,37 @@ pub const fn check_audio_availability(api_level: u32) -> Result<(), ScrcpyError>
         });
     }
     Ok(())
+}
+
+/// Returns a non-blocking diagnostic warning when `api_level` is below the official
+/// Android 9 (API 28) support floor (`0 < api_level < 28`), or `None` for API 28+ or unknown (`0`).
+#[must_use]
+pub fn unsupported_android_api_warning(api_level: u32) -> Option<String> {
+    (api_level > 0 && api_level < MIN_SUPPORTED_ANDROID_API_LEVEL).then(|| {
+        format!(
+            "Android 9 (API 28) 未満は非サポート対象です (API {api_level})。ベストエフォートで音声なしキャプチャを継続します。"
+        )
+    })
+}
+
+/// Returns an honest, user-facing diagnostic reason when audio capture must be proactively
+/// disabled for `api_level`, or `None` when `api_level == 0` (unknown) or `>= 33`.
+#[must_use]
+pub fn audio_unavailable_reason_for_api(api_level: u32) -> Option<String> {
+    if api_level == 0 {
+        return None;
+    }
+    if api_level < MIN_AUDIO_SCRCPY_API_LEVEL {
+        return Some(format!(
+            "Audio capture requires Android 11+ (API 30+); detected API {api_level}. Continuing with video + logs + taps."
+        ));
+    }
+    if api_level < MIN_AUDIO_PLAYBACK_API_LEVEL {
+        return Some(format!(
+            "Non-muting playback audio capture requires Android 13+ (API 33+); detected API {api_level}. Continuing with video + logs + taps."
+        ));
+    }
+    None
 }
 
 /// Video session metadata header emitted before video packets and on rotation/resize.
@@ -1003,5 +1043,55 @@ mod tests {
                 "audio packet length {bad_len} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn t6e_aos9_api_28_proactively_disables_audio_with_clear_reason() {
+        let opts = ScrcpyLaunchOptions::fhd30("1a2b3c4d");
+        let (args_28, status_28) = opts.build_server_args(28);
+        assert_eq!(
+            status_28,
+            AudioTunnelStatus::UnavailableApiLevel {
+                api_level: 28,
+                min_required: 33,
+            }
+        );
+        assert!(
+            args_28.iter().any(|a| a == "audio=false"),
+            "API 28 must launch scrcpy-server with audio=false"
+        );
+        assert!(
+            !args_28.iter().any(|a| a == "audio=true"),
+            "API 28 must never pass audio=true"
+        );
+        assert!(
+            args_28.iter().any(|a| a == "video_codec=h264"),
+            "API 28 must preserve H.264 video capture"
+        );
+
+        let reason_28 = super::audio_unavailable_reason_for_api(28)
+            .expect("API 28 must produce a clear diagnostic reason");
+        assert_eq!(
+            reason_28,
+            "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+        );
+        let reason_29 = super::audio_unavailable_reason_for_api(29).expect("API 29 reason");
+        assert!(reason_29.contains("API 30+") && reason_29.contains("API 29"));
+        let reason_30 = super::audio_unavailable_reason_for_api(30).expect("API 30 reason");
+        assert!(reason_30.contains("API 33+") && reason_30.contains("API 30"));
+        assert_eq!(super::audio_unavailable_reason_for_api(33), None);
+        assert_eq!(super::audio_unavailable_reason_for_api(0), None);
+
+        // Support floor check: API < 28 emits non-blocking warning and never hard-blocks; API 28+ is None.
+        let warn_27 = super::unsupported_android_api_warning(27)
+            .expect("API 27 must emit non-blocking support floor warning");
+        assert!(
+            warn_27.contains("Android 9 (API 28) 未満は非サポート対象です (API 27)"),
+            "warn_27={warn_27}"
+        );
+        assert_eq!(super::unsupported_android_api_warning(28), None);
+        assert_eq!(super::unsupported_android_api_warning(0), None);
+        let (args_27, _) = opts.build_server_args(27);
+        assert!(args_27.iter().any(|a| a == "audio=false"));
     }
 }

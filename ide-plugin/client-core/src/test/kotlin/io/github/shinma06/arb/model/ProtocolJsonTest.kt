@@ -111,4 +111,49 @@ class ProtocolJsonTest {
         // Subsequent frame remains cleanly aligned after draining oversized line.
         assertEquals("""{"ok":true}""", NdjsonFraming.readFrameLine(input, 64))
     }
+
+    @Test
+    fun captureStatusViewParsesAudioUnavailableAndOlderJsonWithoutAudioState() {
+        val aos9Json = """
+            {
+              "active": true,
+              "connected": true,
+              "capture_mode": "video_and_logs",
+              "serial": "aos9-work",
+              "boot_id": "fallback:bc=3:btime=1700000000",
+              "storage_pressure_stopped": false,
+              "video_frames": 90,
+              "audio_frames": 0,
+              "log_records": 42,
+              "tap_records": 3,
+              "discontinuities": 0,
+              "static_hold_events": 0,
+              "ring_write_errors": 0,
+              "audio_state": "unavailable",
+              "audio_reason": "Audio capture requires Android 11+ (API 30+); detected API 28. Continuing with video + logs + taps."
+            }
+        """.trimIndent()
+        val parsed = gson.fromJson(aos9Json, CaptureStatusView::class.java)
+        assertEquals(AudioCaptureState.UNAVAILABLE, parsed.audioState)
+        assertEquals(AudioCaptureState.UNAVAILABLE, parsed.effectiveAudioState)
+        assertTrue(parsed.audioReason!!.contains("API 28"))
+
+        val legacyJson = """
+            {
+              "active": false,
+              "connected": false,
+              "storage_pressure_stopped": false,
+              "video_frames": 0,
+              "audio_frames": 0,
+              "log_records": 0,
+              "tap_records": 0,
+              "discontinuities": 0,
+              "static_hold_events": 0
+            }
+        """.trimIndent()
+        val legacyParsed = gson.fromJson(legacyJson, CaptureStatusView::class.java)
+        assertEquals(null, legacyParsed.audioState)
+        assertEquals(AudioCaptureState.UNKNOWN, legacyParsed.effectiveAudioState)
+        assertEquals(null, legacyParsed.audioReason)
+    }
 }

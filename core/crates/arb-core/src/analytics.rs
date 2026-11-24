@@ -13,14 +13,20 @@ use thiserror::Error;
 use crate::bundle::{FrameRecord, LogRecord, RecordBucket};
 use crate::time::TimeAlignment;
 
+/// Android `events` logcat numeric tag for `am_resume_activity` (API <= 28) / `wm_resume_activity` (API 29+).
+pub const AM_RESUME_ACTIVITY_EVENT_TAG: i32 = 30_007;
+
 /// Android `events` logcat numeric tag for `am_crash` (`ActivityManager`).
 pub const AM_CRASH_EVENT_TAG: i32 = 30_039;
 
-/// Android `events` logcat numeric tag for `wm_on_resume_called`.
+/// Android `events` logcat numeric tag for `am_on_resume_called` (API <= 28) / `wm_on_resume_called` (API 29+).
 pub const WM_ON_RESUME_CALLED_EVENT_TAG: i32 = 30_022;
 
-/// Android `events` logcat numeric tag for `wm_resumed_activity`.
+/// Android `events` logcat numeric tag for `am_focused_activity` (API <= 28) / `wm_set_resumed_activity` (API 29+).
 pub const WM_RESUMED_ACTIVITY_EVENT_TAG: i32 = 30_043;
+
+/// Android `system_server` UID (`AID_SYSTEM`).
+pub const SYSTEM_UID: u32 = 1_000;
 
 /// Standard 8-byte PNG file signature (`\x89PNG\r\n\x1a\n`).
 pub const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -62,6 +68,7 @@ pub fn decode_binary_android_event(raw: &[u8]) -> Option<DecodedBinaryEvent> {
     let message = decode_event_value(raw, &mut cursor, 0)?;
 
     let tag_name = match event_tag {
+        AM_RESUME_ACTIVITY_EVENT_TAG => "am_resume_activity".to_owned(),
         AM_CRASH_EVENT_TAG => "am_crash".to_owned(),
         WM_ON_RESUME_CALLED_EVENT_TAG => "wm_on_resume_called".to_owned(),
         WM_RESUMED_ACTIVITY_EVENT_TAG => "wm_resumed_activity".to_owned(),
@@ -371,7 +378,10 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
         if log.bucket != RecordBucket::Main {
             continue;
         }
-        if let Some(parsed) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message) {
+        if is_system_server_uid(log.uid)
+            && let Some(parsed) =
+                parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+        {
             if parsed.is_fatal() {
                 let boottime_ns = log_boottime_hint(log);
                 let boot_id = log_boot_id_hint(log);
@@ -670,9 +680,53 @@ pub struct ParsedActivityComponent {
     pub short_name: String,
 }
 
-/// Parses a single logcat record for an Android Activity transition event:
-/// - `wm_on_resume_called`: `[Token,ComponentName,Reason(,time)]`
-/// - `wm_resumed_activity`: `[User,Token,ComponentName]`
+const fn is_system_server_uid(uid: Option<u32>) -> bool {
+    match uid {
+        Some(u) => u == SYSTEM_UID,
+        None => true,
+    }
+}
+
+fn is_app_resume_event_tag(tag: Option<&str>) -> bool {
+    matches!(
+        tag.map(str::trim),
+        Some("wm_on_resume_called" | "am_on_resume_called" | "30022")
+    )
+}
+
+fn is_system_server_screen_tag(tag: Option<&str>) -> bool {
+    matches!(
+        tag.map(str::trim),
+        Some(
+            "wm_resumed_activity"
+                | "wm_set_resumed_activity"
+                | "am_focused_activity"
+                | "30043"
+                | "am_resume_activity"
+                | "wm_resume_activity"
+                | "30007"
+                | "ActivityTaskManager"
+                | "ActivityManager"
+        )
+    )
+}
+
+fn is_authentic_screen_transition_record(log: &LogRecord) -> bool {
+    if is_app_resume_event_tag(log.tag.as_deref()) {
+        return true;
+    }
+    if is_system_server_screen_tag(log.tag.as_deref()) {
+        return is_system_server_uid(log.uid);
+    }
+    false
+}
+
+/// Parses a single logcat record for an Android Activity transition event across Android 9
+/// (API 28 `am_*`) and Android 10+ (API 29+ `wm_*`) formats:
+/// - `wm_on_resume_called` / `am_on_resume_called` (`30022`): `[TokenOrUser,ComponentName,Reason(,time)]`
+/// - `am_resume_activity` / `wm_resume_activity` (`30007`): `[User,Token,TaskId,ComponentName]`
+/// - `am_focused_activity` / `wm_set_resumed_activity` (`30043`): `[User,ComponentName(,Reason)]`
+/// - `wm_resumed_activity` (`30043`): `[User,ComponentName,Reason]` or `[User,Token,ComponentName]`
 /// - `ActivityTaskManager` / `ActivityManager`: `Displayed <ComponentName> ...`
 #[must_use]
 pub fn parse_screen_transition_line(
@@ -682,15 +736,55 @@ pub fn parse_screen_transition_line(
     let trimmed_tag = tag.map(str::trim);
     let trimmed_msg = message.trim();
 
-    if matches!(trimmed_tag, Some("wm_on_resume_called" | "30022"))
-        || trimmed_msg.starts_with("wm_on_resume_called:")
+    if matches!(
+        trimmed_tag,
+        Some("wm_on_resume_called" | "am_on_resume_called" | "30022")
+    ) || trimmed_msg.starts_with("wm_on_resume_called:")
+        || trimmed_msg.starts_with("am_on_resume_called:")
     {
         let body = trimmed_msg
             .strip_prefix("wm_on_resume_called:")
+            .or_else(|| trimmed_msg.strip_prefix("am_on_resume_called:"))
             .map_or(trimmed_msg, str::trim);
         let inner = body.strip_prefix('[')?.strip_suffix(']')?;
         let mut fields = inner.split(',');
+        let _token_or_user = fields.next()?;
+        let component = fields.next()?.trim();
+        return normalize_activity_component(component);
+    }
+
+    if matches!(
+        trimmed_tag,
+        Some("am_resume_activity" | "wm_resume_activity" | "30007")
+    ) || trimmed_msg.starts_with("am_resume_activity:")
+        || trimmed_msg.starts_with("wm_resume_activity:")
+    {
+        let body = trimmed_msg
+            .strip_prefix("am_resume_activity:")
+            .or_else(|| trimmed_msg.strip_prefix("wm_resume_activity:"))
+            .map_or(trimmed_msg, str::trim);
+        let inner = body.strip_prefix('[')?.strip_suffix(']')?;
+        let mut fields = inner.split(',');
+        let _user = fields.next()?;
         let _token = fields.next()?;
+        let _task_id = fields.next()?;
+        let component = fields.next()?.trim();
+        return normalize_activity_component(component);
+    }
+
+    if matches!(
+        trimmed_tag,
+        Some("am_focused_activity" | "wm_set_resumed_activity")
+    ) || trimmed_msg.starts_with("am_focused_activity:")
+        || trimmed_msg.starts_with("wm_set_resumed_activity:")
+    {
+        let body = trimmed_msg
+            .strip_prefix("am_focused_activity:")
+            .or_else(|| trimmed_msg.strip_prefix("wm_set_resumed_activity:"))
+            .map_or(trimmed_msg, str::trim);
+        let inner = body.strip_prefix('[')?.strip_suffix(']')?;
+        let mut fields = inner.split(',');
+        let _user = fields.next()?;
         let component = fields.next()?.trim();
         return normalize_activity_component(component);
     }
@@ -700,13 +794,22 @@ pub fn parse_screen_transition_line(
     {
         let body = trimmed_msg
             .strip_prefix("wm_resumed_activity:")
+            .or_else(|| trimmed_msg.strip_prefix("wm_set_resumed_activity:"))
+            .or_else(|| trimmed_msg.strip_prefix("am_focused_activity:"))
+            .or_else(|| trimmed_msg.strip_prefix("30043:"))
             .map_or(trimmed_msg, str::trim);
         let inner = body.strip_prefix('[')?.strip_suffix(']')?;
         let mut fields = inner.split(',');
         let _user = fields.next()?;
-        let _token = fields.next()?;
-        let component = fields.next()?.trim();
-        return normalize_activity_component(component);
+        let second = fields.next()?.trim();
+        // AOSP numeric event tag 30043 (`am_focused_activity` on API 28,
+        // `wm_set_resumed_activity` on API 29+) emits `[User, ComponentName, Reason]`,
+        // while `wm_resumed_activity` fixtures emit `[User, Token, ComponentName]`.
+        if let Some(comp) = normalize_activity_component(second) {
+            return Some(comp);
+        }
+        let third = fields.next()?.trim();
+        return normalize_activity_component(third);
     }
 
     if matches!(trimmed_tag, Some("ActivityTaskManager" | "ActivityManager"))
@@ -793,19 +896,11 @@ pub fn extract_screen_spans(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<S
         };
         latest_log_bt = Some(latest_log_bt.map_or(bt, |prev| prev.max(bt)));
 
-        // Decide on the tag alone: an app message that merely *starts with* a system event
-        // name must not forge `timeline.screens` entries.
-        if !matches!(
-            log.tag.as_deref().map(str::trim),
-            Some(
-                "wm_on_resume_called"
-                    | "30022"
-                    | "wm_resumed_activity"
-                    | "30043"
-                    | "ActivityTaskManager"
-                    | "ActivityManager"
-            )
-        ) {
+        // Decide on the tag (and system_server UID when present): an app message that merely
+        // *starts with* a system event name or forges a system_server tag must not populate
+        // `timeline.screens`. Note `am_on_resume_called` / `wm_on_resume_called` (`30022`) is
+        // emitted by ActivityThread inside the app process itself.
+        if !is_authentic_screen_transition_record(log) {
             continue;
         }
         if let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message) {
@@ -981,7 +1076,9 @@ impl LogPackageResolver {
                 let norm = normalize_known_package(pkg, known_packages);
                 resolver.record_pid(boot.as_deref(), pid, norm);
             }
-            if let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+            if is_system_server_uid(log.uid)
+                && let Some(crash) =
+                    parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
                 && !crash.package_name.is_empty()
             {
                 let norm = normalize_known_package(&crash.package_name, known_packages);
@@ -996,22 +1093,23 @@ impl LogPackageResolver {
                 let norm = normalize_known_package(&fb.package_name, known_packages);
                 resolver.record_pid(boot.as_deref(), pid, norm);
             }
-            if matches!(
-                log.tag.as_deref().map(str::trim),
-                Some("ActivityManager" | "ActivityTaskManager")
-            ) && let Some((pid, pkg)) = parse_start_proc_line(&log.message)
+            if is_system_server_uid(log.uid)
+                && matches!(
+                    log.tag.as_deref().map(str::trim),
+                    Some("ActivityManager" | "ActivityTaskManager")
+                )
+                && let Some((pid, pkg)) = parse_start_proc_line(&log.message)
             {
                 let norm = normalize_known_package(&pkg, known_packages);
                 resolver.record_pid(boot.as_deref(), pid, norm);
             }
         }
 
-        // Pass 2: `wm_on_resume_called` is emitted by ActivityThread inside the app's own PID.
+        // Pass 2: `wm_on_resume_called` / `am_on_resume_called` (`30022`) is emitted by
+        // ActivityThread inside the app's own PID.
         for log in logs {
-            if matches!(
-                log.tag.as_deref().map(str::trim),
-                Some("wm_on_resume_called" | "30022")
-            ) && let Some(pid) = log.pid
+            if is_app_resume_event_tag(log.tag.as_deref())
+                && let Some(pid) = log.pid
                 && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
             {
                 let boot = log_boot_id_hint(log);
@@ -1070,22 +1168,14 @@ impl LogPackageResolver {
         {
             return true;
         }
-        if let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+        if is_system_server_uid(log.uid)
+            && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
             && crash.package_name == target
         {
             return true;
         }
-        if matches!(
-            log.tag.as_deref().map(str::trim),
-            Some(
-                "wm_on_resume_called"
-                    | "30022"
-                    | "wm_resumed_activity"
-                    | "30043"
-                    | "ActivityTaskManager"
-                    | "ActivityManager"
-            )
-        ) && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+        if is_authentic_screen_transition_record(log)
+            && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
             && (comp.package_name == target
                 || comp.activity_name.starts_with(&format!("{target}.")))
         {
@@ -2358,6 +2448,197 @@ mod tests {
                 .iter()
                 .map(|e| &e.relative_path)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "covers Android 9 API 28 binary/text am_* tags, spoofing rejection, screen spans, and foreground app-logs"
+    )]
+    fn t6e_aos9_am_screen_tags_binary_and_text_build_spans_and_app_logs_safely() {
+        use super::{
+            AM_RESUME_ACTIVITY_EVENT_TAG, SYSTEM_UID, WM_RESUMED_ACTIVITY_EVENT_TAG,
+            extract_foreground_app_logs,
+        };
+
+        // 1. Android 9 text formats: am_focused_activity, am_resume_activity, am_on_resume_called.
+        let focused = parse_screen_transition_line(
+            Some("am_focused_activity"),
+            "[0,com.work.aos9/.MainActivity,startedActivity]",
+        )
+        .expect("am_focused_activity must parse");
+        assert_eq!(focused.package_name, "com.work.aos9");
+        assert_eq!(focused.activity_name, "com.work.aos9.MainActivity");
+        assert_eq!(focused.short_name, "MainActivity");
+
+        // NULL focus clear must return None cleanly.
+        assert_eq!(
+            parse_screen_transition_line(Some("am_focused_activity"), "[0,NULL,clear]"),
+            None
+        );
+
+        let resumed = parse_screen_transition_line(
+            Some("am_resume_activity"),
+            "[0,12345,42,com.work.aos9/.ui.OrderActivity]",
+        )
+        .expect("am_resume_activity must parse");
+        assert_eq!(resumed.package_name, "com.work.aos9");
+        assert_eq!(resumed.activity_name, "com.work.aos9.ui.OrderActivity");
+        assert_eq!(resumed.short_name, "OrderActivity");
+
+        let on_resume = parse_screen_transition_line(
+            Some("am_on_resume_called"),
+            "[0,com.work.aos9.ui.OrderActivity,RESUME_ACTIVITY]",
+        )
+        .expect("am_on_resume_called must parse");
+        assert_eq!(on_resume.activity_name, "com.work.aos9.ui.OrderActivity");
+        assert_eq!(on_resume.short_name, "OrderActivity");
+
+        // 2. Binary AOSP event tag 30007 (`am_resume_activity`: [User, Token, TaskId, Component])
+        //    and 30043 (`am_focused_activity` / `wm_set_resumed_activity`: [User, Component, Reason]).
+        let encode_list = |tag: i32, items: &[Result<i32, &str>]| -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.push(3); // EVENT_TYPE_LIST
+            b.push(u8::try_from(items.len()).expect("len fits u8"));
+            for item in items {
+                match item {
+                    Ok(v) => {
+                        b.push(0);
+                        b.extend_from_slice(&v.to_le_bytes());
+                    }
+                    Err(s) => {
+                        b.push(2);
+                        b.extend_from_slice(
+                            &u32::try_from(s.len()).expect("str len").to_le_bytes(),
+                        );
+                        b.extend_from_slice(s.as_bytes());
+                    }
+                }
+            }
+            b
+        };
+
+        let bin_30007 = encode_list(
+            AM_RESUME_ACTIVITY_EVENT_TAG,
+            &[Ok(0), Ok(99999), Ok(42), Err("com.work.aos9/.MainActivity")],
+        );
+        let dec_30007 = decode_binary_android_event(&bin_30007).expect("decode 30007");
+        assert_eq!(dec_30007.tag_name, "am_resume_activity");
+        let parsed_30007 =
+            parse_screen_transition_line(Some(&dec_30007.tag_name), &dec_30007.message)
+                .expect("parse decoded 30007");
+        assert_eq!(parsed_30007.package_name, "com.work.aos9");
+        assert_eq!(parsed_30007.short_name, "MainActivity");
+
+        let bin_30043 = encode_list(
+            WM_RESUMED_ACTIVITY_EVENT_TAG,
+            &[
+                Ok(0),
+                Err("com.work.aos9/.ui.OrderActivity"),
+                Err("startedActivity"),
+            ],
+        );
+        let dec_30043 = decode_binary_android_event(&bin_30043).expect("decode 30043");
+        assert_eq!(dec_30043.tag_name, "wm_resumed_activity");
+        let parsed_30043 =
+            parse_screen_transition_line(Some(&dec_30043.tag_name), &dec_30043.message)
+                .expect("parse decoded 30043 [User, Component, Reason]");
+        assert_eq!(parsed_30043.package_name, "com.work.aos9");
+        assert_eq!(parsed_30043.short_name, "OrderActivity");
+
+        // 3. Full Android 9 timeline: screen spans + app-logs + UID spoofing protection.
+        let frames = vec![
+            make_frame(0, 10 * SEC),
+            make_frame(1, 12 * SEC),
+            make_frame(2, 15 * SEC),
+        ];
+
+        let mut am_focused = make_log(
+            1,
+            10 * SEC,
+            "am_focused_activity",
+            1000,
+            "[0,com.work.aos9/.MainActivity,startedActivity]",
+        );
+        am_focused.uid = Some(SYSTEM_UID);
+
+        // Spoofed am_focused_activity from an untrusted app UID must be ignored!
+        let mut spoofed_focused = make_log(
+            2,
+            10 * SEC + 100,
+            "am_focused_activity",
+            7777,
+            "[0,com.evil.spoof/.FakeActivity,startedActivity]",
+        );
+        spoofed_focused.uid = Some(10_999);
+
+        // Spoofed am_resume_activity from an untrusted app UID must be ignored!
+        let mut spoofed_resume = make_log(
+            3,
+            10 * SEC + 200,
+            "am_resume_activity",
+            7777,
+            "[0,1,2,com.evil.spoof/.Fake2]",
+        );
+        spoofed_resume.uid = Some(10_999);
+
+        // Genuine app-emitted am_on_resume_called carries the app's own UID (NOT 1000).
+        let mut app_on_resume = make_log(
+            4,
+            10 * SEC + 300,
+            "am_on_resume_called",
+            5100,
+            "[0,com.work.aos9.MainActivity,RESUME_ACTIVITY]",
+        );
+        app_on_resume.uid = Some(10_200);
+
+        let mut app_log = make_log(5, 11 * SEC, "WorkApp", 5100, "loaded order screen");
+        app_log.uid = Some(10_200);
+
+        let mut am_resume_next = make_log(
+            6,
+            12 * SEC,
+            "am_resume_activity",
+            1000,
+            "[0,555,77,com.work.aos9/.ui.OrderActivity]",
+        );
+        am_resume_next.uid = Some(SYSTEM_UID);
+
+        let logs = vec![
+            am_focused,
+            spoofed_focused,
+            spoofed_resume,
+            app_on_resume,
+            app_log,
+            am_resume_next,
+        ];
+
+        let spans = extract_screen_spans(&logs, &frames);
+        assert_eq!(
+            spans.len(),
+            2,
+            "must emit 2 authentic AOS 9 spans: {spans:?}"
+        );
+        assert_eq!(spans[0].package_name, "com.work.aos9");
+        assert_eq!(spans[0].short_name, "MainActivity");
+        assert_eq!(spans[1].package_name, "com.work.aos9");
+        assert_eq!(spans[1].short_name, "OrderActivity");
+        assert!(
+            !spans.iter().any(|s| s.package_name == "com.evil.spoof"),
+            "non-system UID must never spoof am_focused_activity or am_resume_activity"
+        );
+
+        let extracted = extract_foreground_app_logs(&logs, &frames);
+        assert_eq!(extracted.len(), 1, "only authentic foreground AOS 9 app");
+        assert_eq!(extracted[0].package_name, "com.work.aos9");
+        assert!(
+            extracted[0]
+                .logs
+                .iter()
+                .any(|l| l.message == "loaded order screen"),
+            "app PID log must be attributed via AOS 9 am_on_resume_called"
         );
     }
 }
