@@ -644,6 +644,41 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         self.chunks.get(id)
     }
 
+    /// Removes closed unpinned chunks named in `chunk_ids` (e.g., stale pre-reboot chunks),
+    /// leaving any pinned chunk strictly untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if pin journals cannot be read or chunk files cannot be removed.
+    pub fn purge_unpinned_chunks(
+        &mut self,
+        chunk_ids: &[String],
+    ) -> Result<Vec<String>, StorageError> {
+        if chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pinned_ids = self.pin_journal.pinned_chunk_ids()?;
+        let mut purged = Vec::new();
+        for chunk_id in chunk_ids {
+            if pinned_ids.contains(chunk_id) {
+                continue;
+            }
+            let is_closed = self
+                .chunks
+                .get(chunk_id)
+                .is_some_and(|c| c.status == RingChunkStatus::Closed);
+            if !is_closed {
+                continue;
+            }
+            if let Some(chunk) = self.chunks.get(chunk_id) {
+                remove_chunk_files(&self.ring_dir, chunk)?;
+                self.chunks.remove(chunk_id);
+                purged.push(chunk_id.clone());
+            }
+        }
+        Ok(purged)
+    }
+
     /// Returns the filesystem path of a tracked chunk, if present.
     #[must_use]
     pub fn chunk_path(&self, chunk_id: &str) -> Option<PathBuf> {

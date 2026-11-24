@@ -1238,27 +1238,26 @@ impl Catalog {
     }
 
     fn cleanup_orphan_staging_dirs(&self) -> Result<Vec<PathBuf>, StorageError> {
-        if !self.managed_bundles_root.is_dir() {
-            return Ok(Vec::new());
-        }
-        let entries = fs::read_dir(&self.managed_bundles_root).map_err(|source| {
-            StorageError::io(
-                "scan_managed_bundles_root",
-                &self.managed_bundles_root,
-                source,
-            )
-        })?;
         let mut targets = std::collections::BTreeSet::new();
-        for entry in entries {
-            let entry = entry
-                .map_err(|e| StorageError::io("scan_staging", &self.managed_bundles_root, e))?;
-            if let Some(id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|n| n.strip_prefix(".staging-"))
-                && crate::ring::validate_simple_id("job_id", id).is_ok()
-            {
-                targets.insert((self.managed_bundles_root.clone(), id.to_owned()));
+        if self.managed_bundles_root.is_dir() {
+            let entries = fs::read_dir(&self.managed_bundles_root).map_err(|source| {
+                StorageError::io(
+                    "scan_managed_bundles_root",
+                    &self.managed_bundles_root,
+                    source,
+                )
+            })?;
+            for entry in entries {
+                let entry = entry
+                    .map_err(|e| StorageError::io("scan_staging", &self.managed_bundles_root, e))?;
+                if let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_prefix(".staging-"))
+                    && crate::ring::validate_simple_id("job_id", id).is_ok()
+                {
+                    targets.insert((self.managed_bundles_root.clone(), id.to_owned()));
+                }
             }
         }
         for job in self.list_save_jobs()? {

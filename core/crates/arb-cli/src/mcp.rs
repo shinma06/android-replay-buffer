@@ -480,58 +480,65 @@ impl McpServer {
             .and_then(Value::as_bool)
             .unwrap_or(burn_taps);
 
-        let standalone = match format {
-            "share_mp4" => true,
-            "bundle" => false,
-            other => return Err(format!("未対応の出力形式: {other}")),
-        };
-        let (first, last) = match (args.get("in_frame_index"), args.get("out_frame_index")) {
-            (Some(first), Some(last)) => (
-                first
-                    .as_u64()
-                    .ok_or("in_frame_index は非負の整数で指定してください")?,
-                last.as_u64()
-                    .ok_or("out_frame_index は非負の整数で指定してください")?,
-            ),
-            (None, None) if standalone => {
-                let overview = self.call_daemon(
-                    "timeline.overview",
-                    &json!({ "bundle_id": bundle_id, "max_error_logs": 0 }),
+        match format {
+            "share_mp4" => {
+                let (in_f, out_f) = match (args.get("in_frame_index"), args.get("out_frame_index"))
+                {
+                    (Some(first), Some(last)) => (
+                        Some(
+                            first
+                                .as_u64()
+                                .ok_or("in_frame_index は非負の整数で指定してください")?,
+                        ),
+                        Some(
+                            last.as_u64()
+                                .ok_or("out_frame_index は非負の整数で指定してください")?,
+                        ),
+                    ),
+                    (None, None) => (None, None),
+                    _ => return Err("開始と終了のフレーム番号を両方指定してください".into()),
+                };
+                let resp = self.call_daemon(
+                    "export.share_mp4",
+                    &json!({
+                        "bundle_id": bundle_id,
+                        "in_frame_index": in_f,
+                        "out_frame_index": out_f,
+                        "output_path": optional_abs_path(args, "output_path")?,
+                        "dest_dir": optional_abs_path(args, "dest_dir")?,
+                        "burn_taps": burn_taps,
+                        "trash_original": trash_original,
+                        "holder_pid": std::process::id(),
+                    }),
                 )?;
-                let last = overview["frame_count"]
-                    .as_u64()
-                    .and_then(|n| n.checked_sub(1))
-                    .ok_or("映像フレームがありません")?;
-                (0, last)
+                Ok(vec![text_block(&resp)])
             }
-            _ => return Err("開始と終了のフレーム番号を両方指定してください".into()),
-        };
-        let mut response = self.call_daemon("export.trim", &json!({
-            "bundle_id_or_path": bundle_id,
-            "in_frame_index": first, "out_frame_index": last,
-            "include_share_mp4": standalone || include_share_mp4, "burn_taps": burn_taps,
-            "dest_dir": optional_abs_path(args, "dest_dir")?,
-            "share_output_path": if standalone { optional_abs_path(args, "output_path")? } else { None },
-            "trash_original": trash_original, "holder_pid": std::process::id(),
-        }))?;
-        if standalone {
-            let mux = response["av_mux_report"].clone();
-            if mux.is_null() {
-                return Err("共有 MP4 を作成できませんでした".into());
+            "bundle" => {
+                let first = args
+                    .get("in_frame_index")
+                    .and_then(Value::as_u64)
+                    .ok_or("in_frame_index は非負の整数で指定してください")?;
+                let last = args
+                    .get("out_frame_index")
+                    .and_then(Value::as_u64)
+                    .ok_or("out_frame_index は非負の整数で指定してください")?;
+                let resp = self.call_daemon(
+                    "export.trim",
+                    &json!({
+                        "bundle_id_or_path": bundle_id,
+                        "in_frame_index": first,
+                        "out_frame_index": last,
+                        "include_share_mp4": include_share_mp4,
+                        "burn_taps": burn_taps,
+                        "dest_dir": optional_abs_path(args, "dest_dir")?,
+                        "trash_original": trash_original,
+                        "holder_pid": std::process::id(),
+                    }),
+                )?;
+                Ok(vec![text_block(&resp)])
             }
-            for key in [
-                "video_frame_count",
-                "audio_included",
-                "edts_box_count",
-                "elst_box_count",
-                "output_bytes",
-            ] {
-                response[key] = mux[key].clone();
-            }
-            response["trimmed_bundle_id"] = response["bundle_id"].clone();
-            response["trimmed_bundle_path"] = response["bundle_path"].clone();
+            other => Err(format!("未対応の出力形式: {other}")),
         }
-        Ok(vec![text_block(&response)])
     }
 
     fn tool_export_frame_png(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {

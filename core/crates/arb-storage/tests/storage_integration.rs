@@ -777,6 +777,36 @@ fn p1_unmarked_staging_survives_recovery() {
 }
 
 #[test]
+fn p1_audit_external_staging_cleaned_even_when_managed_root_missing() {
+    let tmp = TempDir::new().unwrap();
+    let managed = tmp.path().join("bundles");
+    let external = tmp.path().join("external");
+    let catalog = Catalog::open(tmp.path().join("cat"), &managed).unwrap();
+    catalog
+        .create_pinned_job("ext-job", external.join("b1"), &[], "2026-01-01T00:00:00Z")
+        .unwrap();
+    let stage = external.join(".staging-ext-job");
+    fs::create_dir_all(&stage).unwrap();
+    fs::write(stage.join(".arb-staging-owner"), b"ext-job").unwrap();
+    let tracked = external.join(".staging-ext-trim");
+    fs::create_dir_all(&tracked).unwrap();
+    fs::write(tracked.join(".arb-staging-owner"), b"ext-trim").unwrap();
+    catalog
+        .track_staging("ext-trim", &external.join("b2"))
+        .unwrap();
+
+    // Remove managed root before recovery: external staging entries must still be swept.
+    fs::remove_dir_all(&managed).unwrap();
+    let report = catalog.recover_on_startup("2026-01-01T00:00:01Z").unwrap();
+    assert!(!stage.exists(), "external job staging must be removed");
+    assert!(
+        !tracked.exists(),
+        "external tracked staging must be removed"
+    );
+    assert_eq!(report.removed_staging_dirs.len(), 2);
+}
+
+#[test]
 fn fault_orphan_lease_staging_and_interrupted_jobs_recover_on_startup() {
     let tmp = TempDir::new().expect("temp dir must be created");
     let managed_root = tmp.path().join("bundles");

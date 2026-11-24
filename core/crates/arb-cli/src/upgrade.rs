@@ -70,16 +70,7 @@ pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(),
     }
     eprintln!("稼働中の arbd を更新します。");
     drop(client);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        match SingleInstanceLock::try_acquire(paths.lock_file()) {
-            Ok(_guard) => break,
-            Err(OsError::LockContended { .. }) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(err) => return Err(CliError::general(err.to_string())),
-        }
-    }
+    wait_for_daemon_locks(paths, Duration::from_secs(15))?;
 
     if start == rpc::AutoStartMode::Enabled {
         let (mut child, log) = rpc::spawn_daemon_process(paths).map_err(CliError::from_rpc)?;
@@ -101,9 +92,63 @@ pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(),
     Ok(())
 }
 
+fn wait_for_daemon_locks(paths: &ArbPaths, timeout: Duration) -> Result<(), CliError> {
+    let deadline = Instant::now() + timeout;
+    let mut runtime_lock = None;
+    loop {
+        if runtime_lock.is_none() {
+            match SingleInstanceLock::try_acquire(paths.lock_file()) {
+                Ok(guard) => runtime_lock = Some(guard),
+                Err(OsError::LockContended { .. }) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                Err(err) => return Err(CliError::general(err.to_string())),
+            }
+        }
+        match SingleInstanceLock::try_acquire(paths.data_lock_file()) {
+            Ok(_data_guard) => return Ok(()),
+            Err(OsError::LockContended { .. }) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => return Err(CliError::general(err.to_string())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::should_replace;
+    use std::thread;
+    use std::time::Duration;
+
+    use arb_os::{fs::SingleInstanceLock, paths::ArbPaths};
+
+    use super::{should_replace, wait_for_daemon_locks};
+
+    #[test]
+    fn wait_for_daemon_locks_waits_for_data_lock_and_allows_shared_dir() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("shared");
+        std::fs::create_dir_all(&dir).expect("create shared dir");
+        let paths = ArbPaths {
+            data_dir: dir.clone(),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: dir,
+        };
+        let data_lock = SingleInstanceLock::try_acquire(paths.data_lock_file()).expect("lock data");
+        assert!(
+            wait_for_daemon_locks(&paths, Duration::from_millis(50)).is_err(),
+            "must not succeed while .arbd-data.lock is still held"
+        );
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            drop(data_lock);
+        });
+        wait_for_daemon_locks(&paths, Duration::from_secs(5)).expect(
+            "must succeed once .arbd-data.lock is released even when runtime_dir == data_dir",
+        );
+        releaser.join().expect("join releaser");
+    }
 
     #[test]
     fn launcher_upgrade_uses_semver_precedence_and_binary_identity() {

@@ -686,13 +686,13 @@ impl CapturePipeline {
 
     fn restore_capture(&mut self, now: i64) {
         let chunks = self.ring.chunks();
-        let mut excluded = false;
+        let mut excluded_ids = Vec::new();
         for chunk in chunks {
             let Some(info) = chunk.capture.filter(|info| {
                 info.host_boot_ns.abs_diff(self.host_boot_ns) < 1_000_000_000
                     && chunk.created_cont_ns <= now
             }) else {
-                excluded = true;
+                excluded_ids.push(chunk.chunk_id);
                 continue;
             };
             if self.serial.as_ref() != Some(&info.device_serial) {
@@ -726,7 +726,10 @@ impl CapturePipeline {
                 },
             );
         }
-        if excluded {
+        if !excluded_ids.is_empty() {
+            // Purge unpinned stale chunks from earlier host boots so their larger pre-reboot
+            // `created_cont_ns` values cannot cause new-boot chunks to be evicted first.
+            let _ = self.ring.purge_unpinned_chunks(&excluded_ids);
             self.record_carried_discontinuity(
                 stream_gap(
                     now,
@@ -1182,13 +1185,10 @@ impl CapturePipeline {
                 payload,
             } => {
                 self.connected = true;
-                self.drain_watermark_ns = Some(
-                    payload
-                        .streams
-                        .iter()
-                        .filter(|s| s.state == arb_adb::wire::StreamLifecycleState::Running)
-                        .fold(payload.boottime_ns, |end, s| end.min(s.last_pts_ns)),
-                );
+                // Companion streams (Control, Logcat, Input) share a single ordered FIFO stream;
+                // `StreamHealthEntry::last_pts_ns` records the last emitted event (0 when idle),
+                // not a heartbeat watermark, so the heartbeat's `boottime_ns` is the watermark.
+                self.drain_watermark_ns = Some(payload.boottime_ns);
                 self.latest_heartbeat_boottime_ns = Some(payload.boottime_ns);
                 self.latest_heartbeat_pc_cont_ns = Some(*pc_cont_ns);
                 let triple = DeviceClockTriple {
@@ -4263,6 +4263,137 @@ mod tests {
         assert_eq!(
             evaluate_stream_drain(trigger, cap.drain_watermark_ns(), 800, &policy),
             DrainOutcome::DrainedComplete
+        );
+    }
+
+    #[test]
+    fn p1_audit_drain_watermark_completes_when_idle_input_stream_has_zero_last_pts() {
+        use arb_adb::wire::{HeartbeatPayload, StreamHealthEntry, StreamId, StreamLifecycleState};
+        use arb_core::selection::{DrainOutcome, evaluate_stream_drain};
+        let tmp = TempDir::new().unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(heartbeat_at(100_000_000_000)).unwrap();
+        cap.ingest_event(video_event(100_500_000_000, vec![1]))
+            .unwrap();
+        let policy = SelectionPolicy::default();
+        let pending = cap.phase1_pin(10, tmp.path(), policy).unwrap();
+        let trigger = pending.drain_trigger_boottime_ns().unwrap();
+        assert_eq!(trigger, 100_500_000_000);
+        // Realistic companion Heartbeat: Control reports previous heartbeat's last_pts_ns,
+        // Logcat was quiet for 2s, and Input has emitted no touch events yet (last_pts_ns == 0).
+        cap.ingest_event(CaptureEvent::Heartbeat {
+            pc_cont_ns: trigger,
+            boot_id: "boot-t".into(),
+            payload: HeartbeatPayload {
+                boottime_ns: trigger,
+                monotonic_ns: trigger,
+                realtime_ns: trigger,
+                streams: vec![
+                    StreamHealthEntry {
+                        stream_id: StreamId::Control,
+                        state: StreamLifecycleState::Running,
+                        restart_count: 0,
+                        emitted_seq: 2,
+                        last_pts_ns: 100_000_000_000,
+                    },
+                    StreamHealthEntry {
+                        stream_id: StreamId::Logcat,
+                        state: StreamLifecycleState::Running,
+                        restart_count: 0,
+                        emitted_seq: 1,
+                        last_pts_ns: 98_500_000_000,
+                    },
+                    StreamHealthEntry {
+                        stream_id: StreamId::Input,
+                        state: StreamLifecycleState::Running,
+                        restart_count: 0,
+                        emitted_seq: 0,
+                        last_pts_ns: 0,
+                    },
+                ],
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            evaluate_stream_drain(trigger, cap.drain_watermark_ns(), 50, &policy),
+            DrainOutcome::DrainedComplete,
+            "a post-trigger companion heartbeat must complete drain even when Input/Logcat are idle"
+        );
+    }
+
+    #[test]
+    fn p1_audit_post_reboot_evicts_old_boot_chunks_before_new_chunks() {
+        let tmp = TempDir::new().unwrap();
+        let policy = RingBudgetPolicy {
+            max_ring_bytes: 2_500,
+            max_ring_duration_ns: u64::MAX,
+            min_free_disk_bytes: 0,
+        };
+        let open = |uptime, boot| {
+            CapturePipeline::open_at(
+                tmp.path(),
+                policy,
+                SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+                arb_os::clock::HostClockSample {
+                    active_mono_ns: uptime,
+                    continuous_mono_ns: uptime,
+                    wall_epoch_ns: boot + uptime,
+                },
+            )
+            .unwrap()
+        };
+        let day5 = 5 * 86_400_000_000_000_i64;
+        let mut cap = open(day5, 0);
+        cap.begin_session("A");
+        cap.ingest_event(video_event(day5, vec![0xAA; 600]))
+            .unwrap();
+        cap.flush_pending_chunk().unwrap();
+        cap.ingest_event(video_event(day5 + 1_000_000_000, vec![0xBB; 600]))
+            .unwrap();
+        cap.flush_pending_chunk().unwrap();
+        // Pin only the first old-boot chunk to verify pinned old chunks remain protected.
+        let old_chunks = cap.ring.chunks();
+        assert_eq!(old_chunks.len(), 2);
+        let pinned_old_id = old_chunks[0].chunk_id.clone();
+        cap.ring
+            .pin_chunks(
+                "old-job",
+                tmp.path().join("bundles/old"),
+                vec![pinned_old_id.clone()],
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+        drop(cap);
+
+        // PC reboots: uptime drops from 5 days back to 60s.
+        let mut cap = open(60_000_000_000, day5);
+        assert!(
+            cap.ring.descriptor(&pinned_old_id).is_some(),
+            "pinned pre-reboot chunk must remain intact for retryable jobs"
+        );
+        assert_eq!(
+            cap.ring.chunks().len(),
+            1,
+            "unpinned pre-reboot chunk must be purged on reboot so it cannot starve new-boot chunks"
+        );
+        cap.begin_session("A");
+        cap.ingest_event(video_event(60_000_000_000, vec![0xCC; 600]))
+            .unwrap();
+        cap.flush_pending_chunk().unwrap();
+        cap.ingest_event(video_event(65_000_000_000, vec![0xDD; 600]))
+            .unwrap();
+        cap.flush_pending_chunk().unwrap();
+        let new_chunks: Vec<_> = cap
+            .ring
+            .chunks()
+            .into_iter()
+            .filter(|c| c.chunk_id != pinned_old_id)
+            .collect();
+        assert_eq!(
+            new_chunks.len(),
+            2,
+            "both new-boot chunks must survive without being evicted in favor of dead old-boot chunks"
         );
     }
 

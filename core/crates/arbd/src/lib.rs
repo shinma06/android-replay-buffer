@@ -200,7 +200,6 @@ struct LiveCapture {
 }
 
 struct DaemonState {
-    _data_lock: SingleInstanceLock,
     paths: ArbPaths,
     started_at: Instant,
     recovery: RecoveryReport,
@@ -1601,6 +1600,7 @@ impl DaemonState {
 #[derive(Debug)]
 pub struct DaemonServer {
     state: Arc<DaemonState>,
+    _data_lock: SingleInstanceLock,
     _lock: SingleInstanceLock,
     accept_thread: Option<JoinHandle<()>>,
     attach_thread: Option<JoinHandle<()>>,
@@ -1682,7 +1682,6 @@ impl DaemonServer {
         let (build_id, binary_mtime_secs) = compute_daemon_binary_identity();
 
         let state = Arc::new(DaemonState {
-            _data_lock: data_lock,
             paths: config.paths,
             started_at: Instant::now(),
             recovery,
@@ -1729,6 +1728,7 @@ impl DaemonServer {
 
         Ok(Self {
             state,
+            _data_lock: data_lock,
             _lock: lock,
             accept_thread: Some(accept_thread),
             attach_thread: Some(attach_thread),
@@ -2373,6 +2373,26 @@ mod supervisor_hardening_tests {
         DaemonServer::start(DaemonConfig::new(paths))
             .unwrap()
             .shutdown();
+    }
+
+    #[test]
+    fn p1_audit_shutdown_releases_data_lock_even_with_detached_idle_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = test_paths(&tmp);
+        // Also verify same-directory runtime_dir == data_dir never self-deadlocks.
+        paths.runtime_dir = paths.data_dir.clone();
+        let first = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+        // Hold an idle client stream open so `run_accept_loop` detaches its worker thread
+        // (which keeps an `Arc<DaemonState>` alive past `DaemonServer::shutdown()`).
+        let _idle_stream = arb_os::ipc::LocalIpcStream::connect(first.endpoint()).unwrap();
+        let _held_handle = first.shutdown_handle();
+        first.shutdown();
+
+        let mut second_paths = paths;
+        second_paths.runtime_dir = tmp.path().join("r2");
+        let second = DaemonServer::start(DaemonConfig::new(second_paths))
+            .expect("second daemon must acquire .arbd-data.lock immediately after shutdown");
+        second.shutdown();
     }
 
     #[test]
