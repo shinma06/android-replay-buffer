@@ -42,7 +42,7 @@ verifies:
 
 ## 2. ローカル品質ゲート & 更新版ゼロ zsh 試用 ZIP 検証結果
 
-- `./device-agent/build.sh --with-scrcpy-audio`: **ProtocolTest 21 passed, 0 failed**（`arb-companion.dex.jar` 27,845 B / `replay-scrcpy-audio.dex.jar` 735,101 B）
+- `./device-agent/build.sh --with-scrcpy-audio`: **ProtocolTest 19 passed + Aos9CompatTest 2 passed（計 21 passed, 0 failed）**（`arb-companion.dex.jar` 27,845 B / `replay-scrcpy-audio.dex.jar` 735,101 B）
 - `./core/scripts/verify.sh`: **6/6 PASS**（`cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` 警告 0 件 / `cargo test` **363 passed, 0 failed, 3 ignored** / license **GPL・AGPL 0 件** / `sara check --strict`（本書 `VER-23` を含む）/ REQ → SPEC 14/14）
 - `RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path core/Cargo.toml --workspace --no-deps`: **PASS（警告 0 件）**
 - `(cd ide-plugin && JAVA_HOME=/opt/homebrew/opt/openjdk@27/libexec/openjdk.jdk/Contents/Home ./gradlew test buildPlugin -ParbNativeDir=../core/target/release -PdeviceAgentDir=../device-agent/build --no-daemon)`: **client-core 83 passed / ide-plugin 35 passed, 0 failed**
