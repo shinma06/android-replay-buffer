@@ -71,12 +71,12 @@ class ArbdRealIntegrationTest {
         var cur: Path? = Paths.get("").toAbsolutePath().normalize()
         repeat(6) {
             val d = cur ?: error("Could not locate repository root")
-            if (Files.isDirectory(d.resolve("core")) && Files.isDirectory(d.resolve("plugin"))) {
+            if (Files.isDirectory(d.resolve("core")) && Files.isDirectory(d.resolve("fixtures"))) {
                 return d
             }
             cur = d.parent
         }
-        error("Could not locate repository root containing core/ and plugin/")
+        error("Could not locate repository root containing core/ and fixtures/")
     }
 
     private fun sha256Hex(file: Path): String {
@@ -291,7 +291,7 @@ class ArbdRealIntegrationTest {
     fun fullRoundTripAgainstRealArbdOverUdsAndShm(@TempDir tmp: Path) {
         val root = repoRoot()
         val legacyFixture = root
-            .resolve("plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface")
+            .resolve("fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface")
         assertTrue(Files.isDirectory(legacyFixture), "Legacy Schema-4 fixture missing at $legacyFixture")
 
         // Prepare a real WORM v2 bundle alongside the temp data dir
@@ -513,7 +513,7 @@ class ArbdRealIntegrationTest {
     fun t1RpcsConfigCrashesScreensSaveLogsScreenshotAndT2bFallbackAgainstRealArbd(@TempDir tmp: Path) {
         val root = repoRoot()
         val legacyFixture = root
-            .resolve("plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface")
+            .resolve("fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface")
         assertTrue(Files.isDirectory(legacyFixture), "Legacy Schema-4 fixture missing at $legacyFixture")
 
         val v2BundlePath = tmp.resolve("data").resolve("bundles").resolve("v2-t1-analytics")
@@ -625,8 +625,8 @@ class ArbdRealIntegrationTest {
     fun t2bShareMp4WithTrashOriginalAndDecodeAudioPcmToWavPcmSource(@TempDir tmp: Path) {
         val root = repoRoot()
         val legacyFixture = root
-            .resolve("plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface")
-        val audioFixture = root.resolve("plugin/src/test/resources/aac-playback-sync/stereo-44100.m4a")
+            .resolve("fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface")
+        val audioFixture = root.resolve("fixtures/aac-playback-sync/stereo-44100.m4a")
         assertTrue(Files.isDirectory(legacyFixture), "Legacy Schema-4 fixture missing at $legacyFixture")
         assertTrue(Files.isRegularFile(audioFixture), "AAC-LC fixture missing at $audioFixture")
 

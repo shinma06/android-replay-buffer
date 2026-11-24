@@ -61,7 +61,7 @@ verifies:
 7. **4 スレッド並列読取（`concurrent_four_thread_v2_bundle_readers_succeed_with_zero_write_locks`）**:
    - 4 スレッド同時オープン＋共有 `Arc<V2BundleReader>` で `verify_integrity` / `frames` / `discontinuities` / `query_logs` / `query_taps` / `clock_anchors` を並列実行しエラー 0 件、かつバンドル内に `-wal` / `-shm` サイドカーが一切生成されないことを確認。
 8. **旧形式読取専用互換（実 Schema 4・合成 Schema 3・ログ単体 Schema 4 の 3 テスト）**:
-   - 実リポジトリフィクスチャ `plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface/`（24 フレーム、セグメント間 1 ギャップ、5 デバイスログ・3 アプリログ、2 タッチ、SHA-256 検証合格）および合成 Schema 3（`session.json`, `video-001.mp4`, `frames.jsonl`）・ログ単体 Schema 4（`LOGS_ONLY`, `video.mp4` なし）を `LegacyBundleReader` / `open_bundle` で読取り、全テスト前後でディレクトリ・全ファイルのサイズおよび mtime が一切変更されないことを確認。
+   - 実リポジトリフィクスチャ `fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface/`（24 フレーム、セグメント間 1 ギャップ、5 デバイスログ・3 アプリログ、2 タッチ、SHA-256 検証合格）および合成 Schema 3（`session.json`, `video-001.mp4`, `frames.jsonl`）・ログ単体 Schema 4（`LOGS_ONLY`, `video.mp4` なし）を `LegacyBundleReader` / `open_bundle` で読取り、全テスト前後でディレクトリ・全ファイルのサイズおよび mtime が一切変更されないことを確認。
 
 ## 3. 品質ゲート結果（`./core/scripts/verify.sh`）
 

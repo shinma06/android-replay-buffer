@@ -1524,10 +1524,8 @@ fn scenario_11_legacy_schema4_real_repo_fixture_readonly_zero_mutation() {
         .join("..")
         .join("..")
         .join("..")
-        .join("plugin")
-        .join("src")
-        .join("test")
-        .join("resources")
+        .join("fixtures")
+        .join("legacy-schema4")
         .join("replay-trim-parity")
         .join("replay-20240101-000000-manual-feedface");
     assert!(
