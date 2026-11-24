@@ -980,8 +980,7 @@ pub fn run(
         return run_polling_loop(ui, &command_tx, &update_rx);
     }
 
-    let mut ui = TrayUi::new(NativeBackend::new());
-    ui.render(&TrayViewState::offline())?;
+    let ui = TrayUi::new(NativeBackend::new());
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -989,6 +988,8 @@ pub fn run(
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        let mut ui = ui;
+        ui.render(&TrayViewState::offline())?;
         run_polling_loop(ui, &command_tx, &update_rx)
     }
 }
@@ -1015,7 +1016,17 @@ fn run_with_event_loop(
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
     }
-    event_loop.run(move |_event, _target, control_flow| {
+    event_loop.run(move |event, _target, control_flow| {
+        // AppKit needs a running main event loop before creating the status item.
+        if matches!(
+            event,
+            tao::event::Event::NewEvents(tao::event::StartCause::Init)
+        ) && let Err(err) = ui.render(&TrayViewState::offline())
+        {
+            eprintln!("[arb-tray] {err}");
+            *control_flow = ControlFlow::ExitWithCode(1);
+            return;
+        }
         while let Ok(update) = update_rx.try_recv() {
             if let Some(code) = apply_update(&mut ui, update) {
                 *control_flow = ControlFlow::ExitWithCode(code);

@@ -9,6 +9,7 @@
 mod mcp;
 mod process_os;
 mod rpc;
+mod upgrade;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -115,6 +116,7 @@ struct GlobalOptions {
     runtime_dir: Option<PathBuf>,
     output: OutputFormat,
     auto_start: AutoStartMode,
+    upgrade_if_needed: bool,
 }
 
 impl Default for GlobalOptions {
@@ -125,6 +127,7 @@ impl Default for GlobalOptions {
             runtime_dir: None,
             output: OutputFormat::Human,
             auto_start: AutoStartMode::Disabled,
+            upgrade_if_needed: false,
         }
     }
 }
@@ -198,9 +201,13 @@ fn absolutize_bundle_target(target: &str) -> Result<String, CliError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandSpec {
     Help,
+    Version,
     Status,
     DaemonStart,
     DaemonStop,
+    PrepareUpgrade {
+        start: AutoStartMode,
+    },
     Devices,
     CaptureStart {
         serial: Option<String>,
@@ -363,6 +370,10 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
                 opts.output = OutputFormat::Json;
                 i += 1;
             }
+            "--upgrade-if-needed" => {
+                opts.upgrade_if_needed = true;
+                i += 1;
+            }
             "--auto-start" => {
                 opts.auto_start = AutoStartMode::Enabled;
                 i += 1;
@@ -376,6 +387,9 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
 
     if rest.is_empty() || matches!(rest[0].as_str(), "-h" | "--help" | "help") {
         return Ok((opts, CommandSpec::Help));
+    }
+    if matches!(rest[0].as_str(), "-V" | "--version") {
+        return Ok((opts, CommandSpec::Version));
     }
 
     let cmd = match rest[0].as_str() {
@@ -424,6 +438,15 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
 fn parse_daemon_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("start") => Ok(CommandSpec::DaemonStart),
+        Some("prepare-upgrade") if args.len() == 1 || args[1..] == ["--start"] => {
+            Ok(CommandSpec::PrepareUpgrade {
+                start: if args.len() == 2 {
+                    AutoStartMode::Enabled
+                } else {
+                    AutoStartMode::Disabled
+                },
+            })
+        }
         Some("stop") => Ok(CommandSpec::DaemonStop),
         other => Err(CliError::usage(format!(
             "usage: arb-cli daemon <start|stop> (got {other:?})"
@@ -1133,9 +1156,19 @@ fn execute(opts: &GlobalOptions, cmd: CommandSpec) -> Result<(), CliError> {
         print_help();
         return Ok(());
     }
+    if matches!(cmd, CommandSpec::Version) {
+        println!("arb-cli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     let paths = opts.resolve_paths()?;
 
+    if let CommandSpec::PrepareUpgrade { start } = cmd {
+        return upgrade::prepare(&paths, start);
+    }
+    if opts.upgrade_if_needed && !matches!(cmd, CommandSpec::DaemonStop) {
+        upgrade::prepare(&paths, AutoStartMode::Enabled)?;
+    }
     if matches!(cmd, CommandSpec::Mcp) {
         return mcp::run_mcp_stdio(&paths);
     }
@@ -1169,7 +1202,9 @@ fn dispatch_connected(
     cmd: CommandSpec,
 ) -> Result<(), CliError> {
     match cmd {
-        CommandSpec::Help | CommandSpec::DaemonStart | CommandSpec::Mcp => Ok(()),
+        CommandSpec::Help | CommandSpec::Version | CommandSpec::DaemonStart | CommandSpec::Mcp => {
+            Ok(())
+        }
         CommandSpec::Status => dispatch_status(client, output),
         CommandSpec::Inspect { target } => execute_inspect(client, output, &target),
         CommandSpec::ScrubBench { target, frame } => {
@@ -1319,6 +1354,8 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "png export",
         ),
         CommandSpec::Help
+        | CommandSpec::Version
+        | CommandSpec::PrepareUpgrade { .. }
         | CommandSpec::DaemonStart
         | CommandSpec::Mcp
         | CommandSpec::Status
@@ -1645,6 +1682,7 @@ GLOBAL OPTIONS:\n  \
   --cache-dir <DIR>      Override ARB_CACHE_DIR\n  \
   --runtime-dir <DIR>    Override ARB_RUNTIME_DIR\n  \
   --json                 Emit machine-readable JSON (structured JSON errors on stderr)\n  \
+  --upgrade-if-needed    Upgrade an older daemon at the selected runtime before connecting\n\
   --auto-start           Auto-spawn detached sibling arbd if not running (timeout: ARB_AUTO_START_TIMEOUT_MS)\n\n\
 COMMANDS:\n  \
   status\n  \
@@ -1667,7 +1705,8 @@ COMMANDS:\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
-  mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n\n\
+  mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n  \
+  -V, --version          Print the arb-cli version\n\n\
 EXIT CODES:\n  \
   0  Success\n  \
   1  General / transport / internal error\n  \
@@ -1704,6 +1743,14 @@ mod tests {
 
     fn abs_string(raw: &str) -> String {
         abs(raw).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn version_flag_parses_without_a_daemon() {
+        for flag in ["--version", "-V"] {
+            let (_opts, cmd) = parse_args(&vec_str(&[flag])).expect("version must parse");
+            assert!(matches!(cmd, CommandSpec::Version), "{flag}");
+        }
     }
 
     #[test]

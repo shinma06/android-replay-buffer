@@ -34,6 +34,11 @@ jobs:
             --classify-tag "$GITHUB_REF_NAME" \
             --github-output "$GITHUB_OUTPUT" \
             || { echo "::error::$GITHUB_REF_NAME is not a release tag (expected vX.Y.Z or vX.Y.Z-alpha.N/-beta.N/-rc.N)"; exit 1; }
+      - name: Require core/Cargo.toml version to match the tag
+        # arbd / arb-cli / arb-tray --version は core/Cargo.toml の版を表示する。タグと食い違う配布物を公開しない。
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 core/scripts/package_distribution.py --check-core-version "$RELEASE_VERSION"
       - name: Require tag on main
         run: |
           set -euo pipefail

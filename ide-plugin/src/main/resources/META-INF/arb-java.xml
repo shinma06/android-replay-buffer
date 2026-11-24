@@ -1,0 +1,4 @@
+<idea-plugin>
+    <!-- Loaded only when the Java plugin (com.intellij.modules.java) is present. SourceJumpResolver uses
+         JavaPsiFacade to jump from logcat stack frames and screen spans to Kotlin / Java sources. -->
+</idea-plugin>

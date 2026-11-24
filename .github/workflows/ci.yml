@@ -8,6 +8,11 @@ on:
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
+    inputs:
+      release_gate:
+        description: '指定したブランチの 3 OS 配布ゲートを実行する'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -18,7 +23,11 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
 jobs:
+  release-gate:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_gate
+    uses: ./.github/workflows/release-gate.yml
   test:
+    if: ${{ !inputs.release_gate }}
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -73,6 +82,9 @@ jobs:
         run: |
           python3 core/scripts/devin_verify_player_matrix.py --self-test
           python3 core/scripts/package_distribution.py --self-test
+          python3 core/scripts/verify_release_bundle.py --self-test
+          python3 core/scripts/release_gate_summary.py --self-test
+          python3 core/scripts/windows_gui_evidence.py --self-test
       - name: device-agent build + host protocol tests (companion + scrcpy-audio DEX jars)
         run: |
           set -euo pipefail
@@ -86,13 +98,15 @@ jobs:
           set -euo pipefail
           base="$(sed -n 's/^devBaseVersion=//p' ide-plugin/gradle.properties)"
           echo "plugin_version=${base}-dev.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - name: ./gradlew test buildPlugin (self-contained zero-zsh plugin ZIP)
+      - name: ./gradlew test buildPlugin verifyPluginProjectConfiguration (self-contained zero-zsh plugin ZIP)
         working-directory: ide-plugin
         env:
           ARB_DAEMON_BIN: ${{ github.workspace }}/core/target/release/arbd
           PLUGIN_VERSION: ${{ steps.version.outputs.plugin_version }}
         # ../core/target/release と ../device-agent/build を自動検出して同梱する。
-        run: ./gradlew test buildPlugin --no-daemon "-PpluginVersion=${PLUGIN_VERSION}"
+        # verifyPluginProjectConfiguration は plugin.xml / Gradle 設定の軽量検査。互換性の本検査（verifyPlugin）は
+        # release-gate.yml の plugin-verifier ジョブで Android Studio 2026.2.2.8 に対して実行する。
+        run: ./gradlew test buildPlugin verifyPluginProjectConfiguration --no-daemon "-PpluginVersion=${PLUGIN_VERSION}"
       - name: Verify plugin ZIP contents
         run: |
           python3 - <<'PY'
@@ -107,6 +121,9 @@ jobs:
               "/native/linux-x86_64/arb-tray",
               "/device-agent/arb-companion.dex.jar",
               "/device-agent/replay-scrcpy-audio.dex.jar",
+              "/licenses/LICENSE-MIT",
+              "/licenses/LICENSE-APACHE",
+              "/licenses/THIRD_PARTY_NOTICES.md",
           ):
               assert any(n.endswith(suffix) for n in names), f"missing {suffix} in {zips[0]}"
           print(f"Verified self-contained zero-zsh plugin ZIP: {zips[0]}")
@@ -144,6 +161,7 @@ jobs:
           if-no-files-found: ignore
 
   os-parity:
+    if: ${{ !inputs.release_gate }}
     name: os-parity (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -188,6 +206,9 @@ jobs:
         run: |
           python3 core/scripts/devin_verify_player_matrix.py --self-test
           python3 core/scripts/package_distribution.py --self-test
+          python3 core/scripts/verify_release_bundle.py --self-test
+          python3 core/scripts/release_gate_summary.py --self-test
+          python3 core/scripts/windows_gui_evidence.py --self-test
       - name: Build release binaries
         run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
       - name: Resolve arbd binary

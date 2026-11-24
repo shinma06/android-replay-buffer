@@ -740,7 +740,8 @@ fn t1_crash_autosave_debounce_and_timeline_crashes_screens() {
         .ingest_device_source(&mut source)
         .expect("ingest crash scenario");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Two saves finish serially and flush their bundles on the real filesystem.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let final_status = loop {
         let st = client.call("system.status", &json!({}));
         let ca = &st["crash_autosave"];

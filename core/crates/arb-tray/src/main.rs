@@ -51,6 +51,7 @@ struct CliOptions {
     icon: IconMode,
     poll_interval: Duration,
     help: bool,
+    version: bool,
 }
 
 impl Default for CliOptions {
@@ -65,6 +66,7 @@ impl Default for CliOptions {
             icon: IconMode::Native,
             poll_interval: controller::DEFAULT_POLL_INTERVAL,
             help: false,
+            version: false,
         }
     }
 }
@@ -141,6 +143,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 opts.help = true;
                 i += 1;
             }
+            "-V" | "--version" => {
+                opts.version = true;
+                i += 1;
+            }
             other => return Err(format!("unknown option `{other}` (run with --help)")),
         }
     }
@@ -160,6 +166,7 @@ OPTIONS:\n  \
   --exit-on-stdin-eof       Parent-bound lifecycle: quit (releasing arb-tray.lock) when stdin\n  \
                             reaches EOF, i.e. when the parent holding the stdin pipe exits\n  \
   --headless                Run the arbd status worker without a tray icon (CI / diagnostics)\n  \
+  -V, --version             Print the arb-tray version\n  \
   -h, --help                Show this help",
         env!("CARGO_PKG_VERSION")
     );
@@ -216,6 +223,10 @@ fn main() -> ExitCode {
 
     if opts.help {
         print_help();
+        return ExitCode::SUCCESS;
+    }
+    if opts.version {
+        println!("arb-tray {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
@@ -337,5 +348,14 @@ mod tests {
         let args: Vec<String> = ["--help"].into_iter().map(str::to_owned).collect();
         let opts = parse_args(&args).expect("help must parse");
         assert!(opts.help);
+    }
+
+    #[test]
+    fn version_flag_is_recognized() {
+        for flag in ["--version", "-V"] {
+            let args: Vec<String> = [flag].into_iter().map(str::to_owned).collect();
+            let opts = parse_args(&args).expect("version must parse");
+            assert!(opts.version);
+        }
     }
 }

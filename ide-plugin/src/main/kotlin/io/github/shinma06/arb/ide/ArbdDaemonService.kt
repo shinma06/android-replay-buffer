@@ -1,12 +1,11 @@
 package io.github.shinma06.arb.ide
 
 import com.intellij.ide.ActivityTracker
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.arb.ipc.ArbPaths
 import io.github.shinma06.arb.ipc.ArbdIoException
 import io.github.shinma06.arb.ipc.ArbdProcessManager
@@ -514,8 +513,14 @@ open class ArbdDaemonService internal constructor(
             return pb.start()
         }
 
+        /**
+         * Installed plugin root (`<plugins>/arb-ide-plugin`). Derived from the jar that holds this
+         * class (`<plugin>/lib/arb-ide-plugin-*.jar`) with the public [PathManager] API instead of the
+         * `@ApiStatus.Internal` plugin-descriptor lookup that Plugin Verifier rejects.
+         */
         internal fun resolveInstalledPluginPath(): Path? = runCatching {
-            PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath
+            val jar = PathManager.getJarPathForClass(ArbdDaemonService::class.java)?.let { Path.of(it) }
+            jar?.parent?.takeIf { it.fileName?.toString() == "lib" }?.parent
         }.getOrNull()
 
         /**

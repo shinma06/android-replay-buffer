@@ -1,0 +1,572 @@
+name: Release Gate
+# `main` 昇格前の 3-OS 配布ゲート（G-M2 / G-M3 / G-M4 / G-M7 / G-M9）。手動起動のみ。
+# 1. 本番（release.yml）と同じ経路で 3 OS の ZIP と IDE プラグイン ZIP を組み立てる。
+# 2. JetBrains Plugin Verifier（Android Studio 2026.2.2.8）を実行する。
+# 3. 組み立て済み ZIP をクリーンな場所へ展開し、各 OS で verify_release_bundle.py を完走させる
+#    （IPC / MCP 17 ツール / 旧形式の読取専用 / Suite B 17/17 / 焼き込み実画素 / arb-tray / 旧リリースからのアップグレード）。
+# 4. Windows では実 GUI（arb-tray、Edge、VLC）の画面と録画を証跡として保存する。
+# main 昇格前も、登録済みの CI の手動入力から同じワークフローを呼び出せる。
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '検証する ref（空なら起動した ref）'
+        required: false
+        default: ''
+        type: string
+      version_label:
+        description: '配布物へ埋め込む版ラベル（空なら <devBaseVersion>-dev.<sha7>）'
+        required: false
+        default: ''
+        type: string
+      previous_release_tag:
+        description: 'アップグレード元にする公開済みリリースのタグ（U5）'
+        required: false
+        default: 'early'
+        type: string
+      allow_missing_previous:
+        description: '旧リリースを取得できないとき、失敗にせず U5 を明示的に未実施として続行する'
+        required: false
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  PYTHONUTF8: '1'
+jobs:
+  prepare:
+    name: prepare (version label)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - id: v
+        env:
+          LABEL: ${{ inputs.version_label }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          base="$(sed -n 's/^devBaseVersion=//p' ide-plugin/gradle.properties)"
+          version="${LABEL:-${base}-dev.${sha:0:7}}"
+          [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || exit 2
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Release gate for ${sha} as ${version}"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Install nasm (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Install nasm (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+        if: runner.os == 'Linux'
+      - uses: Swatinem/rust-cache@v2.7.8
+        with:
+          workspaces: core
+      - name: Prepare pinned Android SDK (android-37.2 + runner build-tools)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sdk_dir="$(mktemp -d "$RUNNER_TEMP/replay-android-sdk.XXXXXX")"
+          archive="$sdk_dir/platform-37.2_r01.zip"
+          curl --fail --location --max-time 120 --output "$archive" \
+            https://dl.google.com/android/repository/platform-37.2_r01.zip
+          echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum -c -
+          mkdir -p "$sdk_dir/platforms/android-37.2"
+          jar="$sdk_dir/platforms/android-37.2/android.jar"
+          unzip -p "$archive" android-37.2/android.jar > "$jar"
+          echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum -c -
+          rm -f "$archive"
+          runner_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ln -s "$runner_sdk/build-tools" "$sdk_dir/build-tools"
+          echo "ANDROID_HOME=$sdk_dir" >> "$GITHUB_ENV"
+      - name: Build device-agent DEX jars
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          ./device-agent/build.sh --with-scrcpy-audio 2>&1 | tee device-agent-build.log
+          grep -q "ProtocolTest: ALL 19 TESTS PASSED" device-agent-build.log
+      - name: Build release binaries and the gate fixture generator
+        run: |
+          cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+          cargo build --manifest-path core/Cargo.toml --release -p arbd --example arb_gate_bundle
+      - name: Generate deterministic gate fixtures (FHD30, 1 s and 5 s GOP, Tap + Swipe + audio)
+        run: |
+          set -euo pipefail
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          for gop in 1 5; do
+            "core/target/release/examples/arb_gate_bundle${exe}" --out-dir gate-fixtures --gop-seconds "$gop"
+          done
+          ls -la gate-fixtures
+      - name: Build IDE plugin ZIP (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ide-plugin
+        env:
+          ARB_DAEMON_BIN: ${{ github.workspace }}/core/target/release/arbd
+        run: ./gradlew buildPlugin --no-daemon "-PpluginVersion=${VERSION}"
+      - name: Package bundle (Linux, with IDE plugin and DEX jars)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --target-os linux --arch "$RUNNER_ARCH" --version "$VERSION" \
+            --bin-dir core/target/release --device-agent-dir device-agent/build --out-dir dist
+          cp "ide-plugin/build/distributions/arb-ide-plugin-${VERSION}.zip" dist/
+          ls -lh dist
+      - name: Package bundle (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --target-os "$RUNNER_OS" --arch "$RUNNER_ARCH" --version "$VERSION" \
+            --bin-dir core/target/release --out-dir dist \
+            --allow-missing-ide-plugin --allow-missing-device-agent
+          ls -lh dist
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-${{ runner.os }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate-fixtures-${{ runner.os }}
+          path: gate-fixtures
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  build-and-assemble:
+    name: build-and-assemble (release.yml path)
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: release-*
+          path: raw-dist
+          merge-multiple: true
+      - name: Dry run of the release.yml tag classification
+        run: |
+          set -euo pipefail
+          classify() { python3 core/scripts/package_distribution.py --classify-tag "$1" --github-output "$2"; }
+          classify v2.0.0 "$RUNNER_TEMP/stable.out" >/dev/null
+          grep -qx 'prerelease=false' "$RUNNER_TEMP/stable.out"
+          grep -qx 'gh_release_flags=--latest' "$RUNNER_TEMP/stable.out"
+          classify v2.0.0-rc.1 "$RUNNER_TEMP/rc.out" >/dev/null
+          grep -qx 'prerelease=true' "$RUNNER_TEMP/rc.out"
+          grep -qx 'gh_release_flags=--prerelease --latest=false' "$RUNNER_TEMP/rc.out"
+          for bad in v2.0 2.0.0 v2.0.0-dev.1 v2.0.0+build v02.0.0 early; do
+            if classify "$bad" "$RUNNER_TEMP/bad.out" >/dev/null 2>&1; then
+              echo "::error::tag '$bad' must be rejected"; exit 1
+            fi
+          done
+          core_version="$(python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "core/scripts")
+          import package_distribution as p
+          from pathlib import Path
+          print(p.read_workspace_version(Path("core/Cargo.toml")))
+          PY
+          )"
+          python3 core/scripts/package_distribution.py --check-core-version "$core_version"
+          if python3 core/scripts/package_distribution.py --check-core-version "0.0.0-mismatch" >/dev/null 2>&1; then
+            echo "::error::a mismatching core version must be rejected"; exit 1
+          fi
+          echo "tag classification and core version dry runs passed (core ${core_version})"
+      - name: Assemble the 4 production ZIPs (universal plugin + 3 OS bundles)
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --assemble-release --version "$VERSION" --input-dir raw-dist --out-dir dist
+          ls -lh dist
+          for name in "arb-ide-plugin-${VERSION}.zip" arb-linux-x86_64.zip arb-macos-arm64.zip arb-windows-x86_64.zip; do
+            test -f "dist/$name" || { echo "::error::missing dist/$name"; exit 1; }
+          done
+          test "$(ls dist/*.zip | wc -l)" -eq 4
+          (cd dist && sha256sum -- *.zip | tee SHA256SUMS-zips.txt)
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-gate-dist
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS-zips.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  plugin-verifier:
+    name: plugin-verifier (Android Studio 2026.2.2.8)
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: verifyPluginProjectConfiguration + verifyPlugin
+        working-directory: ide-plugin
+        run: |
+          set -euo pipefail
+          ./gradlew verifyPluginProjectConfiguration verifyPlugin --no-daemon 2>&1 | tee "$GITHUB_WORKSPACE/verify-plugin.log"
+          grep -E "against AI-262\.[0-9.]+: Compatible" "$GITHUB_WORKSPACE/verify-plugin.log"
+          if grep -Ei "compatibility problems|invalid plugin|missing dependenc" "$GITHUB_WORKSPACE/verify-plugin.log"; then
+            echo "::error::Plugin Verifier reported problems"; exit 1
+          fi
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Plugin Verifier"
+            echo '```'
+            grep -E "^Plugin .* against |usages? of|Deprecated API usages|Experimental API usages|Internal API usages|Compatibility problems" verify-plugin.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: plugin-verifier
+          path: |
+            verify-plugin.log
+            ide-plugin/build/reports/pluginVerifier/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  gate-linux:
+    name: gate-linux
+    needs: [prepare, build, build-and-assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Install gate tools (nasm, ffmpeg, xvfb, dbus)
+        run: sudo apt-get update && sudo apt-get install -y nasm ffmpeg xvfb dbus-x11
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-gate-dist
+          path: dist
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: gate-fixtures-Linux
+          path: gate-fixtures
+      - name: Fetch the previous release for the in-place upgrade (U5)
+        id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-linux-x86_64.zip --dir previous -- "$tag"; then
+            echo "zip=previous/arb-linux-x86_64.zip" >> "$GITHUB_OUTPUT"
+            echo "Previous release '$tag' (arb-linux-x86_64.zip) downloaded: $(sha256sum previous/arb-linux-x86_64.zip)"
+          elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
+            echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
+            echo "zip=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::previous release '$tag' could not be downloaded; U5 needs a real earlier build (set allow_missing_previous to run without it)"
+            exit 1
+          fi
+      - name: verify_release_bundle.py (Xvfb + D-Bus session, with --check-tray)
+        run: |
+          set -euo pipefail
+          upgrade=()
+          if [ -n "${{ steps.previous.outputs.zip }}" ]; then upgrade=(--upgrade-from-zip "${{ steps.previous.outputs.zip }}"); fi
+          xvfb-run -a dbus-run-session -- python3 core/scripts/verify_release_bundle.py \
+            --bundle-zip dist/arb-linux-x86_64.zip \
+            --plugin-zip "dist/arb-ide-plugin-${VERSION}.zip" \
+            --fixtures-dir gate-fixtures \
+            --check-tray ${upgrade[@]+"${upgrade[@]}"} \
+            --out-dir gate-report
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: gate-linux-report
+          path: gate-report
+          if-no-files-found: warn
+          retention-days: 14
+
+  gate-macos:
+    name: gate-macos
+    needs: [prepare, build, build-and-assemble]
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Install gate tools (ffmpeg)
+        run: brew install ffmpeg
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-gate-dist
+          path: dist
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: gate-fixtures-macOS
+          path: gate-fixtures
+      - name: Fetch the previous release for the in-place upgrade (U5)
+        id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-macos-arm64.zip --dir previous -- "$tag"; then
+            echo "zip=previous/arb-macos-arm64.zip" >> "$GITHUB_OUTPUT"
+            echo "Previous release '$tag' (arb-macos-arm64.zip) downloaded: $(shasum -a 256 previous/arb-macos-arm64.zip)"
+          elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
+            echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
+            echo "zip=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::previous release '$tag' could not be downloaded; U5 needs a real earlier build (set allow_missing_previous to run without it)"
+            exit 1
+          fi
+      - name: verify_release_bundle.py (macOS desktop session, with --check-tray)
+        run: |
+          set -euo pipefail
+          upgrade=()
+          if [ -n "${{ steps.previous.outputs.zip }}" ]; then upgrade=(--upgrade-from-zip "${{ steps.previous.outputs.zip }}"); fi
+          python3 core/scripts/verify_release_bundle.py \
+            --bundle-zip dist/arb-macos-arm64.zip \
+            --plugin-zip "dist/arb-ide-plugin-${VERSION}.zip" \
+            --fixtures-dir gate-fixtures \
+            --check-tray ${upgrade[@]+"${upgrade[@]}"} \
+            --out-dir gate-report
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: gate-macos-report
+          path: gate-report
+          if-no-files-found: warn
+          retention-days: 14
+
+  gate-windows:
+    name: gate-windows (G-M7 real GUI)
+    needs: [prepare, build, build-and-assemble]
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Install gate tools (nasm, ffmpeg, vlc)
+        run: |
+          choco install nasm ffmpeg vlc --no-progress -y
+          echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-gate-dist
+          path: dist
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: gate-fixtures-Windows
+          path: gate-fixtures
+      - name: Extract the shipped arbd.exe for the Gradle integration tests
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          dest = Path(os.environ["RUNNER_TEMP"]) / "gradle-natives"
+          with zipfile.ZipFile("dist/arb-windows-x86_64.zip") as zf:
+              zf.extractall(dest)
+          exe = dest / "arb-windows-x86_64" / "bin" / "arbd.exe"
+          assert exe.is_file(), exe
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"ARB_DAEMON_BIN={exe}\n")
+          PY
+      - name: ide-plugin Gradle tests on real Windows (named pipe tests must run, not skip)
+        working-directory: ide-plugin
+        run: ./gradlew test --no-daemon
+      - name: Verify the Windows named pipe tests really ran
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+          import xml.etree.ElementTree as ET
+          ran, skipped = {}, []
+          for path in glob.glob("ide-plugin/**/build/test-results/test/*.xml", recursive=True):
+              for case in ET.parse(path).getroot().iter("testcase"):
+                  name = f"{case.get('classname')}.{case.get('name')}"
+                  if case.find("skipped") is not None:
+                      skipped.append(name)
+                  else:
+                      ran[name] = case.find("failure") is None and case.find("error") is None
+          print(f"{len(ran)} tests ran, {len(skipped)} skipped")
+          for name in skipped:
+              print("SKIPPED:", name)
+          required = [
+              "io.github.shinma06.arb.ipc.WindowsPipeSecurityTest.win32CurrentUserSidIsAValidSidOnWindows",
+          ]
+          missing = [n for n in required if not any(k.startswith(n) for k in ran)]
+          failed = [n for n, ok in ran.items() if not ok]
+          pipe_skips = [n for n in skipped if "WindowsPipe" in n or "NamedPipe" in n]
+          if missing or failed or pipe_skips:
+              print("MISSING:", missing, "FAILED:", failed, "PIPE SKIPPED:", pipe_skips)
+              sys.exit(1)
+          PY
+      - name: Fetch the previous release for the in-place upgrade (U5)
+        id: previous
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous_release_tag || 'early' }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          tag="$PREVIOUS_TAG"
+          if gh release download --pattern arb-windows-x86_64.zip --dir previous -- "$tag"; then
+            echo "zip=previous/arb-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
+            echo "Previous release '$tag' (arb-windows-x86_64.zip) downloaded: $(sha256sum previous/arb-windows-x86_64.zip)"
+          elif [ "${{ inputs.allow_missing_previous }}" = "true" ]; then
+            echo "::warning::previous release '$tag' is not available; U5 (real upgrade) is NOT exercised on this run"
+            echo "zip=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::previous release '$tag' could not be downloaded; U5 needs a real earlier build (set allow_missing_previous to run without it)"
+            exit 1
+          fi
+      - name: verify_release_bundle.py (Named Pipe, MoveFileExW, MCP, legacy RO, Suite B, burn-in, tray, upgrade)
+        id: bundle
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          upgrade=()
+          if [ -n "${{ steps.previous.outputs.zip }}" ]; then upgrade=(--upgrade-from-zip "${{ steps.previous.outputs.zip }}"); fi
+          python3 core/scripts/verify_release_bundle.py \
+            --bundle-zip dist/arb-windows-x86_64.zip \
+            --plugin-zip "dist/arb-ide-plugin-${VERSION}.zip" \
+            --fixtures-dir gate-fixtures \
+            --check-tray ${upgrade[@]+"${upgrade[@]}"} \
+            --keep-work --work-dir "$RUNNER_TEMP/gate-work" \
+            --out-dir gate-report
+      - name: Real Windows GUI evidence (tray, Edge, VLC, Media Foundation, screen recording)
+        if: ${{ !cancelled() && steps.bundle.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/gate-work"
+          share="$(ls "$work"/burn-plain-1s/bundle-*/share.mp4 | head -n 1)"
+          taps="$(ls "$work"/burn-taps-1s/bundle-*/share-taps.mp4 | head -n 1)"
+          python3 core/scripts/windows_gui_evidence.py \
+            --root "$work/extract/arb-windows-x86_64" \
+            --share "$share" --share-taps "$taps" \
+            --out-dir win-gui-evidence
+          cp "$share" win-gui-evidence/share.mp4
+          cp "$taps" win-gui-evidence/share-taps.mp4
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: gate-windows-report
+          path: gate-report
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: release-gate-windows
+          path: win-gui-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  gate-summary:
+    name: gate-summary
+    if: always()
+    needs: [prepare, build, build-and-assemble, plugin-verifier, gate-linux, gate-macos, gate-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: gate-*-report
+          path: gate-reports
+      - name: Summarise the 3-OS gate (fails when any job failed)
+        run: |
+          python3 core/scripts/release_gate_summary.py \
+            --reports gate-reports \
+            --job "prepare=${{ needs.prepare.result }}" \
+            --job "build=${{ needs.build.result }}" \
+            --job "build-and-assemble=${{ needs.build-and-assemble.result }}" \
+            --job "plugin-verifier=${{ needs.plugin-verifier.result }}" \
+            --job "gate-linux=${{ needs.gate-linux.result }}" \
+            --job "gate-macos=${{ needs.gate-macos.result }}" \
+            --job "gate-windows=${{ needs.gate-windows.result }}" \
+            --out "$GITHUB_STEP_SUMMARY"

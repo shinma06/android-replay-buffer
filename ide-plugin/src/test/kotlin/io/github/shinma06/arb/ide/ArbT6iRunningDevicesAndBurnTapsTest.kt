@@ -41,7 +41,16 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
 
     @Test
     fun pluginXmlRegistersRunningDevicesGroupOnStreamingToolbarSecondaryWithExplicitIcons() {
-        val pluginXml = Files.readString(repoRoot().resolve("ide-plugin/src/main/resources/META-INF/plugin.xml"))
+        // The Running Devices group lives in `arb-android.xml`, loaded only when org.jetbrains.android is
+        // present (the optional dependency in plugin.xml declares it via config-file for Plugin Verifier).
+        val metaInf = repoRoot().resolve("ide-plugin/src/main/resources/META-INF")
+        val mainXml = Files.readString(metaInf.resolve("plugin.xml"))
+        val androidXml = Files.readString(metaInf.resolve("arb-android.xml"))
+        assertTrue(mainXml.contains("""config-file="arb-android.xml">org.jetbrains.android</depends>"""))
+        assertTrue(mainXml.contains("""config-file="arb-java.xml">com.intellij.modules.java</depends>"""))
+        assertTrue(Files.isRegularFile(metaInf.resolve("arb-java.xml")))
+        assertFalse(mainXml.contains("StreamingToolbarSecondary"), "Android-only group must not live in plugin.xml")
+        val pluginXml = mainXml + "\n" + androidXml
 
         // Verified in Android Studio 2026.2.2.8 android.jar (META-INF/streaming.xml + AbstractDevicePanel):
         // StreamingToolbarSecondary is rendered on BOTH Embedded Emulator and Physical Device Mirroring panels.
