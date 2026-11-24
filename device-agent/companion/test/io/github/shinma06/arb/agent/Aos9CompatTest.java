@@ -325,11 +325,6 @@ public final class Aos9CompatTest {
     }
 
     /**
-     * Deterministic fake {@link Process} that emits {@code initialBytes} and optionally blocks
-     * mid-line until {@link #destroyForcibly()} / {@link #destroy()} or {@code InputStream.close()}
-     * is invoked, modeling a stuck {@code logcat -S} / {@code logcat -g} pipe.
-     */
-    /**
      * P1-8: touch discovery must match {@code ABS_MT_POSITION_X/Y} (or their unlabelled codes
      * {@code 0035}/{@code 0036}) only as axis definitions of an {@code ABS (0003)} section. The old
      * substring check also accepted key codes, ids and axis ranges containing those digits.
@@ -427,6 +422,11 @@ public final class Aos9CompatTest {
         passed++;
     }
 
+    /**
+     * Deterministic fake {@link Process} that emits {@code initialBytes} and optionally blocks
+     * mid-line until {@link #destroyForcibly()} / {@link #destroy()} or {@code InputStream.close()}
+     * is invoked, modeling a stuck {@code logcat -S} / {@code logcat -g} pipe.
+     */
     private static final class BlockingMidLineProcess extends Process {
         private final byte[] initialBytes;
         private final boolean blockAfterInitial;
