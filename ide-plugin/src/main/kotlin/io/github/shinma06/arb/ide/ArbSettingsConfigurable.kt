@@ -98,8 +98,9 @@ class ArbSettingsFormModel(
     val customScreenshotDirText = TextFieldState("")
     var screenshotStatusText by mutableStateOf("")
 
-    // Local binary path override (IDE-local)
+    // Local binary path override & OS tray icon toggle (IDE-local)
     val customArbdPathText = TextFieldState("")
+    var trayEnabled by mutableStateOf(false)
 
     // Daemon fields this page does not edit (pinned device from the Tool Window / CLI, and the
     // CLI/MCP `screenshot_dir_override`). Carried through unchanged so the draft never reports a
@@ -145,6 +146,7 @@ class ArbSettingsFormModel(
         draft: ArbSettingsDraft,
         screenshotInheritLogcat: Boolean = this.screenshotInheritLogcat,
         customScreenshotDir: String = this.customScreenshotDirText.text.toString(),
+        trayEnabled: Boolean = this.trayEnabled,
     ) {
         saveWindowText.setTextAndPlaceCursorAtEnd(
             draft.saveWindowSecs.coerceIn(
@@ -183,6 +185,7 @@ class ArbSettingsFormModel(
         customArbdPathText.setTextAndPlaceCursorAtEnd(draft.customArbdBinaryPath)
         this.screenshotInheritLogcat = screenshotInheritLogcat
         this.customScreenshotDirText.setTextAndPlaceCursorAtEnd(customScreenshotDir.trim())
+        this.trayEnabled = trayEnabled
     }
 
     fun currentDraft(): ArbSettingsDraft {
@@ -235,6 +238,8 @@ class ArbSettingsConfigurable internal constructor(
     private val localBinaryWriter: (String) -> Unit,
     private val localScreenshotReader: () -> Pair<Boolean, String> = { true to "" },
     private val localScreenshotWriter: (Boolean, String) -> Unit = { _, _ -> },
+    private val localTrayReader: () -> Boolean = { false },
+    private val localTrayWriter: (Boolean) -> Unit = {},
     private val screenshotStatusResolver: (Boolean, String) -> String = { inherit, custom ->
         ArbScreenshotDestinationResolver.resolveDirectory(project, inherit, custom).statusText
     },
@@ -277,6 +282,13 @@ class ArbSettingsConfigurable internal constructor(
                 st.customScreenshotDir = customDir
             }
         },
+        localTrayReader = {
+            ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled ?: false
+        },
+        localTrayWriter = { enabled ->
+            ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled = enabled
+            runCatching { ArbdDaemonService.getInstance().syncTrayStateAsync(enabled) }
+        },
         daemonRestarter = {
             ArbdDaemonService.getInstance().restartDaemon()
         },
@@ -288,6 +300,7 @@ class ArbSettingsConfigurable internal constructor(
     private var baselineCustomBinary: String = ""
     private var baselineScreenshotInherit: Boolean = true
     private var baselineCustomScreenshotDir: String = ""
+    private var baselineTrayEnabled: Boolean = false
     private var daemonOnline: Boolean = false
 
     override fun getDisplayName(): String = "Android Replay Buffer"
@@ -363,8 +376,9 @@ class ArbSettingsConfigurable internal constructor(
         val (inherit, customShot) = currentForm.currentLocalScreenshotSettings()
         val localBinaryChanged = draft.normalizedCustomArbdPath() != baselineCustomBinary
         val localScreenshotChanged = inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir
+        val localTrayChanged = currentForm.trayEnabled != baselineTrayEnabled
         val daemonChanged = daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)
-        return localBinaryChanged || localScreenshotChanged || daemonChanged
+        return localBinaryChanged || localScreenshotChanged || localTrayChanged || daemonChanged
     }
 
     @Throws(ConfigurationException::class)
@@ -372,6 +386,7 @@ class ArbSettingsConfigurable internal constructor(
         val currentForm = form ?: return
         val draft = currentForm.currentDraft()
         val (inherit, customShot) = currentForm.currentLocalScreenshotSettings()
+        val trayEnabled = currentForm.trayEnabled
 
         val newCustomPath = draft.normalizedCustomArbdPath()
         if (newCustomPath.isNotEmpty()) {
@@ -411,10 +426,16 @@ class ArbSettingsConfigurable internal constructor(
             baselineCustomScreenshotDir = customShot
         }
 
+        if (trayEnabled != baselineTrayEnabled) {
+            localTrayWriter(trayEnabled)
+            baselineTrayEnabled = trayEnabled
+        }
+
         currentForm.loadFromDraft(
             draft = ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary),
             screenshotInheritLogcat = baselineScreenshotInherit,
             customScreenshotDir = baselineCustomScreenshotDir,
+            trayEnabled = baselineTrayEnabled,
         )
         refreshScreenshotStatus(currentForm)
     }
@@ -425,6 +446,7 @@ class ArbSettingsConfigurable internal constructor(
         val (inherit, customShot) = localScreenshotReader()
         baselineScreenshotInherit = inherit
         baselineCustomScreenshotDir = customShot.trim()
+        baselineTrayEnabled = localTrayReader()
 
         val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
         if (loaded.isSuccess) {
@@ -445,6 +467,7 @@ class ArbSettingsConfigurable internal constructor(
             draft = ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary),
             screenshotInheritLogcat = baselineScreenshotInherit,
             customScreenshotDir = baselineCustomScreenshotDir,
+            trayEnabled = baselineTrayEnabled,
         )
         refreshScreenshotStatus(currentForm)
     }
@@ -828,8 +851,13 @@ internal fun ArbSettingsContent(
                 )
             }
 
-            // 5. Local Execution Override
+            // 5. Local Execution Override & OS Menu Bar / System Tray
             GroupHeader("ローカル実行設定（IDE ローカル保存）", modifier = Modifier.semantics { heading() })
+            ArbLabeledCheckbox(
+                text = "メニューバー / システムトレイアイコンを表示する",
+                checked = form.trayEnabled,
+                onCheckedChange = { form.trayEnabled = it },
+            )
             SettingsFormRow("arbd バイナリパス (任意):") {
                 TextField(
                     state = form.customArbdPathText,

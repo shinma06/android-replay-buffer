@@ -30,6 +30,7 @@ data class ArbToolbarDaemonSnapshot(
     val probed: Boolean = false,
     val daemonConnected: Boolean = false,
     val captureActive: Boolean = false,
+    val captureEnabled: Boolean = false,
     val hasBufferedData: Boolean = false,
     val hasOnlineDevice: Boolean = false,
     val selectedDeviceSerial: String? = null,
@@ -55,6 +56,8 @@ interface ArbDaemonStateListener {
 @Service(Service.Level.APP)
 open class ArbdDaemonService internal constructor(
     private val processManager: ArbdProcessManager,
+    private val trayBinaryResolver: () -> Path? = { processManager.resolveTrayBinary() },
+    private val trayProcessStarter: (Path, Map<String, String>) -> Process = ::defaultStartTrayProcess,
 ) : Disposable {
     constructor() : this(
         ArbdProcessManager(
@@ -67,10 +70,14 @@ open class ArbdDaemonService internal constructor(
 
     private val logger = Logger.getInstance(ArbdDaemonService::class.java)
     private val lock = Any()
+    private val trayLock = Any()
     private val listeners = CopyOnWriteArrayList<ArbDaemonStateListener>()
 
     @Volatile
     private var client: ArbdRpcClient? = null
+
+    private var managedTrayProcess: Process? = null
+    private var managedTrayBinaryPath: Path? = null
 
     @Volatile
     var lastHello: SystemHelloResponse? = null
@@ -82,6 +89,10 @@ open class ArbdDaemonService internal constructor(
 
     @Volatile
     var cachedCaptureActive: Boolean = false
+        private set
+
+    @Volatile
+    var cachedCaptureEnabled: Boolean = false
         private set
 
     @Volatile
@@ -115,8 +126,9 @@ open class ArbdDaemonService internal constructor(
                 val status = client.systemStatus()
                 val devices = client.deviceList().devices
                 updateCachedConfig(config)
+                val armed = status.captureEnabled || config.captureEnabled
                 val state = CaptureBarReducer.fromStatus(CaptureBarState(), status, devices, config = config)
-                updateCachedToolbarSnapshot(state.toToolbarSnapshot())
+                updateCachedToolbarSnapshot(state.toToolbarSnapshot(captureEnabled = armed))
             }
         } catch (_: Exception) {
             updateCachedToolbarSnapshot(ArbToolbarDaemonSnapshot(probed = true))
@@ -194,12 +206,21 @@ open class ArbdDaemonService internal constructor(
     }
 
     fun updateCachedCaptureActive(active: Boolean) {
-        val changed = cachedCaptureActive != active || cachedToolbarSnapshot.captureActive != active
+        updateCachedCaptureState(active = active, enabled = cachedCaptureEnabled)
+    }
+
+    fun updateCachedCaptureState(active: Boolean, enabled: Boolean) {
+        val changed = cachedCaptureActive != active ||
+            cachedCaptureEnabled != enabled ||
+            cachedToolbarSnapshot.captureActive != active ||
+            cachedToolbarSnapshot.captureEnabled != enabled
         cachedCaptureActive = active
+        cachedCaptureEnabled = enabled
         cachedToolbarSnapshot = cachedToolbarSnapshot.copy(
             probed = true,
             daemonConnected = true,
             captureActive = active,
+            captureEnabled = enabled,
         )
         if (changed) {
             bumpActionToolbarRefresh()
@@ -207,8 +228,11 @@ open class ArbdDaemonService internal constructor(
     }
 
     fun updateCachedToolbarSnapshot(snapshot: ArbToolbarDaemonSnapshot) {
-        val changed = cachedToolbarSnapshot != snapshot || cachedCaptureActive != snapshot.captureActive
+        val changed = cachedToolbarSnapshot != snapshot ||
+            cachedCaptureActive != snapshot.captureActive ||
+            cachedCaptureEnabled != snapshot.captureEnabled
         cachedCaptureActive = snapshot.captureActive
+        cachedCaptureEnabled = snapshot.captureEnabled
         lastToolbarProbeNanos = System.nanoTime()
         cachedToolbarSnapshot = snapshot
         if (changed) {
@@ -232,9 +256,83 @@ open class ArbdDaemonService internal constructor(
         runCatching { ActivityTracker.getInstance()?.inc() }
     }
 
-    /** Launches the bundled `arb-tray` menu-bar / system-tray app with zero terminal setup. */
+    /**
+     * Launches the bundled `arb-tray` menu-bar / system-tray app under plugin-managed lifecycle
+     * ownership (idempotent while already running; `arb-tray` also guards single-instance lock).
+     */
     @Throws(IOException::class)
-    open fun launchBundledTray(): Path = processManager.launchBundledTray()
+    open fun launchBundledTray(): Path = synchronized(trayLock) {
+        check(!disposed) { "ArbdDaemonService is already disposed" }
+        val existing = managedTrayProcess
+        if (existing != null && existing.isAlive) {
+            return@synchronized managedTrayBinaryPath
+                ?: trayBinaryResolver()
+                ?: throw IOException("同梱の arb-tray バイナリが見つかりません。")
+        }
+        managedTrayProcess = null
+        managedTrayBinaryPath = null
+        val trayBin = trayBinaryResolver()
+            ?: throw IOException("同梱の arb-tray バイナリが見つかりません。")
+        val daemonBin = runCatching { processManager.resolveDaemonBinary() }.getOrNull()
+        val env = processManager.buildDaemonEnvironment(daemonBin)
+        val proc = trayProcessStarter(trayBin, env)
+        managedTrayProcess = proc
+        managedTrayBinaryPath = trayBin
+        trayBin
+    }
+
+    /**
+     * Cleanly terminates ONLY the plugin-managed `arb-tray` child process (never stopping `arbd`).
+     * Returns `true` if a managed process was present and stopped.
+     */
+    open fun stopBundledTray(): Boolean {
+        val proc = synchronized(trayLock) {
+            val current = managedTrayProcess
+            managedTrayProcess = null
+            managedTrayBinaryPath = null
+            current
+        } ?: return false
+        if (proc.isAlive) {
+            runCatching { proc.destroy() }
+            val exited = runCatching { proc.waitFor(TRAY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+                .getOrDefault(false)
+            if (!exited && proc.isAlive) {
+                runCatching { proc.destroyForcibly() }
+            }
+        }
+        return true
+    }
+
+    /**
+     * Synchronizes the plugin-managed `arb-tray` process with [enabled] (`true` -> launch
+     * idempotently; `false` -> terminate ONLY `arb-tray`, leaving `arbd` untouched).
+     */
+    open fun syncTrayState(enabled: Boolean) {
+        if (enabled) {
+            if (disposed) return
+            runCatching { launchBundledTray() }
+                .onFailure { logger.warn("ARB arb-tray launch failed: ${it.message}", it) }
+        } else {
+            stopBundledTray()
+        }
+    }
+
+    /** Off-EDT helper invoked by Settings Apply to avoid blocking the UI thread. */
+    fun syncTrayStateAsync(enabled: Boolean) {
+        val app = ApplicationManager.getApplication()
+        if (app != null) {
+            app.executeOnPooledThread { syncTrayState(enabled) }
+        } else {
+            Thread({ syncTrayState(enabled) }, "arb-tray-sync").apply {
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
+    internal fun isManagedTrayRunningForTest(): Boolean = synchronized(trayLock) {
+        managedTrayProcess?.isAlive == true
+    }
 
     /** Resolves the bundled `arb-cli` binary path for Settings CLI/MCP copy actions. */
     open fun resolveBundledCliPath(): Path? =
@@ -289,11 +387,22 @@ open class ArbdDaemonService internal constructor(
 
     override fun dispose() {
         disposed = true
+        stopBundledTray()
         disconnect()
     }
 
     companion object {
         const val PLUGIN_ID: String = "io.github.shinma06.android-replay-buffer"
+        private const val TRAY_STOP_TIMEOUT_MS: Long = 1_500L
+
+        private fun defaultStartTrayProcess(trayBin: Path, env: Map<String, String>): Process {
+            val pb = ProcessBuilder(listOf(trayBin.toAbsolutePath().toString(), "--auto-start"))
+                .redirectInput(ProcessBuilder.Redirect.PIPE)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+            pb.environment().putAll(env)
+            return pb.start().also { it.outputStream.close() }
+        }
 
         internal fun resolveInstalledPluginPath(): Path? = runCatching {
             PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath

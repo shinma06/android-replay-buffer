@@ -1,6 +1,6 @@
 package io.github.shinma06.arb.ide
 
-import com.intellij.ide.actions.RevealFileAction
+import androidx.compose.ui.graphics.ImageBitmap
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileChooser.FileChooserFactory
@@ -13,28 +13,32 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import io.github.shinma06.arb.ipc.BundleLeaseController
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
-import io.github.shinma06.arb.model.ExportShareMp4Params
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.LeaseHolderKind
+import io.github.shinma06.arb.model.LogRecord
 import io.github.shinma06.arb.model.QueryBucket
 import io.github.shinma06.arb.model.StreamStatus
+import io.github.shinma06.arb.model.TimeAlignment
+import io.github.shinma06.arb.playback.AudioSink
 import io.github.shinma06.arb.playback.AudioSyncPlayer
 import io.github.shinma06.arb.playback.FrameSeekResult
 import io.github.shinma06.arb.playback.FrameSeeker
+import io.github.shinma06.arb.playback.JvmAudioSink
+import io.github.shinma06.arb.playback.PlaybackClock
 import io.github.shinma06.arb.playback.PlaybackController
 import io.github.shinma06.arb.playback.PlaybackSpeed
+import io.github.shinma06.arb.playback.SystemPlaybackClock
 import io.github.shinma06.arb.playback.WavFilePcmSource
+import io.github.shinma06.arb.shm.ShmFrameMeta
 import io.github.shinma06.arb.shm.ShmFrameRingReader
-import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
 import io.github.shinma06.arb.state.TrimCloseState
 import io.github.shinma06.arb.ui.ArbStudioContent
-import androidx.compose.ui.graphics.ImageBitmap
-import io.github.shinma06.arb.shm.ShmFrameMeta
 import io.github.shinma06.arb.ui.ArbStudioController
 import io.github.shinma06.arb.ui.LatestValueMailbox
 import io.github.shinma06.arb.ui.StudioExportFormat
@@ -43,8 +47,8 @@ import java.awt.BorderLayout
 import java.beans.PropertyChangeListener
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -57,23 +61,46 @@ import kotlin.math.roundToLong
  *
  * Lifecycle & safety guarantees:
  * - Acquires a Viewer Lease via `bundle.open(holder_kind = ide_viewer)` and renews it periodically.
- * - Attaches to `arbd`'s SHM triple-buffered viewport via [ShmFrameRingReader].
- * - Drives continuous playback & deterministic range presets via T-3's [PlaybackController], and
- *   asynchronously decodes `audio.m4a` via `media.decode_audio_pcm` -> [WavFilePcmSource] ->
- *   [AudioSyncPlayer] with real `av_offset_ms` (gracefully degrading when audio/hardware is absent).
- * - Exports standalone faststart zero-`elst` H.264+AAC `share.mp4` (+ optional trimmed WORM bundle)
- *   via `export.share_mp4`, honoring `trash_original` ONLY on non-Legacy bundles.
- * - Tracks unexported custom trim bounds in [TrimCloseState] for [ArbBundlePreCloseCheck].
- * - On [dispose], closes [PlaybackController], unmaps SHM, closes viewport, and releases the lease off EDT.
+ * - Opens the SHM viewport first and decouples timeline/log pagination so video renders immediately
+ *   even for large log bundles (M2), fetching logs in bounded cursor pages with adaptive halving on
+ *   4 MiB RPC frame-size limits.
+ * - Wires real per-frame VFR timestamps (`framePtsNs` from `media.open_viewport`) into
+ *   [PlaybackController] so play, seek, and loop wrap stay aligned with audio and logs (H8).
+ * - Guards `disposed` + `ownedViewportId` / `ownedLeaseController` / `ownedShmReader` /
+ *   `ownedPlaybackController` atomically under [lifecycleLock] so closing the tab mid-`open_viewport`
+ *   immediately closes the returned viewport off-EDT without leaking or killing shared IPC (M1).
  */
-class ArbBundleFileEditor(
-    private val project: Project,
+class ArbBundleFileEditor internal constructor(
+    private val project: Project?,
     private val backingFile: VirtualFile,
     private val bundleIdOrPath: String,
     private val displayTitle: String,
     private val daemonService: ArbdDaemonService,
-    private val sourceJumpResolver: SourceJumpResolver = IntelliJSourceJumpResolver(project),
+    private val sourceJumpResolver: SourceJumpResolver,
+    private val playbackClock: PlaybackClock = SystemPlaybackClock,
+    private val autoRunPlaybackLoop: Boolean = true,
+    private val audioSinkFactory: () -> AudioSink = { JvmAudioSink() },
+    private val audioAutoRunPump: Boolean = true,
+    private val initialLogPageSize: Int = INITIAL_LOG_PAGE_SIZE,
+    private val publishEdt: (() -> Unit) -> Unit = { block -> SwingUtilities.invokeLater(block) },
 ) : UserDataHolderBase(), FileEditor {
+    constructor(
+        project: Project,
+        backingFile: VirtualFile,
+        bundleIdOrPath: String,
+        displayTitle: String,
+        daemonService: ArbdDaemonService,
+        sourceJumpResolver: SourceJumpResolver = IntelliJSourceJumpResolver(project),
+    ) : this(
+        project = project,
+        backingFile = backingFile,
+        bundleIdOrPath = bundleIdOrPath,
+        displayTitle = displayTitle,
+        daemonService = daemonService,
+        sourceJumpResolver = sourceJumpResolver,
+        playbackClock = SystemPlaybackClock,
+    )
+
     constructor(
         project: Project,
         virtualFile: ArbBundleVirtualFile,
@@ -89,8 +116,13 @@ class ArbBundleFileEditor(
     )
 
     private val logger = Logger.getInstance(ArbBundleFileEditor::class.java)
+    private val lifecycleLock = Any()
+
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "arb-studio-$displayTitle").apply { isDaemon = true }
+    }
+    private val timelineWorker = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "arb-studio-timeline-$displayTitle").apply { isDaemon = true }
     }
     private val audioDecodeWorker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "arb-audio-decode-$displayTitle").apply { isDaemon = true }
@@ -107,37 +139,38 @@ class ArbBundleFileEditor(
             state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
             submitWork {
                 runCatching {
-                    playbackController?.setInFrame(inFrame)
-                    playbackController?.setOutFrame(outFrame)
+                    val ctrl = currentPlaybackController()
+                    ctrl?.setInFrame(inFrame)
+                    ctrl?.setOutFrame(outFrame)
                 }.onFailure { logger.debug("ARB range update failed", it) }
             }
             persistEditSession(inFrame, outFrame, playhead)
         },
         onPlayPauseToggle = {
             submitWork {
-                runCatching { playbackController?.togglePlayPause() }
+                runCatching { currentPlaybackController()?.togglePlayPause() }
                     .onFailure { logger.debug("ARB play/pause failed", it) }
             }
         },
         onStepFrame = { delta ->
             submitWork {
-                runCatching { playbackController?.stepFrame(delta) }
+                runCatching { currentPlaybackController()?.stepFrame(delta) }
                     .onFailure { logger.debug("ARB stepFrame failed", it) }
             }
         },
         onSpeedChange = { speed: PlaybackSpeed ->
             submitWork {
-                runCatching { playbackController?.setSpeed(speed) }
+                runCatching { currentPlaybackController()?.setSpeed(speed) }
             }
         },
         onMuteToggle = {
             submitWork {
-                runCatching { playbackController?.toggleMute() }
+                runCatching { currentPlaybackController()?.toggleMute() }
             }
         },
         onLoopToggle = {
             submitWork {
-                runCatching { playbackController?.toggleLoop() }
+                runCatching { currentPlaybackController()?.toggleLoop() }
             }
         },
         onSelectTapRange = { applySelectTapRange() },
@@ -151,10 +184,11 @@ class ArbBundleFileEditor(
             ArbNotifications.openPathInFileManager(path)
         },
         onOpenExportedBundle = { exportedIdOrPath, title ->
-            SwingUtilities.invokeLater {
-                if (!project.isDisposed) {
+            publishEdt {
+                val p = project
+                if (p != null && !p.isDisposed) {
                     val vf = ArbBundleVirtualFile(exportedIdOrPath, title, isLegacyHint = false)
-                    FileEditorManager.getInstance(project).openFile(vf, true)
+                    FileEditorManager.getInstance(p).openFile(vf, true)
                 }
             }
         },
@@ -164,7 +198,7 @@ class ArbBundleFileEditor(
             runOffEdt {
                 val jumped = runCatching { sourceJumpResolver.resolveAndNavigate(target) }.getOrDefault(false)
                 if (!jumped && !disposed) {
-                    SwingUtilities.invokeLater {
+                    publishEdt {
                         studioController.showError("プロジェクト内に該当ソースが見つかりませんでした: ${target.displayLabel}")
                     }
                 }
@@ -181,11 +215,12 @@ class ArbBundleFileEditor(
                     .getOrNull()
                     ?.let { runCatching { Path.of(it) }.getOrNull() }
                     ?.takeIf { Files.isDirectory(it) }
-                SwingUtilities.invokeLater {
-                    if (disposed || project.isDisposed) return@invokeLater
+                publishEdt {
+                    val p = project
+                    if (disposed || p == null || p.isDisposed) return@publishEdt
                     val descriptor = FileSaverDescriptor("フレーム #$frameIndex の PNG 保存先を選択", "", "png")
                     val wrapper = FileChooserFactory.getInstance()
-                        .createSaveFileDialog(descriptor, project)
+                        .createSaveFileDialog(descriptor, p)
                         .save(baseDir, "$bundleId-frame-$frameIndex.png")
                     wrapper?.let { onChosen(it.file.toPath()) }
                 }
@@ -197,9 +232,10 @@ class ArbBundleFileEditor(
             ArbLocalSettingsState.getInstanceOrNull()?.burnTapsOnExport = enabled
         },
         onCloseTab = {
-            SwingUtilities.invokeLater {
-                if (!project.isDisposed) {
-                    FileEditorManager.getInstance(project).closeFile(backingFile)
+            publishEdt {
+                val p = project
+                if (p != null && !p.isDisposed) {
+                    FileEditorManager.getInstance(p).closeFile(backingFile)
                 }
             }
         },
@@ -210,18 +246,22 @@ class ArbBundleFileEditor(
 
     private val pendingFrame = LatestValueMailbox<PendingFrame>()
 
-    private val rootComponent: JPanel = JPanel(BorderLayout()).apply {
-        add(JewelComposePanel { ArbStudioContent(studioController) }, BorderLayout.CENTER)
+    // Lazy so headless JUnit tests exercising Studio wiring never require a live Skiko/Compose frame.
+    private val rootComponent: JPanel by lazy {
+        JPanel(BorderLayout()).apply {
+            add(JewelComposePanel { ArbStudioContent(studioController) }, BorderLayout.CENTER)
+        }
     }
 
-    @Volatile
-    private var leaseController: BundleLeaseController? = null
+    // All teardown-owned handles below are guarded by [lifecycleLock] so dispose() and async
+    // open/register never race or double-close (M1).
+    private var ownedLeaseController: BundleLeaseController? = null
+    private var ownedViewportId: String? = null
+    private var ownedShmReader: ShmFrameRingReader? = null
+    private var ownedPlaybackController: PlaybackController? = null
 
     @Volatile
-    private var shmReader: ShmFrameRingReader? = null
-
-    @Volatile
-    private var playbackController: PlaybackController? = null
+    private var attachedAudioPlayer: AudioSyncPlayer? = null
 
     @Volatile
     private var state: TimelineViewerState? = null
@@ -243,6 +283,20 @@ class ArbBundleFileEditor(
 
     fun currentTrimRange(): Pair<Long, Long> = trimCloseState.currentRange()
 
+    internal fun playbackControllerForTest(): PlaybackController? = synchronized(lifecycleLock) {
+        ownedPlaybackController
+    }
+
+    internal fun audioPlayerForTest(): AudioSyncPlayer? = attachedAudioPlayer
+
+    private fun currentPlaybackController(): PlaybackController? = synchronized(lifecycleLock) {
+        ownedPlaybackController
+    }
+
+    private fun currentShmReader(): ShmFrameRingReader? = synchronized(lifecycleLock) {
+        ownedShmReader
+    }
+
     private fun loadBundleAsync() {
         submitWork {
             try {
@@ -254,18 +308,24 @@ class ArbBundleFileEditor(
                     )
                 }
 
-                val openedViewportId = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                leaseController = BundleLeaseController(
+                val lease = BundleLeaseController(
                     leaseId = opened.leaseId,
                     renewAction = { id -> daemonService.withClient { it.bundleLeaseRenew(id) } },
                     closeLeaseAction = { id -> daemonService.withClient { it.bundleClose(id) } },
-                    closeViewportAction = {
-                        openedViewportId.get()?.let { vpId -> daemonService.withClient { it.mediaCloseViewport(vpId) } }
-                    },
+                    // Viewport teardown is owned atomically under lifecycleLock (see dispose()).
+                    closeViewportAction = null,
                     onHeartbeatError = { err -> logger.warn("ARB lease heartbeat failed", err) },
                 )
-                if (disposed) {
-                    releaseResources()
+                val leaseRegistered = synchronized(lifecycleLock) {
+                    if (disposed) {
+                        false
+                    } else {
+                        ownedLeaseController = lease
+                        true
+                    }
+                }
+                if (!leaseRegistered) {
+                    runCatching { lease.close() }
                     return@submitWork
                 }
 
@@ -276,45 +336,45 @@ class ArbBundleFileEditor(
                     daemonService.withClient { it.editGetSession(sessionId) }
                 }.getOrNull()
 
-                val discontinuities = daemonService.withClient {
-                    it.timelineDiscontinuities(opened.bundleId).discontinuities
-                }
-                val crashes = runCatching {
-                    daemonService.withClient { it.timelineCrashes(opened.bundleId).crashes }
-                }.getOrDefault(emptyList())
-                val screens = runCatching {
-                    daemonService.withClient { it.timelineScreens(opened.bundleId).screens }
-                }.getOrDefault(emptyList())
-                val mainLogs = daemonService.withClient {
-                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.MAIN, limit = LOG_QUERY_LIMIT).logs
-                }
-                val unanchoredLogs = daemonService.withClient {
-                    it.timelineQueryLogs(opened.bundleId, bucket = QueryBucket.UNANCHORED, limit = LOG_QUERY_LIMIT).logs
-                }
-                val mainTaps = daemonService.withClient {
-                    it.timelineQueryTaps(opened.bundleId, bucket = QueryBucket.MAIN, limit = 5_000).taps
-                }
-                val unanchoredTaps = daemonService.withClient {
-                    it.timelineQueryTaps(opened.bundleId, bucket = QueryBucket.UNANCHORED, limit = 5_000).taps
-                }
-
+                // Phase 1 (M2): Open video viewport FIRST before querying logs/events so video
+                // displays immediately even when log bundles are huge or slow.
                 var viewportId: String? = null
                 var frameCount = opened.summary.frameCount.toLong()
-                var filmstrip = emptyList<io.github.shinma06.arb.model.FilmstripEntryMeta>()
+                var framePtsNs: List<Long> = emptyList()
 
                 if (opened.summary.videoPath != null && frameCount > 0L) {
                     val vp = daemonService.withClient { it.mediaOpenViewport(opened.bundleId) }
-                    viewportId = vp.viewportId
-                    openedViewportId.set(vp.viewportId)
-                    frameCount = vp.frameCount
-                    shmReader = ShmFrameRingReader.open(Path.of(vp.shmPath))
-                    if (disposed) {
-                        releaseResources()
+                    // M1: atomically check disposed vs register ownedViewportId. If disposed
+                    // raced while media.open_viewport was in flight, close it immediately off-EDT!
+                    val viewportRegistered = synchronized(lifecycleLock) {
+                        if (disposed) {
+                            false
+                        } else {
+                            ownedViewportId = vp.viewportId
+                            true
+                        }
+                    }
+                    if (!viewportRegistered) {
+                        runCatching { daemonService.withClient { it.mediaCloseViewport(vp.viewportId) } }
                         return@submitWork
                     }
-                    filmstrip = runCatching {
-                        daemonService.withClient { it.mediaFilmstrip(vp.viewportId) }.entries
-                    }.getOrDefault(emptyList())
+                    viewportId = vp.viewportId
+                    frameCount = vp.frameCount
+                    framePtsNs = vp.framePtsNs
+
+                    val reader = ShmFrameRingReader.open(Path.of(vp.shmPath))
+                    val readerRegistered = synchronized(lifecycleLock) {
+                        if (disposed) {
+                            false
+                        } else {
+                            ownedShmReader = reader
+                            true
+                        }
+                    }
+                    if (!readerRegistered) {
+                        runCatching { reader.close() }
+                        return@submitWork
+                    }
                 }
 
                 val initialIn = existingSession?.inFrameIndex ?: 0L
@@ -322,28 +382,18 @@ class ArbBundleFileEditor(
                 val initialPlayhead = existingSession?.playheadFrameIndex ?: 0L
                 trimCloseState.initialize(frameCount, initialIn, initialOut)
 
-                val initialState = TimelineViewerReducer.withBucketedRecords(
-                    state = TimelineViewerState(
-                        bundleId = opened.bundleId,
-                        path = opened.path,
-                        format = opened.format,
-                        isLegacy = opened.isLegacy,
-                        leaseId = opened.leaseId,
-                        viewportId = viewportId,
-                        summary = opened.summary,
-                        frameCount = frameCount,
-                        currentFrameIndex = initialPlayhead,
-                        inFrameIndex = initialIn,
-                        outFrameIndex = initialOut,
-                        filmstrip = filmstrip,
-                        discontinuities = discontinuities,
-                        crashes = crashes,
-                        screens = screens,
-                    ),
-                    mainLogs = mainLogs,
-                    unanchoredLogs = unanchoredLogs,
-                    mainTaps = mainTaps,
-                    unanchoredTaps = unanchoredTaps,
+                val initialState = TimelineViewerState(
+                    bundleId = opened.bundleId,
+                    path = opened.path,
+                    format = opened.format,
+                    isLegacy = opened.isLegacy,
+                    leaseId = opened.leaseId,
+                    viewportId = viewportId,
+                    summary = opened.summary,
+                    frameCount = frameCount,
+                    currentFrameIndex = initialPlayhead,
+                    inFrameIndex = initialIn,
+                    outFrameIndex = initialOut,
                 )
                 state = initialState
 
@@ -351,60 +401,314 @@ class ArbBundleFileEditor(
                 val hasAudioTrack = opened.summary.audioPath != null ||
                     opened.summary.streams.audio?.status in setOf(StreamStatus.PRESENT, StreamStatus.PARTIAL)
 
+                var activeCtrl: PlaybackController? = null
                 if (viewportId != null && frameCount > 0L) {
+                    val openedVpId = viewportId
                     val seeker = object : FrameSeeker {
                         override fun seekExact(frameIndex: Long): FrameSeekResult {
-                            val resp = daemonService.withClient { it.mediaSeekFrame(viewportId, frameIndex) }
+                            val resp = daemonService.withClient { it.mediaSeekFrame(openedVpId, frameIndex) }
                             readShmAndRender()
                             return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate)
                         }
 
                         override fun scrubApprox(frameIndex: Long): FrameSeekResult {
-                            val resp = daemonService.withClient { it.mediaScrub(viewportId, frameIndex) }
+                            val resp = daemonService.withClient { it.mediaScrub(openedVpId, frameIndex) }
                             readShmAndRender()
                             return FrameSeekResult(resp.requestedFrameIndex, resp.displayedFrameIndex, resp.isApproximate)
                         }
                     }
+                    // H8: Pass real per-frame VFR presentation timestamps from `media.open_viewport`
+                    // into PlaybackController so play, seek, and loop wrap share the exact PTS map.
                     val ctrl = PlaybackController(
                         totalFrames = frameCount,
                         frameSeeker = seeker,
+                        framePtsNs = framePtsNs,
                         fallbackFps = initialState.estimatedFps,
                         audioPlayer = null,
+                        clock = playbackClock,
                         initialFrameIndex = initialPlayhead,
                         initialInFrameIndex = initialIn,
                         initialOutFrameIndex = initialOut,
                         initialAvOffsetMs = fallbackAvOffsetMs,
+                        autoRunLoop = autoRunPlaybackLoop,
                         onPlaybackError = { err -> logger.debug("ARB playback error", err) },
                     )
                     ctrl.addStateListener { pb ->
-                        SwingUtilities.invokeLater { studioController.renderPlaybackState(pb) }
+                        publishEdt {
+                            if (!disposed) {
+                                studioController.renderPlaybackState(pb)
+                            }
+                        }
                     }
-                    playbackController = ctrl
-                    if (disposed) {
-                        releaseResources()
+                    val ctrlRegistered = synchronized(lifecycleLock) {
+                        if (disposed) {
+                            false
+                        } else {
+                            ownedPlaybackController = ctrl
+                            true
+                        }
+                    }
+                    if (!ctrlRegistered) {
+                        runCatching { ctrl.close() }
                         return@submitWork
                     }
+                    activeCtrl = ctrl
 
                     if (hasAudioTrack) {
                         attachDecodedAudioAsync(opened.bundleId, ctrl)
                     }
                 }
 
-                SwingUtilities.invokeLater {
-                    studioController.renderState(initialState, image = null)
-                    playbackController?.state?.let(studioController::renderPlaybackState)
+                publishEdt {
+                    if (!disposed) {
+                        studioController.renderState(initialState, image = null)
+                        activeCtrl?.state?.let(studioController::renderPlaybackState)
+                    }
                 }
 
-                if (viewportId != null && frameCount > 0L) {
-                    performSeekExact(initialPlayhead)
+                // Render initial frame right away before decoupled timeline/log pagination starts!
+                if (activeCtrl != null && !disposed) {
+                    runCatching { activeCtrl.seekToFrame(initialPlayhead) }
+                        .onFailure { t ->
+                            logger.warn("ARB initial seek_frame failed", t)
+                            if (!disposed) {
+                                publishEdt {
+                                    studioController.showError("フレームシークに失敗しました: ${t.message}")
+                                }
+                            }
+                        }
+                }
+
+                // Phase 2 (M2): Decoupled background loading of filmstrip, events, and paged logs.
+                if (!disposed) {
+                    loadTimelineDataAsync(opened.bundleId, viewportId)
                 }
             } catch (t: Throwable) {
+                if (disposed) return@submitWork
                 logger.warn("Failed to open ARB bundle $bundleIdOrPath", t)
-                SwingUtilities.invokeLater {
-                    studioController.showError("バンドルを開けませんでした: ${t.message}")
+                publishEdt {
+                    if (!disposed) {
+                        studioController.showError("バンドルを開けませんでした: ${t.message}")
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Decoupled Phase 2 loader (M2): loads filmstrip, discontinuities, crashes, screens, taps, and
+     * cursor-paged logs without blocking or aborting video viewport startup.
+     */
+    private fun loadTimelineDataAsync(bundleId: String, viewportId: String?) {
+        submitGuarded(timelineWorker) {
+            if (disposed) return@submitGuarded
+
+            if (viewportId != null) {
+                val filmstrip = runCatching {
+                    daemonService.withClient { it.mediaFilmstrip(viewportId) }.entries
+                }.getOrDefault(emptyList())
+                if (!disposed && filmstrip.isNotEmpty()) {
+                    state = state?.copy(filmstrip = filmstrip)
+                    publishEdt {
+                        if (!disposed) {
+                            studioController.updateState { it.copy(filmstrip = filmstrip) }
+                        }
+                    }
+                }
+            }
+            if (disposed) return@submitGuarded
+
+            val discontinuities = runCatching {
+                daemonService.withClient { it.timelineDiscontinuities(bundleId).discontinuities }
+            }.getOrDefault(emptyList())
+            val crashes = runCatching {
+                daemonService.withClient { it.timelineCrashes(bundleId).crashes }
+            }.getOrDefault(emptyList())
+            val screens = runCatching {
+                daemonService.withClient { it.timelineScreens(bundleId).screens }
+            }.getOrDefault(emptyList())
+            val mainTaps = runCatching {
+                daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = QueryBucket.MAIN, limit = LOG_QUERY_LIMIT).taps }
+            }.getOrDefault(emptyList())
+            val unanchoredTaps = runCatching {
+                daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = QueryBucket.UNANCHORED, limit = LOG_QUERY_LIMIT).taps }
+            }.getOrDefault(emptyList())
+
+            if (disposed) return@submitGuarded
+            state = state?.let {
+                TimelineViewerReducer.withBucketedRecords(
+                    state = it.copy(
+                        discontinuities = discontinuities,
+                        crashes = crashes,
+                        screens = screens,
+                    ),
+                    mainLogs = it.mainLogs,
+                    unanchoredLogs = it.unanchoredLogs,
+                    mainTaps = mainTaps,
+                    unanchoredTaps = unanchoredTaps,
+                )
+            }
+            publishEdt {
+                if (!disposed) {
+                    studioController.updateState {
+                        TimelineViewerReducer.withBucketedRecords(
+                            state = it.copy(
+                                discontinuities = discontinuities,
+                                crashes = crashes,
+                                screens = screens,
+                            ),
+                            mainLogs = it.mainLogs,
+                            unanchoredLogs = it.unanchoredLogs,
+                            mainTaps = mainTaps,
+                            unanchoredTaps = unanchoredTaps,
+                        )
+                    }
+                }
+            }
+
+            try {
+                val mainLogs = queryLogsPaged(
+                    bundleId = bundleId,
+                    bucket = QueryBucket.MAIN,
+                    maxLogs = LOG_QUERY_LIMIT,
+                )
+                if (disposed) return@submitGuarded
+                val unanchoredLogs = queryLogsPaged(
+                    bundleId = bundleId,
+                    bucket = QueryBucket.UNANCHORED,
+                    maxLogs = LOG_QUERY_LIMIT,
+                )
+                if (disposed) return@submitGuarded
+
+                state = state?.let {
+                    TimelineViewerReducer.withBucketedRecords(
+                        state = it,
+                        mainLogs = mainLogs,
+                        unanchoredLogs = unanchoredLogs,
+                        mainTaps = it.mainTaps,
+                        unanchoredTaps = it.unanchoredTaps,
+                    )
+                }
+                publishEdt {
+                    if (!disposed) {
+                        studioController.updateState {
+                            TimelineViewerReducer.withBucketedRecords(
+                                state = it,
+                                mainLogs = mainLogs,
+                                unanchoredLogs = unanchoredLogs,
+                                mainTaps = it.mainTaps,
+                                unanchoredTaps = it.unanchoredTaps,
+                            )
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                if (disposed) return@submitGuarded
+                logger.warn("ARB paged log load failed for $bundleId (video remains active)", t)
+                publishEdt {
+                    if (!disposed) {
+                        studioController.showError("ログの読み込みに失敗しました（映像再生は継続できます）: ${t.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetches up to [maxLogs] log rows in bounded pages without gaps or duplicates (M2).
+     *
+     * `timeline.query_logs` filters by the row timestamp (`COALESCE(aligned_boottime_ns,
+     * pc_ingest_cont_ns)`, inclusive `start_ns`/`end_ns`) but orders and truncates by `seq`, so a
+     * "last timestamp" cursor would silently skip rows whose `seq` is later but whose timestamp is
+     * earlier than the cursor. Instead each request covers a disjoint closed time window and asks for
+     * `pageSize + 1` rows: a window that returns at most `pageSize` rows is complete; a truncated
+     * window is split (guided by the returned timestamps) into strictly smaller disjoint sub-windows,
+     * earliest first. A window rejected by `arbd`'s 4 MiB IPC frame limit is retried with a halved
+     * page size. Results are merged by `seq` and returned in `seq` order.
+     */
+    internal fun queryLogsPaged(
+        bundleId: String,
+        bucket: QueryBucket,
+        maxLogs: Int = LOG_QUERY_LIMIT,
+        packageName: String? = null,
+    ): List<LogRecord> {
+        val cap = maxLogs.coerceAtLeast(1)
+        val collected = LinkedHashMap<Long, LogRecord>()
+        var pageSize = initialLogPageSize.coerceIn(1, cap)
+        // Depth-first, earliest window first: the deque head is the next window to fetch.
+        val pending = ArrayDeque<LogWindow>()
+        pending.addFirst(LogWindow(Long.MIN_VALUE, Long.MAX_VALUE))
+        var queries = 0
+
+        while (pending.isNotEmpty() && collected.size < cap && !disposed) {
+            if (queries >= MAX_LOG_PAGE_QUERIES) {
+                logger.warn("ARB log pagination hit the $MAX_LOG_PAGE_QUERIES-request budget; showing ${collected.size} rows")
+                break
+            }
+            val window = pending.first()
+            val windowPageSize = if (window.rowLimit > 0) window.rowLimit else pageSize
+            queries++
+            val page = try {
+                daemonService.withClient {
+                    it.timelineQueryLogs(
+                        bundleIdOrPath = bundleId,
+                        bucket = bucket,
+                        startNs = window.startNs.takeIf { s -> s != Long.MIN_VALUE },
+                        endNs = window.endNs.takeIf { e -> e != Long.MAX_VALUE },
+                        limit = windowPageSize + 1,
+                        packageName = packageName,
+                    ).logs
+                }
+            } catch (e: ArbdRpcException) {
+                if (!isResponseTooLargeError(e)) throw e
+                pending.removeFirst()
+                when {
+                    windowPageSize <= 1 ->
+                        logger.warn("ARB single log row exceeded the IPC frame cap; skipping window $window")
+                    window.rowLimit > 0 ->
+                        // A grown single-timestamp window hit the cap: settle for what fits.
+                        pending.addFirst(window.copy(rowLimit = windowPageSize / 2, growthStopped = true))
+                    else -> {
+                        pageSize = (pageSize / 2).coerceAtLeast(1)
+                        pending.addFirst(window)
+                    }
+                }
+                continue
+            }
+            pending.removeFirst()
+
+            if (page.size <= windowPageSize) {
+                for (record in page) collected.putIfAbsent(record.seq, record)
+                continue
+            }
+            val parts = splitLogWindow(window, page.map(::logCursorTimestampNs))
+            if (parts.isNotEmpty()) {
+                for (part in parts.asReversed()) pending.addFirst(part)
+                continue
+            }
+            // More rows than one page share a single exact timestamp (e.g. bounded-alignment rows
+            // stamped with the same lower bound), so the window cannot be narrowed: grow its own
+            // row limit until it completes, the overall cap is reached, or the frame cap pushes back.
+            val stillWanted = cap - collected.size
+            if (window.growthStopped || windowPageSize >= stillWanted) {
+                if (window.growthStopped) {
+                    logger.warn("ARB log rows sharing timestamp ${window.startNs} exceed the IPC frame cap; keeping ${page.size}")
+                }
+                for (record in page.take(stillWanted)) collected.putIfAbsent(record.seq, record)
+                continue
+            }
+            val grown = minOf(stillWanted.toLong(), windowPageSize.toLong() * 4L, MAX_LOG_WINDOW_ROWS.toLong()).toInt()
+            pending.addFirst(window.copy(rowLimit = grown, growthStopped = grown >= MAX_LOG_WINDOW_ROWS))
+        }
+
+        val rows = collected.values.toList()
+        val kept = if (rows.size <= cap) {
+            rows
+        } else {
+            // Windows complete earliest-first, so keep the earliest rows by timestamp.
+            rows.sortedWith(compareBy<LogRecord>({ logCursorTimestampNs(it) }, { it.seq })).take(cap)
+        }
+        return kept.sortedBy { it.seq }
     }
 
     private fun attachDecodedAudioAsync(
@@ -428,7 +732,9 @@ class ArbBundleFileEditor(
             val player = runCatching {
                 AudioSyncPlayer(
                     source = WavFilePcmSource.open(wavPath),
+                    sink = audioSinkFactory(),
                     avOffsetMs = effectiveAvOffsetMs,
+                    autoRunPump = audioAutoRunPump,
                 )
             }.onFailure { err ->
                 logger.debug("ARB audio player unavailable, continuing video-only", err)
@@ -438,6 +744,7 @@ class ArbBundleFileEditor(
                 runCatching { player.close() }
                 return@Runnable
             }
+            attachedAudioPlayer = player
             controller.attachAudioPlayer(player, effectiveAvOffsetMs)
         }
         try {
@@ -448,7 +755,7 @@ class ArbBundleFileEditor(
     }
 
     private fun performScrub(frameIndex: Long) {
-        val ctrl = playbackController
+        val ctrl = currentPlaybackController()
         if (ctrl != null) {
             submitWork {
                 runCatching { ctrl.scrubTo(frameIndex) }
@@ -466,14 +773,16 @@ class ArbBundleFileEditor(
     }
 
     private fun performSeekExact(frameIndex: Long) {
-        val ctrl = playbackController
+        val ctrl = currentPlaybackController()
         if (ctrl != null) {
             submitWork {
                 runCatching { ctrl.seekToFrame(frameIndex) }
                     .onFailure { t ->
                         logger.warn("ARB seek_frame failed", t)
-                        SwingUtilities.invokeLater {
-                            studioController.showError("フレームシークに失敗しました: ${t.message}")
+                        publishEdt {
+                            if (!disposed) {
+                                studioController.showError("フレームシークに失敗しました: ${t.message}")
+                            }
                         }
                     }
             }
@@ -486,8 +795,10 @@ class ArbBundleFileEditor(
                 readShmAndRender()
             } catch (t: Throwable) {
                 logger.warn("ARB seek_frame failed", t)
-                SwingUtilities.invokeLater {
-                    studioController.showError("フレームシークに失敗しました: ${t.message}")
+                publishEdt {
+                    if (!disposed) {
+                        studioController.showError("フレームシークに失敗しました: ${t.message}")
+                    }
                 }
             }
         }
@@ -501,15 +812,17 @@ class ArbBundleFileEditor(
         val padBefore = (fps * 1.0).roundToLong().coerceAtLeast(1L)
         val padAfter = (fps * 2.0).roundToLong().coerceAtLeast(1L)
         submitWork {
-            val ctrl = playbackController
+            val ctrl = currentPlaybackController()
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
                 val pb = ctrl.state
                 trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
                 val updated = (state ?: current).copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex)
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                SwingUtilities.invokeLater {
-                    studioController.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
+                publishEdt {
+                    if (!disposed) {
+                        studioController.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
+                    }
                 }
             }
         }
@@ -522,7 +835,7 @@ class ArbBundleFileEditor(
         val before = (fps * 5.0).roundToLong().coerceAtLeast(1L)
         val after = (fps * 2.0).roundToLong().coerceAtLeast(1L)
         submitWork {
-            val ctrl = playbackController
+            val ctrl = currentPlaybackController()
             if (ctrl != null) {
                 ctrl.selectAroundCrash(crashFrame, before, after)
                 val pb = ctrl.state
@@ -534,13 +847,15 @@ class ArbBundleFileEditor(
                 )
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                SwingUtilities.invokeLater {
-                    studioController.updateState {
-                        it.copy(
-                            inFrameIndex = pb.inFrameIndex,
-                            outFrameIndex = pb.outFrameIndex,
-                            currentFrameIndex = pb.currentFrameIndex,
-                        )
+                publishEdt {
+                    if (!disposed) {
+                        studioController.updateState {
+                            it.copy(
+                                inFrameIndex = pb.inFrameIndex,
+                                outFrameIndex = pb.outFrameIndex,
+                                currentFrameIndex = pb.currentFrameIndex,
+                            )
+                        }
                     }
                 }
             }
@@ -550,18 +865,22 @@ class ArbBundleFileEditor(
     private fun applyResetFullRange() {
         val current = state ?: return
         submitWork {
-            playbackController?.resetFullRange()
+            currentPlaybackController()?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
             trimCloseState.onRangeAdjusted(0L, maxF)
             val updated = (state ?: current).copy(inFrameIndex = 0L, outFrameIndex = maxF)
             state = updated
             persistEditSession(0L, maxF, updated.currentFrameIndex)
-            SwingUtilities.invokeLater { studioController.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } }
+            publishEdt {
+                if (!disposed) {
+                    studioController.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) }
+                }
+            }
         }
     }
 
     private fun readShmAndRender() {
-        val reader = shmReader ?: return
+        val reader = currentShmReader() ?: return
         val frame = reader.readLatest() ?: return
         val image = frame.toBufferedImage()
         val prev = state ?: return
@@ -570,9 +889,9 @@ class ArbBundleFileEditor(
         // frame is ever queued (a slow EDT skips stale frames instead of queueing every bitmap).
         val bitmap = ArbStudioController.toImageBitmapOrNull(image)
         if (pendingFrame.offer(PendingFrame(frame.meta, bitmap, image.width, image.height))) {
-            SwingUtilities.invokeLater {
-                if (disposed) return@invokeLater
-                val latest = pendingFrame.take() ?: return@invokeLater
+            publishEdt {
+                if (disposed) return@publishEdt
+                val latest = pendingFrame.take() ?: return@publishEdt
                 studioController.applyFramePublished(latest.meta, latest.bitmap, latest.width, latest.height)
             }
         }
@@ -580,34 +899,38 @@ class ArbBundleFileEditor(
 
     private fun performAppPackageFilter(packageName: String?) {
         val current = state ?: return
-        submitWork {
+        submitGuarded(timelineWorker) {
+            if (disposed) return@submitGuarded
             try {
-                val mainLogs = daemonService.withClient {
-                    it.timelineQueryLogs(
-                        current.bundleId,
-                        bucket = QueryBucket.MAIN,
-                        limit = LOG_QUERY_LIMIT,
-                        packageName = packageName,
-                    ).logs
-                }
-                val unanchoredLogs = daemonService.withClient {
-                    it.timelineQueryLogs(
-                        current.bundleId,
-                        bucket = QueryBucket.UNANCHORED,
-                        limit = LOG_QUERY_LIMIT,
-                        packageName = packageName,
-                    ).logs
-                }
+                val mainLogs = queryLogsPaged(
+                    bundleId = current.bundleId,
+                    bucket = QueryBucket.MAIN,
+                    maxLogs = LOG_QUERY_LIMIT,
+                    packageName = packageName,
+                )
+                if (disposed) return@submitGuarded
+                val unanchoredLogs = queryLogsPaged(
+                    bundleId = current.bundleId,
+                    bucket = QueryBucket.UNANCHORED,
+                    maxLogs = LOG_QUERY_LIMIT,
+                    packageName = packageName,
+                )
+                if (disposed) return@submitGuarded
                 state = state?.let {
                     TimelineViewerReducer.withBucketedRecords(it, mainLogs, unanchoredLogs, it.mainTaps, it.unanchoredTaps)
                 }
-                SwingUtilities.invokeLater {
-                    studioController.applyAppPackageLogs(packageName, mainLogs, unanchoredLogs)
+                publishEdt {
+                    if (!disposed) {
+                        studioController.applyAppPackageLogs(packageName, mainLogs, unanchoredLogs)
+                    }
                 }
             } catch (t: Throwable) {
+                if (disposed) return@submitGuarded
                 logger.warn("ARB timeline.query_logs(package=$packageName) failed", t)
-                SwingUtilities.invokeLater {
-                    studioController.appPackageFilterFailed(packageName, "アプリ別ログの取得に失敗しました: ${t.message}")
+                publishEdt {
+                    if (!disposed) {
+                        studioController.appPackageFilterFailed(packageName, "アプリ別ログの取得に失敗しました: ${t.message}")
+                    }
                 }
             }
         }
@@ -628,10 +951,6 @@ class ArbBundleFileEditor(
 
         submitWork {
             try {
-                // Every trim/share export produces a complete Trimmed Bundle Directory in the
-                // user's configured output directory (with video.mp4, audio.m4a, logcat.log,
-                // app-logs/<pkg>.log, events.jsonl, timeline.sqlite, manifest.json, and optional
-                // share.mp4 / share-taps.mp4) and registers immediately under `トリム済み`.
                 val res = daemonService.withClient {
                     it.exportTrim(
                         ExportTrimParams(
@@ -677,7 +996,7 @@ class ArbBundleFileEditor(
                     lastActionMessage = summaryText,
                 )
                 state = updated
-                SwingUtilities.invokeLater {
+                publishEdt {
                     if (!disposed) {
                         studioController.setExporting(false)
                         studioController.updateState {
@@ -695,7 +1014,7 @@ class ArbBundleFileEditor(
                 )
             } catch (t: Throwable) {
                 logger.warn("ARB export failed (format=$format)", t)
-                SwingUtilities.invokeLater {
+                publishEdt {
                     if (!disposed) {
                         studioController.setExporting(false)
                         studioController.showError("書き出しに失敗しました: ${t.message}")
@@ -731,9 +1050,11 @@ class ArbBundleFileEditor(
                     lastActionMessage = summaryText,
                 )
                 state = updated
-                SwingUtilities.invokeLater {
-                    studioController.updateState {
-                        it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                publishEdt {
+                    if (!disposed) {
+                        studioController.updateState {
+                            it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                        }
                     }
                 }
                 ArbNotifications.notifyImageSaved(
@@ -745,7 +1066,11 @@ class ArbBundleFileEditor(
                 )
             } catch (t: Throwable) {
                 logger.warn("ARB export.png failed", t)
-                SwingUtilities.invokeLater { studioController.showError("PNG 書き出しに失敗しました: ${t.message}") }
+                publishEdt {
+                    if (!disposed) {
+                        studioController.showError("PNG 書き出しに失敗しました: ${t.message}")
+                    }
+                }
                 ArbNotifications.notifyActionFailed(project, "PNG 書き出し", t.message)
             }
         }
@@ -793,13 +1118,38 @@ class ArbBundleFileEditor(
     override fun getFile(): VirtualFile = backingFile
 
     override fun dispose() {
-        disposed = true
+        val ctrl: PlaybackController?
+        val reader: ShmFrameRingReader?
+        val vpId: String?
+        val lease: BundleLeaseController?
+        synchronized(lifecycleLock) {
+            disposed = true
+            ctrl = ownedPlaybackController
+            ownedPlaybackController = null
+            reader = ownedShmReader
+            ownedShmReader = null
+            vpId = ownedViewportId
+            ownedViewportId = null
+            lease = ownedLeaseController
+            ownedLeaseController = null
+        }
         // Graceful shutdown only: `shutdownNow()` would interrupt a worker blocked inside the
         // shared app-level IPC client, closing its interruptible SocketChannel for every ARB view.
         // Queued tasks bail out on `disposed` (see [submitWork]).
         worker.shutdown()
+        timelineWorker.shutdown()
         audioDecodeWorker.shutdown()
-        releaseResources()
+
+        if (ctrl != null || reader != null || vpId != null || lease != null) {
+            runOffEdt {
+                runCatching { ctrl?.close() }
+                runCatching { reader?.close() }
+                vpId?.let { id ->
+                    runCatching { daemonService.withClient { it.mediaCloseViewport(id) } }
+                }
+                runCatching { lease?.close() }
+            }
+        }
     }
 
     /** Submits [block] to the IPC worker unless disposed; never throws on a shut-down executor. */
@@ -809,7 +1159,14 @@ class ArbBundleFileEditor(
 
     private fun runOffEdt(block: () -> Unit) {
         val app = ApplicationManager.getApplication()
-        if (app != null) app.executeOnPooledThread(block) else block()
+        if (app != null) {
+            app.executeOnPooledThread(block)
+        } else {
+            Thread(block, "arb-studio-off-edt").apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 
     private fun submitGuarded(executor: ExecutorService, task: () -> Unit) {
@@ -820,22 +1177,74 @@ class ArbBundleFileEditor(
         }
     }
 
-    private companion object {
+    internal companion object {
         const val LOG_QUERY_LIMIT: Int = 5_000
-    }
+        const val INITIAL_LOG_PAGE_SIZE: Int = 500
+        // Matches `arbd`'s `RPC_ERR_RESPONSE_TOO_LARGE` structured error code (-32010).
+        const val RPC_ERR_RESPONSE_TOO_LARGE: Int = -32010
 
-    @Synchronized
-    private fun releaseResources() {
-        val ctrl = playbackController
-        playbackController = null
-        val reader = shmReader
-        shmReader = null
-        val lease = leaseController
-        leaseController = null
-        ApplicationManager.getApplication().executeOnPooledThread {
-            runCatching { ctrl?.close() }
-            runCatching { reader?.close() }
-            runCatching { lease?.close() }
+        /** Safety stop for pathological timestamp layouts; normal bundles need far fewer requests. */
+        const val MAX_LOG_PAGE_QUERIES: Int = 1_000
+
+        /** Upper bound on one single-timestamp window request (below `arbd`'s `MAX_QUERY_LIMIT`). */
+        const val MAX_LOG_WINDOW_ROWS: Int = 50_000
+
+        /**
+         * Closed timestamp window `[startNs, endNs]`; `Long.MIN_VALUE` / `Long.MAX_VALUE` mean
+         * unbounded. [rowLimit] > 0 overrides the shared page size for a single-timestamp window that
+         * cannot be split; [growthStopped] marks one that already hit the IPC frame cap.
+         */
+        internal data class LogWindow(
+            val startNs: Long,
+            val endNs: Long,
+            val rowLimit: Int = 0,
+            val growthStopped: Boolean = false,
+        )
+
+        /**
+         * Timestamp `timeline.query_logs` filters on: `COALESCE(aligned_boottime_ns, pc_ingest_cont_ns)`
+         * where `aligned_boottime_ns` is the anchored boottime or the bounded minimum.
+         */
+        internal fun logCursorTimestampNs(record: LogRecord): Long = when (val a = record.alignment) {
+            is TimeAlignment.Anchored -> a.boottimeNs
+            is TimeAlignment.Bounded -> a.minBoottimeNs
+            is TimeAlignment.Unanchored -> record.pcIngestContNs
         }
+
+        /**
+         * Splits a truncated [window] into strictly smaller, disjoint, ordered sub-windows covering it,
+         * guided by the timestamps of the rows it returned. Returns an empty list when the window is a
+         * single timestamp and cannot be narrowed.
+         */
+        internal fun splitLogWindow(window: LogWindow, returnedTs: List<Long>): List<LogWindow> {
+            val lo = window.startNs
+            val hi = window.endNs
+            if (lo >= hi) return emptyList()
+            val ts = returnedTs.filter { it in lo..hi }.sorted()
+            if (ts.isEmpty()) {
+                // Timestamps disagree with the daemon's filter key: fall back to a plain midpoint split.
+                val mid = (lo shr 1) + (hi shr 1) + (lo and hi and 1L)
+                return listOf(LogWindow(lo, mid), LogWindow(mid + 1, hi))
+            }
+            val min = ts.first()
+            val max = ts.last()
+            if (min == max) {
+                return buildList {
+                    if (min > lo) add(LogWindow(lo, min - 1))
+                    add(LogWindow(min, min))
+                    if (min < hi) add(LogWindow(min + 1, hi))
+                }
+            }
+            // Split at the 3/4 quantile so the left part usually fits in one page even when `seq`
+            // order and timestamp order disagree slightly; never at `max`, so both parts shrink.
+            var cut = ts[(ts.size * 3) / 4]
+            if (cut >= max) cut = ts.last { it < max }
+            return listOf(LogWindow(lo, cut), LogWindow(cut + 1, hi))
+        }
+
+        internal fun isResponseTooLargeError(e: ArbdRpcException): Boolean =
+            e.code == RPC_ERR_RESPONSE_TOO_LARGE ||
+                e.message.contains("IPC frame limit", ignoreCase = true) ||
+                e.message.contains("exceeds the", ignoreCase = true)
     }
 }

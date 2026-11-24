@@ -83,20 +83,23 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
         assertTrue(ArbToolbarPresentationState.quickSave(unprobed, 300).enabled)
         assertTrue(ArbToolbarPresentationState.screenshot(unprobed).enabled)
 
-        // 2. Connected, no online device: ToggleCapture & Screenshot disabled with clear tooltip; QuickSave disabled when no buffer.
+        // 2. Connected, no online device: ToggleCapture stays armable (enabled=true, selected=false); Screenshot & QuickSave disabled.
         val noDevice = ArbToolbarDaemonSnapshot(
             probed = true,
             daemonConnected = true,
             captureActive = false,
+            captureEnabled = false,
             hasBufferedData = false,
             hasOnlineDevice = false,
             selectedDeviceSerial = null,
             disabledDeviceHint = "端末未検出（USB / エミュレータを接続）",
         )
         val toggleNoDev = ArbToolbarPresentationState.toggleCapture(noDevice)
-        assertFalse(toggleNoDev.enabled)
+        assertTrue(toggleNoDev.enabled, "ToggleCapture must allow arming capture_enabled=true with 0 devices")
+        assertFalse(toggleNoDev.selected)
         assertEquals(AllIcons.Actions.Restart, toggleNoDev.icon)
         assertTrue(toggleNoDev.description.contains("端末未検出"))
+        assertTrue(toggleNoDev.description.contains("ON・待機中"))
 
         val saveNoBuf = ArbToolbarPresentationState.quickSave(noDevice, 120)
         assertFalse(saveNoBuf.enabled)

@@ -14,11 +14,22 @@ import java.util.Locale;
  *
  * <p>Supports v1 (20-byte header, {@code hdr_size == 0}), v2/v3 (24-byte header with {@code lid}),
  * v4 (28-byte header with {@code lid} and {@code uid}), and forward-compatible larger headers.
+ *
+ * <p><b>UID provenance invariant (M10):</b> Legacy 20-byte (v1) and 24-byte (v2/v3) headers do not
+ * carry a sender UID field. This parser MUST strictly emit {@link #UNKNOWN_U32_UNSIGNED}
+ * ({@link Protocol#UNKNOWN_U32}) for {@code uid} whenever {@code hdr_size < 28}, and MUST NEVER
+ * infer or spoof {@code 1000} ({@code AID_SYSTEM}) from {@code lid} or retain bytes from an
+ * earlier 28-byte record in {@link #extraBuf}. Downstream host crash/system detectors rely on
+ * {@code UNKNOWN_U32} to distinguish unverified legacy headers from confirmed {@code system_server}
+ * records.
  */
 public final class LoggerEntryParser {
     private static final int BASE_HEADER_SIZE = 20;
+    private static final int HEADER_SIZE_WITH_UID = 28;
     private static final int MAX_RECORD_PAYLOAD = 65536;
     private static final int MAX_HEADER_SIZE = 256;
+    /** Unsigned 32-bit sentinel emitted when a header omits {@code lid} or {@code uid}. */
+    public static final long UNKNOWN_U32_UNSIGNED = Protocol.UNKNOWN_U32 & 0xFFFFFFFFL;
 
     private final byte[] baseBuf = new byte[BASE_HEADER_SIZE];
     private final byte[] extraBuf = new byte[MAX_HEADER_SIZE];
@@ -51,8 +62,10 @@ public final class LoggerEntryParser {
             throw new IOException("Invalid logger_entry payload_len: " + payloadLen);
         }
 
-        long lid = Protocol.UNKNOWN_U32 & 0xFFFFFFFFL;
-        long uid = Protocol.UNKNOWN_U32 & 0xFFFFFFFFL;
+        // 20-byte (v1) and 24-byte (v2/v3) headers omit UID; keep UNKNOWN_U32_UNSIGNED strictly
+        // (never infer 1000/AID_SYSTEM) and never read past `extra` bytes of the reused buffer.
+        long lid = UNKNOWN_U32_UNSIGNED;
+        long uid = UNKNOWN_U32_UNSIGNED;
         int extra = hdrSize - BASE_HEADER_SIZE;
         if (extra > 0) {
             WireFrame.readFully(in, extraBuf, 0, extra);
@@ -60,7 +73,7 @@ public final class LoggerEntryParser {
             if (extra >= 4) {
                 lid = eb.getInt() & 0xFFFFFFFFL;
             }
-            if (extra >= 8) {
+            if (hdrSize >= HEADER_SIZE_WITH_UID && extra >= 8) {
                 uid = eb.getInt() & 0xFFFFFFFFL;
             }
         }

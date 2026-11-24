@@ -123,8 +123,9 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 }
 
                 InlineStatusIndicator(
-                    text = capture.statusBadgeText,
+                    text = controller.captureStatusBadgeText,
                     isRecording = capture.isRecordingHealthy,
+                    isArmedWaiting = controller.captureToggleState == CaptureToggleState.ARMED_WAITING,
                     isWarning = capture.capture?.storagePressureStopped == true ||
                         (capture.capture?.active == true && !capture.capture!!.connected) ||
                         (capture.capture?.active != true && capture.devices.isNotEmpty() && !capture.hasOnlineDevice),
@@ -138,6 +139,17 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 ) {
                     Text("ARB 設定（保存秒数・CLI/MCP・スクリーンショット保存先）")
                 }
+            }
+
+            // Armed-waiting notice when always-on capture is ON but waiting for a device / selection
+            controller.armedWaitingNotice?.let { waitingText ->
+                Text(
+                    text = waitingText,
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11f, color = ArbJewelPalette.accent()),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { contentDescription = waitingText },
+                )
             }
 
             // Inline device-selection prompt (zero height unless the user must pick / reconnect)
@@ -233,11 +245,15 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
                 ArbSubtleAction(
                     label = controller.startStopLabel,
-                    iconKey = if (controller.isCaptureActive) AllIconsKeys.Actions.Suspend else AllIconsKeys.Actions.Execute,
+                    iconKey = if (controller.isCaptureOn) AllIconsKeys.Actions.Suspend else AllIconsKeys.Actions.Execute,
                     enabled = controller.startStopEnabled,
                     tooltip = controller.startStopTooltip,
                     compact = true,
-                    tint = if (controller.isCaptureActive) ArbJewelPalette.recRed() else null,
+                    tint = when (controller.captureToggleState) {
+                        CaptureToggleState.RECORDING -> ArbJewelPalette.recRed()
+                        CaptureToggleState.ARMED_WAITING -> ArbJewelPalette.accent()
+                        CaptureToggleState.OFF -> null
+                    },
                     onClick = { controller.toggleCapture() },
                 )
                 ArbSubtleAction(
@@ -432,16 +448,19 @@ private fun CaptureModeRow(controller: ArbToolWindowController) {
 private fun InlineStatusIndicator(
     text: String,
     isRecording: Boolean,
+    isArmedWaiting: Boolean = false,
     isWarning: Boolean,
 ) {
     val dotColor = when {
         isRecording -> ArbJewelPalette.recRed()
         isWarning -> ArbJewelPalette.warningAmber()
+        isArmedWaiting -> ArbJewelPalette.accent()
         else -> ArbJewelPalette.mutedText().copy(alpha = 0.6f)
     }
     val textColor = when {
         isRecording -> ArbJewelPalette.recRed()
         isWarning -> ArbJewelPalette.warningAmber()
+        isArmedWaiting -> ArbJewelPalette.accent()
         else -> ArbJewelPalette.mutedText()
     }
     Row(
@@ -457,7 +476,7 @@ private fun InlineStatusIndicator(
         )
         Text(
             text = text,
-            style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10.5f, bold = isRecording, color = textColor),
+            style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10.5f, bold = isRecording || isArmedWaiting, color = textColor),
             maxLines = 1,
             softWrap = false,
         )

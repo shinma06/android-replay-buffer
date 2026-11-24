@@ -1,19 +1,35 @@
 package io.github.shinma06.arb.agent;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Pure-Java host unit tests for Android 9 (API 28) compatibility hardening:
- * SELinux {@code EACCES} fallbacks in {@link BootIdResolver} and restricted
- * {@code logcat} buffer fallbacks / API 28 {@code logcat -S} stats parsing.
+ * SELinux {@code EACCES} fallbacks in {@link BootIdResolver}, restricted
+ * {@code logcat} buffer fallbacks / API 28 {@code logcat -S} stats parsing,
+ * M10 24-byte legacy logger_entry unknown-UID invariant, and M11 stats probe
+ * child-process ownership/cleanup on {@code stop()} and timeout.
  */
 public final class Aos9CompatTest {
     private static int passed = 0;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         testBootIdResolverSelinuxEaccesFallbacks();
         testLogcatWorkerRestrictedBufferFallbackCommandAndAos9Stats();
+        testM10Legacy24ByteHeadersStrictlyEmitUnknownUidNeverSystem1000();
+        testM11StatsProbeChildDestroyedAndReapedOnStopMidLine();
+        testM11StatsProbeTimeoutDestroysHungChildAndRecoversStatsLoop();
         System.out.println("Aos9CompatTest: ALL " + passed + " TESTS PASSED");
     }
 
@@ -122,6 +138,308 @@ public final class Aos9CompatTest {
         assertEq(4, snap.bufferCount, "4 buffers excluding Total");
         assertEq(0L, snap.prunedCumulative, "0 pruned");
         passed++;
+    }
+
+    /**
+     * M10 regression: 24-byte (v2/v3) and 20-byte (v1) legacy {@code logger_entry} headers carry
+     * no UID field and MUST strictly emit {@code UNKNOWN_U32} (never spoofing {@code 1000} /
+     * {@code AID_SYSTEM} even immediately after a 28-byte {@code uid=1000} record on the same
+     * parser instance or for {@code lid=2} events / {@code lid=3} system buffers).
+     */
+    private static void testM10Legacy24ByteHeadersStrictlyEmitUnknownUidNeverSystem1000() throws IOException {
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        byte[] binaryAmCrashLike = new byte[] {0x07, 0x75, 0x00, 0x00, 0x03, 0x00};
+        byte[] systemText = "\u0006ActivityManager\u0000Crash\u0000".getBytes(StandardCharsets.UTF_8);
+
+        // Record 1: 28-byte v4 header with lid=2 (events) and confirmed uid=1000 (system_server).
+        // Deliberately populates extraBuf[4..7] with 1000 first to verify no stale-buffer bleed!
+        ByteBuffer v4System = ByteBuffer.allocate(28 + binaryAmCrashLike.length).order(ByteOrder.LITTLE_ENDIAN);
+        v4System.putShort((short) binaryAmCrashLike.length)
+                .putShort((short) 28)
+                .putInt(500).putInt(501)
+                .putInt(1700000001).putInt(10)
+                .putInt(2)    // LOG_ID_EVENTS
+                .putInt(1000) // AID_SYSTEM
+                .put(binaryAmCrashLike);
+        stream.write(v4System.array());
+
+        // Record 2: 24-byte legacy v3 header with lid=2 (events) — NO uid field!
+        ByteBuffer v3Events = ByteBuffer.allocate(24 + binaryAmCrashLike.length).order(ByteOrder.LITTLE_ENDIAN);
+        v3Events.putShort((short) binaryAmCrashLike.length)
+                .putShort((short) 24)
+                .putInt(600).putInt(601)
+                .putInt(1700000002).putInt(20)
+                .putInt(2) // LOG_ID_EVENTS
+                .put(binaryAmCrashLike);
+        stream.write(v3Events.array());
+
+        // Record 3: 24-byte legacy v3 header with lid=3 (system) — NO uid field!
+        ByteBuffer v3System = ByteBuffer.allocate(24 + systemText.length).order(ByteOrder.LITTLE_ENDIAN);
+        v3System.putShort((short) systemText.length)
+                .putShort((short) 24)
+                .putInt(700).putInt(701)
+                .putInt(1700000003).putInt(30)
+                .putInt(3) // LOG_ID_SYSTEM
+                .put(systemText);
+        stream.write(v3System.array());
+
+        // Record 4: 20-byte legacy v1 header (hdr_size=0) — NO lid and NO uid!
+        ByteBuffer v1Base = ByteBuffer.allocate(20 + systemText.length).order(ByteOrder.LITTLE_ENDIAN);
+        v1Base.putShort((short) systemText.length)
+                .putShort((short) 0)
+                .putInt(800).putInt(801)
+                .putInt(1700000004).putInt(40)
+                .put(systemText);
+        stream.write(v1Base.array());
+
+        ClockSource clock = fixedClock();
+        LoggerEntryParser parser = new LoggerEntryParser();
+        ByteArrayInputStream in = new ByteArrayInputStream(stream.toByteArray());
+        long expectedUnknown = Protocol.UNKNOWN_U32 & 0xFFFFFFFFL;
+
+        PayloadCodec.LogRecord r1 = parser.readNext(in, clock);
+        assertEq(28, r1.hdrSize, "v4 hdrSize");
+        assertEq(1000L, r1.uid, "v4 preserves confirmed uid=1000");
+
+        PayloadCodec.LogRecord r2 = parser.readNext(in, clock);
+        assertEq(24, r2.hdrSize, "v3 events hdrSize");
+        assertEq(2L, r2.lid, "v3 events lid");
+        assertEq(expectedUnknown, r2.uid, "24-byte events record strictly emits UNKNOWN_U32");
+        assertTrue(r2.uid != 1000L, "24-byte events record must NEVER spoof uid=1000");
+        assertEq(Protocol.LOG_RECORD_FLAG_BINARY_EVENT, r2.recordFlags, "24-byte events keeps binary flag");
+        PayloadCodec.LogRecord r2Decoded = PayloadCodec.decodeLogRecord(PayloadCodec.encodeLogRecord(r2));
+        assertEq(expectedUnknown, r2Decoded.uid, "UNKNOWN_U32 round-trips intact on wire");
+
+        PayloadCodec.LogRecord r3 = parser.readNext(in, clock);
+        assertEq(24, r3.hdrSize, "v3 system hdrSize");
+        assertEq(3L, r3.lid, "v3 system lid");
+        assertEq(expectedUnknown, r3.uid, "24-byte system record strictly emits UNKNOWN_U32");
+        assertTrue(r3.uid != 1000L, "24-byte system record must NEVER spoof uid=1000");
+
+        PayloadCodec.LogRecord r4 = parser.readNext(in, clock);
+        assertEq(20, r4.hdrSize, "v1 hdrSize");
+        assertEq(expectedUnknown, r4.lid, "v1 emits UNKNOWN_U32 lid");
+        assertEq(expectedUnknown, r4.uid, "v1 strictly emits UNKNOWN_U32 uid");
+        assertTrue(r4.uid != 1000L, "v1 record must NEVER spoof uid=1000");
+        passed++;
+    }
+
+    /**
+     * M11 regression 1: A stats-probe child blocking mid-line on stdout must be forcibly
+     * destroyed, have its streams closed and exit reaped, and let the stats thread terminate
+     * cleanly when {@link LogcatWorker#stop()} is called.
+     */
+    private static void testM11StatsProbeChildDestroyedAndReapedOnStopMidLine() throws Exception {
+        BlockingMidLineProcess fakeLogcat = new BlockingMidLineProcess(new byte[0], true);
+        BlockingMidLineProcess fakeStats = new BlockingMidLineProcess(
+                "size/num main\npartial_without_newline".getBytes(StandardCharsets.UTF_8), true);
+
+        ByteArrayOutputStream wireOut = new ByteArrayOutputStream();
+        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(wireOut);
+        StreamHealthTracker health = new StreamHealthTracker();
+        LogcatWorker worker = new LogcatWorker(
+                writer,
+                fixedClock(),
+                health,
+                cmd -> fakeLogcat,
+                cmd -> fakeStats,
+                /* statsIntervalMs = */ 5_000L,
+                /* statsProbeTimeoutMs = */ 30_000L);
+
+        worker.start();
+        try {
+            assertTrue(fakeStats.blockedMidRead.await(5, TimeUnit.SECONDS), "stats probe blocked mid-line");
+            worker.stop();
+            assertTrue(worker.awaitThreadsTerminated(5_000L), "reader and stats threads terminated after stop()");
+            assertTrue(fakeStats.destroyedForcibly.get(), "stats probe child was destroyForcibly()'d");
+            assertTrue(fakeStats.stdoutClosed.get(), "stats probe stdout closed");
+            assertTrue(fakeStats.reaped.get(), "stats probe child reaped via waitFor");
+            assertTrue(fakeLogcat.destroyedForcibly.get(), "main logcat child destroyed on stop()");
+        } finally {
+            worker.stop();
+            writer.closeQuietly();
+        }
+        passed++;
+    }
+
+    /**
+     * M11 regression 2: A hung stats-probe child must be forcibly destroyed and reaped upon
+     * probe timeout so the stats thread never stalls and continues collecting subsequent snapshots.
+     */
+    private static void testM11StatsProbeTimeoutDestroysHungChildAndRecoversStatsLoop() throws Exception {
+        BlockingMidLineProcess fakeLogcat = new BlockingMidLineProcess(new byte[0], true);
+        BlockingMidLineProcess hungProbe = new BlockingMidLineProcess(
+                "size/num main\nhung_mid_line".getBytes(StandardCharsets.UTF_8), true);
+        String validStatsOutput = "size/num main               system             Total\n"
+                + "Total    12000/120          2000/20            14000/140\n"
+                + "Now      12000/120          2000/20            14000/140\n";
+        AtomicInteger statsInvocations = new AtomicInteger(0);
+        CountDownLatch recoveredStatsRead = new CountDownLatch(1);
+
+        ByteArrayOutputStream wireOut = new ByteArrayOutputStream();
+        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(wireOut);
+        StreamHealthTracker health = new StreamHealthTracker();
+        LogcatWorker worker = new LogcatWorker(
+                writer,
+                fixedClock(),
+                health,
+                cmd -> fakeLogcat,
+                cmd -> {
+                    int n = statsInvocations.incrementAndGet();
+                    if (n == 1) {
+                        return hungProbe;
+                    }
+                    recoveredStatsRead.countDown();
+                    return new BlockingMidLineProcess(validStatsOutput.getBytes(StandardCharsets.UTF_8), false);
+                },
+                /* statsIntervalMs = */ 30L,
+                /* statsProbeTimeoutMs = */ 120L);
+
+        worker.start();
+        try {
+            assertTrue(hungProbe.blockedMidRead.await(5, TimeUnit.SECONDS), "first probe entered hung mid-line read");
+            assertTrue(recoveredStatsRead.await(5, TimeUnit.SECONDS),
+                    "stats loop timed out hung probe and recovered to run next probe");
+            assertTrue(hungProbe.destroyedForcibly.get(), "hung probe was destroyForcibly()'d on timeout");
+            assertTrue(hungProbe.stdoutClosed.get(), "hung probe stdout was closed on timeout");
+            assertTrue(hungProbe.reaped.get(), "hung probe was reaped on timeout");
+            worker.stop();
+            assertTrue(worker.awaitThreadsTerminated(5_000L), "worker threads stopped cleanly after recovery");
+        } finally {
+            worker.stop();
+            writer.closeQuietly();
+        }
+        passed++;
+    }
+
+    private static ClockSource fixedClock() {
+        return new ClockSource() {
+            private long t = 1_000_000L;
+            @Override public long boottimeNs() { return t += 1_000L; }
+            @Override public long monotonicNs() { return t; }
+            @Override public long realtimeNs() { return t; }
+        };
+    }
+
+    /**
+     * Deterministic fake {@link Process} that emits {@code initialBytes} and optionally blocks
+     * mid-line until {@link #destroyForcibly()} / {@link #destroy()} or {@code InputStream.close()}
+     * is invoked, modeling a stuck {@code logcat -S} / {@code logcat -g} pipe.
+     */
+    private static final class BlockingMidLineProcess extends Process {
+        private final byte[] initialBytes;
+        private final boolean blockAfterInitial;
+        private final Object monitor = new Object();
+        final CountDownLatch blockedMidRead = new CountDownLatch(1);
+        final AtomicBoolean destroyedForcibly = new AtomicBoolean(false);
+        final AtomicBoolean stdoutClosed = new AtomicBoolean(false);
+        final AtomicBoolean reaped = new AtomicBoolean(false);
+        private volatile boolean alive = true;
+
+        private final InputStream stdout = new InputStream() {
+            private int offset = 0;
+
+            @Override
+            public int read() throws IOException {
+                byte[] one = new byte[1];
+                int n = read(one, 0, 1);
+                return n < 0 ? -1 : (one[0] & 0xFF);
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                if (offset < initialBytes.length) {
+                    int count = Math.min(len, initialBytes.length - offset);
+                    System.arraycopy(initialBytes, offset, b, off, count);
+                    offset += count;
+                    return count;
+                }
+                if (!blockAfterInitial) {
+                    alive = false;
+                    return -1;
+                }
+                blockedMidRead.countDown();
+                synchronized (monitor) {
+                    while (alive && !stdoutClosed.get()) {
+                        try {
+                            // Deliberately ignore Thread.interrupt() while still alive/open,
+                            // matching native pipe readLine() which is not guaranteed to unblock
+                            // on Java thread interrupt until the child is destroyed or closed.
+                            monitor.wait(100L);
+                        } catch (InterruptedException ignored) {
+                            // Keep waiting until process is destroyed or stream closed!
+                        }
+                    }
+                }
+                if (stdoutClosed.get()) {
+                    throw new IOException("Stream closed");
+                }
+                return -1;
+            }
+
+            @Override
+            public void close() {
+                stdoutClosed.set(true);
+                synchronized (monitor) {
+                    monitor.notifyAll();
+                }
+            }
+        };
+
+        private final InputStream stderr = new ByteArrayInputStream(new byte[0]);
+        private final OutputStream stdin = new ByteArrayOutputStream();
+
+        BlockingMidLineProcess(byte[] initialBytes, boolean blockAfterInitial) {
+            this.initialBytes = initialBytes;
+            this.blockAfterInitial = blockAfterInitial;
+            if (!blockAfterInitial) {
+                this.alive = false;
+            }
+        }
+
+        @Override public OutputStream getOutputStream() { return stdin; }
+        @Override public InputStream getInputStream() { return stdout; }
+        @Override public InputStream getErrorStream() { return stderr; }
+
+        @Override
+        public int waitFor() {
+            reaped.set(true);
+            return alive ? 137 : 0;
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) {
+            reaped.set(true);
+            return !alive;
+        }
+
+        @Override
+        public int exitValue() {
+            if (alive) {
+                throw new IllegalThreadStateException("still running");
+            }
+            return destroyedForcibly.get() ? 137 : 0;
+        }
+
+        @Override
+        public void destroy() {
+            alive = false;
+            synchronized (monitor) {
+                monitor.notifyAll();
+            }
+        }
+
+        @Override
+        public Process destroyForcibly() {
+            destroyedForcibly.set(true);
+            destroy();
+            return this;
+        }
+
+        @Override
+        public boolean isAlive() {
+            return alive;
+        }
     }
 
     private static void assertTrue(boolean cond, String msg) {

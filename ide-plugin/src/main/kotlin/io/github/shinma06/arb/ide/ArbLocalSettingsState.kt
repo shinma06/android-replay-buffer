@@ -23,6 +23,8 @@ class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.Sta
         var screenshotInheritLogcat: Boolean = true,
         var customScreenshotDir: String = "",
         var burnTapsOnExport: Boolean = true,
+        var trayEnabled: Boolean = false,
+        var migratedFromV1: Boolean = false,
     )
 
     private var internalState = State()
@@ -51,6 +53,18 @@ class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.Sta
             internalState.burnTapsOnExport = value
         }
 
+    var trayEnabled: Boolean
+        get() = internalState.trayEnabled
+        set(value) {
+            internalState.trayEnabled = value
+        }
+
+    var migratedFromV1: Boolean
+        get() = internalState.migratedFromV1
+        set(value) {
+            internalState.migratedFromV1 = value
+        }
+
     fun customArbdBinaryPathOrNull(): Path? =
         internalState.customArbdBinaryPath.trim().takeIf { it.isNotEmpty() }?.let { raw ->
             runCatching { Path.of(raw) }.getOrNull()
@@ -69,6 +83,8 @@ class ArbLocalSettingsState : PersistentStateComponent<ArbLocalSettingsState.Sta
             screenshotInheritLogcat = state.screenshotInheritLogcat,
             customScreenshotDir = state.customScreenshotDir.trim(),
             burnTapsOnExport = state.burnTapsOnExport,
+            trayEnabled = state.trayEnabled,
+            migratedFromV1 = state.migratedFromV1,
         )
     }
 
