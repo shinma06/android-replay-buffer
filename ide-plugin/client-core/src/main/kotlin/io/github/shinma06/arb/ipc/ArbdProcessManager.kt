@@ -246,33 +246,16 @@ class ArbdProcessManager(
                     return probe.connected
                 }
                 val connected = probe.connected
-                val oldProcess = ProcessHandle.of(connected.hello.pid).orElse(null)
-                try {
-                    if (!connected.client.shutdownForHandover().ok) return connected
-                } catch (e: ArbdRpcException) {
-                    if (e.isMethodNotFound) return connected
-                    connected.client.close()
-                    throw e
-                } catch (e: IOException) {
-                    connected.client.close()
-                    throw e
-                }
-                connected.client.close()
-                if (oldProcess != null && oldProcess.isAlive) {
-                    try {
-                        oldProcess.onExit().get(startupTimeout.toMillis(), TimeUnit.MILLISECONDS)
-                    } catch (e: java.util.concurrent.TimeoutException) {
-                        throw IOException("Timed out waiting for arbd handover", e)
-                    }
-                }
-                tryConnectAndHello(endpoint)?.let { return it }
-                return spawnAndAwaitHello(resolvedBinary, endpoint, startupTimeout)
+                return replaceConnectedDaemon(connected, resolvedBinary, startupTimeout, identityUpgrade = false)
             }
             is ProbeResult.Stale -> {
                 val upgradeBin = resolvedBinary
                     ?: throw IOException(
                         "Running arbd is incompatible (${probe.reason}) and no newer arbd binary was found.",
                     )
+                probe.connected?.let {
+                    return replaceConnectedDaemon(it, upgradeBin, startupTimeout, identityUpgrade = true)
+                }
                 stopRunningDaemonBestEffort(endpoint)
                 return spawnAndAwaitHello(upgradeBin, endpoint, startupTimeout)
             }
@@ -284,6 +267,47 @@ class ArbdProcessManager(
                 return spawnAndAwaitHello(binary, endpoint, startupTimeout)
             }
         }
+    }
+
+    private fun replaceConnectedDaemon(
+        connected: ConnectedDaemon,
+        binary: Path,
+        timeout: Duration,
+        identityUpgrade: Boolean,
+    ): ConnectedDaemon {
+        val rpc = connected.client
+        val oldProcess = ProcessHandle.of(connected.hello.pid).orElse(null)
+        try {
+            val accepted = if (identityUpgrade && (!parentBound || connected.hello.parentBound)) {
+                rpc.systemShutdown().ok
+            } else {
+                try {
+                    rpc.shutdownForHandover().ok
+                } catch (e: ArbdRpcException) {
+                    if (!e.isMethodNotFound) throw e
+                    if (!identityUpgrade) return connected
+                    // Pre-M2 bundled daemon: preserve G-M9 updates, but defer known active saves.
+                    val status = rpc.systemStatus()
+                    if (status.activeSaveJobs != 0L || status.crashAutosave?.inFlight == true) return connected
+                    rpc.systemShutdown().ok
+                }
+            }
+            if (!accepted) return connected
+        } catch (e: Exception) {
+            rpc.close()
+            throw e
+        }
+        rpc.close()
+        if (identityUpgrade) tryClaimIdentityUpgrade()
+        if (oldProcess != null && oldProcess.isAlive) {
+            try {
+                oldProcess.onExit().get(timeout.toMillis(), TimeUnit.MILLISECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                throw IOException("Timed out waiting for arbd handover", e)
+            }
+        }
+        val endpoint = paths.ipcEndpoint()
+        return tryConnectAndHello(endpoint) ?: spawnAndAwaitHello(binary, endpoint, timeout)
     }
 
     /**
@@ -508,7 +532,7 @@ class ArbdProcessManager(
 
     private sealed interface ProbeResult {
         data class Healthy(val connected: ConnectedDaemon) : ProbeResult
-        data class Stale(val reason: String) : ProbeResult
+        data class Stale(val reason: String, val connected: ConnectedDaemon? = null) : ProbeResult
         data object NotRunning : ProbeResult
     }
 
@@ -546,17 +570,21 @@ class ArbdProcessManager(
                 .flatMap { it.info().command() }
                 .map { Paths.get(it) }
                 .orElse(null)
-            if ((!parentBound || managedDaemonProcess()?.pid() == hello.pid) &&
-                shouldRestartForIdentity(runningExe, bundledBinary, hello)
-            ) {
-                runCatching { client.close() }
-                return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})")
+            val connected = ConnectedDaemon(client, hello)
+            if (hasPendingBundledUpgrade(runningExe, bundledBinary, hello)) {
+                return ProbeResult.Stale("bundled arbd differs from running $runningExe (build ${hello.buildId})", connected)
             }
-            ProbeResult.Healthy(ConnectedDaemon(client = client, hello = hello, spawnedProcess = null))
+            ProbeResult.Healthy(connected)
         } catch (_: Exception) {
             runCatching { client?.close() }
             ProbeResult.NotRunning
         }
+    }
+
+    internal fun hasPendingBundledUpgrade(runningExe: Path?, bundledBinary: Path?, hello: SystemHelloResponse): Boolean {
+        val foreignParent = parentBound && hello.parentBound && managedDaemonProcess()?.pid() != hello.pid
+        return !foreignParent && !identityUpgradeAttempted &&
+            shouldAutoUpgradeBinary(runningExe, bundledBinary, hello.binaryMtimeSecs, hello.buildId)
     }
 
     private fun tryConnectAndHello(endpoint: String): ConnectedDaemon? {

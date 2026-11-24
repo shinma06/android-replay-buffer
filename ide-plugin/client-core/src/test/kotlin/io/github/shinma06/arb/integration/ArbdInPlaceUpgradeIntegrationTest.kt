@@ -102,7 +102,10 @@ class ArbdInPlaceUpgradeIntegrationTest {
         assertEquals(oldBytes.size.toLong(), Files.size(bin), "same size as the build that is still running")
 
         val paths = ArbPaths(tmp.resolve("d"), tmp.resolve("c"), tmp.resolve("r"), os = HostOs.LINUX)
-        val manager = ArbdProcessManager(paths = paths, os = HostOs.LINUX, arch = "x64")
+        val manager = ArbdProcessManager(paths = paths, os = HostOs.LINUX, arch = "x64", parentBound = true)
+        assertTrue(manager.hasPendingBundledUpgrade(bin, bin, runningOld), "upgrade the previous unbound plugin build")
+        assertFalse(manager.hasPendingBundledUpgrade(bin, null, runningOld), "custom binary is outside the bundled upgrade path")
+        assertFalse(manager.hasPendingBundledUpgrade(bin, bin, runningOld.copy(parentBound = true)), "respect another live IDE")
         assertFalse(
             ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, fixed / 1000, "2.0.0-${oldBytes.size}-${fixed / 1000}"),
             "precondition: size + mtime alone cannot see the overwrite",
