@@ -1359,7 +1359,7 @@ def mutate_config_for_upgrade(config_path: Path, output_dir: Path, *, variant: s
     return cfg
 
 
-def insert_retry_pending_job(catalog: Path, job_id: str, destination: Path) -> None:
+def seed_interrupted_pinned_job(catalog: Path, job_id: str, destination: Path) -> None:
     """Seed the old JSON chunk + pin journal + materialization parameters as a stopped daemon."""
     data = catalog.parent
     chunk_id = f"chunk-{job_id}"
@@ -1395,7 +1395,7 @@ def insert_retry_pending_job(catalog: Path, job_id: str, destination: Path) -> N
     try:
         con.execute(
             "INSERT INTO save_jobs (job_id, state, destination_path, pinned_chunks_json, error_message, created_at_utc, updated_at_utc, trigger_kind) "
-            "VALUES (?, 'failed_retryable', ?, ?, 'synthetic upgrade-gate failure', '2026-11-24T00:00:00Z', '2026-11-24T00:00:00Z', 'manual')",
+            "VALUES (?, 'pinned', ?, ?, NULL, '2026-11-24T00:00:00Z', '2026-11-24T00:00:00Z', 'manual')",
             (job_id, str(destination), json.dumps([chunk_id])),
         )
         con.commit()
@@ -1481,9 +1481,9 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             sec.check("old arbd stops cleanly", old.stop_arbd(), "")
             # ---- state only an older build could have left behind -------------------------------
             catalog = old.data / "catalog.sqlite"
-            insert_retry_pending_job(catalog, UPGRADE_JOB_ID, work / "retry-destination")
+            seed_interrupted_pinned_job(catalog, UPGRADE_JOB_ID, work / "retry-destination")
             retarget_id = f"{UPGRADE_JOB_ID}-retarget"
-            insert_retry_pending_job(catalog, retarget_id, work / "old-destination")
+            seed_interrupted_pinned_job(catalog, retarget_id, work / "old-destination")
             config_path = old.data / "config.json"
             if not config_path.exists():
                 old.start_arbd()
@@ -1496,6 +1496,22 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             before_rows = catalog_rows(catalog)
             sec.check("catalog.sqlite holds saved, trimmed, trashed and five-column bundles", {"trashed"} <= set(before_rows.values()) and len(before_rows) >= 4, before_rows)
             sec.check("old arbd restarts on that state and serves it", old.start_arbd(), "")
+            # Make the old writer attempt publication. A directory occupied by an unrelated
+            # file fails on every host, including elevated Windows and Unix test runners.
+            for job_id, dest in ((UPGRADE_JOB_ID, work / "retry-destination"),
+                                 (retarget_id, work / "old-destination")):
+                dest.mkdir()
+                sentinel = dest / "keep.txt"
+                sentinel.write_text("occupied", encoding="utf-8")
+                failed = old.cli("jobs", "retry", job_id)
+                job = (failed.data or {}).get("job", {})
+                sec.check("old writer persists a failed job with its real ring pin",
+                          job.get("state") == "failed_retryable"
+                          and job.get("pinned_chunk_ids") == [f"chunk-{job_id}"]
+                          and bool(job.get("last_error")) and sentinel.is_file(), job_id)
+                if job_id == UPGRADE_JOB_ID:
+                    sentinel.unlink()
+                    dest.rmdir()
             old_hello = status_hello(old)
             old_pid = old_hello.get("pid")
             other = Isolated(new_root, work / "separate-instance", host_os)

@@ -4242,6 +4242,31 @@ mod tests {
     }
 
     #[test]
+    fn late_heartbeat_before_the_save_trigger_does_not_complete_the_tail() {
+        use arb_core::selection::{DrainOutcome, evaluate_stream_drain};
+        let tmp = TempDir::new().unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(heartbeat_at(100_000_000_000)).unwrap();
+        cap.ingest_event(video_event(100_800_000_000, vec![1]))
+            .unwrap();
+        let policy = SelectionPolicy::default();
+        let pending = cap.phase1_pin(10, tmp.path(), policy).unwrap();
+        let trigger = pending.drain_trigger_boottime_ns().unwrap();
+        assert_eq!(trigger, 100_800_000_000);
+        cap.ingest_event(heartbeat_at(100_300_000_000)).unwrap();
+        assert_eq!(
+            evaluate_stream_drain(trigger, cap.drain_watermark_ns(), 300, &policy),
+            DrainOutcome::Waiting
+        );
+        cap.ingest_event(heartbeat_at(trigger)).unwrap();
+        assert_eq!(
+            evaluate_stream_drain(trigger, cap.drain_watermark_ns(), 800, &policy),
+            DrainOutcome::DrainedComplete
+        );
+    }
+
+    #[test]
     fn save_after_codec_chunk_eviction_replays_video_and_correct_audio() {
         use arb_adb::scrcpy::{AudioPacket, AudioPacketKind};
         use arb_media::codec::VideoCodecBackend as _;

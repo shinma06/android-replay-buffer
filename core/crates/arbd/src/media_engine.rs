@@ -612,12 +612,18 @@ pub fn export_trim(
         build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
 
     let policy = SelectionPolicy::default();
+    // Existing sidecars from either stream take precedence over newly uncertain rows.
+    let previous_taps =
+        reader.query_taps(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
+    let kept_taps = select_for_trim_with_truncated([], previous_taps, 0, &frame_window, &policy);
+    let log_budget = policy.after_quarantine(&kept_taps.unanchored);
     let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
-        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &policy)?;
+        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &log_budget)?;
     let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) = select_trimmed_taps(
         reader.as_ref(),
         &frame_window,
         &policy.after_logs(&trimmed_logs),
+        kept_taps,
     )?;
     let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
@@ -1191,12 +1197,16 @@ fn select_trimmed_taps(
     reader: &dyn BundleReader,
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
+    previous: arb_core::selection::SelectedPartition<arb_core::bundle::TapRecord>,
 ) -> Result<(Vec<arb_core::bundle::TapRecord>, usize, usize, usize), DaemonError> {
     let source_main = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let source_unanchored =
-        reader.query_taps(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
-    let part =
-        select_for_trim_with_truncated(source_main, source_unanchored, 0, frame_window, policy);
+    let part = select_for_trim_with_truncated(
+        source_main,
+        previous.unanchored,
+        previous.unanchored_truncated_count,
+        frame_window,
+        policy,
+    );
     let main_count = part.main.len();
     let unanchored_count = part.unanchored.len();
     let mut trimmed = Vec::with_capacity(main_count + unanchored_count);

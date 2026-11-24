@@ -391,15 +391,24 @@ impl AlignedRecord for LogRecord {
 impl SelectionPolicy {
     /// Debits a bundle's shared quarantine budget before selecting the next stream.
     #[must_use]
-    pub fn after_logs(mut self, logs: &[LogRecord]) -> Self {
-        for log in logs
-            .iter()
-            .filter(|l| l.bucket == crate::bundle::RecordBucket::Unanchored)
-        {
+    pub fn after_logs(self, logs: &[LogRecord]) -> Self {
+        self.after_quarantine(
+            logs.iter()
+                .filter(|l| l.bucket == crate::bundle::RecordBucket::Unanchored),
+        )
+    }
+
+    /// Subtracts the cost of previously admitted sidecar records from the common budget.
+    #[must_use]
+    pub fn after_quarantine<'a, T: AlignedRecord + 'a>(
+        mut self,
+        rows: impl IntoIterator<Item = &'a T>,
+    ) -> Self {
+        for row in rows {
             self.max_unanchored_records = self.max_unanchored_records.saturating_sub(1);
             self.max_unanchored_bytes = self
                 .max_unanchored_bytes
-                .saturating_sub(log.estimated_bytes());
+                .saturating_sub(row.estimated_bytes());
         }
         self
     }
