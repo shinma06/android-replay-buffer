@@ -460,7 +460,7 @@ pub struct ExportContext<'a> {
 
 /// Acquires a temporary `ExportJob` lease on a cataloged source bundle so `bundle.gc` cannot
 /// purge it mid-export; the lease is released on every return path.
-fn acquire_export_lease<'a>(
+pub(super) fn acquire_export_lease<'a>(
     catalog: &'a Catalog,
     source_catalog_id: Option<&str>,
     holder_pid: u32,
@@ -572,21 +572,7 @@ pub fn export_trim(
             .map(|id| catalog.bundle(id))
             .transpose()?
             .flatten();
-        if reader.is_legacy()
-            || entry
-                .as_ref()
-                .is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo)
-        {
-            return Err(DaemonError::Conflict(format!(
-                "refusing trash_original on read-only legacy bundle `{parent_bundle_id}`"
-            )));
-        }
-        if !entry.is_some_and(|e| e.state == arb_core::state::BundleLifecycleState::Active) {
-            return Err(DaemonError::Conflict(
-                "refusing trash_original on uncataloged or non-active bundle; open or register it first"
-                    .to_owned(),
-            ));
-        }
+        validate_trash_source(reader.as_ref(), entry.as_ref())?;
     }
 
     let video_path = reader.video_path().ok_or_else(|| {
@@ -783,30 +769,19 @@ pub fn export_trim(
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        arb_media::copy_new(source, output)?;
+        if let Err(err) = arb_media::copy_new(source, output) {
+            let _ = catalog.trash_bundle(&new_bundle_id, &utc_now_iso8601());
+            return Err(err.into());
+        }
         share_mp4_path = Some(output.clone());
     }
     drop(lease_guard);
 
-    let mut original_trashed = false;
-    let mut trash_warning: Option<String> = None;
-    if params.trash_original
-        && let Some(src_id) = source_catalog_id
-    {
-        match catalog.trash_bundle(src_id, &utc_now_iso8601()) {
-            Ok(_) => original_trashed = true,
-            Err(err) => {
-                trash_warning = Some(format!(
-                    "trimmed bundle committed but trashing the original failed: {err}"
-                ));
-            }
-        }
-    }
-
-    let warning = match (commit_warning, trash_warning) {
-        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-        (a, b) => a.or(b),
-    };
+    let (original_trashed, warning) = finish_export(
+        catalog,
+        source_catalog_id.filter(|_| params.trash_original),
+        commit_warning,
+    );
 
     Ok(ExportTrimResponse {
         bundle_id: new_bundle_id,
@@ -826,6 +801,47 @@ pub fn export_trim(
     })
 }
 
+pub(super) fn validate_trash_source(
+    reader: &dyn BundleReader,
+    entry: Option<&arb_storage::catalog::BundleEntry>,
+) -> Result<(), DaemonError> {
+    if reader.is_legacy()
+        || entry.is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo)
+    {
+        return Err(DaemonError::Conflict(
+            "refusing trash_original on read-only legacy bundle".into(),
+        ));
+    }
+    if !entry.is_some_and(|e| e.state == arb_core::state::BundleLifecycleState::Active) {
+        return Err(DaemonError::Conflict(
+            "refusing trash_original on uncataloged or non-active bundle".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A failed post-publication trash operation must preserve the successful export result.
+pub(super) fn finish_export(
+    catalog: &Catalog,
+    trash_id: Option<&str>,
+    warning: Option<String>,
+) -> (bool, Option<String>) {
+    let Some(id) = trash_id else {
+        return (false, warning);
+    };
+    match catalog.trash_bundle(id, &utc_now_iso8601()) {
+        Ok(_) => (true, warning),
+        Err(err) => {
+            let message =
+                format!("書き出しは完了しましたが、元の録画をゴミ箱に移せませんでした ({err})");
+            (
+                false,
+                Some(warning.map_or_else(|| message.clone(), |w| format!("{w}. {message}"))),
+            )
+        }
+    }
+}
+
 /// Commits the trimmed bundle and registers it idempotently. A commit whose only failure
 /// is the parent-directory `fsync` is published: it is registered and reported as a warning
 /// instead of an error that would invite a second, duplicate trim (R3 M1 / S8a).
@@ -836,6 +852,7 @@ fn commit_trimmed_bundle(
     source_apps: &[arb_core::bundle::AppLogSummary],
     entry: &NewBundleEntry,
 ) -> Result<(usize, Option<String>), DaemonError> {
+    ctx.catalog.track_staging(trim_job_id, &entry.path)?;
     let (app_logs_count, warning) = match V2BundleWriter::write_with_source_apps(
         &entry.path,
         trim_job_id,
@@ -877,6 +894,7 @@ fn commit_trimmed_bundle(
                 entry.path.display()
             ))
         })?;
+    let _ = ctx.catalog.forget_staging(trim_job_id, &entry.path);
     Ok((app_logs_count, warning))
 }
 
@@ -1203,7 +1221,7 @@ fn select_trimmed_taps(
     ))
 }
 
-struct LeaseDropGuard<'a> {
+pub(super) struct LeaseDropGuard<'a> {
     catalog: &'a Catalog,
     lease_id: String,
 }

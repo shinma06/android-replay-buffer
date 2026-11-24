@@ -54,12 +54,16 @@ pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(),
         return Ok(());
     }
     if hello["parent_bound"] == true {
-        eprintln!("Android Studio が録画中のため、デーモンの更新を延期しました。");
+        eprintln!("Android Studio が管理中のため、デーモンの更新を延期しました。");
         return Ok(());
     }
-    let response = client
-        .call("system.shutdown_for_handover", json!({}))
-        .map_err(CliError::from_rpc)?;
+    let response = match client.call("system.shutdown_for_handover", json!({})) {
+        Err(rpc::RpcClientError::Rpc { code: -32601, .. }) => {
+            eprintln!("稼働中のデーモンは安全な引き継ぎに未対応です。終了後に更新します。");
+            return Ok(());
+        }
+        result => result.map_err(CliError::from_rpc)?,
+    };
     if response["ok"] != true {
         eprintln!("デーモンの処理が完了するまで更新を延期しました。");
         return Ok(());

@@ -570,6 +570,12 @@ mod imp {
     }
 
     fn fallback_rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        // Hard-link creation is an exclusive publish even on file systems without renameat2.
+        if fs::symlink_metadata(from)?.is_file() {
+            fs::hard_link(from, to)?;
+            let _ = fs::remove_file(from);
+            return Ok(());
+        }
         match fs::symlink_metadata(to) {
             Ok(_) => {
                 return Err(io::Error::new(

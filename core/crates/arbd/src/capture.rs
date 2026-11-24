@@ -584,6 +584,7 @@ pub struct CapturePipeline {
     static_hold_seen: usize,
     ring_write_errors: usize,
     session_first_event_cont_ns: Option<i64>,
+    drain_watermark_ns: Option<i64>,
     latest_heartbeat_boottime_ns: Option<i64>,
     latest_heartbeat_pc_cont_ns: Option<i64>,
     latest_pc_cont_ns: Option<i64>,
@@ -664,6 +665,7 @@ impl CapturePipeline {
             static_hold_seen: 0,
             ring_write_errors: 0,
             session_first_event_cont_ns: None,
+            drain_watermark_ns: None,
             latest_heartbeat_boottime_ns: None,
             latest_heartbeat_pc_cont_ns: None,
             latest_pc_cont_ns: None,
@@ -906,6 +908,7 @@ impl CapturePipeline {
             self.device.api_level = 0;
             self.device.is_emulator = false;
         }
+        self.drain_watermark_ns = None;
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active = true;
         self.connected = false;
@@ -1179,6 +1182,13 @@ impl CapturePipeline {
                 payload,
             } => {
                 self.connected = true;
+                self.drain_watermark_ns = Some(
+                    payload
+                        .streams
+                        .iter()
+                        .filter(|s| s.state == arb_adb::wire::StreamLifecycleState::Running)
+                        .fold(payload.boottime_ns, |end, s| end.min(s.last_pts_ns)),
+                );
                 self.latest_heartbeat_boottime_ns = Some(payload.boottime_ns);
                 self.latest_heartbeat_pc_cont_ns = Some(*pc_cont_ns);
                 let triple = DeviceClockTriple {
@@ -1365,6 +1375,11 @@ impl CapturePipeline {
                 .zip(self.latest_heartbeat_pc_cont_ns)
                 .map(|((b, t), p)| (b.to_owned(), t, p)),
         }
+    }
+
+    /// Conservative heartbeat progress across all active streams of this session.
+    pub(super) const fn drain_watermark_ns(&self) -> Option<i64> {
+        self.drain_watermark_ns
     }
 
     /// Flushes any buffered events into an immutable closed Zone-1 ring chunk.
@@ -1785,10 +1800,9 @@ impl CapturePipeline {
         let plan = self.phase2_plan(&job.job.pinned_chunk_ids)?;
         let journal = self.ring.pin_journal();
         let previous = journal.load(job_id).ok().map(|r| r.destination_path);
-        arb_storage::bundle_io::remove_stale_staging_sibling(
-            Path::new(&job.job.destination_path),
-            job_id,
-        )?;
+        let old_destination = Path::new(&job.job.destination_path);
+        catalog.track_staging(job_id, old_destination)?;
+        catalog.clean_tracked_staging(job_id, old_destination);
         let _ = journal.update_destination(job_id, &new_bundle_dir)?;
         if let Err(err) = catalog.retarget_job(job_id, &new_bundle_dir, &utc_now_iso8601()) {
             if let Some(prev) = previous {
@@ -1811,10 +1825,7 @@ impl CapturePipeline {
     ) -> Result<SaveJobView, DaemonError> {
         let now_utc = utc_now_iso8601();
         let discarded = catalog.discard_job(job_id, &now_utc)?;
-        arb_storage::bundle_io::remove_stale_staging_sibling(
-            Path::new(&discarded.job.destination_path),
-            job_id,
-        )?;
+        catalog.clean_tracked_staging(job_id, Path::new(&discarded.job.destination_path));
         let _ = self.ring.unpin_job(job_id);
         let _ = remove_job_params(&self.data_dir, job_id);
         Ok(save_job_to_view(&discarded))
@@ -4145,18 +4156,40 @@ mod tests {
         };
         let mut cap = open(5 * 86_400_000_000_000, 0);
         cap.begin_session("A");
-        cap.ingest_event(video_event(5 * 86_400_000_000_000, vec![1]))
+        cap.ingest_event(heartbeat_at(5 * 86_400_000_000_000))
             .unwrap();
         cap.mark_stopped();
         drop(cap);
         let mut cap = open(60_000_000_000, 5 * 86_400_000_000_000);
         cap.begin_session("A");
-        cap.ingest_event(video_event(60_000_000_000, vec![2]))
-            .unwrap();
+        cap.ingest_event(heartbeat_at(60_000_000_000)).unwrap();
+        let out = tmp.path().join("bundles");
+        let catalog = arb_storage::catalog::Catalog::open(tmp.path().join("cat"), &out).unwrap();
         let pending = cap
-            .phase1_pin(10, tmp.path(), SelectionPolicy::default())
+            .phase1_pin_with_options(
+                10,
+                &out,
+                SelectionPolicy::default(),
+                SaveMode::LogsOnly,
+                super::SaveTriggerKind::Manual,
+            )
             .unwrap();
         assert_eq!(pending.pinned_chunk_ids.len(), 1);
+        let (job, plan) = cap
+            .phase1_commit(&catalog, pending, super::TailCompleteness::Complete)
+            .unwrap();
+        let path = super::phase2_materialize(&plan, &catalog, &job.job.job_id)
+            .unwrap()
+            .bundle_path
+            .unwrap();
+        let anchors = arb_storage::bundle_io::V2BundleReader::open(path)
+            .unwrap()
+            .clock_anchors()
+            .unwrap();
+        assert_eq!(anchors.len(), 1);
+        assert!(
+            matches!(&anchors[0], arb_storage::bundle_io::ClockAnchorRecord::DeviceTriple(triple) if triple.boottime_ns == 60_000_000_000)
+        );
     }
 
     #[test]
@@ -4328,6 +4361,61 @@ mod tests {
                 .any(|d| d.kind == DiscontinuityKind::StreamGap && d.pc_cont_start_ns == 100)
         );
         assert_eq!(pins.list_all().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn interrupted_crash_autosave_is_requeued_once_on_startup() {
+        let tmp = TempDir::new().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().into(),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(heartbeat_at(100)).unwrap();
+        let mut pending = cap
+            .phase1_pin_with_options(
+                10,
+                &tmp.path().join("bundles"),
+                SelectionPolicy::default(),
+                SaveMode::LogsOnly,
+                super::SaveTriggerKind::CrashAutoSave,
+            )
+            .unwrap();
+        let id = pending.job_id().to_owned();
+        pending.guard.armed = false;
+        drop(pending);
+        drop(cap);
+        let config = crate::DaemonConfig::new(paths);
+        let server = crate::DaemonServer::start(config.clone()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let status = server.state.crash_autosave_status.lock().unwrap();
+            if status.last_job_id.as_ref() == Some(&id) {
+                assert!(status.last_bundle_id.is_some());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "crash job failed: {:?}",
+                status.last_error
+            );
+            drop(status);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        server.shutdown();
+        let server = crate::DaemonServer::start(config).unwrap();
+        assert!(!server.state.recovery.recovered_job_ids.contains(&id));
+        assert_eq!(server.state.catalog.list_save_jobs().unwrap().len(), 1);
+        assert_eq!(
+            server
+                .state
+                .crash_jobs
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        server.shutdown();
     }
 
     #[test]

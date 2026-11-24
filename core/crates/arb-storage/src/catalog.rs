@@ -12,7 +12,7 @@
 //!   and transitions interrupted save jobs into `FailedRetryable` with pins intact.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS save_jobs (
   created_at_utc TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL,
   trigger_kind TEXT NOT NULL DEFAULT 'manual'
+);
+
+CREATE TABLE IF NOT EXISTS pending_staging (
+  job_id TEXT NOT NULL,
+  destination_path TEXT NOT NULL,
+  PRIMARY KEY (job_id, destination_path)
 );
 
 CREATE TABLE IF NOT EXISTS edit_sessions (
@@ -1183,6 +1189,54 @@ impl Catalog {
         })
     }
 
+    /// Remembers a job's external staging location across a process exit or retarget.
+    ///
+    /// # Errors
+    /// Returns a database error if the recovery record cannot be persisted.
+    pub fn track_staging(&self, job_id: &str, destination: &Path) -> Result<(), StorageError> {
+        self.lock_conn()?
+            .execute(
+                "INSERT OR IGNORE INTO pending_staging(job_id, destination_path) VALUES (?1, ?2)",
+                params![job_id, destination.to_string_lossy()],
+            )
+            .map_err(|e| StorageError::sqlite("track_staging", e))?;
+        Ok(())
+    }
+
+    /// Clears a known staging target after publication or successful inspection.
+    ///
+    /// # Errors
+    /// Returns a database error if the registry cannot be updated.
+    pub fn forget_staging(&self, job_id: &str, destination: &Path) -> Result<(), StorageError> {
+        self.lock_conn()?
+            .execute(
+                "DELETE FROM pending_staging WHERE job_id = ?1 AND destination_path = ?2",
+                params![job_id, destination.to_string_lossy()],
+            )
+            .map_err(|e| StorageError::sqlite("forget_staging", e))?;
+        Ok(())
+    }
+
+    /// Tries cleanup without blocking retarget/discard when an external drive is offline.
+    pub fn clean_tracked_staging(&self, job_id: &str, destination: &Path) -> bool {
+        if destination.parent().is_some_and(Path::is_dir) {
+            let result = crate::bundle_io::remove_stale_staging_sibling(destination, job_id)
+                .inspect(|_| {
+                    let _ = self.forget_staging(job_id, destination);
+                });
+            match result {
+                Ok(removed) => return removed,
+                Err(e) => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "保存先の作業ディレクトリの清掃を延期しました ({e})"
+                    );
+                }
+            }
+        }
+        false
+    }
+
     fn cleanup_orphan_staging_dirs(&self) -> Result<Vec<PathBuf>, StorageError> {
         if !self.managed_bundles_root.is_dir() {
             return Ok(Vec::new());
@@ -1212,10 +1266,38 @@ impl Catalog {
                 targets.insert((parent.to_path_buf(), job.job.job_id));
             }
         }
+        let pending = {
+            let conn = self.lock_conn()?;
+            let mut query = conn
+                .prepare("SELECT job_id, destination_path FROM pending_staging")
+                .map_err(|e| StorageError::sqlite("prepare_staging", e))?;
+            query
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        PathBuf::from(row.get::<_, String>(1)?),
+                    ))
+                })
+                .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+                .map_err(|e| StorageError::sqlite("list_staging", e))?
+        };
         let mut orphan_paths = Vec::new();
+        for (id, path) in pending {
+            if self.clean_tracked_staging(&id, &path) {
+                orphan_paths.push(path.with_file_name(format!(".staging-{id}")));
+            }
+        }
         for (parent, id) in targets {
-            if crate::bundle_io::remove_stale_staging_sibling(&parent.join("bundle"), &id)? {
-                orphan_paths.push(parent.join(format!(".staging-{id}")));
+            match crate::bundle_io::remove_stale_staging_sibling(&parent.join("bundle"), &id) {
+                Ok(true) => orphan_paths.push(parent.join(format!(".staging-{id}"))),
+                Ok(false) => {}
+                Err(e) if parent != self.managed_bundles_root => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "外部保存先の作業ディレクトリを確認できませんでした ({e})"
+                    );
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(orphan_paths)
@@ -1478,7 +1560,7 @@ pub fn parse_utc_timestamp_ns(value: &str) -> Option<i128> {
     if !(1..=max_day).contains(&day) || hour > 23 || minute > 59 {
         return None;
     }
-    if second > 60 {
+    if second > 59 {
         return None;
     }
     let mut pos = 19;
@@ -1499,7 +1581,6 @@ pub fn parse_utc_timestamp_ns(value: &str) -> Option<i128> {
         }
     }
     let offset_secs: i64 = match b.get(pos) {
-        None => 0,
         Some(b'Z' | b'z') if pos + 1 == b.len() => 0,
         Some(&sign @ (b'+' | b'-')) => {
             let rest = &b[pos + 1..];
@@ -1514,7 +1595,7 @@ pub fn parse_utc_timestamp_ns(value: &str) -> Option<i128> {
             let secs = oh * 3_600 + om * 60;
             if sign == b'+' { secs } else { -secs }
         }
-        Some(_) => return None,
+        _ => return None,
     };
     // Days from civil (proleptic Gregorian), Howard Hinnant's algorithm.
     let y = if month <= 2 { year - 1 } else { year };
@@ -2092,6 +2173,8 @@ mod tests {
         catalog.gc_trashed_bundles("2024-03-01T12:00:00Z").unwrap();
         assert!(!path.exists());
         for date in [
+            "2024-02-29T12:00:60Z",
+            "2024-02-29T12:00:00",
             "2023-02-29T12:00:00Z",
             "2024-04-31T12:00:00Z",
             "2024-01-01T12:00:00+24:00",

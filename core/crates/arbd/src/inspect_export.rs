@@ -22,22 +22,23 @@ use arb_media::contact_sheet::{
     select_contact_sheet_indices,
 };
 use arb_media::mp4::Mp4VideoTrack;
-use arb_media::mux_av::AvMuxReport;
 use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::GopLruCache;
 use arb_storage::bundle_io::{BundleReader, TimeRange, open_bundle};
-use arb_storage::catalog::{BundleEntry, Catalog, CatalogFormatVersion, LeaseHolderKind};
+use arb_storage::catalog::{BundleEntry, Catalog};
 use arb_storage::sha256_hex;
 
 use crate::error::DaemonError;
-use crate::media_engine::{ExportContext, compute_epoch_frame_ranges, export_trim};
+use crate::media_engine::{
+    ExportContext, acquire_export_lease, compute_epoch_frame_ranges, export_trim,
+};
 use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
     ExportTrimParams, InspectFramesMode, MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse,
     MediaInspectFramesParams, MediaInspectFramesResponse, OverviewTapItem, TapCropMeta,
     TimelineOverviewResponse, TimelineQueryParams,
 };
-use crate::time_util::{next_id, utc_now_iso8601};
+use crate::time_util::next_id;
 
 /// Maximum cached WAV files retained under `<cache_dir>/audio-pcm/`.
 /// Cache entries younger than this are never evicted by [`prune_cache_dir`].
@@ -67,34 +68,6 @@ const MAX_ERROR_LOG_MESSAGE_CHARS: usize = 512;
 const INSPECT_GOP_CACHE_GOPS: usize = 4;
 const INSPECT_GOP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
-struct LeaseGuard<'a> {
-    catalog: &'a Catalog,
-    lease_id: String,
-}
-
-impl Drop for LeaseGuard<'_> {
-    fn drop(&mut self) {
-        let _ = self.catalog.release_lease(&self.lease_id);
-    }
-}
-
-fn acquire_job_lease<'a>(
-    catalog: &'a Catalog,
-    source_catalog_id: Option<&str>,
-    holder_pid: u32,
-) -> Result<Option<LeaseGuard<'a>>, DaemonError> {
-    let Some(bundle_id) = source_catalog_id else {
-        return Ok(None);
-    };
-    let lease_id = catalog.acquire_lease(
-        bundle_id,
-        LeaseHolderKind::ExportJob,
-        holder_pid,
-        &utc_now_iso8601(),
-    )?;
-    Ok(Some(LeaseGuard { catalog, lease_id }))
-}
-
 /// Decodes a bundle's `audio.m4a` to a cached signed 16-bit LE PCM RIFF/WAV file under
 /// `<cache_dir>/audio-pcm/<source_sha256>.wav`.
 ///
@@ -109,7 +82,7 @@ pub fn decode_audio_pcm(
     bundle_dir: &Path,
     source_catalog_id: Option<&str>,
 ) -> Result<MediaDecodeAudioPcmResponse, DaemonError> {
-    let _lease = acquire_job_lease(catalog, source_catalog_id, std::process::id())?;
+    let _lease = acquire_export_lease(catalog, source_catalog_id, std::process::id())?;
     let reader = open_bundle(bundle_dir)?;
     let summary = reader.manifest_summary();
     let audio_meta = summary.streams.audio.as_ref();
@@ -209,36 +182,14 @@ pub fn export_share_mp4(
     share_mp4_path: &Path,
     params: &ExportShareMp4Params,
 ) -> Result<ExportShareMp4Response, DaemonError> {
-    if params.in_frame_index.is_some() != params.out_frame_index.is_some() {
-        return Err(DaemonError::InvalidParams(
-            "in_frame_index and out_frame_index must either both be provided or both be omitted"
-                .to_owned(),
-        ));
-    }
-
     let source_catalog_id = source_entry.map(|e| e.bundle_id.as_str());
     let holder_pid = params.holder_pid.unwrap_or_else(std::process::id);
-    let lease_guard = acquire_job_lease(ctx.catalog, source_catalog_id, holder_pid)?;
+    let lease_guard = acquire_export_lease(ctx.catalog, source_catalog_id, holder_pid)?;
 
     let reader = open_bundle(source_bundle_dir)?;
     let summary = reader.manifest_summary();
-    let is_legacy = reader.is_legacy()
-        || source_entry.is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo);
-
-    // Enforce REQ-04/07 safety invariant upfront: never trash read-only legacy or external bundles.
     if params.trash_original {
-        if is_legacy {
-            return Err(DaemonError::Conflict(format!(
-                "refusing trash_original on read-only legacy bundle `{}`",
-                source_catalog_id.unwrap_or(&summary.bundle_id)
-            )));
-        }
-        if source_catalog_id.is_none() {
-            return Err(DaemonError::Conflict(
-                "refusing trash_original on uncataloged external bundle; open or register it first"
-                    .to_owned(),
-            ));
-        }
+        crate::media_engine::validate_trash_source(reader.as_ref(), source_entry)?;
     }
 
     let source_video = reader.video_path().ok_or_else(|| {
@@ -270,43 +221,65 @@ pub fn export_share_mp4(
         fs::create_dir_all(parent)?;
     }
 
-    let prepared = prepare_share_mp4_sources(
-        ctx,
-        reader.as_ref(),
-        source_bundle_dir,
-        source_catalog_id,
-        dest_parent,
-        &source_video,
-        requested_trim,
-        params,
-    )?;
-
-    let av_mux_report = mux_and_verify_share_mp4(ctx, &prepared, share_mp4_path)?;
+    let (av_mux_report, trimmed_bundle) = if let Some((first, last)) = requested_trim {
+        let trim = export_trim(
+            ctx,
+            source_bundle_dir,
+            source_catalog_id,
+            dest_parent,
+            &ExportTrimParams {
+                bundle_id_or_path: params.bundle_id.clone(),
+                in_frame_index: first,
+                out_frame_index: last,
+                dest_dir: params.dest_dir.clone(),
+                holder_pid: params.holder_pid,
+                burn_taps: params.burn_taps,
+                include_share_mp4: true,
+                share_output_path: Some(share_mp4_path.to_owned()),
+                trash_original: false,
+            },
+        )?;
+        let report = trim
+            .av_mux_report
+            .ok_or_else(|| DaemonError::Internal("共有動画の検証結果がありません".into()))?;
+        (
+            report,
+            (Some(trim.bundle_id), Some(trim.bundle_path), trim.warning),
+        )
+    } else {
+        let (video, _cleanup) = if params.burn_taps {
+            burn_in_share_video_if_nonempty(ctx, reader.as_ref(), &source_video)?
+        } else {
+            (source_video, None)
+        };
+        let offset = summary
+            .streams
+            .audio
+            .as_ref()
+            .map_or(0, |a| a.audio_lead_in_offset_ns);
+        let report = mux_share_mp4(
+            &video,
+            reader.audio_path().as_deref(),
+            offset,
+            share_mp4_path,
+        )?;
+        (report, (None, None, None))
+    };
+    let (trimmed_bundle_id, trimmed_bundle_path, commit_warning) = trimmed_bundle;
 
     // Release temporary export lease before logical trash (source files remain untouched on disk).
     drop(lease_guard);
 
-    let mut original_trashed = false;
-    let mut trash_warning: Option<String> = None;
-    if params.trash_original
-        && let Some(src_id) = source_catalog_id
-    {
-        // share.mp4 is already committed: a late trash failure (source already trashed, racing
-        // trash) must not hide the export result, so it degrades to a warning.
-        match ctx.catalog.trash_bundle(src_id, &utc_now_iso8601()) {
-            Ok(_) => original_trashed = true,
-            Err(err) => {
-                trash_warning = Some(format!(
-                    "share.mp4 was written but trashing the original failed: {err}"
-                ));
-            }
-        }
-    }
+    let (original_trashed, warning) = crate::media_engine::finish_export(
+        ctx.catalog,
+        source_catalog_id.filter(|_| params.trash_original),
+        commit_warning,
+    );
 
     Ok(ExportShareMp4Response {
         share_mp4_path: share_mp4_path.to_path_buf(),
-        trimmed_bundle_id: prepared.trimmed_bundle_id,
-        trimmed_bundle_path: prepared.trimmed_bundle_path,
+        trimmed_bundle_id,
+        trimmed_bundle_path,
         audio_included: av_mux_report.audio_included,
         video_frame_count: av_mux_report.video_frame_count,
         edts_box_count: av_mux_report.edts_box_count,
@@ -314,21 +287,8 @@ pub fn export_share_mp4(
         output_bytes: av_mux_report.output_bytes,
         original_trashed,
         av_mux_report,
-        warning: match (prepared.warning, trash_warning) {
-            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-            (a, b) => a.or(b),
-        },
+        warning,
     })
-}
-
-struct PreparedShareSources {
-    trimmed_bundle_id: Option<String>,
-    trimmed_bundle_path: Option<PathBuf>,
-    video_path: PathBuf,
-    audio_path: Option<PathBuf>,
-    lead_in_offset_ns: i64,
-    warning: Option<String>,
-    _temp_burned_video: Option<TempFileCleanup>,
 }
 
 use crate::capture::TempFileGuard as TempFileCleanup;
@@ -355,7 +315,10 @@ fn resolve_share_trim_range(
             }
             Ok((in_f > 0 || out_f + 1 < src_frame_count).then_some((in_f, out_f)))
         }
-        _ => Ok(None),
+        (None, None) => Ok(None),
+        _ => Err(DaemonError::InvalidParams(
+            "開始と終了のフレーム番号を両方指定してください".into(),
+        )),
     }
 }
 
@@ -405,113 +368,6 @@ fn burn_in_share_video_if_nonempty(
         ctx.backend,
     )?;
     Ok((tmp_burned, Some(cleanup)))
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper bundling validated inputs for full vs trimmed share.mp4 muxing"
-)]
-fn prepare_share_mp4_sources(
-    ctx: &ExportContext<'_>,
-    reader: &dyn BundleReader,
-    source_bundle_dir: &Path,
-    source_catalog_id: Option<&str>,
-    dest_parent: &Path,
-    source_video: &Path,
-    requested_trim: Option<(u64, u64)>,
-    params: &ExportShareMp4Params,
-) -> Result<PreparedShareSources, DaemonError> {
-    if let Some((in_f, out_f)) = requested_trim {
-        let trim_params = ExportTrimParams {
-            bundle_id_or_path: params.bundle_id.clone(),
-            in_frame_index: in_f,
-            out_frame_index: out_f,
-            dest_dir: params.dest_dir.clone(),
-            holder_pid: params.holder_pid,
-            burn_taps: false,
-            share_output_path: None,
-            include_share_mp4: false,
-            trash_original: false,
-        };
-        let trim_resp = export_trim(
-            ctx,
-            source_bundle_dir,
-            source_catalog_id,
-            dest_parent,
-            &trim_params,
-        )?;
-        let trimmed_reader = open_bundle(&trim_resp.bundle_path)?;
-        let trimmed_video = trimmed_reader.video_path().ok_or_else(|| {
-            DaemonError::Internal(format!(
-                "committed trimmed bundle `{}` is missing video.mp4",
-                trim_resp.bundle_id
-            ))
-        })?;
-        let trimmed_audio = trimmed_reader.audio_path();
-        let lead_in_offset_ns = trimmed_reader
-            .manifest_summary()
-            .streams
-            .audio
-            .as_ref()
-            .map_or(0, |a| a.audio_lead_in_offset_ns);
-        let (video_path, temp_burned) = if params.burn_taps {
-            burn_in_share_video_if_nonempty(ctx, trimmed_reader.as_ref(), &trimmed_video)?
-        } else {
-            (trimmed_video, None)
-        };
-        Ok(PreparedShareSources {
-            trimmed_bundle_id: Some(trim_resp.bundle_id),
-            trimmed_bundle_path: Some(trim_resp.bundle_path),
-            video_path,
-            audio_path: trimmed_audio,
-            lead_in_offset_ns,
-            warning: trim_resp.warning,
-            _temp_burned_video: temp_burned,
-        })
-    } else {
-        let lead_in_offset_ns = reader
-            .manifest_summary()
-            .streams
-            .audio
-            .as_ref()
-            .map_or(0, |a| a.audio_lead_in_offset_ns);
-        let (video_path, temp_burned) = if params.burn_taps {
-            burn_in_share_video_if_nonempty(ctx, reader, source_video)?
-        } else {
-            (source_video.to_path_buf(), None)
-        };
-        Ok(PreparedShareSources {
-            trimmed_bundle_id: None,
-            trimmed_bundle_path: None,
-            video_path,
-            audio_path: reader.audio_path(),
-            lead_in_offset_ns,
-            warning: None,
-            _temp_burned_video: temp_burned,
-        })
-    }
-}
-
-/// Muxes and verifies `share.mp4`; on failure the trimmed bundle created for this export is
-/// logically trashed so no orphan is left in the catalog.
-fn mux_and_verify_share_mp4(
-    ctx: &ExportContext<'_>,
-    prepared: &PreparedShareSources,
-    share_mp4_path: &Path,
-) -> Result<AvMuxReport, DaemonError> {
-    let committed = mux_share_mp4(
-        &prepared.video_path,
-        prepared.audio_path.as_deref(),
-        prepared.lead_in_offset_ns,
-        share_mp4_path,
-    )
-    .map_err(DaemonError::from);
-    if committed.is_err()
-        && let Some(trimmed_id) = prepared.trimmed_bundle_id.as_deref()
-    {
-        let _ = ctx.catalog.trash_bundle(trimmed_id, &utc_now_iso8601());
-    }
-    committed
 }
 
 /// Builds a compact one-shot [`TimelineOverviewResponse`] for AI triage.
@@ -622,7 +478,7 @@ pub fn inspect_frames(
     source_catalog_id: Option<&str>,
     params: &MediaInspectFramesParams,
 ) -> Result<MediaInspectFramesResponse, DaemonError> {
-    let _lease = acquire_job_lease(ctx.catalog, source_catalog_id, std::process::id())?;
+    let _lease = acquire_export_lease(ctx.catalog, source_catalog_id, std::process::id())?;
     let reader = open_bundle(bundle_dir)?;
     let summary = reader.manifest_summary();
     let bundle_id = source_catalog_id.unwrap_or(&summary.bundle_id).to_owned();

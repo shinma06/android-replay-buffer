@@ -725,6 +725,46 @@ fn seed_interrupted_jobs(
 }
 
 #[test]
+fn external_staging_recovery_requires_a_matching_owner_and_no_completion_marker() {
+    let tmp = TempDir::new().unwrap();
+    let managed = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("cat"), &managed).unwrap();
+    let external = tmp.path().join("external");
+    for (id, owner, finished) in [
+        ("owned", "owned", false),
+        ("other", "wrong", false),
+        ("finished", "finished", true),
+    ] {
+        catalog
+            .create_pinned_job(id, external.join(id), &[], "2026-01-01T00:00:00Z")
+            .unwrap();
+        let stage = external.join(format!(".staging-{id}"));
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join(".arb-staging-owner"), owner).unwrap();
+        if finished {
+            fs::write(stage.join("manifest.json"), b"{}").unwrap();
+        }
+    }
+    let trim_stage = external.join(".staging-trim");
+    fs::create_dir_all(&trim_stage).unwrap();
+    fs::write(trim_stage.join(".arb-staging-owner"), "trim").unwrap();
+    catalog
+        .track_staging("trim", &external.join("export"))
+        .unwrap();
+    let report = catalog.recover_on_startup("2026-01-01T00:00:01Z").unwrap();
+    assert_eq!(report.removed_staging_dirs.len(), 2);
+    assert!(
+        report
+            .removed_staging_dirs
+            .contains(&external.join(".staging-owned"))
+    );
+    assert!(report.removed_staging_dirs.contains(&trim_stage));
+    assert!(!trim_stage.exists());
+    assert!(external.join(".staging-other").is_dir());
+    assert!(external.join(".staging-finished/manifest.json").is_file());
+}
+
+#[test]
 fn p1_unmarked_staging_survives_recovery() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().join("bundles");

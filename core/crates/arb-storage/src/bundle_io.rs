@@ -610,6 +610,9 @@ impl V2BundleWriter {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|source| StorageError::json("serialize_manifest_v2", source))?;
         staging.write_file_synced(MANIFEST_V2_FILE, &manifest_bytes)?;
+        let marker = staging.staging_path().join(STAGING_OWNER);
+        fs::remove_file(&marker)
+            .map_err(|e| StorageError::io("remove_staging_owner", &marker, e))?;
 
         staging.commit()?;
         Ok(manifest)
@@ -646,9 +649,23 @@ pub fn remove_stale_staging_sibling(final_dir: &Path, job_id: &str) -> Result<bo
         && fs::symlink_metadata(&marker_path)
             .is_ok_and(|m| m.is_file() && Some(m.len()) == u64::try_from(job_id.len()).ok())
         && fs::read(&marker_path).is_ok_and(|v| v == job_id.as_bytes());
-    if !owned || [arb_os::fs::COMMIT_MARKER_FILE, MANIFEST_V2_FILE, "replay.json", "session.json"].iter()
-        .any(|file| !matches!(fs::symlink_metadata(stage.join(file)), Err(e) if e.kind() == io::ErrorKind::NotFound)) {
-        let _ = writeln!(io::stderr(), "未確定の所有情報または完成済みのため保持しました: {}", stage.display());
+    let completed = [
+        arb_os::fs::COMMIT_MARKER_FILE,
+        MANIFEST_V2_FILE,
+        "replay.json",
+        "session.json",
+    ]
+    .iter()
+    .any(|name| match fs::symlink_metadata(stage.join(name)) {
+        Ok(_) => true,
+        Err(e) => e.kind() != io::ErrorKind::NotFound,
+    });
+    if !owned || completed {
+        let _ = writeln!(
+            io::stderr(),
+            "所有情報が不明または完成済みのため保持しました ({})",
+            stage.display()
+        );
         return Ok(false);
     }
     fs::remove_dir_all(&stage).map_err(|e| StorageError::io("remove_staging_dir", &stage, e))?;

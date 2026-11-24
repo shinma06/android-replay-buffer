@@ -908,6 +908,9 @@ impl DaemonState {
             .unwrap_or(policy.drain_timeout_ms)
             .min(5_000);
         let limits = SelectionPolicy::default();
+        policy.unanchored_ingest_margin_ns = policy
+            .unanchored_ingest_margin_ns
+            .min(limits.unanchored_ingest_margin_ns);
         policy.max_unanchored_records = policy
             .max_unanchored_records
             .min(limits.max_unanchored_records);
@@ -1051,7 +1054,7 @@ impl DaemonState {
                 if cap.session_generation() != generation || !cap.is_connected() {
                     return Ok(TailCompleteness::MayBeIncomplete);
                 }
-                cap.latest_heartbeat_boottime_ns()
+                cap.drain_watermark_ns()
             };
             let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             match evaluate_stream_drain(trigger_boottime_ns, latest_hb, elapsed_ms, policy) {

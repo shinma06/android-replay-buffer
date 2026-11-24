@@ -1664,8 +1664,7 @@ def build_stub_plugin(tmp: Path, slugs: Sequence[str], *, with_licenses: bool = 
 
 
 def run_static(tmp: Path, bundle_zip: Path, plugin_zip: Path | None, scope: str, arch: str) -> Report:
-    work = tmp / f"static-{bundle_zip.stem}-{time.monotonic_ns()}"
-    work.mkdir(parents=True)
+    work = Path(tempfile.mkdtemp(prefix=f"static-{bundle_zip.stem}-", dir=tmp))
     ctx = {"bundle_zip": bundle_zip, "plugin_zip": plugin_zip, "plugin_scope": scope, "bundle_arch": arch, "work_dir": work, "extract_dir": work / "extract"}
     report = Report({"platform": "selftest"}, quiet=True)
     section_bundle_integrity(report, ctx)

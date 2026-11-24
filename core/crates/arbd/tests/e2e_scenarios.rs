@@ -1877,7 +1877,9 @@ fn r3_m2_selective_window_pinning_leaves_older_chunks_evictable() {
     fs::write(&blocked_file, b"file").expect("create blocking file");
     let failed = client.call(
         "save.trigger",
-        &json!({ "duration_sec": 10, "dest_dir": blocked_file }),
+        &json!({ "duration_sec": 10, "dest_dir": blocked_file,
+            "selection_policy": { "unanchored_ingest_margin_ns": u64::MAX, "max_unanchored_records": 100, "max_unanchored_bytes": 1000, "drain_timeout_ms": 0 }
+        }),
     );
     assert_eq!(
         failed["job"]["state"], "failed_retryable",
