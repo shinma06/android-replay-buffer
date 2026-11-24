@@ -22,10 +22,12 @@ arb-os = { path = "crates/arb-os" }
 arb-storage = { path = "crates/arb-storage" }
 arb-media = { path = "crates/arb-media" }
 arb-adb = { path = "crates/arb-adb" }
+stateright = { version = "0.31", default-features = false }
 
 # BeautifulRust strict workspace lints (vendored from morganlinton/BeautifulRust).
 # CI/local gate enforces `-D warnings` via `core/scripts/verify.sh`.
 [workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 unsafe_op_in_unsafe_fn = "warn"
 missing_debug_implementations = "warn"
 missing_docs = "warn"
