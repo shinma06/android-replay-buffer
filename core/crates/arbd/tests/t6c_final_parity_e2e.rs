@@ -358,7 +358,7 @@ fn t6c_logs_only_capture_foreground_app_logs_and_hello_build_id() {
         "logs_only bundle must have no video.mp4"
     );
 
-    // 5. Verify foreground + crashed per-app extraction (`app-logs/<package>.jsonl`) and ZERO GMS/SystemUI noise.
+    // 5. Verify foreground + crashed per-app extraction (`app-logs/<package>.log`) and ZERO GMS/SystemUI noise.
     let app_log_pkgs: Vec<&str> = manifest
         .app_logs
         .iter()
@@ -366,26 +366,38 @@ fn t6c_logs_only_capture_foreground_app_logs_and_hello_build_id() {
         .collect();
     assert_eq!(app_log_pkgs, vec!["com.example.shop", "com.example.worker"]);
     for entry in &manifest.app_logs {
+        assert!(
+            std::path::Path::new(&entry.relative_path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("log")),
+            "per-app log sidecar must use human-readable .log extension: {}",
+            entry.relative_path
+        );
         let on_disk = bundle_path.join(&entry.relative_path);
         assert!(
             on_disk.is_file(),
             "extracted file must exist: {}",
             on_disk.display()
         );
-        let actual_sha = sha256_hex(&fs::read(&on_disk).expect("read app log"));
+        let raw_bytes = fs::read(&on_disk).expect("read app log");
+        let actual_sha = sha256_hex(&raw_bytes);
         assert_eq!(
             actual_sha, entry.sha256,
             "app-log SHA-256 must match manifest"
         );
     }
     assert!(
+        bundle_path.join("logcat.log").is_file(),
+        "human-readable logcat.log must be written alongside timeline.sqlite"
+    );
+    assert!(
         !bundle_path
-            .join("app-logs/com.google.android.gms.jsonl")
+            .join("app-logs/com.google.android.gms.log")
             .exists()
     );
     assert!(
         !bundle_path
-            .join("app-logs/com.android.systemui.jsonl")
+            .join("app-logs/com.android.systemui.log")
             .exists()
     );
 

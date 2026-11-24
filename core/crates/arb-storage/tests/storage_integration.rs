@@ -144,6 +144,10 @@ fn sample_logs() -> Vec<LogRecord> {
     ]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "integration test bundle draft fixture constructs all fields explicitly"
+)]
 fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
     V2BundleDraft {
         bundle_kind: arb_core::bundle::BundleKind::Full,
@@ -192,6 +196,7 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
         },
         video_mp4: Some(MediaPayload::Bytes(video_bytes)),
         audio_m4a: None,
+        share_mp4: None,
         frames: sample_frames(),
         discontinuities: vec![DiscontinuityEvent {
             kind: DiscontinuityKind::DeviceSleep,
@@ -1873,4 +1878,88 @@ fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
         ),
         "unparsable now_utc is rejected"
     );
+}
+
+#[test]
+fn t6i_bundle_writer_emits_human_readable_sidecars_and_share_mp4_with_sha256_integrity() {
+    use arb_storage::bundle_io::{
+        EVENTS_JSONL_FILE, LOGCAT_LOG_FILE, SHARE_TAPS_MP4_FILE, ShareMp4Sidecar,
+        UNANCHORED_LOG_FILE,
+    };
+
+    let tmp = TempDir::new().expect("temp dir");
+    let bundle_dir = tmp.path().join("t6i-sidecars-full");
+    let mut draft = build_draft("01JT6ISIDECAR0000000000001", b"fake-mp4-video".to_vec());
+    draft.share_mp4 = Some(ShareMp4Sidecar {
+        file_name: SHARE_TAPS_MP4_FILE.to_owned(),
+        payload: MediaPayload::Bytes(b"fake-share-taps-mp4".to_vec()),
+    });
+
+    V2BundleWriter::write(&bundle_dir, "job-t6i-sidecars", &draft).expect("write bundle");
+    let reader = V2BundleReader::open(&bundle_dir).expect("open bundle");
+    reader
+        .verify_integrity()
+        .expect("all sidecars and share-taps.mp4 must pass SHA-256 verification");
+
+    let logcat_text = fs::read_to_string(bundle_dir.join(LOGCAT_LOG_FILE)).expect("logcat.log");
+    assert!(
+        logcat_text.contains("Activity") && logcat_text.contains("main timeline log"),
+        "logcat.log must contain human-readable main log line: {logcat_text}"
+    );
+    let unanchored_text =
+        fs::read_to_string(bundle_dir.join(UNANCHORED_LOG_FILE)).expect("unanchored.log");
+    assert!(
+        unanchored_text.contains("quarantined unanchored log"),
+        "unanchored.log must contain unanchored log line: {unanchored_text}"
+    );
+    let events_text = fs::read_to_string(bundle_dir.join(EVENTS_JSONL_FILE)).expect("events.jsonl");
+    assert!(
+        events_text.contains("\"kind\":\"tap\"")
+            && events_text.contains("\"kind\":\"discontinuity\""),
+        "events.jsonl must record tap & discontinuity entries: {events_text}"
+    );
+    assert_eq!(
+        fs::read(bundle_dir.join(SHARE_TAPS_MP4_FILE)).expect("share-taps.mp4"),
+        b"fake-share-taps-mp4",
+        "share-taps.mp4 sidecar must be committed atomically"
+    );
+
+    // When there are zero unanchored logs, unanchored.log MUST NOT be emitted (zero empty clutter).
+    let clean_dir = tmp.path().join("t6i-sidecars-no-unanchored");
+    let mut clean_draft = build_draft("01JT6ISIDECAR0000000000002", b"fake-mp4-video-2".to_vec());
+    clean_draft.logs.retain(|r| r.bucket == RecordBucket::Main);
+    clean_draft.unanchored_summary = UnanchoredSummary {
+        included_count: 0,
+        truncated_count: 0,
+    };
+    V2BundleWriter::write(&clean_dir, "job-t6i-clean", &clean_draft).expect("write clean bundle");
+    assert!(
+        clean_dir.join(LOGCAT_LOG_FILE).is_file(),
+        "logcat.log must exist"
+    );
+    assert!(
+        !clean_dir.join(UNANCHORED_LOG_FILE).exists(),
+        "unanchored.log must NOT be created when unanchored logs are empty"
+    );
+}
+
+#[test]
+fn empty_timeline_has_readable_sidecars_but_no_unanchored_log() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("bundle");
+    let mut draft = build_draft("empty", vec![]);
+    draft.logs.clear();
+    draft.taps.clear();
+    draft.discontinuities.clear();
+    let manifest = V2BundleWriter::write(&dir, "job", &draft).unwrap();
+    for name in ["events.jsonl", "logcat.log"] {
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|f| f.path == name && f.bytes == 0)
+        );
+        assert_eq!(fs::metadata(dir.join(name)).unwrap().len(), 0);
+    }
+    assert!(!dir.join("unanchored.log").exists());
 }

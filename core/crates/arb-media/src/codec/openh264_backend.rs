@@ -13,7 +13,7 @@ use openh264::encoder::{
 use openh264::formats::{YUVSlices, YUVSource as _};
 
 use crate::codec::{
-    DecodedFrame, EncodeParams, EncodedGop, EncodedSample, PixelFormat, RgbImage,
+    DecodedFrame, EncodeParams, EncodedGop, EncodedSample, MutableYuvFrame, PixelFormat, RgbImage,
     VideoCodecBackend, convert_from_yuv420p, copy_plane_rows, fit_thumbnail_dimensions,
     split_yuv420p_planes, yuv420p_to_thumb_rgb24,
 };
@@ -187,11 +187,23 @@ fn decode_range_yuv420p(
     gop_start: u64,
     end_inclusive: u64,
 ) -> Result<Vec<DecodedYuvFrame>, MediaError> {
+    let mut frames = Vec::new();
+    visit_range_yuv420p(track, gop_start, end_inclusive, |frame| {
+        frames.push(frame);
+        Ok(())
+    })?;
+    Ok(frames)
+}
+
+fn visit_range_yuv420p(
+    track: &Mp4VideoTrack,
+    gop_start: u64,
+    end_inclusive: u64,
+    mut visit: impl FnMut(DecodedYuvFrame) -> Result<(), MediaError>,
+) -> Result<(), MediaError> {
     let mut dec = make_decoder(Flush::NoFlush)?;
     let mut raw = Vec::new();
     let mut annexb = Vec::new();
-    let capacity = usize::try_from(end_inclusive.saturating_sub(gop_start) + 1).unwrap_or(0);
-    let mut decoded_frames = Vec::with_capacity(capacity);
     let mut emitted_idx = gop_start;
 
     for idx in gop_start..=end_inclusive {
@@ -210,12 +222,12 @@ fn decode_range_yuv420p(
             .map_err(|err| MediaError::Codec(format!("openh264 decode frame {idx}: {err:?}")))?;
         if let Some(yuv) = decoded {
             let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
-            decoded_frames.push(DecodedYuvFrame {
+            visit(DecodedYuvFrame {
                 frame_index: emitted_idx,
                 width,
                 height,
                 yuv420p,
-            });
+            })?;
             emitted_idx += 1;
         }
     }
@@ -226,16 +238,16 @@ fn decode_range_yuv420p(
         .map_err(|err| MediaError::Codec(format!("openh264 flush_remaining: {err:?}")))?;
     for yuv in remaining {
         let (width, height, yuv420p) = pack_decoded_yuv420p(&yuv)?;
-        decoded_frames.push(DecodedYuvFrame {
+        visit(DecodedYuvFrame {
             frame_index: emitted_idx,
             width,
             height,
             yuv420p,
-        });
+        })?;
         emitted_idx += 1;
     }
 
-    Ok(decoded_frames)
+    Ok(())
 }
 
 fn decode_keyframe_thumb_chunk(
@@ -435,6 +447,31 @@ impl VideoCodecBackend for OpenH264Backend {
         end_frame_exclusive: u64,
         params: EncodeParams,
     ) -> Result<EncodedGop, MediaError> {
+        self.reencode_frame_range_with_overlay(
+            track,
+            start_frame,
+            end_frame_exclusive,
+            params,
+            u64::MAX,
+            &|_| false,
+            &mut |_, _| {},
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "streaming frame-by-frame decode, overlay paint, and H.264 re-encode loop"
+    )]
+    fn reencode_frame_range_with_overlay(
+        &self,
+        track: &Mp4VideoTrack,
+        start_frame: u64,
+        end_frame_exclusive: u64,
+        params: EncodeParams,
+        keyframe_interval: u64,
+        has_overlay: &dyn Fn(u64) -> bool,
+        apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
+    ) -> Result<EncodedGop, MediaError> {
         let frame_count = track.frame_count();
         if start_frame >= end_frame_exclusive || end_frame_exclusive > frame_count {
             return Err(MediaError::InvalidFrameRange {
@@ -443,32 +480,55 @@ impl VideoCodecBackend for OpenH264Backend {
                 frame_count,
             });
         }
-
-        let gop_start = track.decodable_gop_start(start_frame)?;
+        let interval = keyframe_interval.max(1);
         let end_inclusive = end_frame_exclusive - 1;
-        let decoded = decode_range_yuv420p(track, gop_start, end_inclusive)?;
-        let decoded_frames = u64::try_from(decoded.len()).unwrap_or(0);
+        let expected_encoded = usize::try_from(end_frame_exclusive - start_frame).unwrap_or(0);
 
         let mut enc = make_encoder(params)?;
         let mut seq_param_set: Option<Vec<u8>> = None;
         let mut pic_param_set: Option<Vec<u8>> = None;
-        let expected_encoded = usize::try_from(end_frame_exclusive - start_frame).unwrap_or(0);
         let mut samples = Vec::with_capacity(expected_encoded);
         let mut bs_buf = Vec::new();
+        let mut decoded_frames = 0u64;
 
-        for frame in decoded {
+        let gop_start = track.decodable_gop_start(start_frame)?;
+        visit_range_yuv420p(track, gop_start, end_inclusive, |mut frame| {
+            decoded_frames += 1;
             let frame_idx = frame.frame_index;
-            if frame_idx < start_frame || frame_idx >= end_frame_exclusive {
-                continue;
+            if frame_idx < start_frame {
+                return Ok(());
             }
             let width = usize::try_from(frame.width)
                 .map_err(|_| MediaError::Codec("frame width exceeds usize".to_owned()))?;
             let height = usize::try_from(frame.height)
                 .map_err(|_| MediaError::Codec("frame height exceeds usize".to_owned()))?;
             require_even_encode_dims(width, height)?;
-            let planes = split_yuv420p_planes(&frame.yuv420p, width, height)?;
 
-            if frame_idx == start_frame {
+            if has_overlay(frame_idx) {
+                let y_len = width.saturating_mul(height);
+                let cw = width.div_ceil(2);
+                let ch = height.div_ceil(2);
+                let uv_len = cw.saturating_mul(ch);
+                if frame.yuv420p.len() >= y_len + uv_len * 2 {
+                    let (y_slice, uv_rest) = frame.yuv420p.split_at_mut(y_len);
+                    let (u_slice, v_slice) = uv_rest.split_at_mut(uv_len);
+                    let mut yuv_view = MutableYuvFrame::Yuv420p {
+                        width,
+                        height,
+                        y: y_slice,
+                        u: u_slice,
+                        v: &mut v_slice[..uv_len],
+                        y_stride: width,
+                        u_stride: cw,
+                        v_stride: cw,
+                    };
+                    apply_overlay(frame_idx, &mut yuv_view);
+                }
+            }
+
+            let planes = split_yuv420p_planes(&frame.yuv420p, width, height)?;
+            let rel_idx = frame_idx.saturating_sub(start_frame);
+            if rel_idx % interval == 0 {
                 enc.force_intra_frame();
             }
 
@@ -478,7 +538,9 @@ impl VideoCodecBackend for OpenH264Backend {
                 (width, width / 2, width / 2),
             );
             let bs = enc.encode(&slices).map_err(|err| {
-                MediaError::Codec(format!("openh264 re-encode frame {frame_idx}: {err:?}"))
+                MediaError::Codec(format!(
+                    "openh264 overlay encode frame {frame_idx}: {err:?}"
+                ))
             })?;
             if matches!(bs.frame_type(), FrameType::Skip) {
                 return Err(MediaError::Codec(format!(
@@ -488,7 +550,7 @@ impl VideoCodecBackend for OpenH264Backend {
             let is_idr = matches!(bs.frame_type(), FrameType::IDR | FrameType::I);
             if frame_idx == start_frame && !is_idr {
                 return Err(MediaError::Codec(format!(
-                    "first re-encoded frame {frame_idx} was not IDR: {:?}",
+                    "first overlay-encoded frame {frame_idx} was not IDR: {:?}",
                     bs.frame_type()
                 )));
             }
@@ -503,11 +565,12 @@ impl VideoCodecBackend for OpenH264Backend {
                 duration_ticks,
                 is_keyframe: is_idr,
             });
-        }
+            Ok(())
+        })?;
 
         if samples.len() != expected_encoded {
             return Err(MediaError::Codec(format!(
-                "openh264 re-encoded {} frames, expected {expected_encoded}",
+                "openh264 overlay-encoded {} frames, expected {expected_encoded}",
                 samples.len()
             )));
         }

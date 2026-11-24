@@ -272,6 +272,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
         },
         video_mp4: Some(MediaPayload::File(video_src)),
         audio_m4a: Some(MediaPayload::File(audio_src)),
+        share_mp4: None,
         frames,
         discontinuities: Vec::new(),
         logs,
@@ -622,7 +623,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "text metadata should not duplicate giant png_base64"
     );
 
-    // 9. `tools/call` -> `arb_export_trim` (`format: "share_mp4"`)
+    // 9. `tools/call` -> `arb_export_trim` (`format: "share_mp4"` with `burn_taps: true`)
     let mcp_mp4 = tmp.path().join("mcp-share.mp4");
     let trim_resp = send_mcp_request(
         &mut stdin,
@@ -638,6 +639,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                     "format": "share_mp4",
                     "in_frame_index": 2,
                     "out_frame_index": 12,
+                    "burn_taps": true,
                     "output_path": mcp_mp4
                 }
             }
@@ -664,6 +666,50 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let atoms = inspect_mp4_atoms(&mcp_mp4).expect("inspect mcp share.mp4");
     assert_eq!(atoms.edts_count, 0, "disk edts=0");
     assert_eq!(atoms.elst_count, 0, "disk elst=0");
+
+    // 9b. `tools/call` -> `arb_export_trim` (`format: "bundle"`, `include_share_mp4: true`, `burn_taps: true`)
+    let trim_bundle_resp = send_mcp_request(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "tools/call",
+            "params": {
+                "name": "arb_export_trim",
+                "arguments": {
+                    "bundle_id": bundle_id,
+                    "format": "bundle",
+                    "in_frame_index": 2,
+                    "out_frame_index": 12,
+                    "include_share_mp4": true,
+                    "trash_original": true,
+                    "burn_taps": true
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        trim_bundle_resp["result"]["isError"], false,
+        "arb_export_trim bundle ok: {trim_bundle_resp}"
+    );
+    let trim_bundle_json: Value = serde_json::from_str(
+        trim_bundle_resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("bundle text"),
+    )
+    .expect("parse trim bundle json");
+    assert_eq!(trim_bundle_json["burn_taps_applied"], true);
+    assert_eq!(trim_bundle_json["original_trashed"], true);
+    let share_sidecar = PathBuf::from(
+        trim_bundle_json["share_mp4_path"]
+            .as_str()
+            .expect("share_mp4_path"),
+    );
+    assert!(
+        share_sidecar.is_file(),
+        "trimmed bundle share-taps.mp4 must exist"
+    );
 
     // 10. `tools/call` -> `arb_screenshot` (returns MCP `image/png` + text metadata!)
     let shot_out = tmp.path().join("mcp-shot.png");

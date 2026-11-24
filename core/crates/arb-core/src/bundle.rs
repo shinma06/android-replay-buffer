@@ -27,7 +27,7 @@ pub enum BundleKind {
 pub struct AppLogSummary {
     /// Android application package name (e.g., `com.example.app`).
     pub package_name: String,
-    /// Bundle-relative JSONL file path (e.g., `app-logs/com.example.app.jsonl`).
+    /// Bundle-relative human-readable logcat file path (e.g., `app-logs/com.example.app.log`).
     pub relative_path: String,
     /// Number of log records written into `relative_path`.
     pub line_count: u64,
@@ -878,13 +878,13 @@ mod tests {
         let mut m = valid_manifest();
         let sha = "b".repeat(64);
         m.files.push(FileDigest {
-            path: "app-logs/com.example.app.jsonl".into(),
+            path: "app-logs/com.example.app.log".into(),
             bytes: 128,
             sha256: sha.clone(),
         });
         m.app_logs.push(AppLogSummary {
             package_name: "com.example.app".into(),
-            relative_path: "app-logs/com.example.app.jsonl".into(),
+            relative_path: "app-logs/com.example.app.log".into(),
             line_count: 4,
             crash_count: 1,
             sha256: sha,
@@ -894,7 +894,7 @@ mod tests {
         let mut bad_missing = valid_manifest();
         bad_missing.app_logs.push(AppLogSummary {
             package_name: "com.example.app".into(),
-            relative_path: "app-logs/com.example.app.jsonl".into(),
+            relative_path: "app-logs/com.example.app.log".into(),
             line_count: 1,
             crash_count: 0,
             sha256: "c".repeat(64),
@@ -910,7 +910,7 @@ mod tests {
         let mut bad_path = valid_manifest();
         bad_path.app_logs.push(AppLogSummary {
             package_name: "com.example.app".into(),
-            relative_path: "../escape.jsonl".into(),
+            relative_path: "../escape.log".into(),
             line_count: 1,
             crash_count: 0,
             sha256: "d".repeat(64),
@@ -932,12 +932,12 @@ mod tests {
         for (pkg, path, sha) in [
             (
                 "com.Example.app",
-                "app-logs/com.Example.app.jsonl",
+                "app-logs/com.Example.app.log",
                 "e".repeat(64),
             ),
             (
                 "com.example.app",
-                "app-logs/com.example.app.jsonl",
+                "app-logs/com.example.app.log",
                 "f".repeat(64),
             ),
         ] {

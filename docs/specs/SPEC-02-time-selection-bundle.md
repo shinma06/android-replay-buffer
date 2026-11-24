@@ -51,3 +51,9 @@ satisfies:
 - `LegacyBundleReader` は元フォルダを一切変更せずに以下を読み取り、共通の `TimelineView` へ投影（および必要に応じ v2 への非破壊トリム書き出し）する:
   - **Schema 4（`develop` 系統）**: `replay.json`（`schema: 4`）、`video.mp4`、`video-frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`、任意の `touches.jsonl`、および **ログ単体保存（`-logs`）**。
   - **Schema 3（`main` / `v0.2.0` 系統）**: `session.json`、`video-001.mp4`、`frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`。
+
+## 4. トリムバンドルの共有用ファイル
+
+`export.trim` は明示された出力先、設定済みの保存先、管理バンドルディレクトリの順に保存先を選ぶ。`logcat.log` と `events.jsonl` は選択区間が空でも作成し、元の記録からアプリを特定できるログは `app-logs/<package>.log` にも出力する。`unanchored.log` は対象行がある場合に作成する。すべてのサイドカーはマニフェストに SHA-256 を記録する。
+
+`include_share_mp4` は音声付きの共有動画（音声欠落時は映像のみ）を追加する。`burn_taps` が有効な場合は `share-taps.mp4` にタップ・スワイプを描画する。元のバンドルは読み取り専用として扱い、`trash_original` は書き出し成功後に管理対象の元バンドルを論理ゴミ箱へ移す。旧形式の元バンドルにこの指定を行うと書き出し前にエラーを返す。

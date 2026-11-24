@@ -148,8 +148,7 @@ class ArbBundleFileEditor(
             state = state?.let { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
         },
         onRevealInFinder = { path ->
-            runCatching { RevealFileAction.openFile(Path.of(path)) }
-                .onFailure { logger.warn("Failed to reveal $path", it) }
+            ArbNotifications.openPathInFileManager(path)
         },
         onOpenExportedBundle = { exportedIdOrPath, title ->
             SwingUtilities.invokeLater {
@@ -193,6 +192,17 @@ class ArbBundleFileEditor(
             }
         },
         onAppPackageFilterChanged = { packageName -> performAppPackageFilter(packageName) },
+        initialBurnTapsOnExport = ArbLocalSettingsState.getInstanceOrNull()?.burnTapsOnExport ?: true,
+        onBurnTapsToggled = { enabled ->
+            ArbLocalSettingsState.getInstanceOrNull()?.burnTapsOnExport = enabled
+        },
+        onCloseTab = {
+            SwingUtilities.invokeLater {
+                if (!project.isDisposed) {
+                    FileEditorManager.getInstance(project).closeFile(backingFile)
+                }
+            }
+        },
     )
 
     /** A decoded SHM frame awaiting EDT publication (bitmap already converted off the EDT). */
@@ -609,91 +619,58 @@ class ArbBundleFileEditor(
         format: StudioExportFormat,
     ) {
         val current = state ?: return
-        val isFullRange = current.frameCount > 0L &&
-            inFrameIndex <= 0L &&
-            outFrameIndex >= current.frameCount - 1L
-        val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy &&
-            !(format == StudioExportFormat.SHARE_MP4 && isFullRange)
+        val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy
+        val includeShareMp4 = format == StudioExportFormat.SHARE_MP4
+        val burnTapsEnabled = includeShareMp4 && studioController.burnTapsOnExport
+        val progressText = if (burnTapsEnabled) "焼き込み書き出し中..." else "書き出し中..."
+        if (disposed || studioController.isExporting) return
+        studioController.setExporting(true, progressText)
 
         submitWork {
             try {
-                if (format == StudioExportFormat.SHARE_MP4) {
-                    val shareResp = daemonService.withClient {
-                        it.exportShareMp4OrNull(
-                            ExportShareMp4Params(
-                                bundleIdOrPath = current.bundleId,
-                                inFrameIndex = if (isFullRange) null else inFrameIndex,
-                                outFrameIndex = if (isFullRange) null else outFrameIndex,
-                                trashOriginal = shouldTrashOriginal,
-                                holderPid = ProcessHandle.current().pid(),
-                            ),
-                        )
-                    }
-                    if (shareResp != null) {
-                        trimCloseState.markExported(inFrameIndex, outFrameIndex)
-                        val mp4Name = runCatching { Path.of(shareResp.shareMp4Path).fileName.toString() }
-                            .getOrDefault(shareResp.shareMp4Path)
-                        val trackLabel = if (shareResp.audioIncluded) "映像+音声" else "映像のみ"
-                        val trimmedNote = shareResp.trimmedBundleId?.let { " · バンドル: $it" }.orEmpty()
-                        val trashedNote = if (shareResp.originalTrashed) {
-                            " · 元のバンドルをゴミ箱へ移動しました（復元可）"
-                        } else {
-                            ""
-                        }
-                        val warningNote = shareResp.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
-                        val summaryText = "共有用 MP4 を書き出しました: $mp4Name (${shareResp.videoFrameCount}f · $trackLabel)$trimmedNote$trashedNote$warningNote"
-                        val completion = ExportCompletionInfo(
-                            summaryText = summaryText,
-                            outputPath = shareResp.shareMp4Path,
-                            bundleId = shareResp.trimmedBundleId,
-                            isTrimBundle = !shareResp.trimmedBundleId.isNullOrBlank(),
-                        )
-                        val updated = (state ?: current).copy(
-                            exportCompletion = completion,
-                            lastActionMessage = summaryText,
-                        )
-                        state = updated
-                        SwingUtilities.invokeLater {
-                            studioController.updateState {
-                                it.copy(exportCompletion = completion, lastActionMessage = summaryText)
-                            }
-                        }
-                        return@submitWork
-                    }
-                }
-
+                // Every trim/share export produces a complete Trimmed Bundle Directory in the
+                // user's configured output directory (with video.mp4, audio.m4a, logcat.log,
+                // app-logs/<pkg>.log, events.jsonl, timeline.sqlite, manifest.json, and optional
+                // share.mp4 / share-taps.mp4) and registers immediately under `トリム済み`.
                 val res = daemonService.withClient {
                     it.exportTrim(
                         ExportTrimParams(
                             bundleIdOrPath = current.bundleId,
                             inFrameIndex = inFrameIndex,
                             outFrameIndex = outFrameIndex,
+                            burnTaps = burnTapsEnabled,
+                            includeShareMp4 = includeShareMp4,
+                            trashOriginal = shouldTrashOriginal,
                             holderPid = ProcessHandle.current().pid(),
                         ),
                     )
                 }
                 trimCloseState.markExported(inFrameIndex, outFrameIndex)
+                daemonService.notifyCatalogChanged()
 
-                val trashedNote = if (shouldTrashOriginal && !current.isLegacy) {
-                    val failure = runCatching {
-                        daemonService.withClient { it.bundleTrash(current.bundleId) }
-                    }.exceptionOrNull()
-                    if (failure == null) {
-                        " · 元のバンドルをゴミ箱へ移動しました（復元可）"
-                    } else {
-                        logger.warn("ARB bundle.trash after export failed", failure)
-                        " · 元のバンドルをゴミ箱へ移動できませんでした: ${failure.message}"
-                    }
+                val shareName = res.shareMp4Path
+                    ?.let { p -> runCatching { Path.of(p).fileName?.toString() }.getOrNull() }
+                val shareNote = when {
+                    shareName != null && res.burnTapsApplied -> " · $shareName (タップ焼き込み)"
+                    shareName != null -> " · $shareName"
+                    else -> ""
+                }
+                val trashedBundleId = if (res.originalTrashed) current.bundleId else null
+                val trashedNote = if (res.originalTrashed) {
+                    " · 元バンドルをゴミ箱へ移動しました（復元可）"
                 } else {
                     ""
                 }
-
-                val summaryText = "${ArbFormatters.EXPORT_TOAST_TITLE}: ${res.bundleId} (${res.trimReport.outputFrameCount}f)$trashedNote"
+                val warningNote = res.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
+                val summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)$shareNote$trashedNote$warningNote"
                 val completion = ExportCompletionInfo(
                     summaryText = summaryText,
                     outputPath = res.bundlePath,
                     bundleId = res.bundleId,
                     isTrimBundle = true,
+                    shareMp4Path = res.shareMp4Path,
+                    originalTrashedBundleId = trashedBundleId,
+                    burnTapsApplied = res.burnTapsApplied,
                 )
                 val updated = (state ?: current).copy(
                     exportCompletion = completion,
@@ -701,13 +678,30 @@ class ArbBundleFileEditor(
                 )
                 state = updated
                 SwingUtilities.invokeLater {
-                    studioController.updateState {
-                        it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                    if (!disposed) {
+                        studioController.setExporting(false)
+                        studioController.updateState {
+                            it.copy(exportCompletion = completion, lastActionMessage = summaryText)
+                        }
                     }
                 }
+                ArbNotifications.notifyExportCompleted(
+                    project = project,
+                    daemonService = daemonService,
+                    summaryText = summaryText,
+                    outputPath = res.bundlePath,
+                    trimmedBundleId = res.bundleId,
+                    originalTrashedBundleId = trashedBundleId,
+                )
             } catch (t: Throwable) {
                 logger.warn("ARB export failed (format=$format)", t)
-                SwingUtilities.invokeLater { studioController.showError("書き出しに失敗しました: ${t.message}") }
+                SwingUtilities.invokeLater {
+                    if (!disposed) {
+                        studioController.setExporting(false)
+                        studioController.showError("書き出しに失敗しました: ${t.message}")
+                    }
+                }
+                ArbNotifications.notifyActionFailed(project, "書き出し", t.message)
             }
         }
     }
@@ -742,9 +736,17 @@ class ArbBundleFileEditor(
                         it.copy(exportCompletion = completion, lastActionMessage = summaryText)
                     }
                 }
+                ArbNotifications.notifyImageSaved(
+                    project = project,
+                    imagePath = res.outputPath,
+                    width = res.report.width,
+                    height = res.report.height,
+                    kindLabel = "フレーム画像",
+                )
             } catch (t: Throwable) {
                 logger.warn("ARB export.png failed", t)
                 SwingUtilities.invokeLater { studioController.showError("PNG 書き出しに失敗しました: ${t.message}") }
+                ArbNotifications.notifyActionFailed(project, "PNG 書き出し", t.message)
             }
         }
     }

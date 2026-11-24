@@ -13,17 +13,38 @@ import io.github.shinma06.arb.ipc.ArbdProcessManager
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.SystemHelloResponse
+import io.github.shinma06.arb.state.CaptureBarReducer
+import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.ui.toToolbarSnapshot
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
 import java.io.IOException
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Listener notified immediately when user settings (`config.update`) or custom `arbd` binary
- * settings change so Tool Windows and toolbar actions refresh without waiting for polling or restart.
+ * Snapshot of live daemon + device state used by Running Devices & Tools Menu toolbar actions
+ * so `update(AnActionEvent)` stays instant, non-blocking, and honest about enabled/tooltip state.
+ */
+data class ArbToolbarDaemonSnapshot(
+    val probed: Boolean = false,
+    val daemonConnected: Boolean = false,
+    val captureActive: Boolean = false,
+    val hasBufferedData: Boolean = false,
+    val hasOnlineDevice: Boolean = false,
+    val selectedDeviceSerial: String? = null,
+    val disabledDeviceHint: String? = null,
+)
+
+/**
+ * Listener notified immediately when user settings (`config.update`), custom `arbd` binary
+ * settings, or saved/trimmed/trashed bundles change so Tool Windows and toolbar actions refresh
+ * without waiting for polling or restart.
  */
 interface ArbDaemonStateListener {
     fun onConfigUpdated(config: ArbConfig) {}
     fun onDaemonConnectionChanged() {}
+    fun onCatalogChanged() {}
 }
 
 /**
@@ -62,6 +83,45 @@ open class ArbdDaemonService internal constructor(
     @Volatile
     var cachedCaptureActive: Boolean = false
         private set
+
+    @Volatile
+    var cachedToolbarSnapshot: ArbToolbarDaemonSnapshot = ArbToolbarDaemonSnapshot()
+        private set
+
+    private val toolbarProbeRunning = AtomicBoolean()
+    @Volatile private var lastToolbarProbeNanos: Long? = null
+    @Volatile private var disposed = false
+
+    fun toolbarSnapshot(): ArbToolbarDaemonSnapshot {
+        val now = System.nanoTime()
+        val stale = lastToolbarProbeNanos?.let { now - it >= TimeUnit.SECONDS.toNanos(2) } ?: true
+        if (!disposed && stale && toolbarProbeRunning.compareAndSet(false, true)) {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    if (!disposed) refreshToolbarSnapshot()
+                } finally {
+                    lastToolbarProbeNanos = System.nanoTime()
+                    toolbarProbeRunning.set(false)
+                }
+            }
+        }
+        return cachedToolbarSnapshot
+    }
+
+    internal fun refreshToolbarSnapshot() {
+        try {
+            withClient { client ->
+                val config = client.configGet().config
+                val status = client.systemStatus()
+                val devices = client.deviceList().devices
+                updateCachedConfig(config)
+                val state = CaptureBarReducer.fromStatus(CaptureBarState(), status, devices, config = config)
+                updateCachedToolbarSnapshot(state.toToolbarSnapshot())
+            }
+        } catch (_: Exception) {
+            updateCachedToolbarSnapshot(ArbToolbarDaemonSnapshot(probed = true))
+        }
+    }
 
     fun addStateListener(listener: ArbDaemonStateListener) {
         listeners.addIfAbsent(listener)
@@ -134,10 +194,37 @@ open class ArbdDaemonService internal constructor(
     }
 
     fun updateCachedCaptureActive(active: Boolean) {
-        val changed = cachedCaptureActive != active
+        val changed = cachedCaptureActive != active || cachedToolbarSnapshot.captureActive != active
         cachedCaptureActive = active
+        cachedToolbarSnapshot = cachedToolbarSnapshot.copy(
+            probed = true,
+            daemonConnected = true,
+            captureActive = active,
+        )
         if (changed) {
             bumpActionToolbarRefresh()
+        }
+    }
+
+    fun updateCachedToolbarSnapshot(snapshot: ArbToolbarDaemonSnapshot) {
+        val changed = cachedToolbarSnapshot != snapshot || cachedCaptureActive != snapshot.captureActive
+        cachedCaptureActive = snapshot.captureActive
+        lastToolbarProbeNanos = System.nanoTime()
+        cachedToolbarSnapshot = snapshot
+        if (changed) {
+            bumpActionToolbarRefresh()
+        }
+    }
+
+    /**
+     * Broadcasts bundle creation/trim/trash/restore immediately so the ARB Tool Window's
+     * library (`すべて` / `トリム済み` / `ゴミ箱`) refreshes without waiting for the 2s poll.
+     */
+    fun notifyCatalogChanged() {
+        bumpActionToolbarRefresh()
+        for (listener in listeners) {
+            runCatching { listener.onCatalogChanged() }
+                .onFailure { logger.warn("ARB catalog listener failed", it) }
         }
     }
 
@@ -158,6 +245,7 @@ open class ArbdDaemonService internal constructor(
 
     @Throws(IOException::class)
     open fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {
+        check(!disposed)
         val active = ensureConnectedLocked()
         try {
             block(active)
@@ -200,6 +288,7 @@ open class ArbdDaemonService internal constructor(
     }
 
     override fun dispose() {
+        disposed = true
         disconnect()
     }
 

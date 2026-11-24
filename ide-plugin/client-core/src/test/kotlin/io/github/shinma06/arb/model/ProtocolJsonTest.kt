@@ -156,4 +156,59 @@ class ProtocolJsonTest {
         assertEquals(AudioCaptureState.UNKNOWN, legacyParsed.effectiveAudioState)
         assertEquals(null, legacyParsed.audioReason)
     }
+
+    @Test
+    fun `ExportTrimParams ExportTrimResponse and ExportShareMp4Params round-trip burn_taps fields`() {
+        val trimReq = ExportTrimParams(
+            bundleIdOrPath = "b-source",
+            inFrameIndex = 10,
+            outFrameIndex = 90,
+            destDir = "/tmp/out",
+            holderPid = 42,
+            burnTaps = true,
+            includeShareMp4 = true,
+            trashOriginal = true,
+        )
+        val trimReqJson = gson.toJson(trimReq)
+        assertTrue(trimReqJson.contains("\"burn_taps\":true"))
+        assertTrue(trimReqJson.contains("\"include_share_mp4\":true"))
+        assertTrue(trimReqJson.contains("\"trash_original\":true"))
+
+        val trimRespJson = """
+            {
+              "bundle_id": "trim-01",
+              "bundle_path": "/tmp/out/trim-01",
+              "trim_report": {
+                "in_frame_index": 10,
+                "out_frame_index": 90,
+                "output_frame_count": 81,
+                "head_decoded_frames": 10,
+                "reencoded_frames": 10,
+                "stream_copied_frames": 71,
+                "backend_name": "videotoolbox",
+                "edts_box_count": 0,
+                "elst_box_count": 0
+              },
+              "unanchored_summary": { "included_count": 0, "truncated_count": 0 },
+              "main_log_count": 12,
+              "unanchored_log_count": 0,
+              "main_tap_count": 3,
+              "unanchored_tap_count": 0,
+              "share_mp4_path": "/tmp/out/trim-01/share-taps.mp4",
+              "app_logs_count": 2,
+              "original_trashed": true,
+              "burn_taps_applied": true
+            }
+        """.trimIndent()
+        val parsed = gson.fromJson(trimRespJson, ExportTrimResponse::class.java)
+        assertEquals("/tmp/out/trim-01/share-taps.mp4", parsed.shareMp4Path)
+        assertEquals(2, parsed.appLogsCount)
+        assertEquals(true, parsed.originalTrashed)
+        assertEquals(true, parsed.burnTapsApplied)
+
+        val shareReqJson = gson.toJson(
+            ExportShareMp4Params(bundleIdOrPath = "b-source", burnTaps = true, trashOriginal = false),
+        )
+        assertTrue(shareReqJson.contains("\"burn_taps\":true"))
+    }
 }

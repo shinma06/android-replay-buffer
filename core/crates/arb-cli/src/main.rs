@@ -272,6 +272,9 @@ enum CommandSpec {
         in_frame: u64,
         out_frame: u64,
         dest: Option<PathBuf>,
+        burn_taps: bool,
+        include_share_mp4: bool,
+        trash_original: bool,
     },
     ShareMp4 {
         target: String,
@@ -279,6 +282,7 @@ enum CommandSpec {
         out_frame: Option<u64>,
         out: Option<PathBuf>,
         dest: Option<PathBuf>,
+        burn_taps: bool,
         trash_original: bool,
     },
     Png {
@@ -917,13 +921,16 @@ fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage(
-            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> [--dest <dir>]",
+            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> [--dest <dir>] [--include-share-mp4] [--burn-taps] [--trash-original]",
         )
     })?;
     let target = absolutize_bundle_target(raw)?;
     let mut in_frame = None;
     let mut out_frame = None;
     let mut dest = None;
+    let mut burn_taps = false;
+    let mut include_share_mp4 = false;
+    let mut trash_original = false;
     let mut i = 1_usize;
 
     while i < args.len() {
@@ -946,6 +953,19 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                 i += 2;
             }
+            "--burn-taps" => {
+                burn_taps = true;
+                include_share_mp4 = true;
+                i += 1;
+            }
+            "--include-share-mp4" => {
+                include_share_mp4 = true;
+                i += 1;
+            }
+            "--trash-original" => {
+                trash_original = true;
+                i += 1;
+            }
             other => return Err(CliError::usage(format!("unknown trim option `{other}`"))),
         }
     }
@@ -957,13 +977,16 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         in_frame,
         out_frame,
         dest,
+        burn_taps,
+        include_share_mp4,
+        trash_original,
     })
 }
 
 fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage(
-            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--trash-original]",
+            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--burn-taps] [--trash-original]",
         )
     })?;
     let target = absolutize_bundle_target(raw)?;
@@ -971,6 +994,7 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut out_frame = None;
     let mut out = None;
     let mut dest = None;
+    let mut burn_taps = false;
     let mut trash_original = false;
     let mut i = 1_usize;
 
@@ -998,6 +1022,10 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                 i += 2;
             }
+            "--burn-taps" => {
+                burn_taps = true;
+                i += 1;
+            }
             "--trash-original" => {
                 trash_original = true;
                 i += 1;
@@ -1022,6 +1050,7 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         out_frame,
         out,
         dest,
+        burn_taps,
         trash_original,
     })
 }
@@ -1183,6 +1212,10 @@ enum OutcomeCheck {
     SaveJob,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "centralized subcommand-to-JSON-RPC dispatch table"
+)]
 fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
     match cmd {
         CommandSpec::DaemonStop => ("system.shutdown", json!({}), "arbd shutdown requested"),
@@ -1262,11 +1295,20 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             in_frame,
             out_frame,
             dest,
+            burn_taps,
+            include_share_mp4,
+            trash_original,
         } => (
             "export.trim",
             json!({
-                "bundle_id_or_path": target, "in_frame_index": in_frame,
-                "out_frame_index": out_frame, "dest_dir": dest, "holder_pid": std::process::id(),
+                "bundle_id_or_path": target,
+                "in_frame_index": in_frame,
+                "out_frame_index": out_frame,
+                "dest_dir": dest,
+                "burn_taps": burn_taps,
+                "include_share_mp4": include_share_mp4,
+                "trash_original": trash_original,
+                "holder_pid": std::process::id(),
             }),
             "trim result",
         ),
@@ -1292,6 +1334,7 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         out_frame,
         out,
         dest,
+        burn_taps,
         trash_original,
     } = cmd
     else {
@@ -1305,6 +1348,7 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "out_frame_index": out_frame,
             "output_path": out,
             "dest_dir": dest,
+            "burn_taps": burn_taps,
             "trash_original": trash_original,
             "holder_pid": std::process::id(),
         }),
@@ -1619,8 +1663,8 @@ COMMANDS:\n  \
   bundles close <LEASE_ID>\n  \
   bundles trash <ID> | restore <ID> | gc\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
-  trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>]\n  \
-  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--trash-original]\n  \
+  trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
+  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
   mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n\n\
@@ -1697,8 +1741,37 @@ mod tests {
                 in_frame: 17,
                 out_frame: 49,
                 dest: Some(abs("/tmp/out")),
+                burn_taps: false,
+                include_share_mp4: false,
+                trash_original: false,
             },
             "trim command must match"
+        );
+
+        let (_, burn_trim) = parse_args(&vec_str(&[
+            "trim",
+            "bundle-1",
+            "--in-frame",
+            "1",
+            "--out-frame",
+            "10",
+            "--burn-taps",
+            "--include-share-mp4",
+            "--trash-original",
+        ]))
+        .expect("trim --burn-taps must parse");
+        assert_eq!(
+            burn_trim,
+            CommandSpec::Trim {
+                target: "bundle-1".to_owned(),
+                in_frame: 1,
+                out_frame: 10,
+                dest: None,
+                burn_taps: true,
+                include_share_mp4: true,
+                trash_original: true,
+            },
+            "trim burn-taps flags must match"
         );
     }
 
@@ -2069,9 +2142,26 @@ mod tests {
                 out_frame: Some(20),
                 out: Some(cwd.join("clips/out.mp4")),
                 dest: None,
+                burn_taps: false,
                 trash_original: true,
             },
             "share-mp4 command must match"
+        );
+
+        let (_, share_burn) = parse_args(&vec_str(&["share-mp4", "bundle-7", "--burn-taps"]))
+            .expect("share-mp4 burn");
+        assert_eq!(
+            share_burn,
+            CommandSpec::ShareMp4 {
+                target: "bundle-7".to_owned(),
+                in_frame: None,
+                out_frame: None,
+                out: None,
+                dest: None,
+                burn_taps: true,
+                trash_original: false,
+            },
+            "share-mp4 --burn-taps must parse"
         );
 
         let err = parse_args(&vec_str(&["share-mp4", "bundle-7", "--in-frame", "5"]))

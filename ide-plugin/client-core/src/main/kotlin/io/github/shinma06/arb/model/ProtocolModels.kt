@@ -887,6 +887,9 @@ data class ExportTrimParams(
     val outFrameIndex: Long,
     val destDir: String? = null,
     val holderPid: Long? = null,
+    val burnTaps: Boolean = false,
+    val includeShareMp4: Boolean = false,
+    val trashOriginal: Boolean = false,
 )
 
 data class TrimReport(
@@ -910,6 +913,10 @@ data class ExportTrimResponse(
     val unanchoredLogCount: Int,
     val mainTapCount: Int,
     val unanchoredTapCount: Int,
+    val shareMp4Path: String? = null,
+    val appLogsCount: Int = 0,
+    val originalTrashed: Boolean = false,
+    val burnTapsApplied: Boolean = false,
     val warning: String? = null,
 )
 
@@ -919,6 +926,7 @@ data class ExportShareMp4Params(
     val inFrameIndex: Long? = null,
     val outFrameIndex: Long? = null,
     val outputPath: String? = null,
+    val burnTaps: Boolean = false,
     val trashOriginal: Boolean = false,
     val destDir: String? = null,
     val holderPid: Long? = null,

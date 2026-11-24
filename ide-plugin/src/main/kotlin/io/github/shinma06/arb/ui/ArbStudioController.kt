@@ -98,6 +98,9 @@ class ArbStudioController(
     private val clipboardWriter: (String) -> Unit = ::copyPathToClipboard,
     /** Re-queries `timeline.query_logs(package = ...)` off the EDT (`null` = all apps). */
     private val onAppPackageFilterChanged: (packageName: String?) -> Unit = {},
+    initialBurnTapsOnExport: Boolean = true,
+    private val onBurnTapsToggled: (enabled: Boolean) -> Unit = {},
+    private val onCloseTab: () -> Unit = {},
 ) {
     var viewerState: TimelineViewerState? by mutableStateOf(null)
         private set
@@ -137,6 +140,16 @@ class ArbStudioController(
         private set
 
     var selectedExportFormat: StudioExportFormat by mutableStateOf(StudioExportFormat.SHARE_MP4)
+        private set
+
+    /** Whether Share MP4 export burns tap ripples & swipe trajectories into `share-taps.mp4`. */
+    var burnTapsOnExport: Boolean by mutableStateOf(initialBurnTapsOnExport)
+        private set
+
+    var isExporting: Boolean by mutableStateOf(false)
+        private set
+
+    var exportProgressLabel: String by mutableStateOf("書き出し中...")
         private set
 
     var errorMessage: String? by mutableStateOf(null)
@@ -202,7 +215,17 @@ class ArbStudioController(
         }
 
     val exportButtonLabel: String
-        get() = viewerState?.exportCtaLabel ?: ArbFormatters.EXPORT_FULL_LABEL
+        get() = if (isExporting) {
+            exportProgressLabel
+        } else {
+            viewerState?.exportCtaLabel ?: ArbFormatters.EXPORT_FULL_LABEL
+        }
+
+    val isExportButtonEnabled: Boolean
+        get() = hasVideo && !isExporting
+
+    val isBurnTapsVisible: Boolean
+        get() = selectedExportFormat == StudioExportFormat.SHARE_MP4
 
     val activeTapOverlays: List<ActiveTapOverlay>
         get() = viewerState?.activeTapsAtFrame().orEmpty()
@@ -501,7 +524,27 @@ class ArbStudioController(
         onTrashOriginalToggled(next.effectiveTrashOriginalAfterExport)
     }
 
+    fun toggleBurnTapsOnExport(enabled: Boolean) {
+        burnTapsOnExport = enabled
+        onBurnTapsToggled(enabled)
+    }
+
+    fun setExporting(
+        exporting: Boolean,
+        label: String = if (burnTapsOnExport) "焼き込み書き出し中..." else "書き出し中...",
+    ) {
+        isExporting = exporting
+        if (exporting) {
+            exportProgressLabel = label
+        }
+    }
+
+    fun closeStudioTab() {
+        onCloseTab()
+    }
+
     fun triggerExport() {
+        if (isExporting) return
         val s = viewerState ?: return
         val handler = onExportRequested
         if (handler != null) {
@@ -598,6 +641,7 @@ class ArbStudioController(
     companion object {
         const val APPROXIMATE_BADGE_TEXT: String = APPROXIMATE_PREVIEW_BADGE_TEXT
         const val ALL_APPS_LABEL: String = "全アプリ"
+        const val BURN_TAPS_TOGGLE_LABEL: String = "タップ・スワイプを動画に焼き込む"
 
         /**
          * Converts a decoded frame to a Compose [ImageBitmap] (a full pixel copy). Safe to call off

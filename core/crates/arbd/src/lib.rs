@@ -1241,12 +1241,23 @@ impl DaemonState {
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let dest_parent = match &parsed.dest_dir {
             Some(dest) => {
                 self.validate_output_location(dest, "dest_dir", Some(&path))?;
                 dest.clone()
             }
-            None => self.catalog.managed_bundles_root().to_path_buf(),
+            None => match user_cfg.output_dir_override {
+                Some(override_dir) => {
+                    self.validate_output_location(
+                        &override_dir,
+                        "output_dir_override",
+                        Some(&path),
+                    )?;
+                    override_dir
+                }
+                None => self.catalog.managed_bundles_root().to_path_buf(),
+            },
         };
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
         // R3 S9: exports run outside the media mutex `M` with their own codec backend.
@@ -1289,7 +1300,17 @@ impl DaemonState {
                 self.validate_output_location(dest, "dest_dir", Some(&path))?;
                 dest.clone()
             }
-            None => self.catalog.managed_bundles_root().to_path_buf(),
+            None => match user_cfg.output_dir_override.clone() {
+                Some(override_dir) => {
+                    self.validate_output_location(
+                        &override_dir,
+                        "output_dir_override",
+                        Some(&path),
+                    )?;
+                    override_dir
+                }
+                None => self.catalog.managed_bundles_root().to_path_buf(),
+            },
         };
 
         let share_mp4_path = if let Some(explicit) = &parsed.output_path {
@@ -1303,7 +1324,13 @@ impl DaemonState {
             } else {
                 self.paths.data_dir.join("exports")
             };
-            base_dir.join(format!("{}.mp4", next_id("share")))
+            let stem = next_id("share");
+            let file_name = if parsed.burn_taps {
+                format!("{stem}-taps.mp4")
+            } else {
+                format!("{stem}.mp4")
+            };
+            base_dir.join(file_name)
         };
 
         let backend = default_codec_backend();

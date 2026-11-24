@@ -471,6 +471,14 @@ impl McpServer {
             .get("trash_original")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let burn_taps = args
+            .get("burn_taps")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_share_mp4 = args
+            .get("include_share_mp4")
+            .and_then(Value::as_bool)
+            .unwrap_or(burn_taps);
 
         match format {
             "share_mp4" => {
@@ -488,6 +496,7 @@ impl McpServer {
                 if let Some(dest) = optional_abs_path(args, "dest_dir")? {
                     params.insert("dest_dir".to_owned(), json!(dest));
                 }
+                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
                 params.insert("trash_original".to_owned(), Value::Bool(trash_original));
                 params.insert("holder_pid".to_owned(), json!(std::process::id()));
                 let resp = self.call_daemon("export.share_mp4", &Value::Object(params))?;
@@ -507,86 +516,28 @@ impl McpServer {
                         "format=\"bundle\" requires integer `out_frame_index`".to_owned()
                     })?;
 
-                // Resolve the catalog id BEFORE trimming so a doomed trash never leaves an
-                // untracked trimmed bundle behind.
-                let mut trash_catalog_id: Option<String> = None;
-                if trash_original {
-                    let summary = self.call_daemon(
-                        "timeline.summary",
-                        &json!({ "bundle_id_or_path": bundle_id }),
-                    )?;
-                    if summary.get("is_legacy").and_then(Value::as_bool) == Some(true) {
-                        return Err(format!(
-                            "refusing trash_original on read-only legacy bundle `{bundle_id}`"
-                        ));
-                    }
-                    trash_catalog_id = Some(self.resolve_active_catalog_id(&bundle_id, &summary)?);
-                }
-
                 let mut params = Map::new();
-                params.insert(
-                    "bundle_id_or_path".to_owned(),
-                    Value::String(bundle_id.clone()),
-                );
+                params.insert("bundle_id_or_path".to_owned(), Value::String(bundle_id));
                 params.insert("in_frame_index".to_owned(), json!(in_f));
                 params.insert("out_frame_index".to_owned(), json!(out_f));
                 if let Some(dest) = optional_abs_path(args, "dest_dir")? {
                     params.insert("dest_dir".to_owned(), json!(dest));
                 }
+                params.insert("burn_taps".to_owned(), Value::Bool(burn_taps));
+                params.insert(
+                    "include_share_mp4".to_owned(),
+                    Value::Bool(include_share_mp4),
+                );
                 params.insert("holder_pid".to_owned(), json!(std::process::id()));
 
-                let mut resp = self.call_daemon("export.trim", &Value::Object(params))?;
-                let mut original_trashed = false;
-                let mut trash_warning: Option<String> = None;
-                if let Some(catalog_id) = trash_catalog_id {
-                    match self.call_daemon("bundle.trash", &json!({ "bundle_id": catalog_id })) {
-                        Ok(_) => original_trashed = true,
-                        Err(err) => {
-                            trash_warning = Some(format!(
-                                "trimmed bundle was created but trashing the original failed: {err}"
-                            ));
-                        }
-                    }
-                }
-                if let Some(obj) = resp.as_object_mut() {
-                    obj.insert("original_trashed".to_owned(), Value::Bool(original_trashed));
-                    if let Some(warning) = trash_warning {
-                        obj.insert("trash_warning".to_owned(), Value::String(warning));
-                    }
-                }
+                params.insert("trash_original".to_owned(), Value::Bool(trash_original));
+                let resp = self.call_daemon("export.trim", &Value::Object(params))?;
                 Ok(vec![text_block(&resp)])
             }
             other => Err(format!(
                 "unsupported format `{other}`; expected \"share_mp4\" or \"bundle\""
             )),
         }
-    }
-
-    /// Maps a user-supplied bundle target (catalog id or path) to an active, non-legacy
-    /// catalog id, or fails when the bundle is not cataloged.
-    fn resolve_active_catalog_id(
-        &mut self,
-        target: &str,
-        summary: &Value,
-    ) -> Result<String, String> {
-        let list = self.call_daemon("bundle.list", &json!({ "state": "active" }))?;
-        let summary_path = summary.get("path").and_then(Value::as_str);
-        let found = list
-            .get("bundles")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|entry| {
-                let id = entry.get("bundle_id").and_then(Value::as_str);
-                let path = entry.get("path").and_then(Value::as_str);
-                id == Some(target) || path.is_some_and(|p| p == target || Some(p) == summary_path)
-            })
-            .and_then(|entry| entry.get("bundle_id").and_then(Value::as_str));
-        found.map(str::to_owned).ok_or_else(|| {
-            format!(
-                "refusing trash_original on uncataloged or non-active bundle `{target}`; open or register it first"
-            )
-        })
     }
 
     fn tool_export_frame_png(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -1083,6 +1034,8 @@ fn tool_definitions() -> Vec<Value> {
                     "out_frame_index": { "type": "integer", "minimum": 0 },
                     "output_path": { "type": "string", "description": "Optional explicit .mp4 output path (for share_mp4)." },
                     "dest_dir": { "type": "string", "description": "Optional parent directory for the trimmed WORM bundle." },
+                    "burn_taps": { "type": "boolean", "description": "Composite recorded Tap/Swipe overlays onto output video frames (default false; WORM source stays untouched)." },
+                    "include_share_mp4": { "type": "boolean", "description": "When format=\"bundle\", also emit ready-to-share share.mp4 (or share-taps.mp4 when burn_taps=true) inside the trimmed bundle directory." },
                     "trash_original": { "type": "boolean", "description": "Move source bundle to non-destructive Trash after verified commit (default false)." }
                 },
                 "required": ["bundle_id"],

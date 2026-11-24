@@ -177,6 +177,7 @@ fun ArbStudioContent(controller: ArbStudioController) {
                 onReveal = { controller.revealExportedInFinder() },
                 onCopy = { controller.copyExportedPath() },
                 onOpenTab = { controller.openExportedBundleInNewTab() },
+                onCloseTab = { controller.closeStudioTab() },
                 onDismiss = { controller.dismissExportCompletion() },
             )
         }
@@ -363,18 +364,18 @@ private fun StudioHeaderBar(
                 onClick = { controller.revealBundleInFinder() },
             )
             val formats = StudioExportFormat.entries
-            key(controller.selectedExportFormat, controller.hasVideo) {
+            key(controller.selectedExportFormat, controller.hasVideo, controller.isExporting) {
                 ListComboBox(
                     items = formats.map { it.label },
                     selectedIndex = formats.indexOf(controller.selectedExportFormat).coerceAtLeast(0),
                     onSelectedItemChange = { controller.selectExportFormat(formats[it]) },
-                    enabled = controller.hasVideo,
+                    enabled = controller.hasVideo && !controller.isExporting,
                     modifier = Modifier.width(114.dp),
                 )
             }
             DefaultButton(
                 onClick = { controller.triggerExport() },
-                enabled = controller.hasVideo,
+                enabled = controller.isExportButtonEnabled,
             ) {
                 Text(
                     text = controller.exportButtonLabel,
@@ -392,6 +393,7 @@ private fun ExportCompletionStrip(
     onReveal: () -> Unit,
     onCopy: () -> Unit,
     onOpenTab: () -> Unit,
+    onCloseTab: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     ArbSoftBanner(
@@ -406,16 +408,23 @@ private fun ExportCompletionStrip(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        ArbSubtleAction(label = "フォルダを表示", iconKey = AllIconsKeys.Nodes.Folder, compact = true, onClick = onReveal)
+        ArbSubtleAction(label = "フォルダを開く", iconKey = AllIconsKeys.Nodes.Folder, compact = true, onClick = onReveal)
         ArbSubtleAction(label = "パスをコピー", iconKey = AllIconsKeys.Actions.Copy, compact = true, onClick = onCopy)
         if (info.isTrimBundle && !info.bundleId.isNullOrBlank()) {
-            ArbSubtleAction(label = "新しいタブで開く", iconKey = AllIconsKeys.Actions.Execute, compact = true, onClick = onOpenTab)
+            ArbSubtleAction(label = "結果を開く", iconKey = AllIconsKeys.Actions.Execute, compact = true, onClick = onOpenTab)
         }
+        ArbSubtleAction(
+            label = "タブを閉じる",
+            iconKey = AllIconsKeys.Actions.Cancel,
+            compact = true,
+            tooltip = "このスタジオタブを閉じます",
+            onClick = onCloseTab,
+        )
         IconActionButton(
-            key = AllIconsKeys.Actions.Cancel,
-            contentDescription = "閉じる",
+            key = AllIconsKeys.Actions.Close,
+            contentDescription = "バナーを隠す",
             onClick = onDismiss,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(20.dp),
         )
     }
 }
@@ -1270,19 +1279,34 @@ private fun BottomMultiTrackDock(
                 )
             }
 
-            ArbTooltip(
-                if (state?.isLegacy == true) {
-                    "Legacy (RO) バンドルは読取専用のためゴミ箱へ移動できません"
-                } else {
-                    "書き出しの検証完了後に元のバンドルを非破壊でゴミ箱へ移動します"
-                },
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                ArbLabeledCheckbox(
-                    text = ArbFormatters.TRASH_ORIGINAL_TOGGLE_LABEL,
-                    checked = controller.isTrashOriginalSelected,
-                    onCheckedChange = { controller.toggleTrashOriginal(it) },
-                    enabled = controller.isTrashOriginalEnabled,
-                )
+                if (controller.isBurnTapsVisible) {
+                    ArbTooltip("共有用 MP4 (share-taps.mp4) にタップ波紋とスワイプ軌跡を焼き込みます（元の video.mp4 は無劣化のまま保持）") {
+                        ArbLabeledCheckbox(
+                            text = ArbStudioController.BURN_TAPS_TOGGLE_LABEL,
+                            checked = controller.burnTapsOnExport,
+                            onCheckedChange = { controller.toggleBurnTapsOnExport(it) },
+                            enabled = controller.hasVideo && !controller.isExporting,
+                        )
+                    }
+                }
+                ArbTooltip(
+                    if (state?.isLegacy == true) {
+                        "Legacy (RO) バンドルは読取専用のためゴミ箱へ移動できません"
+                    } else {
+                        "書き出しの検証完了後に元のバンドルを非破壊でゴミ箱へ移動します"
+                    },
+                ) {
+                    ArbLabeledCheckbox(
+                        text = ArbFormatters.TRASH_ORIGINAL_TOGGLE_LABEL,
+                        checked = controller.isTrashOriginalSelected,
+                        onCheckedChange = { controller.toggleTrashOriginal(it) },
+                        enabled = controller.isTrashOriginalEnabled && !controller.isExporting,
+                    )
+                }
             }
         }
     }

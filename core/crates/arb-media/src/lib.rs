@@ -17,6 +17,7 @@
 
 pub mod audio;
 pub mod audio_decode;
+pub mod burn_in;
 pub mod codec;
 pub mod contact_sheet;
 pub mod error;
@@ -34,6 +35,11 @@ pub use crate::audio::{
 };
 pub use crate::audio_decode::{
     AudioDecodeReport, WavHeaderInfo, decode_audio_m4a_to_wav, inspect_wav_header,
+};
+pub use crate::burn_in::{
+    BurnInDisplayGeometry, BurnInReport, BurnInTouchEvent, DEFAULT_BURN_IN_KEYFRAME_INTERVAL,
+    SWIPE_FADE_DURATION_NS, TAP_FADE_DURATION_NS, burn_in_taps_video,
+    composite_touch_overlays_rgb24,
 };
 pub use crate::contact_sheet::{
     ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions, TapCropResult,

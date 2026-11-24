@@ -559,6 +559,9 @@ data class ExportCompletionInfo(
     val outputPath: String,
     val bundleId: String? = null,
     val isTrimBundle: Boolean = false,
+    val shareMp4Path: String? = null,
+    val originalTrashedBundleId: String? = null,
+    val burnTapsApplied: Boolean = false,
 )
 
 // ---------------- Timeline & Video Viewport State ----------------
@@ -612,7 +615,7 @@ data class TimelineViewerState(
     val canSelectAroundCrash: Boolean
         get() = crashes.isNotEmpty() && frameCount > 0L
 
-    /** Per-app extracted foreground log summaries (`app-logs/<package>.jsonl`). */
+    /** Per-app extracted foreground log summaries (`app-logs/<package>.log`). */
     val appLogs: List<AppLogSummary>
         get() = summary.appLogs
 
