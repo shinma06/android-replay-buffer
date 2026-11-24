@@ -1923,12 +1923,24 @@ mod kani_proofs {
             PixelFormat::Rgb24 => u64::from(w) * 3,
             PixelFormat::Nv12 => u64::from(w).next_multiple_of(2),
         };
+        let rows: u128 = match fmt {
+            PixelFormat::Nv12 => u128::from(h) + u128::from(h.div_ceil(2)),
+            _ => u128::from(h),
+        };
+        let exact_total = u128::from(stride) * rows;
         let r = fmt.required_buffer_bytes(w, h, stride);
         assert_eq!(
             r.is_none(),
-            w == 0 || h == 0 || u64::from(stride) < min_row,
-            "None iff zero dimension or undersized stride (no u64 overflow on 64-bit)"
+            w == 0
+                || h == 0
+                || u64::from(stride) < min_row
+                || exact_total > u128::from(u64::MAX)
+                || usize::try_from(exact_total).is_err(),
+            "None iff zero dimension, undersized stride, or total overflowing u64/usize"
         );
+        if let Some(len) = r {
+            assert_eq!(len as u128, exact_total, "exact total, no truncation");
+        }
         let Some(len) = r else { return };
         let len = len as u64;
         let (x, y): (u32, u32) = (kani::any(), kani::any());

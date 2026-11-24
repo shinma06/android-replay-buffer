@@ -62,8 +62,11 @@ fn k9_parse_stts_bounded() {
 #[kani::proof]
 #[kani::unwind(4)]
 fn k9_parse_stsc_strictly_increasing() {
-    let buf: [u8; N] = kani::any();
-    let data = any_slice(&buf);
+    // 8-byte header + two 12-byte entries, so the ordering check is reachable.
+    let buf: [u8; 32] = kani::any();
+    let len: usize = kani::any();
+    kani::assume(len <= buf.len());
+    let data = &buf[..len];
     if let Ok(e) = parse_stsc(data) {
         assert!(!e.is_empty() && e[0].0 == 1);
         let mut i = 1;
