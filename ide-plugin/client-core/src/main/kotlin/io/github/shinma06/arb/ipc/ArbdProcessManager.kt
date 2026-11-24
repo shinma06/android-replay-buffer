@@ -7,7 +7,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
@@ -582,28 +582,31 @@ class ArbdProcessManager(
             return DaemonBuildIdentity(version = version, sizeBytes = size, mtimeSecs = mtime)
         }
 
-        private data class DigestKey(
-            val path: String,
-            val sizeBytes: Long,
-            val mtimeNanos: Long,
-            val fileKey: Any?,
-        )
+        private data class DigestStamp(val device: Long, val inode: Long, val changed: FileTime)
+        private data class CachedDigest(val stamp: DigestStamp, val hex: String)
+        private val digestCache = ConcurrentHashMap<Path, CachedDigest>()
 
-        private val digestCache = ConcurrentHashMap<DigestKey, String>()
+        // An in-place reinstall may preserve inode, size and mtime. Cache only on
+        // filesystems that also report a change time, and recheck it after hashing.
+        private fun digestStamp(path: Path): DigestStamp? {
+            if ("unix" !in path.fileSystem.supportedFileAttributeViews()) return null
+            return runCatching {
+                val attrs = Files.readAttributes(path, "unix:dev,ino,ctime")
+                DigestStamp(attrs["dev"] as Long, attrs["ino"] as Long, attrs["ctime"] as FileTime)
+            }.getOrNull()
+        }
 
-        /**
-         * Lower-case hex SHA-256 of [file], cached per path / size / mtime / file key (inode) so the
-         * bundled `arbd` is hashed once per installed binary. `null` when the file is unreadable.
-         */
         fun sha256Hex(file: Path): String? = runCatching {
-            val attrs = Files.readAttributes(file, BasicFileAttributes::class.java)
-            val key = DigestKey(
-                path = file.toAbsolutePath().normalize().toString(),
-                sizeBytes = attrs.size(),
-                mtimeNanos = attrs.lastModifiedTime().to(java.util.concurrent.TimeUnit.NANOSECONDS),
-                fileKey = attrs.fileKey(),
-            )
-            digestCache[key] ?: computeSha256Hex(file).also { digestCache[key] = it }
+            val path = file.toAbsolutePath().normalize()
+            val stamp = digestStamp(path) ?: return@runCatching computeSha256Hex(path)
+            // A recently modified inode may still share the filesystem clock tick
+            // with a subsequent overwrite, especially on coarse-grained filesystems.
+            if (stamp.changed.toInstant().isAfter(Instant.now().minusSeconds(2))) {
+                return@runCatching computeSha256Hex(path)
+            }
+            digestCache[path]?.takeIf { it.stamp == stamp }?.hex ?: computeSha256Hex(path).also {
+                if (stamp == digestStamp(path)) digestCache[path] = CachedDigest(stamp, it)
+            }
         }.getOrNull()
 
         private fun computeSha256Hex(file: Path): String {

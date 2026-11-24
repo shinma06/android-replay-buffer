@@ -16,16 +16,16 @@
 //! concurrent plain `memcpy` / volatile reads are a data race (undefined
 //! behaviour) even if the torn result is discarded afterwards. Every access to
 //! slot metadata and payload bytes is consequently an atomic `Relaxed`
-//! `AtomicU64` word (plus `AtomicU8` tail byte) access, bracketed by the
+//! `AtomicU64` word access (including the padded final word), bracketed by the
 //! per-slot `Acquire`/`Release` sequence counter and fences. The binary wire
 //! layout is unchanged (atomics have the same size and alignment as the plain
 //! integers they replace), so the Kotlin `ShmFrameRingReader` stays compatible.
 
 use std::fs::{self, File, OpenOptions};
-use std::mem::{align_of, offset_of, size_of, size_of_val};
+use std::mem::{align_of, offset_of, size_of};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering, fence};
 
 use memmap2::{Mmap, MmapMut};
 
@@ -923,71 +923,53 @@ const fn slot_payload_ptr(base: *const u8, slot_idx: usize, aligned_stride: usiz
     base.wrapping_add(offset)
 }
 
-/// Atomic view over one slot's payload bytes: `len / 8` aligned `AtomicU64`
-/// words followed by `len % 8` `AtomicU8` tail bytes.
-///
-/// All payload traffic goes through `Relaxed` atomic word accesses so a writer
-/// that laps a reader mid-copy is a benign (seqlock-detected) race rather than
-/// undefined behaviour. Relaxed word loads/stores compile to plain aligned
-/// moves on x86-64 and `AArch64`, keeping the copy allocation-free and fast.
+/// Every shared access covers an aligned full word, even when successive frames
+/// in the same slot have different lengths. The cache-line stride provides padding.
 struct AtomicPayload<'a> {
     words: &'a [AtomicU64],
-    tail: &'a [AtomicU8],
 }
 
 impl AtomicPayload<'_> {
     /// # Safety
     ///
-    /// `ptr` must be 8-byte aligned and valid for `len` bytes of shared
-    /// (possibly concurrently mutated) memory for the returned view's lifetime,
-    /// and that memory must only ever be accessed atomically.
+    /// `ptr` must be aligned and valid for `len` rounded up to a whole word
+    /// for the view's lifetime. Shared payload accesses must use aligned words.
     #[expect(
         clippy::cast_ptr_alignment,
-        reason = "payload regions start 64-byte aligned (HEADER_REGION_BYTES and slot strides are cache-line multiples)"
+        reason = "slot payload starts at a cache-line boundary"
     )]
     unsafe fn new(ptr: *const u8, len: usize) -> Self {
-        debug_assert_eq!(
-            ptr.align_offset(align_of::<AtomicU64>()),
-            0,
-            "payload pointer must be AtomicU64-aligned"
-        );
-        let word_count = len / size_of::<AtomicU64>();
-        let tail_len = len % size_of::<AtomicU64>();
-        // SAFETY: per the caller contract `ptr` is aligned and valid for
-        // `word_count * 8 <= len` bytes; atomics permit shared mutation.
-        let words = unsafe { std::slice::from_raw_parts(ptr.cast::<AtomicU64>(), word_count) };
-        let tail_ptr = ptr.wrapping_add(word_count * size_of::<AtomicU64>());
-        // SAFETY: the tail lies within the caller-guaranteed `len` bytes.
-        let tail = unsafe { std::slice::from_raw_parts(tail_ptr.cast::<AtomicU8>(), tail_len) };
-        Self { words, tail }
+        // SAFETY: the final word fits within the caller-guaranteed padded slot.
+        let words = unsafe { std::slice::from_raw_parts(ptr.cast::<AtomicU64>(), len.div_ceil(8)) };
+        Self { words }
     }
 
     fn store_from(&self, src: &[u8]) {
-        let (src_words, src_tail) = src.split_at(size_of_val(self.words));
-        let (chunks, _) = src_words.as_chunks::<8>();
+        let (chunks, tail) = src.as_chunks::<8>();
         for (word, chunk) in self.words.iter().zip(chunks) {
             word.store(u64::from_ne_bytes(*chunk), Ordering::Relaxed);
         }
-        for (byte, &value) in self.tail.iter().zip(src_tail) {
-            byte.store(value, Ordering::Relaxed);
+        if let Some(last) = self.words.get(chunks.len()) {
+            let mut padded = [0; 8];
+            padded[..tail.len()].copy_from_slice(tail);
+            last.store(u64::from_ne_bytes(padded), Ordering::Relaxed);
         }
     }
 
     fn load_into(&self, dst: &mut [u8], mid_copy: &mut impl FnMut()) {
-        let (dst_words, dst_tail) = dst.split_at_mut(size_of_val(self.words));
-        let (chunks, _) = dst_words.as_chunks_mut::<8>();
-        let half = self.words.len() / 2;
+        let (chunks, tail) = dst.as_chunks_mut::<8>();
+        let count = chunks.len();
         for (index, (word, chunk)) in self.words.iter().zip(chunks).enumerate() {
-            if index == half {
+            if index == count / 2 {
                 mid_copy();
             }
             *chunk = word.load(Ordering::Relaxed).to_ne_bytes();
         }
-        if self.words.is_empty() {
+        if count == 0 {
             mid_copy();
         }
-        for (byte, value) in self.tail.iter().zip(dst_tail) {
-            *value = byte.load(Ordering::Relaxed);
+        if let Some(last) = self.words.get(count) {
+            tail.copy_from_slice(&last.load(Ordering::Relaxed).to_ne_bytes()[..tail.len()]);
         }
     }
 }
@@ -1357,7 +1339,7 @@ mod tests {
     fn writer_wrapping_whole_ring_mid_copy_never_returns_torn_frame() {
         const WIDTH: u32 = 64;
         const HEIGHT: u32 = 48;
-        // Odd tail (not a multiple of 8) exercises the AtomicU8 tail path too.
+        // Odd tail (not a multiple of 8) exercises the partial-word path too.
         const FRAME_BYTES: usize = 64 * 48 * 4 + 5;
 
         let tmp = TestShmDir::new("wrap-mid-copy");
@@ -1484,7 +1466,7 @@ mod tests {
     #[test]
     fn same_allocation_concurrent_publish_and_read_is_race_free_and_untorn() {
         const FRAME_BYTES: usize = 32 * 8 * 4 + 3;
-        let alloc = Arc::new(SharedRingAlloc::new(FRAME_BYTES));
+        let alloc = Arc::new(SharedRingAlloc::new(FRAME_BYTES + 5));
         let view = alloc.view;
         let done = Arc::new(AtomicBool::new(false));
         // The writer only starts once the reader is spinning, so their accesses
@@ -1523,8 +1505,13 @@ mod tests {
         while !reader_live.load(Ordering::Relaxed) {
             std::hint::spin_loop();
         }
-        let mut frame = vec![0_u8; FRAME_BYTES];
+        let mut frame = vec![0_u8; FRAME_BYTES + 5];
         for i in 1_i64..=2_000 {
+            let len = if i % 2 == 0 {
+                FRAME_BYTES + 5
+            } else {
+                FRAME_BYTES
+            };
             frame.fill(u8::try_from(i.rem_euclid(251)).expect("byte"));
             let slot = u8::try_from((i - 1).rem_euclid(3)).expect("slot");
             let fields = super::SlotFieldsSnapshot {
@@ -1535,16 +1522,28 @@ mod tests {
                 height: 8,
                 stride: 128,
                 pixel_format: PixelFormat::Rgba8.to_raw(),
-                payload_len: u32::try_from(FRAME_BYTES).expect("len"),
+                payload_len: u32::try_from(len).expect("len"),
                 flags: 0,
             };
             // SAFETY: single writer over the initialized allocation, slot < 3,
             // and the payload fits the slot capacity.
-            unsafe { view.publish_slot(slot, &fields, &frame) };
+            unsafe { view.publish_slot(slot, &fields, &frame[..len]) };
         }
         done.store(true, Ordering::Relaxed);
         let observed = reader.join().expect("reader thread must not panic");
         assert!(observed > 0, "reader must observe at least one frame");
+    }
+
+    #[test]
+    fn partial_payload_writes_a_complete_final_word() {
+        let word = AtomicU64::new(u64::MAX);
+        // SAFETY: one aligned word is live for the entire access.
+        let view = unsafe { super::AtomicPayload::new(word.as_ptr().cast(), 3) };
+        view.store_from(&[1, 2, 3]);
+        assert_eq!(
+            word.load(Ordering::Relaxed).to_ne_bytes(),
+            [1, 2, 3, 0, 0, 0, 0, 0]
+        );
     }
 
     /// H6: the atomic payload path round-trips every length class (empty word

@@ -47,13 +47,14 @@ impl LocalIpcListener {
         Ok(Self { inner, endpoint })
     }
 
-    /// Blocks until a local client connects and returns the bidirectional stream.
+    /// Accepts a client with a bounded write timeout for server replies.
     ///
     /// # Errors
     ///
     /// Returns [`OsError::Ipc`] if accepting a connection fails.
     pub fn accept(&self) -> Result<LocalIpcStream, OsError> {
         let stream = self.inner.accept(&self.endpoint)?;
+        stream.set_write_timeout(Some(DEFAULT_IPC_DRAIN_TIMEOUT), &self.endpoint)?;
         Ok(LocalIpcStream {
             inner: stream,
             endpoint: self.endpoint.clone(),
@@ -559,6 +560,14 @@ mod imp {
                     endpoint: endpoint.display().to_string(),
                     source,
                 })
+        }
+
+        #[cfg(test)]
+        pub(super) fn has_write_deadline(&self) -> bool {
+            self.stream
+                .write_timeout()
+                .expect("socket timeout")
+                .is_some()
         }
 
         pub(super) fn set_write_timeout(
@@ -1346,7 +1355,7 @@ mod imp {
                     Ok(())
                 };
             };
-            let deadline = Instant::now() + timeout;
+            let started = Instant::now();
 
             // A previous drain is still blocked: the peer has not even consumed
             // the earlier bytes, so wait for it (bounded) before flushing again.
@@ -1385,7 +1394,7 @@ mod imp {
                 })
                 .map_err(map_err)?;
 
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = timeout.saturating_sub(started.elapsed());
             match done_rx.recv_timeout(remaining) {
                 Ok(result) => {
                     let _ = worker.join();
@@ -1434,6 +1443,11 @@ mod imp {
             // `OverlappedCall::wait` inside `read`.
             self.read_timeout_ms.store(ms, Ordering::Release);
             Ok(())
+        }
+
+        #[cfg(test)]
+        pub(super) fn has_write_deadline(&self) -> bool {
+            self.write_timeout_ms.load(Ordering::Relaxed) != NO_TIMEOUT_MS
         }
 
         pub(super) fn set_write_timeout(
@@ -1846,6 +1860,10 @@ mod tests {
         let server = thread::spawn(move || {
             let stream = listener.accept().expect("accept client");
             let mut writer = stream.try_clone().expect("server try_clone must succeed");
+            assert!(
+                writer.inner.has_write_deadline(),
+                "server replies need a finite write deadline"
+            );
             let mut reader = BufReader::new(stream);
 
             let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
@@ -1968,7 +1986,7 @@ mod tests {
         resume_tx.send(()).expect("resume client");
         let _reader = client.join().expect("client thread must not panic");
         server
-            .drain()
+            .drain_with_timeout(Some(Duration::MAX))
             .expect("drain must succeed once the peer has consumed the reply");
     }
 

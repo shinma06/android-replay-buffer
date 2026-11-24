@@ -160,6 +160,19 @@ class WindowsPipeSecurityTest {
         assertFalse(opened)
     }
 
+    @Test
+    fun interruptedCloserReleasesIdleHandleAndPreservesInterrupt() {
+        var released = false
+        Thread.currentThread().interrupt()
+        try {
+            closeAfterPipeIo(java.util.concurrent.locks.ReentrantReadWriteLock(), {}, { released = true })
+            assertTrue(released)
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
     /** Windows-only facility: the real FFM binding must resolve the process token user SID. */
     @Test
     fun win32CurrentUserSidIsAValidSidOnWindows() {

@@ -273,27 +273,31 @@ internal object Win32NamedPipes : WindowsPipeOpener {
 
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
-            val writeLock = ioLock.writeLock()
-            // Unblock a ReadFile parked on another thread (e.g. the RPC read executor) before
-            // closing, so the handle is never closed underneath an in-flight call.
-            repeat(CLOSE_CANCEL_ATTEMPTS) {
-                runCatching { call(a.cancelIoEx, handle, MemorySegment.NULL) }
-                if (writeLock.tryLock(CLOSE_CANCEL_WAIT_MS, TimeUnit.MILLISECONDS)) {
-                    try {
-                        call(a.closeHandle, handle)
-                    } finally {
-                        writeLock.unlock()
-                    }
-                    return
-                }
-            }
-            // Last resort (matches the previous RandomAccessFile behaviour): close regardless.
-            runCatching { call(a.closeHandle, handle) }
+            closeAfterPipeIo(ioLock, { call(a.cancelIoEx, handle, MemorySegment.NULL) }, { call(a.closeHandle, handle) })
         }
+    }
+}
 
-        companion object {
-            private const val CLOSE_CANCEL_ATTEMPTS = 50
-            private const val CLOSE_CANCEL_WAIT_MS = 20L
+internal fun closeAfterPipeIo(ioLock: ReentrantReadWriteLock, cancelIo: () -> Unit, closeHandle: () -> Unit) {
+    val exclusive = ioLock.writeLock()
+    var interrupted = false
+    try {
+        while (!exclusive.tryLock()) {
+            // An operation may have acquired its read lock just before close, but
+            // only entered the kernel after the previous cancellation.
+            cancelIo()
+            try {
+                if (exclusive.tryLock(20, TimeUnit.MILLISECONDS)) break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
         }
+        try {
+            closeHandle()
+        } finally {
+            exclusive.unlock()
+        }
+    } finally {
+        if (interrupted) Thread.currentThread().interrupt()
     }
 }

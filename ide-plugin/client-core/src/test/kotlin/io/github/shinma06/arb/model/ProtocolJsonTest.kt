@@ -243,6 +243,15 @@ class ProtocolJsonTest {
     }
 
     @Test
+    fun rejectsMalformedFrameTimestamps() {
+        for (value in listOf("[1.5]", "[9223372036854775808]", "42")) {
+            assertFailsWith<com.google.gson.JsonParseException> {
+                gson.fromJson("""{$viewportBase,"frame_pts_ns":$value}""", MediaOpenViewportResponse::class.java)
+            }
+        }
+    }
+
+    @Test
     fun captureEnabledRoundTripsInConfigPatchAndStatus() {
         val config = gson.fromJson("""{"capture_enabled":true}""", ArbConfig::class.java)
         assertTrue(config.captureEnabled)

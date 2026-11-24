@@ -278,6 +278,16 @@ class ArbdProcessManagerTest {
     }
 
     @Test
+    fun warmedDigestDetectsInPlaceOverwrite(@TempDir tmp: Path) {
+        val bin = Files.writeString(tmp.resolve("arbd"), "old")
+        val timestamp = Files.getLastModifiedTime(bin)
+        val digest = ArbdProcessManager.sha256Hex(bin)
+        Files.writeString(bin, "new")
+        Files.setLastModifiedTime(bin, timestamp)
+        assertTrue(ArbdProcessManager.shouldAutoUpgradeBinary(bin, bin, null, "1:sha256:$digest"))
+    }
+
+    @Test
     fun digestMismatchThatSurvivesRestartIsStillLimitedToOneRestart(@TempDir tmp: Path) {
         val bin = Files.writeString(tmp.resolve("arbd"), "bundled-bytes")
         val stale = hello("2.0.0:sha256:${sha256("stale-bytes".toByteArray())}", 0L)

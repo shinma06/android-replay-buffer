@@ -248,7 +248,10 @@ object ProtocolJson {
             context: JsonDeserializationContext,
         ): MediaOpenViewportResponse {
             val obj = json.asJsonObject
-            val pts = obj.get("frame_pts_ns")?.takeIf { it.isJsonArray }?.asJsonArray
+            val pts = obj.get("frame_pts_ns")?.takeUnless { it.isJsonNull }?.let {
+                if (!it.isJsonArray) throw JsonParseException("frame_pts_ns must be an array")
+                it.asJsonArray
+            }
             return MediaOpenViewportResponse(
                 viewportId = obj.requireString("viewport_id"),
                 bundleId = obj.requireString("bundle_id"),
@@ -264,7 +267,7 @@ object ProtocolJson {
                     if (!element.isJsonPrimitive || !element.asJsonPrimitive.isNumber) {
                         throw JsonParseException("frame_pts_ns entries must be integers, got: $element")
                     }
-                    element.asLong
+                    element.asString.toLongOrNull() ?: throw JsonParseException("Invalid frame timestamp: $element")
                 } ?: emptyList(),
             )
         }
