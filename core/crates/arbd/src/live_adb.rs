@@ -446,6 +446,7 @@ enum LivenessKind {
 /// M5/M6/S14 behaviour is unit-tested without a device.
 #[derive(Debug)]
 struct LiveTracker {
+    touch_calibration: crate::touch_calibration::TouchCalibration,
     timeline: ClockTimeline,
     suppress_reboot_for: Option<String>,
     boot_id: String,
@@ -459,6 +460,7 @@ struct LiveTracker {
 impl LiveTracker {
     fn new() -> Self {
         Self {
+            touch_calibration: crate::touch_calibration::TouchCalibration::default(),
             timeline: ClockTimeline::new(ClockTimelineConfig::new()),
             suppress_reboot_for: None,
             boot_id: "unknown".to_owned(),
@@ -875,7 +877,15 @@ fn run_single_adb_session(
     }
     sink.set_device_api_warning(detected_sdk.and_then(unsupported_android_api_warning));
     sink.push_all(tracker.on_hello(supervisor, hello, sample_cont_ns()));
+    tracker.touch_calibration = crate::touch_calibration::TouchCalibration::default();
     if let Some((display_w, display_h)) = adb.query_display_size(&cfg.serial) {
+        if cfg.input_enabled
+            && let Ok(axes) = adb.shell(&cfg.serial, &["getevent", "-lp"])
+        {
+            tracker.touch_calibration = crate::touch_calibration::TouchCalibration::from_getevent(
+                &axes, display_w, display_h,
+            );
+        }
         sink.set_display_size(display_w, display_h);
     }
     let uid_packages = adb.query_package_uids(&cfg.serial);
@@ -1599,6 +1609,7 @@ fn dispatch_companion_frame(
             pc_cont_ns,
             boot_id,
             flags: frame.header.flags,
+            display_value: tracker.touch_calibration.display_value(&touch),
             payload: touch,
             normalized: None,
         }),

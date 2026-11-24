@@ -23,6 +23,7 @@ satisfies:
   - `beacon`（250〜500 ms 周期）が `boot_id`, `boottime_ns`, `monotonic_ns`, `realtime_ns` と各ストリームの生存状態・連番を送信し、静止画面（`STATIC_HOLD`）と切断／欠損（`CONNECTION_LOST` / `STREAM_GAP`）を分離する。
   - `logcat` は端末読取時の `device_read_boottime_ns` を打刻し、`logcat -S` / `-g` 統計監視によりドロップを検知する。裏付け不可の端末では `completeness = "unverified"` を明示する。
   - `video` / `audio` / `logcat` / `input` / `beacon` は独立エラー境界で障害隔離する。
+- 入力取得時は接続ごとにホストが `getevent -lp` のデバイス別・軸別の最小値と最大値を読み、絶対座標を物理画面のピクセル位置に変換する。Tap / Swipe の移動量判定、保存する軌跡、Studio・共有動画の表示は同じ座標を使う。軸情報や寸法を取得できない場合は従来の座標を使い、表示範囲外のマーカーは描画しない。
 - **自動再接続**: ADB デバイストラッカーを常時監視し、切断検知後は指数バックオフ（200 ms → 500 ms → 1 s → 2 s）で数秒以内に Device Agent を自動再起動する。再接続時の `boot_id` 照合で `CONNECTION_RESTORED` と `DEVICE_REBOOT` を厳密区別する。
 
 ## 2. `arbd` ↔ クライアント ローカル IPC と共有メモリフレームリング

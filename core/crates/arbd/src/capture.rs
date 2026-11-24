@@ -2292,7 +2292,8 @@ impl ReplayCollector {
             CaptureEvent::TouchEvent {
                 pc_cont_ns,
                 boot_id,
-                payload,
+                mut payload,
+                display_value,
                 normalized,
                 ..
             } => {
@@ -2300,6 +2301,9 @@ impl ReplayCollector {
                 if let Some(t) = normalized {
                     self.ingest_touch_sample(boot_id, pc_cont_ns, &t);
                 } else {
+                    if let Some(pixel) = display_value {
+                        payload.ev_value = pixel;
+                    }
                     for t in self.touch_normalizer.ingest(&payload, viewport) {
                         self.ingest_touch_sample(boot_id.clone(), pc_cont_ns, &t);
                     }
@@ -4565,6 +4569,72 @@ mod tests {
     }
 
     #[test]
+    fn live_axis_ranges_scale_gesture_slop_and_saved_swipe_path() {
+        use super::{
+            ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, EV_ABS, EV_SYN, SYN_REPORT,
+        };
+        use crate::touch_calibration::TouchCalibration;
+
+        let axes = "add device 1: /dev/input/event2\nABS_MT_POSITION_X : value 0, min 0, max 32767\nABS_MT_POSITION_Y : value 0, min 0, max 32767";
+        let calibration = TouchCalibration::from_getevent(axes, 1080, 2400);
+        let params = t6h_gesture_params(Some(1080), Some(2400));
+        let mut collector = ReplayCollector::new(&params);
+        for end_y in [16600, 32767] {
+            for (idx, (ty, code, value)) in [
+                (EV_ABS, ABS_MT_TRACKING_ID, 1),
+                (EV_ABS, ABS_MT_POSITION_X, 16384),
+                (EV_ABS, ABS_MT_POSITION_Y, 16384),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_ABS, ABS_MT_POSITION_Y, end_y),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_ABS, ABS_MT_TRACKING_ID, -1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let t = i64::try_from(idx).unwrap() * 10_000_000;
+                let payload = raw_evdev(ty, code, value, t);
+                collector.ingest_one(CaptureEvent::TouchEvent {
+                    pc_cont_ns: t,
+                    boot_id: "boot".into(),
+                    flags: arb_adb::wire::FrameFlags::default(),
+                    display_value: calibration.display_value(&payload),
+                    normalized: None,
+                    payload,
+                });
+            }
+        }
+        let [tap, swipe] = collector.raw_taps.as_slice() else {
+            panic!("expected two gestures")
+        };
+        assert_eq!(tap.gesture_kind, GestureKind::Tap);
+        assert_eq!((tap.x, tap.y), (Some(540.0), Some(1200.0)));
+        assert_eq!(swipe.gesture_kind, GestureKind::Swipe);
+        assert_eq!((swipe.end_x, swipe.end_y), (Some(540.0), Some(2399.0)));
+        assert_eq!(
+            swipe.path.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>(),
+            [(540.0, 1200.0), (540.0, 2399.0), (540.0, 2399.0)]
+        );
+    }
+
+    #[test]
+    fn axis_calibration_is_per_device_and_preserves_uncalibrated_pixels() {
+        use crate::touch_calibration::TouchCalibration;
+
+        let axes = "add device 1: /dev/input/event1\nABS (0003): ABS_X : value 8, min -10, max 4085\nABS_Y : value 0, min 0, max 4095\nadd device 2: /dev/input/event2\nABS (0003): ABS_X : value 0, min 0, max 1080";
+        let calibration = TouchCalibration::from_getevent(axes, 1080, 2400);
+        let mut e = raw_evdev(super::EV_ABS, super::ABS_X, 800, 0);
+        assert_eq!(calibration.display_value(&e), Some(800));
+        assert_eq!(TouchCalibration::default().display_value(&e), None);
+        e.device_path = "/dev/input/event1".into();
+        assert_eq!(calibration.display_value(&e), Some(213));
+        e.ev_code = super::ABS_Y;
+        e.ev_value = 4095;
+        assert_eq!(calibration.display_value(&e), Some(2399));
+    }
+
+    #[test]
     fn t6h_touch_normalizer_protocol_a_single_touch_btn_touch_swipe() {
         let params = t6h_gesture_params(Some(1080), Some(2400));
         let mut collector = ReplayCollector::new(&params);
@@ -4587,6 +4657,7 @@ mod tests {
                 boot_id: "boot-single".to_owned(),
                 flags: arb_adb::wire::FrameFlags::default(),
                 payload,
+                display_value: None,
                 normalized: None,
             });
         }

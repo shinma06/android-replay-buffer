@@ -16,6 +16,7 @@ pub mod media_engine;
 pub mod protocol;
 pub mod screenshot;
 pub mod time_util;
+mod touch_calibration;
 
 use std::collections::BTreeMap;
 use std::io::BufReader;

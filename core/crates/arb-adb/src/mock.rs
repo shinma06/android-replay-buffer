@@ -180,6 +180,9 @@ pub enum CaptureEvent {
         flags: FrameFlags,
         /// Decoded wire `TouchEvent` payload.
         payload: TouchEventPayload,
+        /// Calibrated display-pixel value for an absolute position axis, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_value: Option<i32>,
         /// Optional high-level normalized touch gesture representation.
         normalized: Option<NormalizedTouchEvent>,
     },
@@ -684,6 +687,7 @@ impl MockDeviceSource {
                 boot_id,
                 flags,
                 payload,
+                display_value: None,
                 normalized,
             }),
             FaultStep::StreamState {

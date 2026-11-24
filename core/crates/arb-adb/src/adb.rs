@@ -1931,6 +1931,7 @@ impl<C, V, A> AdbSessionSource<C, V, A> {
                     boot_id,
                     flags,
                     payload: touch,
+                    display_value: None,
                     normalized: None,
                 });
             }
