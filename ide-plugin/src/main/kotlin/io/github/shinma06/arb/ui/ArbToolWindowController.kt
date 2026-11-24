@@ -1,0 +1,946 @@
+package io.github.shinma06.arb.ui
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.intellij.ide.actions.RevealFileAction
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.project.Project
+import io.github.shinma06.arb.ide.ArbDaemonStateListener
+import io.github.shinma06.arb.ide.ArbNotifications
+import io.github.shinma06.arb.ide.ArbScreenshotDestinationResolver
+import io.github.shinma06.arb.ide.ArbSettingsConfigurable
+import io.github.shinma06.arb.ide.ArbToolbarDaemonSnapshot
+import io.github.shinma06.arb.ide.ArbdDaemonService
+import io.github.shinma06.arb.model.AdbDeviceInfo
+import io.github.shinma06.arb.model.AdbDeviceState
+import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.BundleKind
+import io.github.shinma06.arb.model.CaptureMode
+import io.github.shinma06.arb.model.CaptureStartParams
+import io.github.shinma06.arb.model.IdeDefaultSaveAction
+import io.github.shinma06.arb.model.SaveLogsParams
+import io.github.shinma06.arb.model.SaveScreenshotParams
+import io.github.shinma06.arb.model.SaveTriggerParams
+import io.github.shinma06.arb.model.StringPatch
+import io.github.shinma06.arb.state.ArbFormatters
+import io.github.shinma06.arb.state.BundleCatalogItem
+import io.github.shinma06.arb.state.BundleCatalogState
+import io.github.shinma06.arb.state.BundleFilter
+import io.github.shinma06.arb.state.CaptureBarReducer
+import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.state.DeviceSelectionOutcome
+import io.github.shinma06.arb.state.DeviceSelectionPolicy
+import io.github.shinma06.arb.state.FailedSaveRecoveryReducer
+import io.github.shinma06.arb.state.FailedSaveRecoveryState
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import javax.swing.SwingUtilities
+
+/**
+ * Explicit 3-state always-on capture UX state rendered by the Tool Window & Running Devices toolbar:
+ * - [OFF]: capture disabled (`capture_enabled == false && !capture.active`).
+ * - [ARMED_WAITING]: armed (`capture_enabled == true`) and waiting for a device / selection.
+ * - [RECORDING]: actively capturing (`capture.active == true`).
+ */
+enum class CaptureToggleState {
+    OFF,
+    ARMED_WAITING,
+    RECORDING,
+}
+
+/**
+ * Pure Kotlin + Compose state controller for the `ARB` Tool Window.
+ *
+ * Owns 2-second live background polling (`system.status`, `config.get`, `device.list`,
+ * `save.list_jobs`, `bundle.list`), `ArbDaemonStateListener` updates, stale-`arbd` detection
+ * and 1-click restart, bundled `arb-tray` launching, and screenshot destination resolution.
+ * Fully headless-testable with JUnit 5 without requiring Skiko or a live IDE frame.
+ */
+class ArbToolWindowController(
+    private val project: Project?,
+    private val daemonService: ArbdDaemonService,
+    private val onOpenBundle: (bundleIdOrPath: String, title: String, isLegacy: Boolean) -> Unit,
+    private val onOpenSettings: () -> Unit = {},
+    private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
+    /**
+     * Resolves the `save.screenshot` `output_dir` (Android Studio Logcat screenshot destination
+     * inheritance or the IDE-local custom override); `null` lets `arbd` apply its own
+     * `screenshot_dir_override` -> `output_dir_override` -> default chain. Called off the EDT.
+     */
+    private val screenshotDirResolver: () -> String? = {
+        ArbScreenshotDestinationResolver.resolveOutputDir(project)
+    },
+) : Disposable {
+    private val logger = Logger.getInstance(ArbToolWindowController::class.java)
+    private val executor = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "arb-toolwindow-worker").apply { isDaemon = true }
+    }
+    private val captureStateLock = Any()
+
+    @Volatile
+    private var disposed = false
+
+    @Volatile
+    private var rawCaptureState = CaptureBarState()
+
+    @Volatile
+    private var rawCaptureEnabled = false
+
+    @Volatile
+    private var rawRecoveryState = FailedSaveRecoveryState()
+
+    @Volatile
+    private var rawCatalogState = BundleCatalogState()
+
+    @Volatile
+    private var activeFilterBacking = BundleFilter.ALL
+
+    private data class BundleMeta(val kind: BundleKind, val durationSecs: Long?, val crashed: Boolean)
+
+    private val metaCache = ConcurrentHashMap<String, BundleMeta>()
+
+    var captureState: CaptureBarState by mutableStateOf(CaptureBarState())
+        private set
+
+    var captureEnabled: Boolean by mutableStateOf(false)
+        private set
+
+    var recoveryState: FailedSaveRecoveryState by mutableStateOf(FailedSaveRecoveryState())
+        private set
+
+    var catalogState: BundleCatalogState by mutableStateOf(BundleCatalogState())
+        private set
+
+    var activeFilter: BundleFilter by mutableStateOf(BundleFilter.ALL)
+        private set
+
+    var catalogNote: String? by mutableStateOf(null)
+        private set
+
+    var staleDaemonMessage: String? by mutableStateOf(null)
+        private set
+
+    var daemonRestartBusy: Boolean by mutableStateOf(false)
+        private set
+
+    var captureModeBusy: Boolean by mutableStateOf(false)
+        private set
+
+    private val daemonStateListener = object : ArbDaemonStateListener {
+        override fun onConfigUpdated(config: ArbConfig) {
+            val next = synchronized(captureStateLock) {
+                rawCaptureEnabled = config.captureEnabled
+                CaptureBarReducer.withConfig(rawCaptureState, config).also { rawCaptureState = it }
+            }
+            publishOnEdt {
+                captureState = next
+                captureEnabled = config.captureEnabled
+            }
+            runAsync { refreshAll() }
+        }
+
+        override fun onDaemonConnectionChanged() {
+            runAsync { refreshAll() }
+        }
+
+        override fun onCatalogChanged() {
+            runAsync { refreshAll() }
+        }
+    }
+
+    init {
+        daemonService.addStateListener(daemonStateListener)
+        if (pollIntervalMs > 0L) {
+            executor.scheduleWithFixedDelay(
+                { refreshAll() },
+                0L,
+                pollIntervalMs,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
+
+    // ---- Derived UI properties (tested directly in headless JUnit tests) ----
+
+    val hasRealDevices: Boolean
+        get() = captureState.devices.isNotEmpty()
+
+    val deviceDropdownEnabled: Boolean
+        get() = hasRealDevices
+
+    /**
+     * Device dropdown entries derived strictly from `client-core`'s [DeviceSelectionPolicy] outcome:
+     * - 0 devices -> single disabled placeholder ([NO_DEVICES_PLACEHOLDER]);
+     * - 2+ online and nothing chosen -> leading prompt ([MULTIPLE_DEVICES_PROMPT], never auto-select);
+     * - pinned device gone while others are online -> the pinned serial stays selected and is
+     *   labelled `切断中（再接続待ち）` (never silently switched to another device).
+     */
+    val deviceDropdownEntries: List<DeviceDropdownEntry>
+        get() = buildDeviceDropdownEntries(captureState)
+
+    val deviceDropdownLabels: List<String>
+        get() = deviceDropdownEntries.map { it.label }
+
+    val selectedDeviceIndex: Int
+        get() {
+            val entries = deviceDropdownEntries
+            val selected = captureState.selectedSerial ?: return 0
+            val idx = entries.indexOfFirst { it.serial == selected }
+            return if (idx >= 0) idx else 0
+        }
+
+    val selectedDeviceSerial: String?
+        get() = if (!hasRealDevices) null else captureState.selectedDevice?.serial
+
+    /** Inline prompt shown under the device row when the user must pick or reconnect a device. */
+    val deviceSelectionNotice: String?
+        get() = when (val sel = captureState.deviceSelection) {
+            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+                if (captureState.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
+            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+                if (captureState.devices.none { it.serial == sel.preferredSerial }) {
+                    "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX。別の端末へは自動で切り替えません。"
+                } else {
+                    null
+                }
+            else -> null
+        }
+
+    /** Current capture mode (`video_and_logs` / `logs_only`) — the running mode while capturing. */
+    val captureMode: CaptureMode
+        get() = captureState.activeCaptureMode
+
+    val isLogsOnlyMode: Boolean
+        get() = captureState.isLogsOnlyMode
+
+    /** Quiet inline status chip text, shown only in `logs_only` mode. */
+    val captureModeChipText: String?
+        get() = if (isLogsOnlyMode) LOGS_ONLY_CHIP_TEXT else null
+
+    val captureModeToggleEnabled: Boolean
+        get() = captureState.daemonConnected && !captureModeBusy
+
+    val canUseSelectedDevice: Boolean
+        get() = captureState.daemonConnected && captureState.isSelectedDeviceOnline
+
+    val isCaptureActive: Boolean
+        get() = captureState.capture?.active == true
+
+    /** Whether always-on background capture is armed (`capture_enabled == true`). */
+    val isCaptureArmed: Boolean
+        get() = captureEnabled || captureState.config.captureEnabled
+
+    /** `true` when either actively recording or armed and waiting for a device to connect. */
+    val isCaptureOn: Boolean
+        get() = isCaptureActive || isCaptureArmed
+
+    val captureToggleState: CaptureToggleState
+        get() = when {
+            isCaptureActive && captureState.capture?.connected == true -> CaptureToggleState.RECORDING
+            isCaptureOn -> CaptureToggleState.ARMED_WAITING
+            else -> CaptureToggleState.OFF
+        }
+
+    /** Compact status indicator text clearly distinguishing OFF / ON・待機中 / ON・REC. */
+    val captureStatusBadgeText: String
+        get() = when {
+            !captureState.daemonConnected -> "未接続"
+            captureState.capture?.storagePressureStopped == true -> "容量停止"
+            captureToggleState == CaptureToggleState.RECORDING -> when {
+                isLogsOnlyMode -> "ON・REC (ログのみ)"
+                else -> "ON・REC"
+            }
+            captureToggleState == CaptureToggleState.ARMED_WAITING -> "ON・待機中"
+            else -> "OFF"
+        }
+
+    /** Shown under the device row while armed and waiting for a device connection / selection. */
+    val armedWaitingNotice: String?
+        get() = if (captureState.daemonConnected && captureToggleState == CaptureToggleState.ARMED_WAITING) {
+            ARMED_WAITING_DETAIL_TEXT
+        } else {
+            null
+        }
+
+    /** Always enabled while `arbd` is connected so Capture ON can be armed even with 0 devices. */
+    val startStopEnabled: Boolean
+        get() = captureState.daemonConnected
+
+    val screenshotEnabled: Boolean
+        get() = if (isCaptureActive) captureState.daemonConnected else canUseSelectedDevice
+
+    val startStopLabel: String
+        get() = if (isCaptureOn) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
+
+    val deviceTooltip: String
+        get() = when (val info = captureState.selectedDevice) {
+            null -> NO_DEVICES_PLACEHOLDER
+            else -> when (info.state) {
+                AdbDeviceState.Unauthorized -> "端末で「USB デバッグを許可」をタップしてください (${info.serial})"
+                AdbDeviceState.Offline -> "端末がオフラインです (${info.serial})"
+                else -> "録画・スクリーンショット対象端末 (${info.serial})"
+            }
+        }
+
+    val startStopTooltip: String
+        get() = when (captureToggleState) {
+            CaptureToggleState.RECORDING -> "ON・REC（取得中） — クリックでキャプチャを OFF にします"
+            CaptureToggleState.ARMED_WAITING -> "$ARMED_WAITING_DETAIL_TEXT — クリックでキャプチャを OFF にします"
+            CaptureToggleState.OFF -> if (canUseSelectedDevice) {
+                "OFF（停止中） — ライブキャプチャを開始"
+            } else {
+                val hint = disabledDeviceHint()?.let { " · $it" }.orEmpty()
+                "OFF（停止中） — クリックで $ARMED_WAITING_DETAIL_TEXT にします$hint"
+            }
+        }
+
+    val screenshotTooltip: String
+        get() = if (isCaptureActive) {
+            "対象端末の現在画面を PNG 保存"
+        } else {
+            disabledDeviceHint() ?: "対象端末の現在画面を PNG 保存"
+        }
+
+    val displayedBundles: List<BundleCatalogItem>
+        get() = catalogState.copy(activeFilter = activeFilter).filteredItems
+
+    val showGcAction: Boolean
+        get() = activeFilter == BundleFilter.TRASH
+
+    private fun disabledDeviceHint(): String? {
+        deviceSelectionNotice?.let { return it }
+        return when (captureState.selectedDevice?.state) {
+            AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
+            AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
+            null -> NO_DEVICES_PLACEHOLDER
+            else -> null
+        }
+    }
+
+    // ---- Commands invoked from Jewel UI & tests ----
+
+    /**
+     * Explicit user choice: pins the serial (clears the auto-selected marker so the reducer never
+     * re-evaluates it away) and persists it as `config.device_serial`, so the Running Devices
+     * toolbar, `arb-tray`, CLI and MCP all target the same device.
+     */
+    fun selectDeviceByIndex(index: Int) {
+        val serial = deviceDropdownEntries.getOrNull(index)?.serial ?: return
+        // Re-choosing the sole auto-selected device is a no-op: it must stay "auto" so plugging
+        // in a second device still prompts instead of silently keeping a pin nobody asked for.
+        val current = captureState
+        if (serial == current.selectedSerial && serial == current.autoSelectedSerial) return
+        val next = synchronized(captureStateLock) {
+            rawCaptureState.copy(
+                selectedSerial = serial,
+                autoSelectedSerial = null,
+                deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
+            ).also { rawCaptureState = it }
+        }
+        publishOnEdt { captureState = next }
+        if (next.config.deviceSerial == serial) return
+        runAsync {
+            val updated = daemonService.withClient {
+                it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+            }
+            daemonService.notifyConfigUpdated(updated)
+        }
+    }
+
+    /**
+     * Switches between `映像＋ログ` and `ログのみ` via `config.update(capture_mode)`. A running capture
+     * is restarted on the same device (`capture.stop` + `capture.start(capture_mode)`) because the
+     * mode only takes effect when a capture starts.
+     */
+    fun setCaptureMode(mode: CaptureMode) {
+        val snapshot = captureState
+        val wasActive = snapshot.capture?.active == true
+        val runningMode = snapshot.capture?.captureMode
+        if (snapshot.config.captureMode == mode && (!wasActive || runningMode == mode)) return
+        val serial = if (wasActive) snapshot.capture?.serial ?: selectedDeviceSerial else selectedDeviceSerial
+        publishOnEdt { captureModeBusy = true }
+        runAsync {
+            val label = captureModeLabel(mode)
+            try {
+                val updated = daemonService.withClient {
+                    it.configUpdate(ArbConfigPatch(captureMode = mode)).config
+                }
+                daemonService.notifyConfigUpdated(updated)
+                if (wasActive && runningMode != mode) {
+                    daemonService.withClient { it.captureStop() }
+                    daemonService.withClient {
+                        it.captureStart(CaptureStartParams(serial = serial, captureMode = mode))
+                    }
+                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に切り替え、録画を再開しました")
+                } else {
+                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に設定しました")
+                }
+            } catch (t: Throwable) {
+                logger.warn("ARB capture mode switch to ${mode.wire} failed", t)
+                ArbNotifications.notifyWarning(
+                    project,
+                    "キャプチャモードを「$label」に切り替えられませんでした: ${t.message ?: "詳細不明"}",
+                )
+            } finally {
+                publishOnEdt { captureModeBusy = false }
+            }
+            refreshAll()
+        }
+    }
+
+    fun triggerPrimarySave() {
+        val sec = captureState.saveWindowSecs.toLong()
+        when (captureState.defaultSaveAction) {
+            IdeDefaultSaveAction.SAVE_AND_OPEN -> triggerSave(sec, openEditor = true)
+            IdeDefaultSaveAction.SAVE_ONLY -> triggerSave(sec, openEditor = false)
+        }
+    }
+
+    fun triggerSecondarySave() {
+        val sec = captureState.saveWindowSecs.toLong()
+        when (captureState.defaultSaveAction) {
+            IdeDefaultSaveAction.SAVE_AND_OPEN -> triggerSave(sec, openEditor = false)
+            IdeDefaultSaveAction.SAVE_ONLY -> triggerSave(sec, openEditor = true)
+        }
+    }
+
+    fun toggleCapture() {
+        val currentlyOn = isCaptureOn
+        val currentlyActive = isCaptureActive
+        val canStartNow = canUseSelectedDevice
+        val serial = selectedDeviceSerial
+        runAsync {
+            if (currentlyOn) {
+                persistCaptureEnabled(daemonService, enabled = false)
+                if (currentlyActive) {
+                    daemonService.withClient { it.captureStop() }
+                }
+                daemonService.updateCachedCaptureState(active = false, enabled = false)
+            } else {
+                val armed = persistCaptureEnabled(daemonService, enabled = true) == true
+                val started = if (canStartNow && !serial.isNullOrBlank()) {
+                    val attempt = runCatching {
+                        daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
+                    }
+                    // Without always-on support the start itself is the whole toggle: surface its error.
+                    if (!armed) attempt.getOrThrow()
+                    attempt.getOrNull()?.started == true
+                } else {
+                    false
+                }
+                daemonService.updateCachedCaptureState(active = started, enabled = armed)
+            }
+            refreshAll()
+        }
+    }
+
+    fun captureScreenshot() {
+        val serial = selectedDeviceSerial
+        runAsync {
+            try {
+                val outputDir = runCatching { screenshotDirResolver() }
+                    .onFailure { logger.debug("ARB screenshot dir resolution failed", it) }
+                    .getOrNull()
+                val res = daemonService.withClient {
+                    it.saveScreenshot(SaveScreenshotParams(serial = serial, outputDir = outputDir))
+                }
+                ArbNotifications.notifyImageSaved(
+                    project = project,
+                    imagePath = res.path,
+                    width = res.width,
+                    height = res.height,
+                    kindLabel = "スクリーンショット",
+                )
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB screenshot failed", t)
+                ArbNotifications.notifyActionFailed(project, "スクリーンショットの保存", t.message)
+                handleDaemonFailure(t)
+            }
+        }
+    }
+
+    fun saveLogsOnly() {
+        val durationSec = captureState.saveWindowSecs.toLong()
+        runAsync {
+            try {
+                val res = daemonService.withClient {
+                    it.saveLogs(SaveLogsParams(windowSecs = durationSec))
+                }
+                val savedId = res.bundleId
+                if (savedId != null) {
+                    ArbNotifications.notifyLogsOnlySaved(
+                        project = project,
+                        daemonService = daemonService,
+                        bundleId = savedId,
+                        bundlePath = res.bundlePath,
+                        windowSecs = durationSec,
+                        warning = res.warning,
+                    )
+                } else {
+                    ArbNotifications.notifyWarning(
+                        project = project,
+                        message = "ログ保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
+                        includeOpenPanel = true,
+                    )
+                }
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB save.logs failed", t)
+                ArbNotifications.notifyActionFailed(project, "ログのみの保存", t.message)
+                handleDaemonFailure(t)
+            }
+        }
+    }
+
+    fun launchTray() {
+        runAsync {
+            val bin = daemonService.launchBundledTray()
+            ArbNotifications.notifyInfo(project, "メニューバー / トレイ (arb-tray) を起動しました: ${bin.fileName}")
+        }
+    }
+
+    fun openSettings() {
+        onOpenSettings()
+        runAsync { refreshAll() }
+    }
+
+    fun restartDaemon() {
+        publishOnEdt { daemonRestartBusy = true }
+        runAsync {
+            try {
+                daemonService.restartDaemon()
+                publishOnEdt {
+                    staleDaemonMessage = null
+                    daemonRestartBusy = false
+                }
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB daemon restart failed", t)
+                publishOnEdt {
+                    daemonRestartBusy = false
+                    staleDaemonMessage = "arbd の再起動に失敗しました: ${t.message ?: "詳細不明"}"
+                }
+            }
+        }
+    }
+
+    fun selectFilter(filter: BundleFilter) {
+        activeFilterBacking = filter
+        publishOnEdt {
+            activeFilter = filter
+            catalogState = rawCatalogState.copy(activeFilter = filter)
+        }
+    }
+
+    fun openBundle(item: BundleCatalogItem) {
+        onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly)
+    }
+
+    fun revealInFinder(path: String) {
+        runCatching { RevealFileAction.openFile(Path.of(path)) }
+            .onFailure { logger.warn("Failed to reveal $path", it) }
+    }
+
+    fun trashBundle(bundleId: String) {
+        runAsync {
+            daemonService.withClient { it.bundleTrash(bundleId) }
+            refreshAll(note = "ゴミ箱へ移動しました（ゴミ箱タブから復元可）")
+        }
+    }
+
+    fun restoreBundle(bundleId: String) {
+        runAsync {
+            daemonService.withClient { it.bundleRestore(bundleId) }
+            refreshAll(note = "バンドルを復元しました")
+        }
+    }
+
+    fun runGc() {
+        runAsync {
+            val gc = daemonService.withClient { it.bundleGc() }
+            val note = "GC 完了: 削除=${gc.purgedBundleIds.size}, Lease 保護=${gc.skippedLeasedBundleIds.size}, Legacy 保護=${gc.skippedUnmanagedOrLegacyBundleIds.size}"
+            refreshAll(note = note)
+        }
+    }
+
+    fun retryFailedJob(jobId: String) {
+        runAsync {
+            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+            val res = daemonService.withClient { it.saveRetry(jobId) }
+            updateRecovery(
+                FailedSaveRecoveryReducer.applyJobUpdated(
+                    rawRecoveryState,
+                    res.job,
+                    "再試行結果: ${res.job.state.wire}",
+                ),
+            )
+            refreshAll()
+        }
+    }
+
+    fun retargetFailedJobInteractive(jobId: String) {
+        val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
+            title = "新しい保存先ディレクトリを選択"
+        }
+        FileChooser.chooseFile(descriptor, project, null) { selected ->
+            retargetFailedJob(jobId, selected.toNioPath().toAbsolutePath().normalize().toString())
+        }
+    }
+
+    fun retargetFailedJob(jobId: String, newDestDir: String) {
+        runAsync {
+            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+            val res = daemonService.withClient { it.saveRetarget(jobId, newDestDir) }
+            updateRecovery(
+                FailedSaveRecoveryReducer.applyJobUpdated(
+                    rawRecoveryState,
+                    res.job,
+                    "保存先変更後の結果: ${res.job.state.wire}",
+                ),
+            )
+            refreshAll()
+        }
+    }
+
+    fun discardFailedJob(jobId: String) {
+        runAsync {
+            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+            val job = daemonService.withClient { it.saveDiscard(jobId) }
+            updateRecovery(
+                FailedSaveRecoveryReducer.applyJobUpdated(
+                    rawRecoveryState,
+                    job,
+                    "保存ジョブを破棄し、ピン留めチャンクを解放しました。",
+                ),
+            )
+            refreshAll()
+        }
+    }
+
+    fun refreshNow() {
+        runAsync { refreshAll() }
+    }
+
+    /** Direct state injection helper for deterministic headless tests. */
+    internal fun applyStateForTest(
+        capture: CaptureBarState = captureState,
+        recovery: FailedSaveRecoveryState = recoveryState,
+        catalog: BundleCatalogState = catalogState,
+        staleMessage: String? = staleDaemonMessage,
+        captureEnabled: Boolean = capture.config.captureEnabled,
+    ) {
+        synchronized(captureStateLock) {
+            rawCaptureState = capture
+            rawCaptureEnabled = captureEnabled
+        }
+        rawRecoveryState = recovery
+        rawCatalogState = catalog
+        activeFilterBacking = catalog.activeFilter
+        captureState = capture
+        this.captureEnabled = captureEnabled
+        recoveryState = recovery
+        catalogState = catalog
+        activeFilter = catalog.activeFilter
+        staleDaemonMessage = staleMessage
+    }
+
+    private fun triggerSave(durationSec: Long, openEditor: Boolean) {
+        runAsync {
+            try {
+                val res = daemonService.withClient {
+                    it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
+                }
+                refreshAll()
+                val savedId = res.bundleId
+                if (savedId != null) {
+                    if (openEditor) {
+                        publishOnEdt { onOpenBundle(savedId, savedId, false) }
+                    }
+                    ArbNotifications.notifyReplaySaved(
+                        project = project,
+                        daemonService = daemonService,
+                        bundleId = savedId,
+                        bundlePath = res.bundlePath,
+                        windowSecs = durationSec,
+                        openedInStudio = openEditor,
+                        warning = res.warning,
+                    )
+                } else {
+                    ArbNotifications.notifyWarning(
+                        project = project,
+                        message = "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
+                        includeOpenPanel = true,
+                    )
+                }
+            } catch (t: Throwable) {
+                logger.warn("ARB save.trigger failed", t)
+                ArbNotifications.notifyActionFailed(project, "直前の記録の保存", t.message)
+                handleDaemonFailure(t)
+            }
+        }
+    }
+
+    private fun runAsync(action: () -> Unit) {
+        if (disposed) return
+        try {
+            executor.submit {
+                if (disposed) return@submit
+                try {
+                    action()
+                } catch (t: Throwable) {
+                    logger.warn("ARB toolwindow action failed", t)
+                    handleDaemonFailure(t)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Disposed concurrently; nothing to do.
+        }
+    }
+
+    private fun refreshAll(note: String? = null) {
+        if (disposed) return
+        try {
+            val status = daemonService.withClient { it.systemStatus() }
+            daemonService.updateCachedCaptureActive(status.capture.active)
+            var staleWarning: String? = null
+            val config = try {
+                daemonService.withClient { it.configGet().config }.also(daemonService::updateCachedConfig)
+            } catch (t: Throwable) {
+                val diag = ArbSettingsConfigurable.classifyDaemonError(t)
+                if (diag.kind == ArbSettingsConfigurable.DaemonDiagnosticKind.STALE_OR_MISMATCHED) {
+                    staleWarning = diag.message
+                }
+                rawCaptureState.config
+            }
+            val devices = runCatching {
+                daemonService.withClient { it.deviceList().devices }
+            }.onFailure { err ->
+                logger.warn("ARB device.list poll failed: ${err.message}")
+            }.getOrDefault(rawCaptureState.devices)
+            val jobs = daemonService.withClient { it.saveListJobs().jobs }
+            val bundles = daemonService.withClient { it.bundleList().bundles }
+
+            var budget = META_BUDGET_PER_POLL
+            for (entry in bundles) {
+                if (metaCache.containsKey(entry.bundleId)) continue
+                if (budget-- <= 0) break
+                val summary = runCatching {
+                    daemonService.withClient { it.timelineSummary(entry.bundleId) }
+                }.getOrNull() ?: continue
+                val spanNs = summary.epochs.firstOrNull()?.let { ep ->
+                    (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
+                }
+                val secs = when {
+                    spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
+                    summary.frameCount > 0 -> (summary.frameCount / config.videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                    else -> null
+                }
+                val crashed = runCatching {
+                    daemonService.withClient { it.timelineCrashes(entry.bundleId).crashes }.isNotEmpty()
+                }.getOrDefault(false)
+                metaCache[entry.bundleId] = BundleMeta(summary.bundleKind, secs, crashed)
+            }
+            val crashIds = mutableSetOf<String>()
+            val durations = mutableMapOf<String, Long>()
+            val kinds = mutableMapOf<String, BundleKind>()
+            for (entry in bundles) {
+                val meta = metaCache[entry.bundleId] ?: continue
+                kinds[entry.bundleId] = meta.kind
+                meta.durationSecs?.let { durations[entry.bundleId] = it }
+                if (meta.crashed) crashIds.add(entry.bundleId)
+            }
+
+            val armed = status.captureEnabled || config.captureEnabled
+            daemonService.updateCachedCaptureState(active = status.capture.active, enabled = armed)
+            val nextCapture = synchronized(captureStateLock) {
+                rawCaptureEnabled = armed
+                CaptureBarReducer.fromStatus(
+                    previous = rawCaptureState,
+                    status = status,
+                    devices = devices,
+                    config = config,
+                ).also { rawCaptureState = it }
+            }
+            daemonService.updateCachedToolbarSnapshot(nextCapture.toToolbarSnapshot(captureEnabled = armed))
+            val nextRecovery = FailedSaveRecoveryReducer.withJobs(rawRecoveryState, jobs)
+            val nextCatalog = BundleCatalogState.fromEntries(
+                entries = bundles,
+                activeFilter = activeFilterBacking,
+                crashBundleIds = crashIds,
+                durationsByBundleId = durations,
+                kindsByBundleId = kinds,
+            )
+            rawRecoveryState = nextRecovery
+            rawCatalogState = nextCatalog
+
+            publishOnEdt {
+                captureState = nextCapture
+                captureEnabled = armed
+                recoveryState = nextRecovery
+                catalogState = nextCatalog
+                staleDaemonMessage = staleWarning
+                if (note != null) {
+                    catalogNote = note
+                }
+            }
+        } catch (t: Throwable) {
+            logger.debug("ARB status poll failed: ${t.message}")
+            handleDaemonFailure(t)
+        }
+    }
+
+    private fun handleDaemonFailure(t: Throwable) {
+        val diag = ArbSettingsConfigurable.classifyDaemonError(t)
+        val stale = if (diag.kind == ArbSettingsConfigurable.DaemonDiagnosticKind.STALE_OR_MISMATCHED) {
+            diag.message
+        } else {
+            null
+        }
+        val next = synchronized(captureStateLock) {
+            CaptureBarReducer.disconnected(rawCaptureState, t.message ?: "arbd 未起動").also { rawCaptureState = it }
+        }
+        daemonService.updateCachedToolbarSnapshot(
+            ArbToolbarDaemonSnapshot(
+                probed = true,
+                daemonConnected = false,
+                captureActive = false,
+            ),
+        )
+        publishOnEdt {
+            captureState = next
+            if (stale != null) {
+                staleDaemonMessage = stale
+            }
+        }
+    }
+
+    private fun updateRecovery(next: FailedSaveRecoveryState) {
+        rawRecoveryState = next
+        publishOnEdt { recoveryState = next }
+    }
+
+    private fun publishOnEdt(block: () -> Unit) {
+        if (disposed) return
+        if (SwingUtilities.isEventDispatchThread()) {
+            if (!disposed) block()
+        } else {
+            SwingUtilities.invokeLater { if (!disposed) block() }
+        }
+    }
+
+    override fun dispose() {
+        disposed = true
+        daemonService.removeStateListener(daemonStateListener)
+        // Never `shutdownNow()`: interrupting a worker blocked in the shared app-level IPC client
+        // closes its interruptible `SocketChannel` (ClosedByInterruptException) and breaks the
+        // in-flight call for every other ARB view. Queued tasks bail out on `disposed` instead.
+        executor.shutdown()
+    }
+
+    /** Test hook: whether the worker executor has been shut down without interrupting tasks. */
+    internal val isWorkerShutdown: Boolean
+        get() = executor.isShutdown
+
+    /** One device dropdown row; [serial] is `null` for non-selectable prompts/placeholders. */
+    data class DeviceDropdownEntry(val label: String, val serial: String?)
+
+    companion object {
+        const val NO_DEVICES_PLACEHOLDER: String = "端末未検出（USB / エミュレータを接続）"
+        const val MULTIPLE_DEVICES_PROMPT: String = "複数端末が接続中です — 対象を選択してください"
+        const val WAITING_FOR_PINNED_SUFFIX: String = "切断中（再接続待ち）"
+        const val CAPTURE_MODE_VIDEO_LABEL: String = "映像＋ログ"
+        const val CAPTURE_MODE_LOGS_LABEL: String = "ログのみ"
+        const val LOGS_ONLY_CHIP_TEXT: String = "ログのみ常時"
+        const val ARMED_WAITING_DETAIL_TEXT: String = "ON・待機中（端末接続で自動開始）"
+
+        fun captureModeLabel(mode: CaptureMode): String = when (mode) {
+            CaptureMode.VIDEO_AND_LOGS -> CAPTURE_MODE_VIDEO_LABEL
+            CaptureMode.LOGS_ONLY -> CAPTURE_MODE_LOGS_LABEL
+        }
+
+        /** Pure dropdown builder (see [deviceDropdownEntries]). */
+        fun buildDeviceDropdownEntries(state: CaptureBarState): List<DeviceDropdownEntry> {
+            val devices = state.devices
+            val selection = state.deviceSelection
+            val entries = mutableListOf<DeviceDropdownEntry>()
+            val pinnedMissing = (selection as? DeviceSelectionOutcome.WaitingForPreferredDevice)
+                ?.preferredSerial
+                ?.takeIf { pinned -> devices.none { it.serial == pinned } }
+            when {
+                pinnedMissing != null ->
+                    entries += DeviceDropdownEntry("$pinnedMissing — $WAITING_FOR_PINNED_SUFFIX", pinnedMissing)
+                selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection && state.selectedSerial == null ->
+                    entries += DeviceDropdownEntry(MULTIPLE_DEVICES_PROMPT, null)
+                devices.isEmpty() ->
+                    entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
+            }
+            devices.mapTo(entries) { DeviceDropdownEntry(formatDeviceLabel(it), it.serial) }
+            return entries
+        }
+        private const val META_BUDGET_PER_POLL = 24
+        const val DEFAULT_POLL_INTERVAL_MS: Long = 2_000L
+
+        fun formatDeviceLabel(device: AdbDeviceInfo): String = when (val st = device.state) {
+            AdbDeviceState.Device -> device.serial
+            AdbDeviceState.Unauthorized -> "${device.serial} (未承認: USB デバッグを許可)"
+            AdbDeviceState.Offline -> "${device.serial} (オフライン)"
+            AdbDeviceState.Recovery -> "${device.serial} (recovery)"
+            AdbDeviceState.Bootloader -> "${device.serial} (bootloader)"
+            is AdbDeviceState.Unknown -> "${device.serial} (${st.value})"
+        }
+    }
+}
+
+internal fun CaptureBarState.toToolbarSnapshot(
+    captureEnabled: Boolean = this.config.captureEnabled,
+): ArbToolbarDaemonSnapshot {
+    val hint = when (val sel = this.deviceSelection) {
+        is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+            if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
+        is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}"
+        else -> when (this.selectedDevice?.state) {
+            AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
+            AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+            null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+            else -> null
+        }
+    }
+    return ArbToolbarDaemonSnapshot(
+        probed = true,
+        daemonConnected = this.daemonConnected,
+        captureActive = this.capture?.active == true,
+        captureConnected = this.capture?.connected == true,
+        captureEnabled = captureEnabled,
+        hasBufferedData = this.ringChunkCount > 0L,
+        hasOnlineDevice = this.isSelectedDeviceOnline,
+        selectedDeviceSerial = this.selectedDevice?.serial,
+        disabledDeviceHint = hint,
+    )
+}
+
+/**
+ * Persists `capture_enabled` (always-on capture) through `config.update`. Returns the daemon's
+ * stored value, or `null` when the running `arbd` predates `capture_enabled` and rejects the patch
+ * field; callers then fall back to a plain `capture.start` / `capture.stop` toggle.
+ */
+internal fun persistCaptureEnabled(daemonService: ArbdDaemonService, enabled: Boolean): Boolean? {
+    val updated = try {
+        daemonService.withClient { it.configUpdate(ArbConfigPatch(captureEnabled = enabled)).config }
+    } catch (e: ArbdRpcException) {
+        if (!e.isUnknownCaptureEnabledField) throw e
+        return null
+    }
+    daemonService.notifyConfigUpdated(updated)
+    return updated.captureEnabled
+}

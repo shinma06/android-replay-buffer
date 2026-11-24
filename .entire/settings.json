@@ -5,5 +5,6 @@
       "provider": "github",
       "repo": "shinma06/entire-checkpoints"
     }
-  }
+  },
+  "absolute_git_hook_path": true
 }

@@ -1,0 +1,7 @@
+model_schema = "docs/model.yaml"
+
+[repositories]
+paths = ["docs"]
+
+[validation]
+strict_mode = true

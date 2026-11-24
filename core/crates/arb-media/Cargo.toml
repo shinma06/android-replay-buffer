@@ -1,0 +1,20 @@
+[package]
+name = "arb-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPL-free media engine for Android Replay Buffer (ARB) (pure-Rust ISO-BMFF avc1 mux/demux, VideoCodecBackend, frame-accurate zero-elst trim, GOP-LRU playback)."
+
+[dependencies]
+arb-core.workspace = true
+openh264 = "0.9"
+png = "0.17"
+rusty_aac = { version = "2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

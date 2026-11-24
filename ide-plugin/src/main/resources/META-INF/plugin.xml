@@ -1,0 +1,104 @@
+<idea-plugin>
+    <id>io.github.shinma06.android-replay-buffer</id>
+    <name>Android Replay Buffer</name>
+    <vendor url="https://github.com/shinma06/android-replay-buffer">shinma06</vendor>
+    <description><![CDATA[
+        Android Replay Buffer は、ローカル常駐デーモン arbd と IPC / 共有メモリ（SHM）で連携する
+        薄い Android Studio / IntelliJ IDEA プラグインです。
+        直前の画面録画・logcat・タッチ入力の保存、失敗保存のリカバリ（再試行・保存先変更・破棄）、
+        記録バンドルおよび旧形式（Legacy RO）フォルダの閲覧、フレーム単位トリム・共有用 MP4・PNG 出力を提供します。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.compose</depends>
+    <depends optional="true">org.jetbrains.android</depends>
+    <depends optional="true">com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Android Replay Buffer" displayType="BALLOON" isLogByDefault="true"/>
+        <applicationService serviceImplementation="io.github.shinma06.arb.ide.ArbLocalSettingsState"/>
+        <applicationService serviceImplementation="io.github.shinma06.arb.ide.ArbdDaemonService"/>
+        <toolWindow id="ARB"
+                    anchor="right"
+                    doNotActivateOnStart="true"
+                    icon="AllIcons.Actions.Restart"
+                    factoryClass="io.github.shinma06.arb.ide.ArbToolWindowFactory"/>
+        <projectConfigurable parentId="tools"
+                             nonDefaultProject="true"
+                             id="io.github.shinma06.arb.settings"
+                             displayName="Android Replay Buffer"
+                             instance="io.github.shinma06.arb.ide.ArbSettingsConfigurable"/>
+        <fileType name="ArbBundleManifest"
+                  implementationClass="io.github.shinma06.arb.ide.ArbBundleFileType"
+                  fieldName="INSTANCE"/>
+        <fileTypeDetector implementation="io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"/>
+        <fileEditorProvider implementation="io.github.shinma06.arb.ide.ArbBundleFileEditorProvider"/>
+        <virtualFilePreCloseCheck implementation="io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"/>
+        <postStartupActivity implementation="io.github.shinma06.arb.ide.ArbStartupActivity"/>
+    </extensions>
+
+    <actions>
+        <group id="io.github.shinma06.arb.Actions" text="Android Replay Buffer" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="io.github.shinma06.arb.QuickSave"
+                    class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
+                    icon="AllIcons.Actions.MenuSaveall"
+                    text="ARB: 直前の記録を保存"
+                    description="arbd 経由で設定秒数分の画面・ログ・入力を保存します"/>
+            <action id="io.github.shinma06.arb.ToggleCapture"
+                    class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
+                    icon="AllIcons.Actions.Restart"
+                    text="ARB: キャプチャ開始 / 停止"
+                    description="arbd のライブキャプチャを開始または停止します"/>
+            <action id="io.github.shinma06.arb.Screenshot"
+                    class="io.github.shinma06.arb.ide.ArbScreenshotAction"
+                    icon="AllIcons.FileTypes.Image"
+                    text="ARB: スクリーンショットを保存"
+                    description="対象端末の現在画面を PNG として即時保存します"/>
+            <action id="io.github.shinma06.arb.SaveLogs"
+                    class="io.github.shinma06.arb.ide.ArbLogcatSaveLogsAction"
+                    icon="AllIcons.FileTypes.Text"
+                    text="ARB: 直前のログのみ保存"
+                    description="映像キャプチャを中断せず直前のログのみを保存します"/>
+            <separator/>
+            <action id="io.github.shinma06.arb.LaunchTray"
+                    class="io.github.shinma06.arb.ide.ArbLaunchTrayAction"
+                    icon="AllIcons.Toolwindows.ToolWindowRun"
+                    text="ARB: メニューバー (arb-tray) を起動"
+                    description="同梱の arb-tray をターミナル不要で起動します"/>
+            <action id="io.github.shinma06.arb.OpenBundleDir"
+                    class="io.github.shinma06.arb.ide.ArbOpenBundleAction"
+                    icon="AllIcons.Nodes.Folder"
+                    text="ARB: バンドルフォルダを開く..."
+                    description="ARB バンドルまたは旧形式フォルダを統合スタジオで開きます"/>
+        </group>
+
+        <action id="io.github.shinma06.arb.About"
+                class="io.github.shinma06.arb.ide.ArbAboutAction"
+                icon="AllIcons.General.Information"
+                text="Android Replay Buffer について"
+                description="バージョン情報、arbd 接続状態、OSS ライセンス情報を表示します">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <group id="io.github.shinma06.arb.RunningDevices">
+            <separator/>
+            <action id="io.github.shinma06.arb.RunningDevices.ToggleCapture"
+                    class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
+                    icon="AllIcons.Actions.Restart"
+                    text="ARB: キャプチャ開始 / 停止"
+                    description="arbd のライブキャプチャを開始または停止します"/>
+            <action id="io.github.shinma06.arb.RunningDevices.Save"
+                    class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
+                    icon="AllIcons.Actions.MenuSaveall"
+                    text="ARB: 直前の記録を保存"
+                    description="設定された秒数と既定アクションに従って直前の記録を保存します"/>
+            <action id="io.github.shinma06.arb.RunningDevices.Screenshot"
+                    class="io.github.shinma06.arb.ide.ArbScreenshotAction"
+                    icon="AllIcons.FileTypes.Image"
+                    text="ARB: スクリーンショットを保存"
+                    description="対象端末の現在画面を PNG として即時保存します"/>
+            <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
+        </group>
+    </actions>
+</idea-plugin>

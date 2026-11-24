@@ -1,0 +1,15 @@
+[package]
+name = "arb-adb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ADB transport, device-agent lifecycle, auto-reconnect, and framed wire protocol for Android Replay Buffer (ARB)."
+
+[dependencies]
+arb-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints]
+workspace = true

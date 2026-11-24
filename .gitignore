@@ -1,18 +1,14 @@
 __pycache__/
 *.py[cod]
-.pytest_cache/
-*.egg-info/
 dist/
 build/
 .DS_Store
-.venv/
-venv/
 .harness-local/
 .env
 .env.*
 !.env.example
 
-# IDE and plugin build state
+# IDE and Gradle build state
 .idea/
 *.iml
 .gradle/

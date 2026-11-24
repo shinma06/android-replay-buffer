@@ -1,0 +1,29 @@
+[package]
+name = "arb-os"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform OS abstraction layer for Android Replay Buffer (ARB) (dual clocks, atomic fs, local IPC, shared memory, paths)."
+
+[dependencies]
+arb-core.workspace = true
+memmap2 = "0.9"
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }
+
+[lints]
+workspace = true
