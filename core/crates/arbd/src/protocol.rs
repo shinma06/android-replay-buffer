@@ -130,6 +130,10 @@ pub struct SystemHelloResponse {
     /// Optional Unix timestamp (seconds) of the running `arbd` executable's last modification time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_mtime_secs: Option<u64>,
+    /// `true` when this daemon was started with `--exit-on-stdin-eof` and exits when the parent
+    /// holding its stdin pipe dies (parent-bound lifecycle). Absent (= `false`) on older daemons.
+    #[serde(default)]
+    pub parent_bound: bool,
 }
 
 /// Honest live audio capture availability state reported in [`CaptureStatusView`].

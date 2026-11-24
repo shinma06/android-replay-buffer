@@ -22,6 +22,24 @@ use arb_tray::native_tray;
 use arb_tray::rpc::AutoStartMode;
 use serde_json::json;
 
+/// How the tray process is bound to whoever launched it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    /// Runs until the user quits it (default).
+    Standalone,
+    /// `--exit-on-stdin-eof`: quits when the parent holding the stdin pipe goes away.
+    ParentBound,
+}
+
+/// Whether a native tray icon is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IconMode {
+    /// The OS menu bar / system tray icon (default).
+    Native,
+    /// `--headless`: the `arbd` status worker only, no tray host needed.
+    Headless,
+}
+
 #[derive(Debug, Clone)]
 struct CliOptions {
     data_dir: Option<PathBuf>,
@@ -29,6 +47,8 @@ struct CliOptions {
     runtime_dir: Option<PathBuf>,
     auto_start: AutoStartMode,
     headless_smoke: bool,
+    lifecycle: Lifecycle,
+    icon: IconMode,
     poll_interval: Duration,
     help: bool,
     version: bool,
@@ -42,6 +62,8 @@ impl Default for CliOptions {
             runtime_dir: None,
             auto_start: AutoStartMode::Disabled,
             headless_smoke: false,
+            lifecycle: Lifecycle::Standalone,
+            icon: IconMode::Native,
             poll_interval: controller::DEFAULT_POLL_INTERVAL,
             help: false,
             version: false,
@@ -99,6 +121,14 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 opts.headless_smoke = true;
                 i += 1;
             }
+            "--exit-on-stdin-eof" => {
+                opts.lifecycle = Lifecycle::ParentBound;
+                i += 1;
+            }
+            "--headless" => {
+                opts.icon = IconMode::Headless;
+                i += 1;
+            }
             "--poll-interval-ms" => {
                 let val = args
                     .get(i + 1)
@@ -133,6 +163,9 @@ OPTIONS:\n  \
   --auto-start              Auto-spawn sibling arbd if not running\n  \
   --poll-interval-ms <N>    Status poll interval in milliseconds (default 1000)\n  \
   --headless-smoke          Connect, run one status/menu-build cycle, print JSON, exit 0\n  \
+  --exit-on-stdin-eof       Parent-bound lifecycle: quit (releasing arb-tray.lock) when stdin\n  \
+                            reaches EOF, i.e. when the parent holding the stdin pipe exits\n  \
+  --headless                Run the arbd status worker without a tray icon (CI / diagnostics)\n  \
   -V, --version             Print the arb-tray version\n  \
   -h, --help                Show this help",
         env!("CARGO_PKG_VERSION")
@@ -228,16 +261,16 @@ fn main() -> ExitCode {
         }
     };
 
-    run_native_tray(paths, opts.auto_start, opts.poll_interval)
+    run_native_tray(paths, &opts)
 }
 
 #[cfg(feature = "native-tray")]
-fn run_native_tray(
-    paths: ArbPaths,
-    auto_start: AutoStartMode,
-    poll_interval: Duration,
-) -> ExitCode {
-    match native_tray::run(paths, auto_start, poll_interval) {
+fn run_native_tray(paths: ArbPaths, opts: &CliOptions) -> ExitCode {
+    let options = native_tray::TrayRunOptions {
+        exit_on_stdin_eof: opts.lifecycle == Lifecycle::ParentBound,
+        headless: opts.icon == IconMode::Headless,
+    };
+    match native_tray::run(paths, opts.auto_start, opts.poll_interval, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
@@ -247,11 +280,7 @@ fn run_native_tray(
 }
 
 #[cfg(not(feature = "native-tray"))]
-fn run_native_tray(
-    _paths: ArbPaths,
-    _auto_start: AutoStartMode,
-    _poll_interval: Duration,
-) -> ExitCode {
+fn run_native_tray(_paths: ArbPaths, _opts: &CliOptions) -> ExitCode {
     eprintln!(
         "error: this arb-tray build has no native tray UI (feature `native-tray` disabled); \
          use --headless-smoke"
@@ -281,6 +310,31 @@ mod tests {
         assert_eq!(opts.auto_start, AutoStartMode::Enabled);
         assert!(opts.headless_smoke);
         assert_eq!(opts.poll_interval, Duration::from_millis(250));
+        assert_eq!(
+            (opts.lifecycle, opts.icon),
+            (Lifecycle::Standalone, IconMode::Native),
+            "parent-bound and headless modes stay off unless requested"
+        );
+    }
+
+    #[test]
+    fn parses_parent_bound_and_headless_flags() {
+        let args: Vec<String> = ["--exit-on-stdin-eof", "--headless"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let opts = parse_args(&args).expect("args must parse");
+        assert_eq!(
+            opts.lifecycle,
+            Lifecycle::ParentBound,
+            "--exit-on-stdin-eof must be parsed"
+        );
+        assert_eq!(opts.icon, IconMode::Headless, "--headless must be parsed");
+        assert_eq!(
+            opts.auto_start,
+            AutoStartMode::Disabled,
+            "parent-bound mode never implies --auto-start"
+        );
     }
 
     #[test]
