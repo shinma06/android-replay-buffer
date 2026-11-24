@@ -12,6 +12,7 @@ import com.google.gson.JsonParseException
 import com.google.gson.JsonPrimitive
 import com.google.gson.JsonSerializationContext
 import com.google.gson.JsonSerializer
+import com.google.gson.reflect.TypeToken
 import java.lang.reflect.Type
 
 /**
@@ -41,10 +42,12 @@ object ProtocolJson {
         .registerWireEnum(LogCompleteness::class.java, LogCompleteness::wire, LogCompleteness::fromWire)
         .registerWireEnum(DiscontinuityKind::class.java, DiscontinuityKind::wire, DiscontinuityKind::fromWire)
         .registerWireEnum(UncertaintyReason::class.java, UncertaintyReason::wire, UncertaintyReason::fromWire)
+        .registerWireEnum(GestureKind::class.java, GestureKind::wire, GestureKind::fromWire)
         .registerTypeAdapter(ArbConfigPatch::class.java, ArbConfigPatchAdapter)
         .registerTypeHierarchyAdapter(AdbDeviceState::class.java, AdbDeviceStateAdapter)
         .registerTypeHierarchyAdapter(Provenance::class.java, ProvenanceAdapter)
         .registerTypeHierarchyAdapter(TimeAlignment::class.java, TimeAlignmentAdapter)
+        .registerTypeAdapter(TapRecord::class.java, TapRecordAdapter)
         .create()
 
     private fun <T : Enum<T>> GsonBuilder.registerWireEnum(
@@ -189,6 +192,44 @@ object ProtocolJson {
         }
     }
 
+    // Gson only honours Kotlin data class default parameter values when EVERY primary
+    // constructor parameter has one (otherwise it allocates via Unsafe, bypassing all
+    // defaults). `TapRecord` has several required fields (`seq`, `pc_ingest_cont_ns`,
+    // `alignment`, `bucket`, `action`), so a hand-written deserializer is the only way to make
+    // the T-6H item 2 fields (`gesture_kind`, `end_x`/`end_y`/`end_t_offset_ns`, `path`) degrade
+    // cleanly to `Tap`/`null`/empty for bundles saved before this feature existed.
+    private object TapRecordAdapter : JsonDeserializer<TapRecord> {
+        override fun deserialize(
+            json: JsonElement,
+            typeOfT: Type,
+            context: JsonDeserializationContext,
+        ): TapRecord {
+            val obj = json.asJsonObject
+            val pathType = TypeToken.getParameterized(List::class.java, TouchPoint::class.java).type
+            return TapRecord(
+                seq = obj.requireLong("seq"),
+                bootId = obj.optString("boot_id"),
+                eventMonoNs = obj.optLong("event_mono_ns"),
+                pcIngestContNs = obj.requireLong("pc_ingest_cont_ns"),
+                alignment = context.deserialize(obj.get("alignment"), TimeAlignment::class.java),
+                bucket = context.deserialize(obj.get("bucket"), RecordBucket::class.java),
+                action = obj.requireString("action"),
+                x = obj.optDouble("x"),
+                y = obj.optDouble("y"),
+                pointerId = obj.optInt("pointer_id"),
+                gestureKind = obj.get("gesture_kind")?.takeIf { !it.isJsonNull }
+                    ?.let { context.deserialize<GestureKind>(it, GestureKind::class.java) }
+                    ?: GestureKind.TAP,
+                endX = obj.optDouble("end_x"),
+                endY = obj.optDouble("end_y"),
+                endTOffsetNs = obj.optLong("end_t_offset_ns"),
+                path = obj.get("path")?.takeIf { !it.isJsonNull }
+                    ?.let { context.deserialize<List<TouchPoint>>(it, pathType) }
+                    ?: emptyList(),
+            )
+        }
+    }
+
     fun toConfigPatchJson(src: ArbConfigPatch): JsonObject = JsonObject().apply {
         src.saveWindowSecs?.let { addProperty("save_window_secs", it) }
         src.ringBudgetBytes?.let { addProperty("ring_budget_bytes", it) }
@@ -230,4 +271,16 @@ object ProtocolJson {
 
     private fun JsonObject.requireLong(key: String): Long =
         get(key)?.asLong ?: throw JsonParseException("Missing required integer field '$key'")
+
+    private fun JsonObject.optString(key: String): String? =
+        get(key)?.takeIf { !it.isJsonNull }?.asString
+
+    private fun JsonObject.optLong(key: String): Long? =
+        get(key)?.takeIf { !it.isJsonNull }?.asLong
+
+    private fun JsonObject.optDouble(key: String): Double? =
+        get(key)?.takeIf { !it.isJsonNull }?.asDouble
+
+    private fun JsonObject.optInt(key: String): Int? =
+        get(key)?.takeIf { !it.isJsonNull }?.asInt
 }

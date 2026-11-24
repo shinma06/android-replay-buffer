@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::BUNDLE_SCHEMA_VERSION;
+use crate::gesture::{GestureKind, TouchPoint};
 use crate::time::{TimeAlignment, TimestampSemantics};
 
 /// High-level bundle payload category recorded in `manifest.json`.
@@ -356,12 +357,32 @@ pub struct TapRecord {
     pub bucket: RecordBucket,
     /// Input action label (e.g., `DOWN`, `MOVE`, `UP`).
     pub action: String,
-    /// X coordinate in display pixels, if available.
+    /// X coordinate in display pixels, if available. For a classified [`GestureKind::Swipe`],
+    /// this is the stroke's `DOWN` (start) point.
     pub x: Option<f64>,
-    /// Y coordinate in display pixels, if available.
+    /// Y coordinate in display pixels, if available (`DOWN`/start point for `Swipe`).
     pub y: Option<f64>,
     /// Multi-touch pointer identifier, if available.
     pub pointer_id: Option<i32>,
+    /// `Tap` vs `Swipe` classification (T-6H item 2). `#[serde(default)]` so every bundle saved
+    /// before this field existed (and every legacy schema 3/4 import) deserializes as `Tap`.
+    #[serde(default)]
+    pub gesture_kind: GestureKind,
+    /// End X coordinate for a [`GestureKind::Swipe`] (`None` for `Tap`, whose single `x`/`y`
+    /// already identifies the whole gesture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_x: Option<f64>,
+    /// End Y coordinate for a [`GestureKind::Swipe`] (`None` for `Tap`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_y: Option<f64>,
+    /// Nanoseconds from this tap's aligned `DOWN` boottime to the gesture's `UP`/end sample
+    /// (the stroke's duration). `Some` for both `Tap` (brief press duration) and `Swipe`, `None`
+    /// when unknown (e.g. legacy data with only a `DOWN` sample).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_t_offset_ns: Option<i64>,
+    /// Decimated trajectory for a [`GestureKind::Swipe`] (`<= 24` points, always empty for `Tap`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<TouchPoint>,
 }
 
 /// Validation failure returned by [`ManifestV2::validate`].

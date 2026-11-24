@@ -135,6 +135,11 @@ class ArbBundleFileEditor(
                 runCatching { playbackController?.toggleMute() }
             }
         },
+        onLoopToggle = {
+            submitWork {
+                runCatching { playbackController?.toggleLoop() }
+            }
+        },
         onSelectTapRange = { applySelectTapRange() },
         onSelectAroundCrash = { applySelectAroundCrash() },
         onResetFullRange = { applyResetFullRange() },

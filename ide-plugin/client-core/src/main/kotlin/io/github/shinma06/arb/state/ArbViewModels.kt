@@ -18,6 +18,7 @@ import io.github.shinma06.arb.model.DiscontinuityEvent
 import io.github.shinma06.arb.model.DiscontinuityKind
 import io.github.shinma06.arb.model.EpochFrameRange
 import io.github.shinma06.arb.model.FilmstripEntryMeta
+import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.LogCompleteness
 import io.github.shinma06.arb.model.LogRecord
@@ -499,12 +500,58 @@ data class SyncedEventRow(
     val sourceJumpTarget: SourceJumpTarget? = null,
 )
 
+/**
+ * Pure computation for the right-hand Event/Log panel's video <-> timeline auto-follow sync
+ * (Owner trial feedback T-6H item 4): finds the index inside [rows] of the row most relevant to
+ * [playheadFrameIndex] — the latest row at or before the playhead, falling back to the nearest
+ * upcoming row within [toleranceFrames] when nothing has happened yet. Returns `null` for an
+ * empty [rows] (nothing to highlight/scroll to) or when no row lies within tolerance.
+ *
+ * Independent of list order and of [SyncedEventRow.isInTrimRange]/filtering — callers pass
+ * whichever (already-filtered) row list is currently visible.
+ */
+fun activeTimelineItemIndex(
+    rows: List<SyncedEventRow>,
+    playheadFrameIndex: Long,
+    toleranceFrames: Long = 30L,
+): Int? {
+    if (rows.isEmpty()) return null
+
+    var bestAtOrBeforeIdx: Int? = null
+    var bestAtOrBeforeFrame = Long.MIN_VALUE
+    var nearestUpcomingIdx: Int? = null
+    var nearestUpcomingDist = Long.MAX_VALUE
+
+    for ((idx, row) in rows.withIndex()) {
+        val f = row.frameIndex ?: continue
+        if (f <= playheadFrameIndex) {
+            if (f > bestAtOrBeforeFrame) {
+                bestAtOrBeforeFrame = f
+                bestAtOrBeforeIdx = idx
+            }
+        } else {
+            val dist = f - playheadFrameIndex
+            if (dist < nearestUpcomingDist) {
+                nearestUpcomingDist = dist
+                nearestUpcomingIdx = idx
+            }
+        }
+    }
+
+    bestAtOrBeforeIdx?.let { return it }
+    return nearestUpcomingIdx?.takeIf { nearestUpcomingDist <= toleranceFrames }
+}
+
 data class ActiveTapOverlay(
     val tapIndex1Based: Int,
     val x: Double,
     val y: Double,
     val deltaMs: Long,
     val label: String,
+    /** `Tap` renders a ripple; `Swipe` renders a polyline + arrowhead (T-6H item 2). */
+    val gestureKind: GestureKind = GestureKind.TAP,
+    val endX: Double? = null,
+    val endY: Double? = null,
 )
 
 data class ExportCompletionInfo(
@@ -882,6 +929,9 @@ data class TimelineViewerState(
                     y = y,
                     deltaMs = deltaNs / 1_000_000L,
                     label = "#$n",
+                    gestureKind = tap.gestureKind,
+                    endX = tap.endX,
+                    endY = tap.endY,
                 )
             } else {
                 null

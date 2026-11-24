@@ -18,6 +18,7 @@ use arb_core::bundle::{
     InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
+use arb_core::gesture::GestureKind;
 use arb_core::time::{TimeAlignment, TimestampSemantics};
 use arb_media::audio::{
     AacMuxInput, AacPacket, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
@@ -207,10 +208,15 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
             semantics: TimestampSemantics::InputEventTime,
         },
         bucket: RecordBucket::Main,
-        action: "DOWN".to_owned(),
+        action: "TAP".to_owned(),
         x: Some(32.0),
         y: Some(32.0),
         pointer_id: Some(0),
+        gesture_kind: GestureKind::Tap,
+        end_x: None,
+        end_y: None,
+        end_t_offset_ns: Some(20_000_000),
+        path: Vec::new(),
     }];
 
     let draft = V2BundleDraft {

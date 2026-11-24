@@ -609,4 +609,73 @@ class PlaybackControllerTest {
             assertTrue(loopAlive(), "Playback loop thread must run while mode is PLAYING")
         }
     }
+
+    @Test
+    fun loopEnabledDefaultsFalseAndStopsCleanlyAtFullRangeEndWithoutAnyTrim() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        val pts = uniformPtsNs(count = 5, stepMs = 100L)
+
+        PlaybackController(
+            totalFrames = 5L,
+            frameSeeker = seeker,
+            framePtsNs = pts,
+            clock = clock,
+            initialFrameIndex = 3L,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            // Default loop is OFF: no trim set (full range [0..4]) must stop cleanly at frame 4.
+            assertFalse(ctrl.state.loopInSelection)
+            assertFalse(ctrl.loopEnabled)
+
+            ctrl.play()
+            clock.advanceMs(500) // well past the end of the 5-frame, 100ms/frame full timeline
+            assertNull(ctrl.tick())
+            assertEquals(4L, ctrl.state.currentFrameIndex)
+            assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
+        }
+    }
+
+    @Test
+    fun loopEnabledOnWrapsFullRangeBackToFrameZeroAndKeepsPlaying() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        val pts = uniformPtsNs(count = 5, stepMs = 100L)
+
+        PlaybackController(
+            totalFrames = 5L,
+            frameSeeker = seeker,
+            framePtsNs = pts,
+            clock = clock,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            ctrl.setLoopEnabled(true)
+            assertTrue(ctrl.loopEnabled)
+
+            ctrl.play()
+            // 5 frames at 100ms each span exactly 500ms; 520ms overshoots past the selection end
+            // (frame 4's own 100ms duration included), which must wrap back to frame 0.
+            clock.advanceMs(520)
+            assertNotNull(ctrl.tick())
+            assertEquals(0L, ctrl.state.currentFrameIndex)
+            assertEquals(PlaybackMode.PLAYING, ctrl.state.mode, "loop ON must keep playing past the full-range end")
+        }
+    }
+
+    @Test
+    fun toggleLoopFlipsLoopEnabledFromCurrentState() {
+        val seeker = RecordingSeeker()
+        PlaybackController(
+            totalFrames = 10L,
+            frameSeeker = seeker,
+            autoRunLoop = false,
+        ).use { ctrl ->
+            assertFalse(ctrl.loopEnabled)
+            ctrl.toggleLoop()
+            assertTrue(ctrl.loopEnabled)
+            assertTrue(ctrl.state.loopInSelection)
+            ctrl.toggleLoop()
+            assertFalse(ctrl.loopEnabled)
+        }
+    }
 }

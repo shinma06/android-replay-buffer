@@ -12,6 +12,7 @@ import io.github.shinma06.arb.model.CrashMarker
 import io.github.shinma06.arb.model.DiscontinuityEvent
 import io.github.shinma06.arb.model.DiscontinuityKind
 import io.github.shinma06.arb.model.EpochSpan
+import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.LogCompleteness
 import io.github.shinma06.arb.model.LogRecord
@@ -284,6 +285,63 @@ class ArbT4StudioModelTest {
         // Preset availability strictly reflects recorded data
         assertTrue(state.canSelectTapRange)
         assertFalse(state.canSelectAroundCrash)
+    }
+
+    @Test
+    fun t6hSwipeRowsShowDirectionAndFlowThroughToTheVideoOverlay() {
+        val base = 10_000_000_000L
+        val swipeUp = TapRecord(
+            seq = 1L,
+            pcIngestContNs = base + 1_000_000_000L,
+            alignment = TimeAlignment.Anchored("boot-1", base + 1_000_000_000L, 1_000_000L, TimestampSemantics.INPUT_EVENT_TIME),
+            bucket = RecordBucket.MAIN,
+            action = "SWIPE",
+            x = 540.0,
+            y = 1800.0,
+            gestureKind = GestureKind.SWIPE,
+            endX = 540.0,
+            endY = 400.0,
+            endTOffsetNs = 150_000_000L,
+        )
+        val plainTap = TapRecord(
+            seq = 2L,
+            pcIngestContNs = base + 2_000_000_000L,
+            alignment = TimeAlignment.Anchored("boot-1", base + 2_000_000_000L, 1_000_000L, TimestampSemantics.INPUT_EVENT_TIME),
+            bucket = RecordBucket.MAIN,
+            action = "TAP",
+            x = 100.0,
+            y = 200.0,
+        )
+
+        val state = TimelineViewerState(
+            bundleId = "b-swipe",
+            path = "/tmp/b-swipe",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l1",
+            summary = healthySummary(),
+            frameCount = 100L,
+            currentFrameIndex = 10L,
+            mainTaps = listOf(swipeUp, plainTap),
+        )
+
+        val rows = state.buildSyncedEventRows()
+        val swipeRow = rows.first { it.seq == 1L }
+        assertEquals("Swipe #1 (540, 1800) -> (540, 400) (上スワイプ)", swipeRow.title)
+        val tapRow = rows.first { it.seq == 2L }
+        assertEquals("Tap #2 (100, 200)", tapRow.title, "a plain Tap row must never show an arrow or direction")
+
+        // The video canvas overlay (`ActiveTapOverlay`) must carry the gesture kind and end point
+        // through so the Viewer can render a polyline instead of a ripple for the Swipe.
+        // swipeUp is anchored at base+1s == frame 10; plainTap is anchored at base+2s == frame 20
+        // (100ms/frame over the 10s/100-frame epoch), each queried at its own exact frame.
+        val swipeOverlay = state.activeTapsAtFrame(10L).first { it.tapIndex1Based == 1 }
+        assertEquals(GestureKind.SWIPE, swipeOverlay.gestureKind)
+        assertEquals(540.0, swipeOverlay.endX)
+        assertEquals(400.0, swipeOverlay.endY)
+        val tapOverlay = state.activeTapsAtFrame(20L).first { it.tapIndex1Based == 2 }
+        assertEquals(GestureKind.TAP, tapOverlay.gestureKind)
+        assertNull(tapOverlay.endX)
     }
 
     @Test

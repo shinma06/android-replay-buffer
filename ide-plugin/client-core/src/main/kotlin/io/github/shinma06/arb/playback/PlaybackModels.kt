@@ -73,7 +73,12 @@ data class PlaybackState(
     val outFrameIndex: Long = (totalFrames - 1L).coerceAtLeast(0L),
     val speed: PlaybackSpeed = PlaybackSpeed.NORMAL,
     val muted: Boolean = false,
-    val loopInSelection: Boolean = true,
+    /**
+     * Loop playback toggle (Owner trial feedback T-6H item 3). `false` (the default) stops
+     * cleanly at `outFrameIndex`; `true` wraps smoothly back to `inFrameIndex` (or `0` for the
+     * full range) and keeps playing. See [PlaybackController.loopEnabled] / `setLoopEnabled`.
+     */
+    val loopInSelection: Boolean = false,
     val isApproximate: Boolean = false,
     val avOffsetMs: Long = 0L,
     val audioState: AudioState = AudioState.UNAVAILABLE,

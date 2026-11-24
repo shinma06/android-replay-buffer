@@ -43,11 +43,11 @@ import io.github.shinma06.arb.state.ArbSettingsDraft
 import io.github.shinma06.arb.state.StorageSizeUnit
 import io.github.shinma06.arb.state.StorageSizeValue
 import io.github.shinma06.arb.ui.ArbJewelPalette
+import io.github.shinma06.arb.ui.ArbLabeledCheckbox
 import io.github.shinma06.arb.ui.ArbScrollableColumn
 import io.github.shinma06.arb.ui.ArbSoftBanner
 import io.github.shinma06.arb.ui.ArbSubtleAction
 import org.jetbrains.jewel.bridge.JewelComposePanel
-import org.jetbrains.jewel.ui.component.CheckboxRow
 import org.jetbrains.jewel.ui.component.GroupHeader
 import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.OutlinedButton
@@ -695,7 +695,7 @@ internal fun ArbSettingsContent(
                     )
                 }
             }
-            CheckboxRow(
+            ArbLabeledCheckbox(
                 text = "端末の再生音を録音する (API 33+)",
                 checked = form.audioEnabled,
                 onCheckedChange = { form.audioEnabled = it },
@@ -719,7 +719,7 @@ internal fun ArbSettingsContent(
                     )
                 }
             }
-            CheckboxRow(
+            ArbLabeledCheckbox(
                 text = "アプリクラッシュ (am_crash) 時に自動保存する",
                 checked = form.crashAutosaveEnabled,
                 onCheckedChange = { form.crashAutosaveEnabled = it },
@@ -753,7 +753,7 @@ internal fun ArbSettingsContent(
 
             // 3. Screenshot Destination Inheritance (Owner-confirmed T-6B feature!)
             GroupHeader("スクリーンショット保存先", modifier = Modifier.semantics { heading() })
-            CheckboxRow(
+            ArbLabeledCheckbox(
                 text = "Android Studio の Logcat スクリーンショット保存先を継承する",
                 checked = form.screenshotInheritLogcat,
                 onCheckedChange = { checked ->

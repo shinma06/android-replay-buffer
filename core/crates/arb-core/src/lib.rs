@@ -9,6 +9,7 @@ pub mod analytics;
 pub mod bundle;
 pub mod config;
 pub mod device;
+pub mod gesture;
 pub mod legacy;
 pub mod selection;
 pub mod state;

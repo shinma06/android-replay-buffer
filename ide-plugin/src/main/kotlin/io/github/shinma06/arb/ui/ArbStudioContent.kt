@@ -1,5 +1,10 @@
 package io.github.shinma06.arb.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.VerticalScrollbar
@@ -80,6 +85,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import io.github.shinma06.arb.model.DiscontinuityEvent
 import io.github.shinma06.arb.model.DiscontinuityKind
+import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.LogRecord
 import io.github.shinma06.arb.model.TimeAlignment
 import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
@@ -94,7 +100,6 @@ import io.github.shinma06.arb.state.SyncedEventRow
 import io.github.shinma06.arb.state.TimelineViewerState
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.Orientation
-import org.jetbrains.jewel.ui.component.CheckboxRow
 import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Divider
 import org.jetbrains.jewel.ui.component.IconActionButton
@@ -106,8 +111,11 @@ import org.jetbrains.jewel.ui.theme.scrollbarStyle
 import java.awt.Cursor
 import java.awt.Rectangle
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlin.math.sin
 
 /**
  * Native JetBrains Jewel Compose UI for the Integrated Viewer & Trim Studio (`ArbBundleFileEditor`).
@@ -450,7 +458,8 @@ private fun VideoStageViewport(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // Vector Tap Ripple Overlay normalized by display_width / display_height
+            // Vector Tap/Swipe Overlay normalized by display_width / display_height (T-6H item 2:
+            // Tap renders a ripple, Swipe renders a polyline + arrowhead + animated travel point).
             if (showTaps && activeTaps.isNotEmpty() && frameW > 0 && frameH > 0) {
                 val scale = minOf(availW / bitmap.width.toFloat(), availH / bitmap.height.toFloat())
                 val drawW = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
@@ -458,13 +467,13 @@ private fun VideoStageViewport(
                 val drawX = ((availW - drawW) / 2f).roundToInt()
                 val drawY = ((availH - drawH) / 2f).roundToInt()
                 val drawRect = Rectangle(drawX, drawY, drawW, drawH)
-                val mappedTaps = activeTaps.mapNotNull { tap ->
-                    if (ArbStudioController.isTapUnmappable(tap.x, tap.y, frameW, frameH, displayW, displayH)) {
+                fun mapPoint(x: Double, y: Double): Pair<Int, Int>? =
+                    if (ArbStudioController.isTapUnmappable(x, y, frameW, frameH, displayW, displayH)) {
                         null
                     } else {
-                        tap to ArbStudioController.mapTapToCanvasPoint(
-                            tapX = tap.x,
-                            tapY = tap.y,
+                        ArbStudioController.mapTapToCanvasPoint(
+                            tapX = x,
+                            tapY = y,
                             drawRect = drawRect,
                             videoW = frameW,
                             videoH = frameH,
@@ -472,30 +481,91 @@ private fun VideoStageViewport(
                             displayH = displayH,
                         )
                     }
+                val mappedTaps = activeTaps.mapNotNull { tap ->
+                    mapPoint(tap.x, tap.y)?.let { pt -> tap to pt }
                 }
+                val mappedSwipeEnds = mappedTaps.associate { (tap, _) ->
+                    val endX = tap.endX
+                    val endY = tap.endY
+                    val endPt = if (tap.gestureKind == GestureKind.SWIPE && endX != null && endY != null) {
+                        mapPoint(endX, endY)
+                    } else {
+                        null
+                    }
+                    tap.tapIndex1Based to endPt
+                }
+                val swipeTravel by rememberInfiniteTransition(label = "swipeTravel").animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 900),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "swipeTravel",
+                )
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     for ((tap, pt) in mappedTaps) {
                         val (cx, cy) = pt
-                        val center = Offset(cx.toFloat(), cy.toFloat())
+                        val start = Offset(cx.toFloat(), cy.toFloat())
                         val proximity = (1.0f - (abs(tap.deltaMs).toFloat() / 250f)).coerceIn(0.2f, 1.0f)
-                        val outerR = (14.dp.toPx() + (1f - proximity) * 14.dp.toPx())
-                        val innerR = 4.5.dp.toPx()
+                        val endPt = mappedSwipeEnds[tap.tapIndex1Based]
 
-                        drawCircle(color = cyanColor.copy(alpha = proximity * 0.28f), radius = outerR, center = center)
-                        drawCircle(
-                            color = cyanColor.copy(alpha = (proximity * 0.85f).coerceIn(0.25f, 0.9f)),
-                            radius = outerR,
-                            center = center,
-                            style = Stroke(width = 1.75.dp.toPx()),
-                        )
-                        drawCircle(color = Color.White.copy(alpha = proximity * 0.92f), radius = innerR, center = center)
-                        drawCircle(
-                            color = cyanColor,
-                            radius = innerR,
-                            center = center,
-                            style = Stroke(width = 1.25.dp.toPx()),
-                        )
+                        if (tap.gestureKind == GestureKind.SWIPE && endPt != null) {
+                            val end = Offset(endPt.first.toFloat(), endPt.second.toFloat())
+                            val lineAlpha = (proximity * 0.85f).coerceIn(0.25f, 0.9f)
+                            drawLine(
+                                color = cyanColor.copy(alpha = lineAlpha),
+                                start = start,
+                                end = end,
+                                strokeWidth = 2.5.dp.toPx(),
+                            )
+                            // Arrowhead at the swipe endpoint.
+                            val angle = atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())
+                            val headLen = 9.dp.toPx()
+                            val headSpread = Math.PI / 7.0
+                            val left = Offset(
+                                (end.x - headLen * cos(angle - headSpread)).toFloat(),
+                                (end.y - headLen * sin(angle - headSpread)).toFloat(),
+                            )
+                            val right = Offset(
+                                (end.x - headLen * cos(angle + headSpread)).toFloat(),
+                                (end.y - headLen * sin(angle + headSpread)).toFloat(),
+                            )
+                            val arrowPath = Path().apply {
+                                moveTo(end.x, end.y)
+                                lineTo(left.x, left.y)
+                                moveTo(end.x, end.y)
+                                lineTo(right.x, right.y)
+                            }
+                            drawPath(arrowPath, color = cyanColor.copy(alpha = lineAlpha), style = Stroke(width = 2.5.dp.toPx()))
+                            drawCircle(color = cyanColor.copy(alpha = proximity * 0.9f), radius = 4.5.dp.toPx(), center = start)
+                            drawCircle(color = cyanColor, radius = 5.dp.toPx(), center = end, style = Stroke(width = 1.5.dp.toPx()))
+                            // Animated point traveling start -> end along the swipe.
+                            val travel = Offset(
+                                start.x + (end.x - start.x) * swipeTravel,
+                                start.y + (end.y - start.y) * swipeTravel,
+                            )
+                            drawCircle(color = Color.White.copy(alpha = proximity), radius = 3.5.dp.toPx(), center = travel)
+                        } else {
+                            val outerR = (14.dp.toPx() + (1f - proximity) * 14.dp.toPx())
+                            val innerR = 4.5.dp.toPx()
+
+                            drawCircle(color = cyanColor.copy(alpha = proximity * 0.28f), radius = outerR, center = start)
+                            drawCircle(
+                                color = cyanColor.copy(alpha = (proximity * 0.85f).coerceIn(0.25f, 0.9f)),
+                                radius = outerR,
+                                center = start,
+                                style = Stroke(width = 1.75.dp.toPx()),
+                            )
+                            drawCircle(color = Color.White.copy(alpha = proximity * 0.92f), radius = innerR, center = start)
+                            drawCircle(
+                                color = cyanColor,
+                                radius = innerR,
+                                center = start,
+                                style = Stroke(width = 1.25.dp.toPx()),
+                            )
+                        }
                     }
                 }
 
@@ -605,6 +675,15 @@ private fun TransportBar(controller: ArbStudioController) {
                 onClick = { controller.toggleMute() },
             )
             ArbSubtleAction(
+                label = "ループ",
+                iconKey = AllIconsKeys.Actions.Refresh,
+                active = controller.isLoopEnabled,
+                enabled = controller.hasVideo,
+                tooltip = controller.loopTooltip,
+                compact = true,
+                onClick = { controller.toggleLoop() },
+            )
+            ArbSubtleAction(
                 label = "タップ表示",
                 active = controller.isTapOverlayEnabled,
                 enabled = controller.hasVideo,
@@ -655,6 +734,18 @@ private fun RightEventsAndLogsPane(
                 selected = controller.activeTab == StudioRightTab.DETAILS,
                 onClick = { controller.selectTab(StudioRightTab.DETAILS) },
             )
+            if (controller.activeTab == StudioRightTab.EVENTS_AND_LOGS) {
+                ArbSpacerH(width = 4.dp)
+                Box(modifier = Modifier.weight(1f))
+                ArbTooltip("再生位置に合わせてログを自動スクロール") {
+                    ArbLabeledCheckbox(
+                        text = "自動追従",
+                        checked = controller.followPlayhead,
+                        onCheckedChange = { controller.selectFollowPlayhead(it) },
+                        muted = true,
+                    )
+                }
+            }
         }
 
         Divider(
@@ -714,6 +805,19 @@ private fun RightEventsAndLogsPane(
                         val listState = rememberLazyListState()
                         val jewelSb = JewelTheme.scrollbarStyle
                         val rowKeys = remember(rows) { ArbStudioController.uniqueKeys(rows, ArbStudioController::syncedRowKey) }
+                        val activeIndex = controller.activeTimelineItemIndex
+                        val followPlayhead = controller.followPlayhead
+
+                        LaunchedEffect(followPlayhead, activeIndex, rows) {
+                            if (followPlayhead && activeIndex != null && activeIndex in rows.indices) {
+                                // Small upper-third offset keeps a bit of recent context above the
+                                // active row while still showing upcoming entries below it.
+                                val viewportHeight = listState.layoutInfo.viewportSize.height
+                                val offsetPx = -(viewportHeight / 3)
+                                listState.animateScrollToItem(activeIndex, scrollOffset = offsetPx)
+                            }
+                        }
+
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 2.dp),
@@ -723,6 +827,7 @@ private fun RightEventsAndLogsPane(
                                 val row = rows[rowIndex]
                                 SyncedEventItemRow(
                                     row = row,
+                                    isAutoFollowActive = followPlayhead && rowIndex == activeIndex,
                                     onSeek = { row.frameIndex?.let(controller::seekExactFrame) },
                                     onSnapIn = { row.frameIndex?.let { controller.applyInFrame(it, settled = true) } },
                                     onSnapOut = { row.frameIndex?.let { controller.applyOutFrame(it, settled = true) } },
@@ -830,18 +935,25 @@ private fun SyncedEventItemRow(
     onSnapIn: () -> Unit,
     onSnapOut: () -> Unit,
     onSourceJump: () -> Unit,
+    isAutoFollowActive: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val isCorrelatedLog = row.kind == SyncedEventKind.LOG && row.correlatedTapIndex != null
 
+    // Owner trial feedback T-6H item 4: the auto-follow active row gets its own wider accent bar
+    // so the video <-> log sync position is unmistakable even when `isAtPlayhead` (exact frame
+    // match) never fires between discrete events.
     val stripeColor = when {
+        isAutoFollowActive -> ArbJewelPalette.accent()
         row.kind == SyncedEventKind.CRASH -> ArbJewelPalette.recRed()
         isCorrelatedLog && row.isInTrimRange -> ArbJewelPalette.infoCyan()
         row.isInTrimRange -> ArbJewelPalette.accent()
         else -> Color.Transparent
     }
+    val stripeWidth = if (isAutoFollowActive) 3.5.dp else 2.5.dp
     val rowBg = when {
+        isAutoFollowActive -> ArbJewelPalette.accentSoft()
         row.isAtPlayhead -> ArbJewelPalette.accentSoft()
         hovered -> ArbJewelPalette.subtleHoverFill()
         isCorrelatedLog && row.isInTrimRange -> ArbJewelPalette.infoCyanSoft().copy(alpha = 0.45f)
@@ -867,10 +979,10 @@ private fun SyncedEventItemRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Subtle vertical trim-range / crash indicator bar
+        // Subtle vertical trim-range / crash / auto-follow-active indicator bar
         Box(
             Modifier
-                .width(2.5.dp)
+                .width(stripeWidth)
                 .height(24.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(stripeColor),
@@ -1161,7 +1273,7 @@ private fun BottomMultiTrackDock(
                     "書き出しの検証完了後に元のバンドルを非破壊でゴミ箱へ移動します"
                 },
             ) {
-                CheckboxRow(
+                ArbLabeledCheckbox(
                     text = ArbFormatters.TRASH_ORIGINAL_TOGGLE_LABEL,
                     checked = controller.isTrashOriginalSelected,
                     onCheckedChange = { controller.toggleTrashOriginal(it) },
@@ -1464,13 +1576,32 @@ private fun MultiTrackTimelineCanvas(
                         }
                     }
 
-                    // Tap pins (cyan circles)
+                    // Tap pins (cyan circles) vs Swipe spans (cyan bar + end pin), T-6H item 2.
                     val tapR = 3.5.dp.toPx()
+                    val swipeBarHeight = 2.5.dp.toPx()
                     for (tap in s.mainTaps) {
                         val bt = TimelineViewerState.alignmentBoottimeNs(tap.alignment) ?: continue
                         val f = s.boottimeNsToFrameIndex(bt) ?: continue
                         val tx = frameToX(f, s.frameCount)
-                        drawCircle(color = cyan, radius = tapR, center = Offset(tx, pinY))
+                        val endOffsetNs = tap.endTOffsetNs
+                        val endFrame = if (tap.gestureKind == GestureKind.SWIPE && endOffsetNs != null) {
+                            s.boottimeNsToFrameIndex(bt + endOffsetNs)
+                        } else {
+                            null
+                        }
+                        if (endFrame != null) {
+                            val ex = frameToX(endFrame, s.frameCount).coerceAtLeast(tx + tapR)
+                            drawRoundRect(
+                                color = cyan,
+                                topLeft = Offset(tx, pinY - swipeBarHeight / 2f),
+                                size = Size(ex - tx, swipeBarHeight),
+                                cornerRadius = CornerRadius(swipeBarHeight / 2f, swipeBarHeight / 2f),
+                            )
+                            drawCircle(color = cyan, radius = tapR * 0.7f, center = Offset(tx, pinY))
+                            drawCircle(color = cyan, radius = tapR, center = Offset(ex, pinY), style = Stroke(width = 1.dp.toPx()))
+                        } else {
+                            drawCircle(color = cyan, radius = tapR, center = Offset(tx, pinY))
+                        }
                     }
                 }
 

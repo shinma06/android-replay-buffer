@@ -24,6 +24,7 @@ use arb_core::bundle::{
     InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
+use arb_core::gesture::GestureKind;
 use arb_core::time::{DiscontinuityEvent, DiscontinuityKind, TimeAlignment, TimestampSemantics};
 use arb_media::audio::{
     AacMuxInput, AacPacket, Mp4AudioTrack, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
@@ -308,10 +309,15 @@ fn seed_rich_v2_bundle(
             semantics: TimestampSemantics::InputEventTime,
         },
         bucket: RecordBucket::Main,
-        action: "DOWN".to_owned(),
+        action: "TAP".to_owned(),
         x: Some(64.0),
         y: Some(80.0),
         pointer_id: Some(0),
+        gesture_kind: GestureKind::Tap,
+        end_x: None,
+        end_y: None,
+        end_t_offset_ns: Some(15_000_000),
+        path: Vec::new(),
     }];
 
     let discontinuities = vec![DiscontinuityEvent {
@@ -737,7 +743,12 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
     assert_eq!(ov["taps"].as_array().expect("taps").len(), 1, "1 tap item");
     assert_eq!(ov["taps"][0]["tap_index"], 0, "tap_index 0");
     assert_eq!(ov["taps"][0]["frame_index"], 10, "tap aligned to frame 10");
-    assert_eq!(ov["taps"][0]["kind"], "DOWN", "tap action");
+    assert_eq!(ov["taps"][0]["kind"], "TAP", "tap action");
+    assert_eq!(ov["taps"][0]["gesture_kind"], "tap", "tap gesture_kind");
+    assert!(
+        ov["taps"][0]["end_x"].is_null(),
+        "tap has no end_x (T-6H item 2)"
+    );
     assert_eq!(
         ov["crashes"].as_array().expect("crashes").len(),
         1,
@@ -920,10 +931,15 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             semantics: TimestampSemantics::InputEventTime,
         },
         bucket: RecordBucket::Main,
-        action: "DOWN".to_owned(),
+        action: "TAP".to_owned(),
         x: Some(540.0),
         y: Some(1200.0),
         pointer_id: Some(0),
+        gesture_kind: GestureKind::Tap,
+        end_x: None,
+        end_y: None,
+        end_t_offset_ns: Some(10_000_000),
+        path: Vec::new(),
     }];
 
     let draft = V2BundleDraft {

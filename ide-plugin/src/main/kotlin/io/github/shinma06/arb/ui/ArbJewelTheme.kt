@@ -22,8 +22,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -43,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.Checkbox
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.Tooltip
@@ -447,3 +451,71 @@ fun ArbSpacerH(width: Dp) = Spacer(Modifier.width(width))
 
 @Composable
 fun ArbSpacerV(height: Dp) = Spacer(Modifier.height(height))
+
+/**
+ * Jewel's own `CheckboxRow` optically renders its checkbox box a touch higher than the
+ * label's glyph center — most visible with CJK/Japanese text, whose em-box sits lower than
+ * Latin cap-height (see upstream JEWEL-1073, "CheckboxRow should align the first line to the
+ * checkbox"). A plain `Row(verticalAlignment = CenterVertically)` around `Checkbox` + `Text`
+ * does NOT fix this: `CenterVertically` centers each child's *measured layout box*, but
+ * `Checkbox`'s box and `Text`'s line box carry different internal/optical padding, so a small
+ * residual upward offset remains on the checkbox.
+ *
+ * This nudges the checkbox down by [CHECKBOX_OPTICAL_OFFSET] — the exact clean correction —
+ * and trims/centers the label's own line box via [LineHeightStyle], so the checkbox and the
+ * label's glyphs align dead-center. Fix this ONCE here; every checkbox + label pairing in
+ * Settings, Studio and the Tool Window must use this instead of a raw `CheckboxRow`/`Checkbox`.
+ */
+private val CHECKBOX_OPTICAL_OFFSET: Dp = 1.dp
+
+@Composable
+fun ArbLabeledCheckbox(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    muted: Boolean = false,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Row(
+        modifier = modifier
+            .toggleable(
+                value = checked,
+                onValueChange = onCheckedChange,
+                enabled = enabled,
+                role = Role.Checkbox,
+                interactionSource = interactionSource,
+                indication = null,
+            )
+            .semantics { contentDescription = text },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            // Shares the `Row.toggleable` above's interaction source so clicking the label text
+            // (outside the small checkbox box) still highlights/toggles consistently; Compose
+            // resolves clicks on the checkbox itself to the innermost handler, so there is no
+            // double-toggle.
+            interactionSource = interactionSource,
+            modifier = Modifier
+                .align(Alignment.CenterVertically)
+                .offset(y = CHECKBOX_OPTICAL_OFFSET),
+        )
+        Text(
+            text = text,
+            style = ArbJewelPalette
+                .bodyStyle(color = if (muted) ArbJewelPalette.mutedText() else ArbJewelPalette.primaryText())
+                .copy(
+                    lineHeightStyle = LineHeightStyle(
+                        alignment = LineHeightStyle.Alignment.Center,
+                        trim = LineHeightStyle.Trim.Both,
+                    ),
+                ),
+            modifier = Modifier.align(Alignment.CenterVertically),
+        )
+    }
+}

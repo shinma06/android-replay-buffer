@@ -18,6 +18,7 @@ import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
 import io.github.shinma06.arb.state.ActiveTapOverlay
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.EventStreamFilter
+import io.github.shinma06.arb.state.activeTimelineItemIndex
 import io.github.shinma06.arb.state.SourceJumpParser
 import io.github.shinma06.arb.state.SourceJumpTarget
 import io.github.shinma06.arb.state.SyncedEventKind
@@ -84,6 +85,7 @@ class ArbStudioController(
     private val onStepFrame: (delta: Int) -> Unit = {},
     private val onSpeedChange: (PlaybackSpeed) -> Unit = {},
     private val onMuteToggle: () -> Unit = {},
+    private val onLoopToggle: () -> Unit = {},
     private val onSelectTapRange: () -> Unit = {},
     private val onSelectAroundCrash: () -> Unit = {},
     private val onResetFullRange: () -> Unit = {},
@@ -116,6 +118,14 @@ class ArbStudioController(
         private set
 
     var activeTab: StudioRightTab by mutableStateOf(StudioRightTab.EVENTS_AND_LOGS)
+        private set
+
+    /**
+     * Video <-> right-panel Event/Log timeline auto-follow toggle (Owner trial feedback T-6H
+     * item 4). `true` (default) scrolls the Event/Log `LazyColumn` to track [activeTimelineItemIndex]
+     * as the playhead advances; `false` pins the list wherever the user scrolled.
+     */
+    var followPlayhead: Boolean by mutableStateOf(true)
         private set
 
     var eventFilter: EventStreamFilter by mutableStateOf(EventStreamFilter.ALL)
@@ -176,6 +186,13 @@ class ArbStudioController(
 
     val muteEnabled: Boolean
         get() = playbackState.audioState != AudioState.UNAVAILABLE
+
+    /** Loop playback toggle state (Owner trial feedback T-6H item 3). */
+    val isLoopEnabled: Boolean
+        get() = playbackState.loopInSelection
+
+    val loopTooltip: String
+        get() = if (isLoopEnabled) "ループ再生 ON" else "ループ再生 OFF"
 
     val timecodeText: String
         get() {
@@ -402,9 +419,26 @@ class ArbStudioController(
 
     fun toggleMute() = onMuteToggle()
 
+    /** Flips the loop playback toggle (Owner trial feedback T-6H item 3). */
+    fun toggleLoop() = onLoopToggle()
+
     fun toggleTapOverlay() {
         val s = viewerState ?: return
         viewerState = s.copy(showTapOverlay = !s.showTapOverlay)
+    }
+
+    /** Index into [syncedRows] of the row most relevant to the current playhead, or `null`. */
+    val activeTimelineItemIndex: Int?
+        get() = activeTimelineItemIndex(syncedRows, viewerState?.currentFrameIndex ?: 0L)
+
+    /** Explicitly sets [followPlayhead]. Turning it back ON snaps immediately (next recompose). */
+    fun selectFollowPlayhead(enabled: Boolean) {
+        followPlayhead = enabled
+    }
+
+    /** Flips [followPlayhead]. */
+    fun toggleFollowPlayhead() {
+        followPlayhead = !followPlayhead
     }
 
     fun scrubToFrame(frameIndex: Long) {

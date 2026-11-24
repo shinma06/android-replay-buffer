@@ -14,6 +14,7 @@ use arb_core::bundle::{
     LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary,
     TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
+use arb_core::gesture::GestureKind;
 use arb_core::legacy::{LegacySaveKind, LegacySchemaVersion};
 use arb_core::state::{BundleLifecycleState, RingBudgetPolicy, SaveJobState};
 use arb_core::time::{
@@ -220,6 +221,11 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
             x: Some(420.0),
             y: Some(810.5),
             pointer_id: Some(0),
+            gesture_kind: GestureKind::Tap,
+            end_x: None,
+            end_y: None,
+            end_t_offset_ns: None,
+            path: Vec::new(),
         }],
         clock_anchors: vec![
             ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
