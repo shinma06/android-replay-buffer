@@ -25,7 +25,10 @@ Sections (each one is reported separately, a crash in one never hides the others
                         in place by the new launcher; config.json (missing + unknown fields,
                         capture_enabled), catalog.sqlite (saved / trimmed / trashed bundles, a
                         retry-pending job) and a pre-T-6H 5-column timeline.sqlite survive; with
-                        --check-tray a running arb-tray survives the arbd restart (U4)
+                        --check-tray a running arb-tray survives the arbd restart (U4). A previous release whose
+                        arbd is byte-identical to the candidate fails, unless --allow-same-previous-arbd (a
+                        reproducible build with core/ unchanged): then the upgrade runs against a copy of it
+                        with a distinct build_id, so U1-U4 still see a real replacement.
 
 Fixture bundles come from `cargo run --release -p arbd --example arb_gate_bundle` (a deterministic
 synthetic FHD30 bundle with audio, Tap and Swipe gestures); see `--fixtures-dir` / `--generator`.
@@ -1445,7 +1448,7 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
         work.mkdir(parents=True, exist_ok=True)
         real_old = ctx.get("old_root") is not None
         old_root: Path = ctx["old_root"] if real_old else new_root
-        sec.notes["mode"] = "real previous release" if real_old else "pseudo-old state on the same build"
+        sec.notes["mode"] = ("real previous release (identical reproducible arbd, distinct build_id forced)" if ctx.get("old_arbd_same_hash") else "real previous release") if real_old else "pseudo-old state on the same build"
         old = Isolated(old_root, work, host_os)
         new = Isolated(new_root, work, host_os, share_with=old)
         if real_old:
@@ -1455,6 +1458,9 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             old_sha = sha256_file(old.bin("arbd"))
             new_sha = sha256_file(new.bin("arbd"))
             replaced_expected = old_sha != new_sha
+            if real_old:
+                sec.check("U1: the old and new arbd are distinct builds (a real build_id hot-swap)", replaced_expected, f"old={old_sha[:12]} new={new_sha[:12]}")
+                sec.notes["old_arbd_same_hash"] = bool(ctx.get("old_arbd_same_hash"))
             sec.check("old arbd cold-starts", old.start_arbd(), f"{old.bin('arbd')}")
             # ---- build the old state with the OLD binaries ---------------------------------
             managed = old.data / "bundles"
@@ -1807,6 +1813,47 @@ def self_test() -> int:
         )
         rep = run_static(tmp, labelled, universal_plugin, "universal", "x86_64")
         require("retired label in THIRD_PARTY_NOTICES.md is detected", not rep.passed)
+        # previous release identical to the candidate: strict by default, opt-in keeps a real hot-swap
+        cand_zip = build_stub_bundle(tmp, "linux", "x86_64", universal_plugin)
+        prev_dir = tmp / "prev-same"
+        prev_dir.mkdir()
+        prev_zip = prev_dir / cand_zip.name
+        shutil.copyfile(cand_zip, prev_zip)
+
+        def prepare(allow: bool) -> tuple[Report, dict[str, Any]]:
+            work_dir = Path(tempfile.mkdtemp(prefix="prepare-old-", dir=tmp))
+            pctx: dict[str, Any] = {"old_root": None, "bundle_zip": cand_zip, "plugin_zip": universal_plugin, "plugin_scope": "universal",
+                                    "bundle_arch": "x86_64", "work_dir": work_dir, "extract_dir": work_dir / "extract"}
+            prep = Report({"platform": "selftest"}, quiet=True)
+            section_bundle_integrity(prep, pctx)
+            ns = argparse.Namespace(upgrade_from_zip=prev_zip, allow_same_previous_arbd=allow)
+            prepare_old_release(prep, pctx, ns)
+            return prep, pctx
+
+        prep, pctx = prepare(False)
+        require("identical previous arbd is rejected by default", not prep.passed and not pctx.get("old_arbd_same_hash"),
+                [c for s in prep.sections for c in s.checks if not c["pass"]][:2])
+        prep, pctx = prepare(True)
+        old_bin = pctx["old_root"] / "bin" / exe("arbd", "linux") if pctx["old_root"] else None
+        new_bin = pctx["root"] / "bin" / exe("arbd", "linux")
+        require("--allow-same-previous-arbd accepts an identical reproducible arbd", prep.passed and pctx.get("old_arbd_same_hash") is True,
+                [c for s in prep.sections for c in s.checks if not c["pass"]][:2])
+        require("--allow-same-previous-arbd forces a distinct previous arbd build", old_bin is not None and sha256_file(old_bin) != sha256_file(new_bin)
+                and pctx["old_root"] != pctx["root"] and (pctx["old_root"] / "bin" / exe("arb-cli", "linux")).is_file())
+        # a previous release that really differs needs no flag and stays untouched
+        diff_dir = tmp / "prev-diff"
+        diff_dir.mkdir()
+        diff_zip = diff_dir / cand_zip.name
+        with zipfile.ZipFile(cand_zip) as src, zipfile.ZipFile(diff_zip, "w") as dst:
+            for info in src.infolist():
+                data = src.read(info.filename)
+                if info.filename.endswith("/bin/arbd"):
+                    data += b"older"
+                dst.writestr(info, data)
+        prev_zip = diff_zip
+        prep, pctx = prepare(False)
+        require("a genuinely different previous arbd passes strictly", prep.passed and pctx["old_root"] is not None and not pctx.get("old_arbd_same_hash"),
+                [c for s in prep.sections for c in s.checks if not c["pass"]][:2])
         # report rendering
         report = Report({"platform": "selftest", "bundle": "x", "core_version": "2.0.0-dev"}, quiet=True)
         with report.section("demo", "demo section") as sec:
@@ -1824,7 +1871,7 @@ def self_test() -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("verify_release_bundle.py --self-test: OK (helpers, MCP framing, pixel comparison, static bundle/plugin verification for linux/macos/windows incl. tamper / missing-license / host-only / retired-label detection, report rendering)")
+    print("verify_release_bundle.py --self-test: OK (helpers, MCP framing, pixel comparison, static bundle/plugin verification for linux/macos/windows incl. tamper / missing-license / host-only / retired-label detection, previous-release identity strict / --allow-same-previous-arbd, report rendering)")
     return 0
 
 
@@ -1845,6 +1892,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap.add_argument("--generator", type=Path, help="path to the compiled arb_gate_bundle example (default: core/target/release/examples, else cargo run)")
     ap.add_argument("--legacy-fixtures", type=Path, default=REPO_ROOT / "fixtures" / "legacy-schema4", help="read-only schema 4 fixture tree")
     ap.add_argument("--upgrade-from-zip", type=Path, help="a previous arb-<os>-<arch>.zip: its arbd is started first and the new launcher must upgrade it in place (omit to self-verify with pseudo-old state)")
+    ap.add_argument("--allow-same-previous-arbd", action="store_true", help="accept a --upgrade-from-zip whose arbd is byte-identical to the candidate (reproducible build, core/ unchanged since that release); the upgrade is then run against a copy of it with a distinct build_id. Default: an identical previous release fails")
     ap.add_argument("--check-tray", action="store_true", help="also verify arb-tray cold start, single instance and clean exit (needs a GUI session or Xvfb)")
     ap.add_argument("--static-only", action="store_true", help="only verify ZIP contents (use when the bundle OS differs from the host)")
     ap.add_argument("--expect-core-version", default=None, help="expected arbd/arb-cli/arb-tray --version (default: core/Cargo.toml when present)")
@@ -1869,13 +1917,49 @@ def prepare_old_release(report: Report, ctx: dict[str, Any], args: argparse.Name
         sec.check("previous release carries arbd / arb-cli / arb-tray", ok, str(old_root))
         old_sha = sha256_file(old_root / "bin" / exe("arbd", ctx["bundle_os"])) if ok else ""
         new_sha = sha256_file(ctx["root"] / "bin" / exe("arbd", ctx["bundle_os"]))
-        # A previous release that is byte-identical to the candidate proves nothing: say so loudly
-        # instead of silently turning the upgrade into a self-check.
-        sec.check("previous release arbd differs from the candidate (a real upgrade)", ok and old_sha != new_sha, f"old={old_sha[:12]} new={new_sha[:12]}")
+        # A previous release that is byte-identical to the candidate proves nothing by itself, so it
+        # fails by default. `--allow-same-previous-arbd` is for a reproducible build whose `core/`
+        # did not change since the previous release: the same arbd is then expected, and the
+        # upgrade is still exercised against a *distinct* build_id (see `distinct_old_release`).
+        same = ok and old_sha == new_sha
+        detail = f"old={old_sha[:12]} new={new_sha[:12]}"
         sec.notes["old_arbd_sha256"] = old_sha
         sec.notes["new_arbd_sha256"] = new_sha
+        if same and args.allow_same_previous_arbd:
+            sec.check("previous release arbd is the identical reproducible build (--allow-same-previous-arbd)", True,
+                      f"identical reproducible arbd binary (old=new={old_sha[:12]}); U1–U4 will still force a distinct build_id hot-swap")
+            old_root = distinct_old_release(sec, old_root, ctx["work_dir"], ctx["bundle_os"])
+            if old_root is None:
+                return
+            ctx["old_arbd_same_hash"] = True
+        else:
+            sec.check("previous release arbd differs from the candidate (a real upgrade)", ok and old_sha != new_sha, detail)
         if ok:
             ctx["old_root"] = old_root
+
+
+def distinct_old_release(sec: Section, old_root: Path, work_dir: Path, bundle_os: str) -> Path | None:
+    """Copies the previous release and appends a marker to its `arbd`.
+
+    arbd's build_id is `<version>:sha256:<digest of its own executable>`, so the copy reports a
+    different build_id from the candidate while running the identical code. The launcher then has
+    a genuine old -> new build_id replacement to perform. Trailing bytes are ignored by ELF and PE
+    loaders; a Mach-O needs its ad-hoc signature redone."""
+    distinct = work_dir / "old-distinct" / old_root.name
+    shutil.copytree(old_root, distinct)
+    arbd = distinct / "bin" / exe("arbd", bundle_os)
+    before = sha256_file(arbd)
+    with arbd.open("ab") as fh:
+        fh.write(b"\nARB-GATE-DISTINCT-PREVIOUS-BUILD\n")
+    signed = True
+    if bundle_os == "macos" and arbd.read_bytes()[:4] in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+        resigned = run_proc(["codesign", "--force", "--sign", "-", arbd], timeout=60)
+        signed = resigned.rc == 0
+        sec.check("distinct previous arbd re-signed ad hoc (macOS)", signed, resigned.err.strip()[:200])
+    after = sha256_file(arbd)
+    sec.notes["old_arbd_distinct_sha256"] = after
+    sec.check("distinct previous arbd has a different SHA-256 from the candidate", signed and after != before, f"{before[:12]} -> {after[:12]}")
+    return distinct if signed and after != before else None
 
 
 def default_core_version() -> str | None:
@@ -1929,6 +2013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = Report(host)
     ctx: dict[str, Any] = {
         "old_root": None,
+        "old_arbd_same_hash": False,
         "bundle_zip": args.bundle_zip.resolve(),
         "plugin_zip": args.plugin_zip.resolve() if args.plugin_zip else None,
         "plugin_scope": args.plugin_scope,
