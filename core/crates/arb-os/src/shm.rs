@@ -44,6 +44,7 @@ const SLOT_HEADER_BYTES: usize = 64;
 const HEADER_REGION_BYTES: usize = RING_HEADER_BYTES + SHM_SLOT_COUNT * SLOT_HEADER_BYTES;
 const FLAG_IS_APPROXIMATE: u32 = 1 << 0;
 const NO_PUBLISHED_SLOT: u32 = u32::MAX;
+const SEQLOCK_CONTENTION: &str = "shared-memory frame seqlock did not stabilize under contention";
 const MAX_SEQLOCK_RETRIES: usize = 64;
 static TMP_SHM_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -848,7 +849,7 @@ impl RingView {
         }
 
         Err(OsError::InvalidShmRing {
-            reason: "shared-memory frame seqlock did not stabilize under contention".to_owned(),
+            reason: SEQLOCK_CONTENTION.to_owned(),
         })
     }
 }
@@ -1259,37 +1260,43 @@ mod tests {
         let mut writer =
             ShmFrameRingWriter::create(&shm_path, FRAME_BYTES).expect("create concurrent ring");
         let reader = ShmFrameRingReader::open(&shm_path).expect("open concurrent reader");
-        let done = Arc::new(AtomicBool::new(false));
-        let reader_done = Arc::clone(&done);
-
+        // Checkpoint every 20 publications so even a preempted reader validates
+        // ten distinct generations. Reads between checkpoints still race the writer.
+        let (validated, checkpoint) = std::sync::mpsc::channel();
         let reader_thread = thread::spawn(move || {
             let mut buf = Vec::with_capacity(FRAME_BYTES);
             let mut last_gen = 0_u64;
-            let mut observed = 0_u64;
-            while !reader_done.load(Ordering::Acquire) || observed < 10 {
-                if let Some(meta) = reader
-                    .read_latest(&mut buf)
-                    .expect("concurrent read_latest must not fail")
-                {
-                    assert!(
-                        meta.generation >= last_gen,
-                        "generation moved backwards: {} < {}",
-                        meta.generation,
-                        last_gen
-                    );
-                    last_gen = meta.generation;
-                    let expected_byte =
-                        u8::try_from(meta.frame_index.rem_euclid(251)).expect("byte in 0..251");
-                    assert!(
-                        buf.iter().all(|&b| b == expected_byte),
-                        "detected torn frame for frame_index={} generation={}",
-                        meta.frame_index,
-                        meta.generation
-                    );
-                    observed += 1;
+            while last_gen < 200 {
+                match reader.read_latest(&mut buf) {
+                    Ok(Some(meta)) => {
+                        assert!(
+                            meta.generation >= last_gen,
+                            "generation moved backwards: {} < {}",
+                            meta.generation,
+                            last_gen
+                        );
+                        let expected_byte =
+                            u8::try_from(meta.frame_index.rem_euclid(251)).expect("byte in 0..251");
+                        assert!(
+                            buf.iter().all(|&b| b == expected_byte),
+                            "detected torn frame for frame_index={} generation={}",
+                            meta.frame_index,
+                            meta.generation
+                        );
+                        if meta.generation > last_gen && meta.generation % 20 == 0 {
+                            validated.send(meta.generation).expect("writer active");
+                        }
+                        last_gen = meta.generation;
+                    }
+                    Ok(None) => thread::yield_now(),
+                    Err(OsError::InvalidShmRing { reason })
+                        if reason == super::SEQLOCK_CONTENTION =>
+                    {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("unexpected read error: {error}"),
                 }
             }
-            observed
         });
 
         let mut frame = vec![0_u8; FRAME_BYTES];
@@ -1310,14 +1317,16 @@ mod tests {
                     &frame,
                 )
                 .expect("publish concurrent frame");
+            if i % 20 == 0 {
+                assert_eq!(
+                    checkpoint
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .expect("reader must validate the published generation"),
+                    i.cast_unsigned()
+                );
+            }
         }
-        done.store(true, Ordering::Release);
-
-        let observed = reader_thread.join().expect("reader thread must not panic");
-        assert!(
-            observed >= 10,
-            "reader thread should observe frames during stress run, saw {observed}"
-        );
+        reader_thread.join().expect("reader thread must not panic");
     }
 
     fn solid_frame(frame_index: i64, width: u32, height: u32) -> FrameDescriptor {
@@ -1413,7 +1422,7 @@ mod tests {
             }
         });
         assert!(
-            matches!(result, Err(OsError::InvalidShmRing { .. })),
+            matches!(&result, Err(OsError::InvalidShmRing { reason }) if reason == super::SEQLOCK_CONTENTION),
             "perpetual lapping must surface a contention error, got {result:?}"
         );
     }
@@ -1495,7 +1504,9 @@ mod tests {
                         );
                         observed += 1;
                     }
-                    Ok(None) | Err(OsError::InvalidShmRing { .. }) => {}
+                    Ok(None) => {}
+                    Err(OsError::InvalidShmRing { reason })
+                        if reason == super::SEQLOCK_CONTENTION => {}
                     Err(other) => panic!("unexpected read error: {other:?}"),
                 }
             }
