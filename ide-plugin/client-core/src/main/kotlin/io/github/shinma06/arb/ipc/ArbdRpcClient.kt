@@ -220,8 +220,10 @@ class ArbdRpcClient(
         tag: String? = null,
         level: String? = null,
         keyword: String? = null,
+        afterSeq: Long? = null,
     ): TimelineLogsResponse {
         val params = buildTimelineQueryParams(bundleIdOrPath, bucket, startNs, endNs, limit).apply {
+            if (afterSeq != null) addProperty("after_seq", afterSeq)
             if (!packageName.isNullOrBlank()) addProperty("package", packageName)
             if (!tag.isNullOrBlank()) addProperty("tag", tag)
             if (!level.isNullOrBlank()) addProperty("level", level)

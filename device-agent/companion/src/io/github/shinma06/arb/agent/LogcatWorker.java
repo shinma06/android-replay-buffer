@@ -2,9 +2,11 @@ package io.github.shinma06.arb.agent;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -19,9 +21,22 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class LogcatWorker {
     private static final long STATS_INTERVAL_MS = 5000L;
+    private static final long STATS_PROBE_TIMEOUT_MS = 4000L;
+    private static final long REAP_TIMEOUT_MS = 500L;
     private static final long INITIAL_BACKOFF_MS = 500L;
     private static final long MAX_BACKOFF_MS = 5000L;
     private static final String SAFE_FALLBACK_BUFFERS = "main,system,crash,events";
+
+    /** Package-private subprocess launcher hook enabling deterministic host unit tests. */
+    interface ProcessStarter {
+        Process start(String... cmd) throws IOException;
+    }
+
+    private static final ProcessStarter DEFAULT_LOGCAT_STARTER =
+            cmd -> new ProcessBuilder(cmd).start();
+
+    private static final ProcessStarter DEFAULT_STATS_STARTER =
+            cmd -> new ProcessBuilder(cmd).redirectErrorStream(true).start();
 
     /**
      * Builds the {@code logcat -B} invocation. Uses {@code -b all} by default and falls back to
@@ -35,17 +50,45 @@ public final class LogcatWorker {
     private final WireFrame.FrameWriter writer;
     private final ClockSource clock;
     private final StreamHealthTracker health;
+    private final ProcessStarter logcatStarter;
+    private final ProcessStarter statsStarter;
+    private final long statsIntervalMs;
+    private final long statsProbeTimeoutMs;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicLong totalRecordsEmitted = new AtomicLong(0);
+    private final Object statsProcessLock = new Object();
 
     private volatile Process activeProcess;
+    private Process activeStatsProcess;
     private Thread readerThread;
     private Thread statsThread;
 
     public LogcatWorker(WireFrame.FrameWriter writer, ClockSource clock, StreamHealthTracker health) {
+        this(
+                writer,
+                clock,
+                health,
+                DEFAULT_LOGCAT_STARTER,
+                DEFAULT_STATS_STARTER,
+                STATS_INTERVAL_MS,
+                STATS_PROBE_TIMEOUT_MS);
+    }
+
+    LogcatWorker(
+            WireFrame.FrameWriter writer,
+            ClockSource clock,
+            StreamHealthTracker health,
+            ProcessStarter logcatStarter,
+            ProcessStarter statsStarter,
+            long statsIntervalMs,
+            long statsProbeTimeoutMs) {
         this.writer = writer;
         this.clock = clock;
         this.health = health;
+        this.logcatStarter = logcatStarter;
+        this.statsStarter = statsStarter;
+        this.statsIntervalMs = Math.max(10L, statsIntervalMs);
+        this.statsProbeTimeoutMs = Math.max(20L, statsProbeTimeoutMs);
     }
 
     public void start() {
@@ -62,7 +105,15 @@ public final class LogcatWorker {
         running.set(false);
         Process p = activeProcess;
         if (p != null) {
-            p.destroy();
+            terminateProcessStreamsAndDestroy(p);
+        }
+        Process statsProc;
+        synchronized (statsProcessLock) {
+            statsProc = activeStatsProcess;
+            activeStatsProcess = null;
+        }
+        if (statsProc != null) {
+            terminateProcessStreamsAndDestroy(statsProc);
         }
         if (readerThread != null) {
             readerThread.interrupt();
@@ -70,6 +121,26 @@ public final class LogcatWorker {
         if (statsThread != null) {
             statsThread.interrupt();
         }
+    }
+
+    /** Package-private test hook for deterministic shutdown assertions. */
+    boolean awaitThreadsTerminated(long timeoutMs) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMs));
+        for (Thread t : new Thread[] {readerThread, statsThread}) {
+            if (t == null) {
+                continue;
+            }
+            long remNs = deadline - System.nanoTime();
+            if (remNs <= 0L) {
+                return false;
+            }
+            long remMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remNs));
+            t.join(remMs);
+            if (t.isAlive()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void runReaderLoop() {
@@ -90,7 +161,7 @@ public final class LogcatWorker {
                 // `-T 1` is used only when nothing has been emitted yet.
                 resume.beginResume();
                 String tArg = resume.nextTArgument();
-                proc = new ProcessBuilder(buildLogcatCommand(useRestrictedBuffers, tArg)).start();
+                proc = logcatStarter.start(buildLogcatCommand(useRestrictedBuffers, tArg));
                 activeProcess = proc;
                 drainStderrQuietly(proc);
                 // stop() may have run between start() and the assignment above, in which case
@@ -197,6 +268,9 @@ public final class LogcatWorker {
                 long nowEmitted = totalRecordsEmitted.get();
                 long emittedDelta = Math.max(0L, nowEmitted - prevEmitted);
                 LogcatStatsParser.Snapshot curr = probeLogcatStats();
+                if (!running.get()) {
+                    return;
+                }
                 PayloadCodec.LogOverflowStats stats = LogcatStatsParser.evaluate(
                         clock.boottimeNs(), prev, curr, emittedDelta, false);
                 long seq = writer.writeFrame(
@@ -213,11 +287,17 @@ public final class LogcatWorker {
                 // Socket closed — stop cleanly without crashing other threads.
                 return;
             } catch (Throwable t) {
+                if (!running.get()) {
+                    return;
+                }
                 System.err.println("arb-logcat-stats error: " + t);
             }
 
+            if (!running.get()) {
+                return;
+            }
             try {
-                Thread.sleep(STATS_INTERVAL_MS);
+                Thread.sleep(statsIntervalMs);
             } catch (InterruptedException ie) {
                 if (!running.get()) {
                     return;
@@ -227,25 +307,28 @@ public final class LogcatWorker {
     }
 
     private LogcatStatsParser.Snapshot probeLogcatStats() {
-        String output = runCommand("logcat", "-b", "all", "-S");
+        if (!running.get()) {
+            return LogcatStatsParser.Snapshot.invalid("stopped");
+        }
+        String output = runStatsCommand("logcat", "-b", "all", "-S");
         LogcatStatsParser.Snapshot snap = LogcatStatsParser.parseLogcatS(output);
-        if (snap.valid) {
+        if (snap.valid || !running.get()) {
             return snap;
         }
         // Fallback 1: explicit main,system,crash,events buffers if `-b all` is restricted.
-        String restrictedOutput = runCommand("logcat", "-b", SAFE_FALLBACK_BUFFERS, "-S");
+        String restrictedOutput = runStatsCommand("logcat", "-b", SAFE_FALLBACK_BUFFERS, "-S");
         LogcatStatsParser.Snapshot restrictedSnap = LogcatStatsParser.parseLogcatS(restrictedOutput);
-        if (restrictedSnap.valid) {
+        if (restrictedSnap.valid || !running.get()) {
             return restrictedSnap;
         }
         // Fallback 2: default `logcat -S`.
-        String fallbackOutput = runCommand("logcat", "-S");
+        String fallbackOutput = runStatsCommand("logcat", "-S");
         LogcatStatsParser.Snapshot fallbackSnap = LogcatStatsParser.parseLogcatS(fallbackOutput);
-        if (fallbackSnap.valid) {
+        if (fallbackSnap.valid || !running.get()) {
             return fallbackSnap;
         }
         // Also probe `logcat -g` purely for diagnostic detail when reporting Unverified.
-        String gOut = runCommand("logcat", "-g");
+        String gOut = runStatsCommand("logcat", "-g");
         if (gOut != null && !gOut.trim().isEmpty()) {
             return LogcatStatsParser.Snapshot.invalid("logcat_S_unavailable_g_present");
         }
@@ -325,29 +408,142 @@ public final class LogcatWorker {
         }
     }
 
-    private static String runCommand(String... cmd) {
+    /**
+     * Runs a bounded stats-probe subprocess under worker ownership (M11):
+     * registers the child in {@link #activeStatsProcess} so {@link #stop()} can immediately
+     * terminate it, enforces {@link #statsProbeTimeoutMs} via a lightweight watchdog that forcibly
+     * destroys the child and closes its pipes (unblocking mid-line {@code readLine()}), and always
+     * closes streams and reaps the child before returning.
+     */
+    private String runStatsCommand(String... cmd) {
+        if (!running.get()) {
+            return null;
+        }
         Process p = null;
+        final AtomicBoolean probeFinished = new AtomicBoolean(false);
+        final AtomicBoolean timedOut = new AtomicBoolean(false);
+        final Object doneMonitor = new Object();
+        Thread watchdog = null;
         try {
-            p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+            p = statsStarter.start(cmd);
+            synchronized (statsProcessLock) {
+                if (!running.get()) {
+                    terminateAndReap(p);
+                    return null;
+                }
+                activeStatsProcess = p;
+            }
+            final Process watchedProcess = p;
+            final Thread callerThread = Thread.currentThread();
+            watchdog = new Thread(() -> {
+                long deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(statsProbeTimeoutMs);
+                synchronized (doneMonitor) {
+                    while (!probeFinished.get() && running.get()) {
+                        long remainingNs = deadlineNs - System.nanoTime();
+                        if (remainingNs <= 0L) {
+                            break;
+                        }
+                        long waitMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNs));
+                        try {
+                            doneMonitor.wait(waitMs);
+                        } catch (InterruptedException ignored) {
+                            break;
+                        }
+                    }
+                }
+                if (!probeFinished.get()) {
+                    if (running.get()) {
+                        timedOut.set(true);
+                    }
+                    terminateProcessStreamsAndDestroy(watchedProcess);
+                    callerThread.interrupt();
+                }
+            }, "arb-logcat-stats-watchdog");
+            watchdog.setDaemon(true);
+            watchdog.start();
+
             StringBuilder sb = new StringBuilder();
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 int lines = 0;
                 // Only the header table + initial summary are needed; cap read to stay lightweight.
-                while ((line = br.readLine()) != null && lines < 120) {
+                while (running.get() && !timedOut.get() && (line = br.readLine()) != null && lines < 120) {
                     sb.append(line).append('\n');
                     lines++;
                 }
             }
-            p.waitFor();
+            if (!running.get() || timedOut.get()) {
+                return null;
+            }
+            p.waitFor(REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             return sb.toString();
         } catch (Throwable ignored) {
             return null;
         } finally {
-            if (p != null) {
-                p.destroy();
+            probeFinished.set(true);
+            synchronized (doneMonitor) {
+                doneMonitor.notifyAll();
             }
+            // If the watchdog interrupted us for a probe timeout while still running, clear the
+            // interrupt flag so the stats loop continues cleanly on the next poll interval.
+            if (timedOut.get() && running.get()) {
+                Thread.interrupted();
+            }
+            if (p != null) {
+                synchronized (statsProcessLock) {
+                    if (activeStatsProcess == p) {
+                        activeStatsProcess = null;
+                    }
+                }
+                terminateAndReap(p);
+            }
+            if (watchdog != null) {
+                try {
+                    watchdog.join(REAP_TIMEOUT_MS);
+                } catch (InterruptedException ignored) {
+                    if (running.get()) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        }
+    }
+
+    private static void terminateProcessStreamsAndDestroy(Process p) {
+        try {
+            p.destroyForcibly();
+        } catch (NoSuchMethodError e) {
+            p.destroy();
+        } catch (Throwable ignored) {
+        }
+        closeQuietly(p.getInputStream());
+        closeQuietly(p.getErrorStream());
+        closeQuietly(p.getOutputStream());
+    }
+
+    private static void terminateAndReap(Process p) {
+        terminateProcessStreamsAndDestroy(p);
+        boolean wasInterrupted = Thread.interrupted();
+        try {
+            p.waitFor(REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            wasInterrupted = true;
+        } catch (Throwable ignored) {
+        } finally {
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static void closeQuietly(Closeable c) {
+        if (c == null) {
+            return;
+        }
+        try {
+            c.close();
+        } catch (Throwable ignored) {
         }
     }
 

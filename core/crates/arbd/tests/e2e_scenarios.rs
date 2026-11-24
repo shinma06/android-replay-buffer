@@ -2328,6 +2328,18 @@ fn r3_s6_s8c_s10_s11_leases_trim_tail_oversized_response_and_shutdown_gate() {
         "connection must remain healthy after oversized response error"
     );
 
+    let cursor = small["logs"][1]["seq"].as_u64().expect("sequence cursor");
+    let next = client.call(
+        "timeline.query_logs",
+        &json!({ "bundle_id_or_path": bundle_id, "limit": 2, "after_seq": cursor }),
+    );
+    let rows = next["logs"].as_array().expect("next page");
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row["seq"].as_u64().expect("seq") > cursor)
+    );
+
     // S11: once shutdown is triggered, idle client connections exit promptly so shutdown completes.
     let shutdown_handle = server.shutdown_handle();
     let mut idle_client = TestIpcClient::connect(server.endpoint());

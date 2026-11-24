@@ -791,16 +791,17 @@ pub fn query_logs_filtered(
         || params.keyword.is_some()
         || package_filter.is_some();
     let fetch_limit = if has_text_filter { None } else { Some(limit) };
-    let mut logs = reader.query_logs(bucket, range, fetch_limit)?;
+    let mut logs = reader.query_logs_after(bucket, range, params.after_seq, fetch_limit)?;
 
     if let Some(target_pkg) = package_filter {
         // Build the PID/package resolver across all bundle logs so PID attributions learned
         // outside the requested frame/time slice still attribute logs inside the slice accurately.
-        let all_logs = if range == TimeRange::all() && bucket.is_none() {
-            logs.clone()
-        } else {
-            reader.query_logs(None, TimeRange::all(), None)?
-        };
+        let all_logs =
+            if range == TimeRange::all() && bucket.is_none() && params.after_seq.is_none() {
+                logs.clone()
+            } else {
+                reader.query_logs(None, TimeRange::all(), None)?
+            };
         logs = arb_core::analytics::filter_logs_by_package(&all_logs, &logs, target_pkg);
     }
 

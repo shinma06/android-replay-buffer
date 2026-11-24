@@ -19,6 +19,7 @@ import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartParams
@@ -43,6 +44,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
+
+/**
+ * Explicit 3-state always-on capture UX state rendered by the Tool Window & Running Devices toolbar:
+ * - [OFF]: capture disabled (`capture_enabled == false && !capture.active`).
+ * - [ARMED_WAITING]: armed (`capture_enabled == true`) and waiting for a device / selection.
+ * - [RECORDING]: actively capturing (`capture.active == true`).
+ */
+enum class CaptureToggleState {
+    OFF,
+    ARMED_WAITING,
+    RECORDING,
+}
 
 /**
  * Pure Kotlin + Compose state controller for the `ARB` Tool Window.
@@ -80,6 +93,9 @@ class ArbToolWindowController(
     private var rawCaptureState = CaptureBarState()
 
     @Volatile
+    private var rawCaptureEnabled = false
+
+    @Volatile
     private var rawRecoveryState = FailedSaveRecoveryState()
 
     @Volatile
@@ -93,6 +109,9 @@ class ArbToolWindowController(
     private val metaCache = ConcurrentHashMap<String, BundleMeta>()
 
     var captureState: CaptureBarState by mutableStateOf(CaptureBarState())
+        private set
+
+    var captureEnabled: Boolean by mutableStateOf(false)
         private set
 
     var recoveryState: FailedSaveRecoveryState by mutableStateOf(FailedSaveRecoveryState())
@@ -119,9 +138,13 @@ class ArbToolWindowController(
     private val daemonStateListener = object : ArbDaemonStateListener {
         override fun onConfigUpdated(config: ArbConfig) {
             val next = synchronized(captureStateLock) {
+                rawCaptureEnabled = config.captureEnabled
                 CaptureBarReducer.withConfig(rawCaptureState, config).also { rawCaptureState = it }
             }
-            publishOnEdt { captureState = next }
+            publishOnEdt {
+                captureState = next
+                captureEnabled = config.captureEnabled
+            }
             runAsync { refreshAll() }
         }
 
@@ -212,14 +235,51 @@ class ArbToolWindowController(
     val isCaptureActive: Boolean
         get() = captureState.capture?.active == true
 
+    /** Whether always-on background capture is armed (`capture_enabled == true`). */
+    val isCaptureArmed: Boolean
+        get() = captureEnabled || captureState.config.captureEnabled
+
+    /** `true` when either actively recording or armed and waiting for a device to connect. */
+    val isCaptureOn: Boolean
+        get() = isCaptureActive || isCaptureArmed
+
+    val captureToggleState: CaptureToggleState
+        get() = when {
+            isCaptureActive && captureState.capture?.connected == true -> CaptureToggleState.RECORDING
+            isCaptureOn -> CaptureToggleState.ARMED_WAITING
+            else -> CaptureToggleState.OFF
+        }
+
+    /** Compact status indicator text clearly distinguishing OFF / ON・待機中 / ON・REC. */
+    val captureStatusBadgeText: String
+        get() = when {
+            !captureState.daemonConnected -> "未接続"
+            captureState.capture?.storagePressureStopped == true -> "容量停止"
+            captureToggleState == CaptureToggleState.RECORDING -> when {
+                isLogsOnlyMode -> "ON・REC (ログのみ)"
+                else -> "ON・REC"
+            }
+            captureToggleState == CaptureToggleState.ARMED_WAITING -> "ON・待機中"
+            else -> "OFF"
+        }
+
+    /** Shown under the device row while armed and waiting for a device connection / selection. */
+    val armedWaitingNotice: String?
+        get() = if (captureState.daemonConnected && captureToggleState == CaptureToggleState.ARMED_WAITING) {
+            ARMED_WAITING_DETAIL_TEXT
+        } else {
+            null
+        }
+
+    /** Always enabled while `arbd` is connected so Capture ON can be armed even with 0 devices. */
     val startStopEnabled: Boolean
-        get() = if (isCaptureActive) captureState.daemonConnected else canUseSelectedDevice
+        get() = captureState.daemonConnected
 
     val screenshotEnabled: Boolean
         get() = if (isCaptureActive) captureState.daemonConnected else canUseSelectedDevice
 
     val startStopLabel: String
-        get() = if (isCaptureActive) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
+        get() = if (isCaptureOn) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
 
     val deviceTooltip: String
         get() = when (val info = captureState.selectedDevice) {
@@ -232,10 +292,15 @@ class ArbToolWindowController(
         }
 
     val startStopTooltip: String
-        get() = if (isCaptureActive) {
-            "ライブキャプチャを停止"
-        } else {
-            disabledDeviceHint() ?: "ライブキャプチャを開始"
+        get() = when (captureToggleState) {
+            CaptureToggleState.RECORDING -> "ON・REC（取得中） — クリックでキャプチャを OFF にします"
+            CaptureToggleState.ARMED_WAITING -> "$ARMED_WAITING_DETAIL_TEXT — クリックでキャプチャを OFF にします"
+            CaptureToggleState.OFF -> if (canUseSelectedDevice) {
+                "OFF（停止中） — ライブキャプチャを開始"
+            } else {
+                val hint = disabledDeviceHint()?.let { " · $it" }.orEmpty()
+                "OFF（停止中） — クリックで $ARMED_WAITING_DETAIL_TEXT にします$hint"
+            }
         }
 
     val screenshotTooltip: String
@@ -349,13 +414,30 @@ class ArbToolWindowController(
     }
 
     fun toggleCapture() {
-        val active = isCaptureActive
+        val currentlyOn = isCaptureOn
+        val currentlyActive = isCaptureActive
+        val canStartNow = canUseSelectedDevice
         val serial = selectedDeviceSerial
         runAsync {
-            if (active) {
-                daemonService.withClient { it.captureStop() }
+            if (currentlyOn) {
+                persistCaptureEnabled(daemonService, enabled = false)
+                if (currentlyActive) {
+                    daemonService.withClient { it.captureStop() }
+                }
+                daemonService.updateCachedCaptureState(active = false, enabled = false)
             } else {
-                daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
+                val armed = persistCaptureEnabled(daemonService, enabled = true) == true
+                val started = if (canStartNow && !serial.isNullOrBlank()) {
+                    val attempt = runCatching {
+                        daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
+                    }
+                    // Without always-on support the start itself is the whole toggle: surface its error.
+                    if (!armed) attempt.getOrThrow()
+                    attempt.getOrNull()?.started == true
+                } else {
+                    false
+                }
+                daemonService.updateCachedCaptureState(active = started, enabled = armed)
             }
             refreshAll()
         }
@@ -555,12 +637,17 @@ class ArbToolWindowController(
         recovery: FailedSaveRecoveryState = recoveryState,
         catalog: BundleCatalogState = catalogState,
         staleMessage: String? = staleDaemonMessage,
+        captureEnabled: Boolean = capture.config.captureEnabled,
     ) {
-        synchronized(captureStateLock) { rawCaptureState = capture }
+        synchronized(captureStateLock) {
+            rawCaptureState = capture
+            rawCaptureEnabled = captureEnabled
+        }
         rawRecoveryState = recovery
         rawCatalogState = catalog
         activeFilterBacking = catalog.activeFilter
         captureState = capture
+        this.captureEnabled = captureEnabled
         recoveryState = recovery
         catalogState = catalog
         activeFilter = catalog.activeFilter
@@ -673,7 +760,10 @@ class ArbToolWindowController(
                 if (meta.crashed) crashIds.add(entry.bundleId)
             }
 
+            val armed = status.captureEnabled || config.captureEnabled
+            daemonService.updateCachedCaptureState(active = status.capture.active, enabled = armed)
             val nextCapture = synchronized(captureStateLock) {
+                rawCaptureEnabled = armed
                 CaptureBarReducer.fromStatus(
                     previous = rawCaptureState,
                     status = status,
@@ -681,7 +771,7 @@ class ArbToolWindowController(
                     config = config,
                 ).also { rawCaptureState = it }
             }
-            daemonService.updateCachedToolbarSnapshot(nextCapture.toToolbarSnapshot())
+            daemonService.updateCachedToolbarSnapshot(nextCapture.toToolbarSnapshot(captureEnabled = armed))
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(rawRecoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
@@ -695,6 +785,7 @@ class ArbToolWindowController(
 
             publishOnEdt {
                 captureState = nextCapture
+                captureEnabled = armed
                 recoveryState = nextRecovery
                 catalogState = nextCatalog
                 staleDaemonMessage = staleWarning
@@ -770,6 +861,7 @@ class ArbToolWindowController(
         const val CAPTURE_MODE_VIDEO_LABEL: String = "映像＋ログ"
         const val CAPTURE_MODE_LOGS_LABEL: String = "ログのみ"
         const val LOGS_ONLY_CHIP_TEXT: String = "ログのみ常時"
+        const val ARMED_WAITING_DETAIL_TEXT: String = "ON・待機中（端末接続で自動開始）"
 
         fun captureModeLabel(mode: CaptureMode): String = when (mode) {
             CaptureMode.VIDEO_AND_LOGS -> CAPTURE_MODE_VIDEO_LABEL
@@ -809,7 +901,9 @@ class ArbToolWindowController(
     }
 }
 
-internal fun CaptureBarState.toToolbarSnapshot(): ArbToolbarDaemonSnapshot {
+internal fun CaptureBarState.toToolbarSnapshot(
+    captureEnabled: Boolean = this.config.captureEnabled,
+): ArbToolbarDaemonSnapshot {
     val hint = when (val sel = this.deviceSelection) {
         is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
             if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
@@ -826,9 +920,27 @@ internal fun CaptureBarState.toToolbarSnapshot(): ArbToolbarDaemonSnapshot {
         probed = true,
         daemonConnected = this.daemonConnected,
         captureActive = this.capture?.active == true,
+        captureConnected = this.capture?.connected == true,
+        captureEnabled = captureEnabled,
         hasBufferedData = this.ringChunkCount > 0L,
         hasOnlineDevice = this.isSelectedDeviceOnline,
         selectedDeviceSerial = this.selectedDevice?.serial,
         disabledDeviceHint = hint,
     )
+}
+
+/**
+ * Persists `capture_enabled` (always-on capture) through `config.update`. Returns the daemon's
+ * stored value, or `null` when the running `arbd` predates `capture_enabled` and rejects the patch
+ * field; callers then fall back to a plain `capture.start` / `capture.stop` toggle.
+ */
+internal fun persistCaptureEnabled(daemonService: ArbdDaemonService, enabled: Boolean): Boolean? {
+    val updated = try {
+        daemonService.withClient { it.configUpdate(ArbConfigPatch(captureEnabled = enabled)).config }
+    } catch (e: ArbdRpcException) {
+        if (!e.isUnknownCaptureEnabledField) throw e
+        return null
+    }
+    daemonService.notifyConfigUpdated(updated)
+    return updated.captureEnabled
 }

@@ -34,6 +34,7 @@
         <fileTypeDetector implementation="io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"/>
         <fileEditorProvider implementation="io.github.shinma06.arb.ide.ArbBundleFileEditorProvider"/>
         <virtualFilePreCloseCheck implementation="io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"/>
+        <postStartupActivity implementation="io.github.shinma06.arb.ide.ArbStartupActivity"/>
     </extensions>
 
     <actions>

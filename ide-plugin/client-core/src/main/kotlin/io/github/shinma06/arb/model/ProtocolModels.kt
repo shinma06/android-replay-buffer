@@ -18,6 +18,9 @@ class ArbdRpcException(
 ) : RuntimeException(
     if (method != null) "arbd RPC error ($method) [$code]: $message" else "arbd RPC error [$code]: $message",
 ) {
+    val isUnknownCaptureEnabledField: Boolean
+        get() = code == -32602 && message.contains("unknown field `capture_enabled`")
+
     val isMethodNotFound: Boolean
         get() = code == RPC_ERR_METHOD_NOT_FOUND
 

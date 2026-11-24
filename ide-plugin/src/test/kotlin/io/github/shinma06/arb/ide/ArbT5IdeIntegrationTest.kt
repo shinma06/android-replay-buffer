@@ -668,19 +668,19 @@ class ArbT5IdeIntegrationTest {
             }
             assertEquals("39101FDH200042", controller.selectedDeviceSerial)
             assertEquals("未承認", controller.captureState.statusBadgeText)
-            assertFalse(controller.startStopEnabled, "capture start must stay disabled while unauthorized")
+            assertTrue(controller.startStopEnabled, "always-on capture toggle stays armable while unauthorized")
             assertFalse(controller.screenshotEnabled, "screenshot must stay disabled while unauthorized")
 
             currentDevices.set(listOf(unauthDevice.copy(state = AdbDeviceState.Device)))
             val d2 = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < d2) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (controller.startStopEnabled) break
+                if (controller.screenshotEnabled) break
                 Thread.sleep(25L)
             }
             assertEquals("39101FDH200042", controller.selectedDeviceSerial)
             assertEquals("待機中", controller.captureState.statusBadgeText)
-            assertTrue(controller.startStopEnabled, "capture start must auto-enable on online transition")
+            assertTrue(controller.startStopEnabled, "capture toggle stays enabled on online transition")
             assertTrue(controller.screenshotEnabled, "screenshot must auto-enable on online transition")
         } finally {
             controller.dispose()

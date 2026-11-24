@@ -591,6 +591,7 @@ data class TimelineViewerState(
     val showTapOverlay: Boolean = true,
     val exportCompletion: ExportCompletionInfo? = null,
     val lastActionMessage: String? = null,
+    val relativeFramePtsNs: List<Long> = emptyList(),
 ) {
     /**
      * Mandatory ARB requirement (`SPEC-03`): show approximate-preview badge whenever `isApproximate == true`,
@@ -651,6 +652,7 @@ data class TimelineViewerState(
 
     val totalDurationMs: Long
         get() {
+            relativeFramePtsNs.lastOrNull()?.let { return it / 1_000_000L }
             if (frameCount <= 1L) return 0L
             if (summary.epochFrameRanges.size > 1) {
                 val sumNs = summary.epochFrameRanges.sumOf { (it.endBoottimeNs - it.startBoottimeNs).coerceAtLeast(0L) }
@@ -677,6 +679,7 @@ data class TimelineViewerState(
     fun frameToRelativeMs(frameIndex: Long): Long {
         if (frameCount <= 1L) return 0L
         val clamped = frameIndex.coerceIn(0L, frameCount - 1L)
+        if (relativeFramePtsNs.isNotEmpty()) return relativeFramePtsNs[clamped.toInt()] / 1_000_000L
         if (summary.epochFrameRanges.size > 1) {
             var accNs = 0L
             for (ep in summary.epochFrameRanges) {

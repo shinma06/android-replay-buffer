@@ -984,6 +984,7 @@ fn tool_definitions() -> Vec<Value> {
                     "tag": { "type": "string", "description": "Case-insensitive tag substring filter." },
                     "level": { "type": "string", "enum": ["V", "D", "I", "W", "E", "F", "A"] },
                     "keyword": { "type": "string", "description": "Case-insensitive message/tag substring filter." },
+                    "after_seq": { "type": "integer", "minimum": 0, "description": "Return log rows strictly after this sequence number." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100_000 }
                 },
                 "required": ["bundle_id"],

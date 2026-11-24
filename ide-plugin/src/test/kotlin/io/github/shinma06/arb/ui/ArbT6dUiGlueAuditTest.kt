@@ -198,13 +198,14 @@ class ArbT6dUiGlueAuditTest {
     fun deviceDropdownFollowsStrictSelectionPolicyForZeroOneAndMultipleDevices() {
         val (controller, service) = offlineController()
         try {
-            // 0 online -> clear placeholder, disabled, no serial.
+            // 0 online -> clear placeholder, disabled dropdown, no serial; capture toggle stays armable.
             val none = CaptureBarReducer.fromStatus(CaptureBarState(), status(), devices = emptyList())
             controller.applyStateForTest(capture = none)
             assertEquals(listOf(ArbToolWindowController.NO_DEVICES_PLACEHOLDER), controller.deviceDropdownLabels)
             assertFalse(controller.deviceDropdownEnabled)
             assertNull(controller.selectedDeviceSerial)
-            assertFalse(controller.startStopEnabled)
+            assertTrue(controller.startStopEnabled)
+            assertFalse(controller.screenshotEnabled)
 
             // 1 online + no preferred -> auto-select and enable capture controls.
             val one = CaptureBarReducer.fromStatus(none, status(), devices = listOf(online("emulator-5554")))
@@ -228,10 +229,10 @@ class ArbT6dUiGlueAuditTest {
             )
             assertEquals(0, controller.selectedDeviceIndex, "prompt must be shown, not the first device")
             assertNull(controller.selectedDeviceSerial)
-            assertFalse(controller.startStopEnabled)
+            assertTrue(controller.startStopEnabled)
             assertFalse(controller.screenshotEnabled)
             assertEquals(ArbToolWindowController.MULTIPLE_DEVICES_PROMPT, controller.deviceSelectionNotice)
-            assertEquals(ArbToolWindowController.MULTIPLE_DEVICES_PROMPT, controller.startStopTooltip)
+            assertTrue(controller.startStopTooltip.contains(ArbToolWindowController.MULTIPLE_DEVICES_PROMPT))
             assertFalse(ArbFormatters.containsEmoji(ArbToolWindowController.MULTIPLE_DEVICES_PROMPT))
         } finally {
             controller.dispose()
@@ -264,7 +265,8 @@ class ArbT6dUiGlueAuditTest {
             )
             assertEquals(0, controller.selectedDeviceIndex, "pinned PIXEL-A must remain the shown selection")
             assertNull(controller.selectedDeviceSerial, "PIXEL-B must never be auto-selected")
-            assertFalse(controller.startStopEnabled)
+            assertTrue(controller.startStopEnabled)
+            assertFalse(controller.screenshotEnabled)
             val notice = assertNotNull(controller.deviceSelectionNotice)
             assertTrue(notice.contains("PIXEL-A") && notice.contains("切断中（再接続待ち）"), notice)
 

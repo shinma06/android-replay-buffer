@@ -298,6 +298,21 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
         bucket: Option<RecordBucket>,
         range: TimeRange,
         limit: Option<usize>,
+    ) -> Result<Vec<LogRecord>, StorageError> {
+        self.query_logs_after(bucket, range, None, limit)
+    }
+
+    /// Queries rows after an exclusive sequence cursor with the same time and bucket filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the filtered rows cannot be read or decoded.
+    fn query_logs_after(
+        &self,
+        bucket: Option<RecordBucket>,
+        range: TimeRange,
+        after_seq: Option<u64>,
+        limit: Option<usize>,
     ) -> Result<Vec<LogRecord>, StorageError>;
 
     /// Queries input / tap rows filtered by optional `bucket`, [`TimeRange`], and optional row `limit`.
@@ -925,10 +940,11 @@ impl BundleReader for V2BundleReader {
         Ok(events)
     }
 
-    fn query_logs(
+    fn query_logs_after(
         &self,
         bucket: Option<RecordBucket>,
         range: TimeRange,
+        after_seq: Option<u64>,
         limit: Option<usize>,
     ) -> Result<Vec<LogRecord>, StorageError> {
         let conn = self.open_timeline_ro()?;
@@ -950,6 +966,7 @@ impl BundleReader for V2BundleReader {
              WHERE (?1 IS NULL OR bucket = ?1)
                AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
                AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+               AND seq > ?5
              ORDER BY seq ASC
              LIMIT ?4"
         } else {
@@ -962,6 +979,7 @@ impl BundleReader for V2BundleReader {
              WHERE (?1 IS NULL OR bucket = ?1)
                AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
                AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)
+               AND seq > ?5
              ORDER BY seq ASC
              LIMIT ?4"
         };
@@ -972,7 +990,13 @@ impl BundleReader for V2BundleReader {
 
         let rows = stmt
             .query_map(
-                params![bucket_str, range.start_ns, range.end_ns, limit_i64],
+                params![
+                    bucket_str,
+                    range.start_ns,
+                    range.end_ns,
+                    limit_i64,
+                    after_seq.map_or(-1, |seq| i64::try_from(seq).unwrap_or(i64::MAX))
+                ],
                 |row| {
                     Ok(RawLogSqlRow {
                         seq: row.get(0)?,
@@ -1282,14 +1306,18 @@ impl BundleReader for LegacyBundleReader {
         Ok(self.discontinuities.clone())
     }
 
-    fn query_logs(
+    fn query_logs_after(
         &self,
         bucket: Option<RecordBucket>,
         range: TimeRange,
+        after_seq: Option<u64>,
         limit: Option<usize>,
     ) -> Result<Vec<LogRecord>, StorageError> {
         let mut results = Vec::new();
         for record in &self.logs {
+            if after_seq.is_some_and(|seq| record.seq <= seq) {
+                continue;
+            }
             if let Some(wanted) = bucket
                 && record.bucket != wanted
             {

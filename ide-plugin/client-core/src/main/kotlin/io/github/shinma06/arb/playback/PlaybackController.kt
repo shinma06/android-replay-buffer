@@ -110,9 +110,10 @@ class PlaybackController(
     val droppedFramesCount: Long
         get() = droppedFramesCounter.get()
 
-    /**
-     * Returns the relative presentation timestamp (ns from frame 0) of [frameIndex].
-     */
+    /** Normalized PTS table shared with the timeline, empty for constant-rate fallback. */
+    val relativeFramePtsNs: List<Long> = normalizedRelativePtsNs?.asList().orEmpty()
+
+    /** Returns the presentation timestamp in nanoseconds relative to frame zero. */
     fun frameRelativePtsNs(frameIndex: Long): Long {
         if (totalFrames <= 0L) return 0L
         val clamped = frameIndex.coerceIn(0L, totalFrames - 1L)
@@ -614,7 +615,7 @@ class PlaybackController(
             return
         }
         if (oldToClose != null && oldToClose !== player && closeAudioPlayerOnClose) {
-            runCatching { oldToClose?.close() }
+            runCatching { oldToClose.close() }
         }
         if (snapshot != null) {
             notifyListeners(snapshot)
