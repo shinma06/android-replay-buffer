@@ -187,12 +187,13 @@ def elf_max_symbol_versions(data: bytes) -> dict[str, tuple[int, ...]]:
             _, aux_count, _, aux_offset, next_entry = struct.unpack_from("<HHIII", data, entry)
             if i + 1 < count and next_entry < 16:
                 raise ValueError("invalid version requirement chain")
-            end = entry + next_entry if next_entry else offset + size
-            if end > offset + size or (aux_count and aux_offset < 16):
+            # Linkers may group all Verneed headers first and place all Vernaux
+            # lists afterwards. vn_next bounds the header chain, not the aux list.
+            if entry + next_entry > offset + size or (aux_count and aux_offset < 16):
                 raise ValueError("invalid version requirement offsets")
             aux = entry + aux_offset
             for j in range(aux_count):
-                if aux + 16 > end:
+                if aux + 16 > offset + size:
                     raise ValueError("truncated auxiliary version requirement")
                 _, _, _, name_offset, next_aux = struct.unpack_from("<IHHII", data, aux)
                 if j + 1 < aux_count and next_aux < 16:
@@ -1936,6 +1937,12 @@ def self_test() -> int:
         # ELF baseline guard: parser, pass at the limit, fail above it
         at_limit = build_stub_elf({"libc.so.6": ["GLIBC_2.2.5", "GLIBC_2.35"], "libstdc++.so.6": ["GLIBCXX_3.4.9", "GLIBCXX_3.4.30"], "libgcc_s.so.1": ["GCC_3.0"]})
         require("ELF verneed parser", elf_max_symbol_versions(at_limit) == {"GLIBC": (2, 35), "GLIBCXX": (3, 4, 30), "GCC": (3, 0)}, elf_max_symbol_versions(at_limit))
+        grouped = bytearray(build_stub_elf({"libc.so.6": ["GLIBC_2.35"], "libstdc++.so.6": ["GLIBCXX_3.4.30"]}))
+        grouped[80:96], grouped[96:112] = grouped[96:112], grouped[80:96]
+        struct.pack_into("<II", grouped, 64 + 8, 32, 16)
+        struct.pack_into("<I", grouped, 80 + 8, 32)
+        require("ELF with grouped Verneed headers", elf_max_symbol_versions(grouped) ==
+                {"GLIBC": (2, 35), "GLIBCXX": (3, 4, 30)})
         require("ELF at the baseline limit passes", elf_compat_problems(at_limit)[1] == [], elf_compat_problems(at_limit))
         too_new = build_stub_elf({"libc.so.6": ["GLIBC_2.34", "GLIBC_2.43", "GLIBC_PRIVATE"]})
         require("GLIBC_2.43 is rejected", elf_compat_problems(too_new)[1] == ["GLIBC_2.43 > GLIBC_2.35"], elf_compat_problems(too_new))
