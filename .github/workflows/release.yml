@@ -65,21 +65,8 @@ jobs:
         with:
           workspaces: core
       - name: Prepare pinned Android SDK (android-37.2 + runner build-tools)
-        run: |
-          set -euo pipefail
-          sdk_dir="$(mktemp -d "$RUNNER_TEMP/replay-android-sdk.XXXXXX")"
-          archive="$sdk_dir/platform-37.2_r01.zip"
-          curl --fail --location --max-time 120 --output "$archive" \
-            https://dl.google.com/android/repository/platform-37.2_r01.zip
-          echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum -c -
-          mkdir -p "$sdk_dir/platforms/android-37.2"
-          jar="$sdk_dir/platforms/android-37.2/android.jar"
-          unzip -p "$archive" android-37.2/android.jar > "$jar"
-          echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum -c -
-          rm -f "$archive"
-          runner_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          ln -s "$runner_sdk/build-tools" "$sdk_dir/build-tools"
-          echo "ANDROID_HOME=$sdk_dir" >> "$GITHUB_ENV"
+        shell: bash
+        run: ./device-agent/scripts/setup-android-sdk.sh
       - name: Build device-agent DEX jars
         run: |
           set -euo pipefail

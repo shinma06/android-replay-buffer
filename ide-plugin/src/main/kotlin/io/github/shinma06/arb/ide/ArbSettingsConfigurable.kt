@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.Configurable
@@ -68,8 +69,15 @@ import javax.swing.JComponent
  * screenshot override), and 1-click CLI / MCP path & JSON copy state.
  */
 class ArbSettingsFormModel(
-    val bundledCliPath: String?,
+    bundledCliPath: String?,
 ) {
+    var bundledCliPath by mutableStateOf(bundledCliPath)
+        private set
+
+    fun updateCliPath(path: String?) {
+        bundledCliPath = path
+        cliPathReadOnlyText.setTextAndPlaceCursorAtEnd(path ?: CLI_PATH_UNAVAILABLE_TEXT)
+    }
     val saveWindowText = TextFieldState(ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toString())
     val ringBudgetAmountText = TextFieldState("1.5")
     var ringBudgetUnit by mutableStateOf(StorageSizeUnit.GIB)
@@ -249,6 +257,11 @@ class ArbSettingsConfigurable internal constructor(
     private val daemonRestarter: () -> Unit = {},
     private val clipboardWriter: (String) -> Unit = ::copyTextToClipboard,
     private val blockingRunner: DaemonCallRunner = DaemonCallRunner.Inline,
+    /**
+     * Runs slow, possibly I/O-bound lookups (Studio's Logcat screenshot settings, VFS) off the
+     * EDT and hands the result back on the EDT; see [BackgroundUiRunner].
+     */
+    private val backgroundUi: BackgroundUiRunner = BackgroundUiRunner.Pooled,
 ) : Configurable, Configurable.NoScroll {
     // Constructor used by IntelliJ Platform `projectConfigurable` extension instantiation.
     constructor(project: Project) : this(
@@ -307,8 +320,9 @@ class ArbSettingsConfigurable internal constructor(
 
     /** Creates the pure form model and runs initial load without instantiating Compose/Skiko. */
     internal fun createFormModel(): ArbSettingsFormModel {
-        val created = ArbSettingsFormModel(bundledCliPath = cliPathProvider())
+        val created = ArbSettingsFormModel(bundledCliPath = null)
         form = created
+        backgroundUi.run(cliPathProvider) { path -> if (form === created) created.updateCliPath(path) }
         reset()
         return created
     }
@@ -321,8 +335,9 @@ class ArbSettingsConfigurable internal constructor(
                 onRestartDaemon = { restartDaemonAndReload() },
                 onBrowseOutputDir = { chooseFolder("保存先フォルダを選択", created.outputDirText) },
                 onBrowseScreenshotDir = {
-                    chooseFolder("スクリーンショット保存先フォルダを選択", created.customScreenshotDirText)
-                    refreshScreenshotStatus(created)
+                    chooseFolder("スクリーンショット保存先フォルダを選択", created.customScreenshotDirText) {
+                        refreshScreenshotStatus(created)
+                    }
                 },
                 onBrowseBinary = { chooseBinary("arbd バイナリを選択", created.customArbdPathText) },
                 onScreenshotOptionChanged = { refreshScreenshotStatus(created) },
@@ -349,9 +364,10 @@ class ArbSettingsConfigurable internal constructor(
     internal fun restartDaemonAndReload() {
         val currentForm = form ?: return
         val draftPath = currentForm.currentDraft().normalizedCustomArbdPath()
-        if (draftPath.isNotEmpty() && draftPath != baselineCustomBinary) {
-            val isAbsolute = runCatching { Path.of(draftPath).isAbsolute }.getOrDefault(false)
-            if (isAbsolute) {
+        // An emptied path is a change too: it switches back to the bundled arbd on restart.
+        if (draftPath != baselineCustomBinary) {
+            val usable = draftPath.isEmpty() || runCatching { Path.of(draftPath).isAbsolute }.getOrDefault(false)
+            if (usable) {
                 blockingRunner.run { localBinaryWriter(draftPath) }
                 baselineCustomBinary = draftPath
             }
@@ -478,31 +494,52 @@ class ArbSettingsConfigurable internal constructor(
 
     internal fun currentFormForTest(): ArbSettingsFormModel? = form
 
+    /**
+     * Resolves the screenshot destination text off the EDT (Studio's Logcat screenshot settings
+     * are read reflectively and may touch the file system) and applies it on the EDT, unless the
+     * form was replaced or the selection changed meanwhile.
+     */
     private fun refreshScreenshotStatus(model: ArbSettingsFormModel) {
-        val (inherit, customShot) = model.currentLocalScreenshotSettings()
-        model.screenshotStatusText = screenshotStatusResolver(inherit, customShot)
+        val selection = model.currentLocalScreenshotSettings()
+        backgroundUi.run(
+            work = { screenshotStatusResolver(selection.first, selection.second) },
+            onEdt = { text ->
+                if (form === model && model.currentLocalScreenshotSettings() == selection) {
+                    model.screenshotStatusText = text
+                }
+            },
+        )
     }
 
-    private fun chooseFolder(titleText: String, target: TextFieldState) {
+    private fun chooseFolder(titleText: String, target: TextFieldState, onChosen: () -> Unit = {}) {
         val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
             title = titleText
         }
-        val current = target.text.toString().trim()
-        val initial = current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
-        FileChooser.chooseFile(descriptor, project, initial) { selected ->
-            target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
-        }
+        chooseFile(descriptor, target, onChosen)
     }
 
     private fun chooseBinary(titleText: String, target: TextFieldState) {
         val descriptor = FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().apply {
             title = titleText
         }
+        chooseFile(descriptor, target) {}
+    }
+
+    /** Opens the chooser at the current path, resolving that VFS entry off the EDT first. */
+    private fun chooseFile(descriptor: FileChooserDescriptor, target: TextFieldState, onChosen: () -> Unit) {
+        val owner = form ?: return
         val current = target.text.toString().trim()
-        val initial = current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
-        FileChooser.chooseFile(descriptor, project, initial) { selected ->
-            target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
-        }
+        backgroundUi.run(
+            work = { current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) } },
+            onEdt = { initial ->
+                if (form !== owner || project?.isDisposed == true) return@run
+                FileChooser.chooseFile(descriptor, project, initial) { selected ->
+                    if (form !== owner) return@chooseFile
+                    target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
+                    onChosen()
+                }
+            },
+        )
     }
 
     enum class DaemonDiagnosticKind {
@@ -881,6 +918,32 @@ internal fun ArbSettingsContent(
 internal fun captureModeOptionLabel(mode: CaptureMode): String = when (mode) {
     CaptureMode.VIDEO_AND_LOGS -> "映像＋ログ（画面録画あり）"
     CaptureMode.LOGS_ONLY -> "ログのみ（低負荷・常時記録）"
+}
+
+/**
+ * Runs [work] off the EDT and [onEdt] with its result on the EDT (in the modality the request
+ * came from, so it also reaches a modal Settings dialog). Without an IntelliJ application
+ * (headless unit tests) both run inline.
+ */
+internal interface BackgroundUiRunner {
+    fun <T> run(work: () -> T, onEdt: (T) -> Unit)
+
+    companion object {
+        val Pooled: BackgroundUiRunner = object : BackgroundUiRunner {
+            override fun <T> run(work: () -> T, onEdt: (T) -> Unit) {
+                val app = com.intellij.openapi.application.ApplicationManager.getApplication()
+                if (app == null) {
+                    onEdt(work())
+                    return
+                }
+                val modality = com.intellij.openapi.application.ModalityState.current()
+                app.executeOnPooledThread {
+                    val result = work()
+                    app.invokeLater({ onEdt(result) }, modality)
+                }
+            }
+        }
+    }
 }
 
 /** Runs a potentially blocking arbd call; see [ArbSettingsConfigurable]. */

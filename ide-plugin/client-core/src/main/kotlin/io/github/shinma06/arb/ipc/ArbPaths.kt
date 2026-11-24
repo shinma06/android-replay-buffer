@@ -1,8 +1,6 @@
 package io.github.shinma06.arb.ipc
 
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -20,23 +18,29 @@ data class ArbPaths(
 ) {
     fun lockFile(): Path = runtimeDir.resolve("arbd.lock")
 
+    /** `arb-tray`'s single-instance lock; holds the PID of its last owner (`arb-tray/instance.rs`). */
+    fun trayLockFile(): Path = runtimeDir.resolve("arb-tray.lock")
+
     fun shmDir(): Path = runtimeDir.resolve("shm")
 
     /**
      * Platform-appropriate local IPC endpoint:
      * - macOS / Linux: `<runtimeDir>/arbd.sock`
-     * - Windows: `\\.\pipe\arb-daemon-<fnv1a64>` (matching `arb-os/src/paths.rs`)
+     * - Windows: `\\.\pipe\arb-daemon-<fnv1a64>` (matching `arb-os/src/paths.rs`), keyed by the
+     *   process token user's SID. The SID comes from [Win32NamedPipes.currentUserSid] (no external
+     *   `whoami` process); when it is unavailable this throws instead of silently naming a pipe
+     *   without the SID that `arbd` would never listen on (fail closed).
      */
+    @Throws(IOException::class)
     fun ipcEndpoint(windowsSidBytes: ByteArray? = null): String {
         if (!explicitEndpoint.isNullOrBlank()) {
             return explicitEndpoint
         }
         return when (os) {
             HostOs.MACOS, HostOs.LINUX -> runtimeDir.resolve("arbd.sock").toString()
-            HostOs.WINDOWS -> computeWindowsPipeEndpoint(
-                runtimeDir = runtimeDir.toString(),
-                sidBytes = windowsSidBytes ?: queryCurrentWindowsSidBytes(),
-            )
+            HostOs.WINDOWS -> windowsPipeEndpoint(runtimeDir.toString()) {
+                windowsSidBytes ?: Win32NamedPipes.currentUserSid()
+            }
         }
     }
 
@@ -117,50 +121,18 @@ data class ArbPaths(
             return """\\.\pipe\arb-daemon-$hex"""
         }
 
-        /**
-         * Encodes a standard Windows textual SID (`S-1-5-21-...`) into the exact Win32 binary
-         * `SID` byte representation returned by `GetTokenInformation(TokenUser)`.
-         */
-        fun encodeWindowsSidStringToBytes(sidString: String): ByteArray? {
-            val parts = sidString.trim().split('-')
-            if (parts.size < 3 || !parts[0].equals("S", ignoreCase = true)) {
-                return null
+        /** [computeWindowsPipeEndpoint] keyed by a required SID from [sid] (fail closed). */
+        @Throws(IOException::class)
+        internal fun windowsPipeEndpoint(runtimeDir: String, sid: () -> ByteArray): String {
+            val sidBytes = try {
+                sid()
+            } catch (e: Exception) {
+                throw IOException("Windows user SID unavailable; cannot derive the arbd pipe name", e)
+            } catch (e: LinkageError) {
+                throw IOException("Windows user SID unavailable; cannot derive the arbd pipe name", e)
             }
-            val revision = parts[1].toIntOrNull() ?: return null
-            if (revision !in 0..255) return null
-            val authority = parts[2].toLongOrNull() ?: return null
-            val subAuthorities = parts.drop(3).map { it.toLongOrNull() ?: return null }
-            if (subAuthorities.size > 255) return null
-
-            val out = ByteArrayOutputStream(8 + subAuthorities.size * 4)
-            out.write(revision)
-            out.write(subAuthorities.size)
-            // 6-byte big-endian identifier authority.
-            for (shift in 40 downTo 0 step 8) {
-                out.write(((authority ushr shift) and 0xFFL).toInt())
-            }
-            // Little-endian 32-bit sub-authorities.
-            val leBuf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-            for (sub in subAuthorities) {
-                leBuf.clear()
-                leBuf.putInt(sub.toInt())
-                out.write(leBuf.array())
-            }
-            return out.toByteArray()
-        }
-
-        private fun queryCurrentWindowsSidBytes(): ByteArray? {
-            return try {
-                val proc = ProcessBuilder("whoami", "/user", "/fo", "csv", "/nh")
-                    .redirectErrorStream(true)
-                    .start()
-                val text = proc.inputStream.bufferedReader(StandardCharsets.UTF_8).readText()
-                proc.waitFor()
-                val match = Regex("""S-\d+-\d+(?:-\d+)+""").find(text)?.value ?: return null
-                encodeWindowsSidStringToBytes(match)
-            } catch (_: Exception) {
-                null
-            }
+            if (sidBytes.isEmpty()) throw IOException("Windows user SID is empty; cannot derive the arbd pipe name")
+            return computeWindowsPipeEndpoint(runtimeDir, sidBytes)
         }
 
         private fun nonEmpty(raw: String?): Path? =

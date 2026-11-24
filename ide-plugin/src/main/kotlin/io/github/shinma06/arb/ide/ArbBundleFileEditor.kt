@@ -135,7 +135,6 @@ class ArbBundleFileEditor internal constructor(
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onRangeChanged = { inFrame, outFrame, playhead ->
             trimCloseState.onRangeAdjusted(inFrame, outFrame)
-            updateViewerState { it.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead) }
             submitWork {
                 runCatching {
                     val ctrl = currentPlaybackController()
@@ -177,7 +176,6 @@ class ArbBundleFileEditor internal constructor(
         onResetFullRange = { applyResetFullRange() },
         onTrashOriginalToggled = { enabled ->
             trashOriginalRequested = enabled
-            updateViewerState { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
         },
         onRevealInFinder = { path ->
             ArbNotifications.openPathInFileManager(path)
@@ -263,9 +261,6 @@ class ArbBundleFileEditor internal constructor(
     private var attachedAudioPlayer: AudioSyncPlayer? = null
 
     @Volatile
-    private var state: TimelineViewerState? = null
-
-    @Volatile
     private var editSessionId: String? = null
 
     @Volatile
@@ -288,10 +283,20 @@ class ArbBundleFileEditor internal constructor(
 
     internal fun audioPlayerForTest(): AudioSyncPlayer? = attachedAudioPlayer
 
+    /**
+     * The one viewer state is [studioController]'s; workers read it ([viewerState]) and change it
+     * only through [updateViewerState], which applies [transform] on the EDT after anything queued
+     * before it (e.g. the initial render), so concurrent loaders never overwrite each other.
+     */
     @Synchronized
-    internal fun updateViewerState(transform: (TimelineViewerState) -> TimelineViewerState): TimelineViewerState? {
-        return state?.let(transform)?.also { state = it }
+    internal fun updateViewerState(transform: (TimelineViewerState) -> TimelineViewerState) {
+        publishEdt {
+            if (!disposed) studioController.updateState(transform)
+        }
     }
+
+    private val viewerState: TimelineViewerState?
+        get() = studioController.viewerState
 
     private fun currentPlaybackController(): PlaybackController? = synchronized(lifecycleLock) {
         ownedPlaybackController
@@ -463,7 +468,6 @@ class ArbBundleFileEditor internal constructor(
                     }
                 }
 
-                state = initialState
                 publishEdt {
                     if (!disposed) {
                         studioController.renderState(initialState, image = null)
@@ -514,11 +518,6 @@ class ArbBundleFileEditor internal constructor(
                 }.getOrDefault(emptyList())
                 if (!disposed && filmstrip.isNotEmpty()) {
                     updateViewerState { it.copy(filmstrip = filmstrip) }
-                    publishEdt {
-                        if (!disposed) {
-                            studioController.updateState { it.copy(filmstrip = filmstrip) }
-                        }
-                    }
                 }
             }
             if (disposed) return@submitGuarded
@@ -556,23 +555,6 @@ class ArbBundleFileEditor internal constructor(
                     unanchoredTaps = unanchoredTaps,
                 )
             }
-            publishEdt {
-                if (!disposed) {
-                    studioController.updateState {
-                        TimelineViewerReducer.withBucketedRecords(
-                            state = it.copy(
-                                discontinuities = discontinuities,
-                                crashes = crashes,
-                                screens = screens,
-                            ),
-                            mainLogs = it.mainLogs,
-                            unanchoredLogs = it.unanchoredLogs,
-                            mainTaps = mainTaps,
-                            unanchoredTaps = unanchoredTaps,
-                        )
-                    }
-                }
-            }
 
             try {
                 val mainLogs = queryLogsPaged(
@@ -596,19 +578,6 @@ class ArbBundleFileEditor internal constructor(
                         mainTaps = it.mainTaps,
                         unanchoredTaps = it.unanchoredTaps,
                     )
-                }
-                publishEdt {
-                    if (!disposed) {
-                        studioController.updateState {
-                            TimelineViewerReducer.withBucketedRecords(
-                                state = it,
-                                mainLogs = mainLogs,
-                                unanchoredLogs = unanchoredLogs,
-                                mainTaps = it.mainTaps,
-                                unanchoredTaps = it.unanchoredTaps,
-                            )
-                        }
-                    }
                 }
             } catch (t: Throwable) {
                 if (disposed) return@submitGuarded
@@ -697,8 +666,10 @@ class ArbBundleFileEditor internal constructor(
                 runCatching { player.close() }
                 return@Runnable
             }
-            attachedAudioPlayer = player
             controller.attachAudioPlayer(player, effectiveAvOffsetMs)
+            synchronized(lifecycleLock) {
+                if (!disposed && ownedPlaybackController === controller) attachedAudioPlayer = player
+            }
         }
         try {
             audioDecodeWorker.submit(task)
@@ -716,7 +687,7 @@ class ArbBundleFileEditor internal constructor(
             }
             return
         }
-        val vpId = state?.viewportId ?: return
+        val vpId = viewerState?.viewportId ?: return
         submitWork {
             runCatching {
                 daemonService.withClient { it.mediaScrub(vpId, frameIndex) }
@@ -741,7 +712,7 @@ class ArbBundleFileEditor internal constructor(
             }
             return
         }
-        val vpId = state?.viewportId ?: return
+        val vpId = viewerState?.viewportId ?: return
         submitWork {
             try {
                 daemonService.withClient { it.mediaSeekFrame(vpId, frameIndex) }
@@ -758,7 +729,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun applySelectTapRange() {
-        val current = state ?: return
+        val current = viewerState ?: return
         val tapFrames = current.mainTapFrameIndices()
         if (tapFrames.isEmpty()) return
         val fps = current.estimatedFps
@@ -771,17 +742,12 @@ class ArbBundleFileEditor internal constructor(
                 trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
                 updateViewerState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                publishEdt {
-                    if (!disposed) {
-                        studioController.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
-                    }
-                }
             }
         }
     }
 
     private fun applySelectAroundCrash() {
-        val current = state ?: return
+        val current = viewerState ?: return
         val crashFrame = current.primaryCrashFrameIndex() ?: return
         val fps = current.estimatedFps
         val before = (fps * 5.0).roundToLong().coerceAtLeast(1L)
@@ -800,42 +766,27 @@ class ArbBundleFileEditor internal constructor(
                     )
                 }
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                publishEdt {
-                    if (!disposed) {
-                        studioController.updateState {
-                            it.copy(
-                                inFrameIndex = pb.inFrameIndex,
-                                outFrameIndex = pb.outFrameIndex,
-                                currentFrameIndex = pb.currentFrameIndex,
-                            )
-                        }
-                    }
-                }
             }
         }
     }
 
     private fun applyResetFullRange() {
-        val current = state ?: return
+        val current = viewerState ?: return
         submitWork {
-            currentPlaybackController()?.resetFullRange()
+            val ctrl = currentPlaybackController()
+            ctrl?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
             trimCloseState.onRangeAdjusted(0L, maxF)
-            val updated = updateViewerState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } ?: return@submitWork
-            persistEditSession(0L, maxF, updated.currentFrameIndex)
-            publishEdt {
-                if (!disposed) {
-                    studioController.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) }
-                }
-            }
+            updateViewerState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) }
+            persistEditSession(0L, maxF, ctrl?.state?.currentFrameIndex ?: current.currentFrameIndex)
         }
     }
 
     private fun readShmAndRender() {
         val reader = currentShmReader() ?: return
         val frame = reader.readLatest() ?: return
+        if (viewerState == null) return
         val image = frame.toBufferedImage()
-        updateViewerState { TimelineViewerReducer.onFramePublished(it, frame.meta) } ?: return
         // Full-frame pixel copy happens here on the worker, never on the EDT, and only the newest
         // frame is ever queued (a slow EDT skips stale frames instead of queueing every bitmap).
         val bitmap = ArbStudioController.toImageBitmapOrNull(image)
@@ -849,7 +800,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun performAppPackageFilter(packageName: String?) {
-        val current = state ?: return
+        val current = viewerState ?: return
         submitGuarded(timelineWorker) {
             if (disposed) return@submitGuarded
             try {
@@ -867,9 +818,6 @@ class ArbBundleFileEditor internal constructor(
                     packageName = packageName,
                 )
                 if (disposed) return@submitGuarded
-                updateViewerState {
-                    TimelineViewerReducer.withBucketedRecords(it, mainLogs, unanchoredLogs, it.mainTaps, it.unanchoredTaps)
-                }
                 publishEdt {
                     if (!disposed) {
                         studioController.applyAppPackageLogs(packageName, mainLogs, unanchoredLogs)
@@ -892,7 +840,7 @@ class ArbBundleFileEditor internal constructor(
         outFrameIndex: Long,
         format: StudioExportFormat,
     ) {
-        val current = state ?: return
+        val current = viewerState ?: return
         val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy
         val includeShareMp4 = format == StudioExportFormat.SHARE_MP4
         val burnTapsEnabled = includeShareMp4 && studioController.burnTapsOnExport
@@ -942,20 +890,10 @@ class ArbBundleFileEditor internal constructor(
                     originalTrashedBundleId = trashedBundleId,
                     burnTapsApplied = res.burnTapsApplied,
                 )
-                updateViewerState {
-                    it.copy(
-                        exportCompletion = completion,
-                        lastActionMessage = summaryText,
-                    )
-                }
                 publishEdt {
-                    if (!disposed) {
-                        studioController.setExporting(false)
-                        studioController.updateState {
-                            it.copy(exportCompletion = completion, lastActionMessage = summaryText)
-                        }
-                    }
+                    if (!disposed) studioController.setExporting(false)
                 }
+                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
                 ArbNotifications.notifyExportCompleted(
                     project = project,
                     daemonService = daemonService,
@@ -978,7 +916,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun performPngExport(frameIndex: Long, outputPath: Path) {
-        val current = state ?: return
+        val current = viewerState ?: return
         submitWork {
             try {
                 val res = daemonService.withClient {
@@ -997,19 +935,7 @@ class ArbBundleFileEditor internal constructor(
                     bundleId = null,
                     isTrimBundle = false,
                 )
-                updateViewerState {
-                    it.copy(
-                        exportCompletion = completion,
-                        lastActionMessage = summaryText,
-                    )
-                }
-                publishEdt {
-                    if (!disposed) {
-                        studioController.updateState {
-                            it.copy(exportCompletion = completion, lastActionMessage = summaryText)
-                        }
-                    }
-                }
+                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
                 ArbNotifications.notifyImageSaved(
                     project = project,
                     imagePath = res.outputPath,
@@ -1030,7 +956,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
-        val current = state ?: return
+        val current = viewerState ?: return
         val sessionId = editSessionId ?: return
         submitWork {
             runCatching {
@@ -1079,6 +1005,7 @@ class ArbBundleFileEditor internal constructor(
             disposed = true
             ctrl = ownedPlaybackController
             ownedPlaybackController = null
+            attachedAudioPlayer = null
             reader = ownedShmReader
             ownedShmReader = null
             vpId = ownedViewportId

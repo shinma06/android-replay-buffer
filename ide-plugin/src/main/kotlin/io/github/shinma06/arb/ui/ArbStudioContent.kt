@@ -477,19 +477,15 @@ private fun VideoStageViewport(
                 val drawY = ((availH - drawH) / 2f).roundToInt()
                 val drawRect = Rectangle(drawX, drawY, drawW, drawH)
                 fun mapPoint(x: Double, y: Double): Pair<Int, Int>? =
-                    if (ArbStudioController.isTapUnmappable(x, y, frameW, frameH, displayW, displayH)) {
-                        null
-                    } else {
-                        ArbStudioController.mapTapToCanvasPoint(
-                            tapX = x,
-                            tapY = y,
-                            drawRect = drawRect,
-                            videoW = frameW,
-                            videoH = frameH,
-                            displayW = displayW,
-                            displayH = displayH,
-                        )
-                    }
+                    ArbStudioController.mapTapToCanvasPoint(
+                        tapX = x,
+                        tapY = y,
+                        drawRect = drawRect,
+                        videoW = frameW,
+                        videoH = frameH,
+                        displayW = displayW,
+                        displayH = displayH,
+                    )
                 val mappedTaps = activeTaps.mapNotNull { tap ->
                     mapPoint(tap.x, tap.y)?.let { pt -> tap to pt }
                 }

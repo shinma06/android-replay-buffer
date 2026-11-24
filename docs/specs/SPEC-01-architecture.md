@@ -21,7 +21,7 @@ satisfies:
   - IDE は最初のプロジェクトを開いた時点で（Tool Window を開かなくても）`arbd --exit-on-stdin-eof` を起動し、子プロセスの標準入力パイプの書き込み端を保持し続ける。`trayEnabled` が ON のときは `arb-tray --exit-on-stdin-eof` も同様に起動する（`arbd` は IDE が所有するため `--auto-start` は付けない）。
   - IDE が終了・クラッシュ・強制終了（`kill -9`）すると OS がパイプを閉じ、子は標準入力の EOF を受け取る。`arbd` は `system.shutdown` と同じ経路（受付停止・キャプチャ停止・ソケットとロックの解放・終了コード 0）で、`arb-tray` は終了要求（`QuitNow`）で終了する。メニュー表示中などで 1.5 秒以内に終了できない `arb-tray` は自ら終了する。PID の監視はしないため PID 再利用の競合はない。挙動は Linux / macOS / Windows で同じ。
   - 通常の IDE 終了・プラグインのアンロードでは `ArbdDaemonService.dispose()` が `arb-tray`、`arbd` の順に停止する（標準入力を閉じ、`arbd` には `system.shutdown` も送る。残った場合は `destroy` / `destroyForcibly`）。複数プロジェクトのうち 1 つを閉じても止めない。トレイ表示を OFF にした場合は `arb-tray` だけを止める。
-  - 稼働中の `arbd` が親を持たない（旧プラグイン・`arb-cli --auto-start`・手動起動）場合、IDE は同じ IPC 接続で保存と競合しない引継ぎを要求し、終了を待って親付きの `arbd` に置き換える。処理中は次の監視周期で再試行する。引継ぎ RPC のない旧版では、G-M9 の同梱バイナリ更新が検出された場合に限り、保存状況を確認して同一接続で通常終了する。それ以外は明示的に再起動するまで利用を続ける。別の生きている親（別の IDE）に紐付いた `arbd`（`system.hello` の `parent_bound == true`）はそのまま使う。IDE は約 10 秒ごとに `arbd` の稼働を確認し、止まっていれば親付きで起動し直す。
+  - 稼働中の `arbd` が親を持たない（旧プラグイン・`arb-cli --auto-start`・手動起動）場合、IDE は同じ IPC 接続で保存と競合しない引継ぎを要求し、終了を待って親付きの `arbd` に置き換える。処理中は次の監視周期で再試行する。引継ぎ RPC がない旧版は保存受付との排他を保証できないため、所有者が停止するまで更新を延期する。同じ IDE の子は、起動時に渡した所有確認値を使い、同梱版や設定パスの変更時に保存と排他的に更新する。別の生きている親（別の IDE）に紐付いた `arbd`（`system.hello` の `parent_bound == true`）はそのまま使う。IDE は約 10 秒ごとに `arbd` の稼働を確認し、止まっていれば親付きで起動し直す。
   - `--exit-on-stdin-eof` は既定で OFF。単体の `arb-cli` / MCP / `start-arb.sh` / `start-arb.ps1` / `arb-tray` の挙動は変わらない。このフラグを受け付けない古い `arbd`（設定画面の独自バイナリなど）は、引数の拒否を確認した起動だけフラグなしで管理し、通常終了時に回収する。
 
 ## 2. 厳格なクレート依存 DAG
