@@ -2,6 +2,7 @@ package io.github.shinma06.arb.ide
 
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.StringPatch
@@ -274,6 +275,101 @@ class LegacyV1SettingsMigratorTest {
         assertIs<LegacyV1SettingsMigrator.MigrationResult.Migrated>(retried)
         assertEquals(150, appliedPatch?.saveWindowSecs)
         assertTrue(localSettings.migratedFromV1)
-        assertNull(appliedPatch?.captureMode)
+        // Options omitted by IntelliJ's XmlSerializer carry the v1 default, not "unchanged".
+        assertEquals(CaptureMode.VIDEO_AND_LOGS, appliedPatch?.captureMode)
+    }
+
+    @Test
+    fun omittedV1OptionsMigrateAsV1DefaultsNotArbdDefaults(@TempDir tmp: Path) {
+        // XmlSerializer drops options equal to their defaults: a user who only changed the
+        // destination had v1 recordAudio=false, autoSaveOnCrash=false, enabled=false, 180 s.
+        val destDir = tmp.resolve("only-dest").toAbsolutePath().normalize()
+        writeWorkspaceXml(
+            tmp,
+            """
+            <project version="4">
+              <component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore">
+                <option name="destination" value="$destDir" />
+              </component>
+            </project>
+            """.trimIndent(),
+        )
+        val localSettings = ArbLocalSettingsState()
+        localSettings.screenshotInheritLogcat = false
+        var applied: ArbConfigPatch? = null
+        val res = LegacyV1SettingsMigrator.migrateOnceIfNeeded(tmp, localSettings) { patch ->
+            applied = patch
+            ArbConfig()
+        }
+        assertIs<LegacyV1SettingsMigrator.MigrationResult.Migrated>(res)
+        val patch = assertNotNull(applied)
+        assertEquals(false, patch.audioEnabled, "v1 recordAudio default is false")
+        assertEquals(false, patch.crashAutosaveEnabled, "v1 autoSaveOnCrash default is false")
+        assertEquals(false, patch.captureEnabled, "v1 enabled default is false")
+        assertEquals(180, patch.saveWindowSecs, "v1 retentionSeconds default is 180")
+        assertEquals(CaptureMode.VIDEO_AND_LOGS, patch.captureMode)
+        assertEquals(1920, patch.videoMaxSize)
+        assertEquals(30, patch.videoMaxFps)
+        assertEquals(OutputDirPatch.Set(destDir.toString()), patch.outputDirOverride)
+        assertTrue(localSettings.screenshotInheritLogcat, "v1 screenshotUsesCommonDestination default is true")
+    }
+
+    @Test
+    fun recognizesV1VideoQualityAsSerializedByXmlSerializer(@TempDir tmp: Path) {
+        // v1 VideoQuality overrides toString(), and that label is what lands in workspace.xml.
+        writeWorkspaceXml(
+            tmp,
+            """
+            <project version="4">
+              <component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore">
+                <option name="videoQuality" value="軽量（1024px / 15fps / 2Mbps）" />
+              </component>
+            </project>
+            """.trimIndent(),
+        )
+        var applied: ArbConfigPatch? = null
+        LegacyV1SettingsMigrator.migrateOnceIfNeeded(tmp, ArbLocalSettingsState()) { patch ->
+            applied = patch
+            ArbConfig()
+        }
+        assertEquals(1024, applied?.videoMaxSize)
+        assertEquals(15, applied?.videoMaxFps)
+        assertEquals(1920 to 30, LegacyV1SettingsMigrator.parseV1VideoQuality("標準（1920px / 30fps / 8Mbps）"))
+        assertEquals(null to null, LegacyV1SettingsMigrator.parseV1VideoQuality("unknown"))
+    }
+
+    @Test
+    fun arbdWithoutCaptureEnabledStillMigratesTheRest(@TempDir tmp: Path) {
+        val destDir = tmp.resolve("dest").toAbsolutePath().normalize()
+        writeWorkspaceXml(
+            tmp,
+            """
+            <project version="4">
+              <component name="io.github.shinma06.replaybuffer.settings.ReplaySettingsStore">
+                <option name="enabled" value="true" />
+                <option name="destination" value="$destDir" />
+                <option name="screenshotUsesCommonDestination" value="false" />
+              </component>
+            </project>
+            """.trimIndent(),
+        )
+        val localSettings = ArbLocalSettingsState()
+        val attempts = mutableListOf<ArbConfigPatch>()
+        val res = LegacyV1SettingsMigrator.migrateOnceIfNeeded(tmp, localSettings) { patch ->
+            attempts += patch
+            if (patch.captureEnabled != null) {
+                // Pre-T-7A arbd: ArbConfigPatch has deny_unknown_fields.
+                throw ArbdRpcException(code = -32602, message = "unknown field `capture_enabled`", method = "config.update")
+            }
+            ArbConfig()
+        }
+        val migrated = assertIs<LegacyV1SettingsMigrator.MigrationResult.Migrated>(res)
+        assertEquals(2, attempts.size)
+        assertEquals(true, attempts[0].captureEnabled)
+        assertNull(attempts[1].captureEnabled)
+        assertEquals(OutputDirPatch.Set(destDir.toString()), attempts[1].outputDirOverride)
+        assertNull(migrated.appliedDaemonPatch?.captureEnabled)
+        assertFalse(localSettings.screenshotInheritLogcat)
+        assertTrue(localSettings.migratedFromV1)
     }
 }

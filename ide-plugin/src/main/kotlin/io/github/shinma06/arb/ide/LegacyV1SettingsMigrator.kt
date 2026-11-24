@@ -4,6 +4,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.StringPatch
@@ -116,10 +117,25 @@ object LegacyV1SettingsMigrator {
             }
         }
 
-        val patch = parsed.daemonPatch
+        var patch = parsed.daemonPatch
         if (patch != null) {
             try {
                 configUpdater(patch)
+            } catch (rejected: ArbdRpcException) {
+                // An arbd that predates always-on capture rejects the whole patch because of the
+                // unknown `capture_enabled` field: migrate everything else rather than nothing.
+                if (patch.captureEnabled == null) {
+                    logger.warn("ARB legacy settings rejected by arbd: ${rejected.message}")
+                    return MigrationResult.DaemonUnavailable(rejected.message)
+                }
+                val withoutCaptureEnabled = patch.copy(captureEnabled = null)
+                try {
+                    configUpdater(withoutCaptureEnabled)
+                } catch (t: Throwable) {
+                    logger.warn("ARB legacy settings daemon migration deferred: ${t.message}")
+                    return MigrationResult.DaemonUnavailable(t.message ?: "daemon error")
+                }
+                patch = withoutCaptureEnabled
             } catch (t: Throwable) {
                 logger.warn("ARB legacy settings daemon migration deferred (arbd unavailable): ${t.message}")
                 return MigrationResult.DaemonUnavailable(t.message ?: "daemon error")
@@ -195,28 +211,22 @@ object LegacyV1SettingsMigrator {
         }
 
         // Explicitly ignored dropped v1 fields: appSelection, manualPackage, showTouches, tapDisplay.
-        val saveWindowSecs = options["retentionSeconds"]?.trim()?.toIntOrNull()?.coerceIn(
-            ArbConfig.MIN_SAVE_WINDOW_SECS,
-            ArbConfig.MAX_SAVE_WINDOW_SECS,
-        )
+        // IntelliJ's XmlSerializer omits options equal to their defaults, so an option missing from a
+        // present component means the v1 default (ReplaySettingsState), not "leave arbd unchanged".
+        val saveWindowSecs = (options["retentionSeconds"]?.trim()?.toIntOrNull() ?: V1_DEFAULT_RETENTION_SECS)
+            .coerceIn(ArbConfig.MIN_SAVE_WINDOW_SECS, ArbConfig.MAX_SAVE_WINDOW_SECS)
         val outputDirPatch = options["destination"]?.let(::normalizeValidAbsolutePath)
             ?.let { OutputDirPatch.Set(it) }
             ?: OutputDirPatch.Unchanged
-        val captureMode = options["captureMode"]?.trim()?.uppercase()?.let { raw ->
-            when (raw) {
-                "VIDEO_AND_LOGS" -> CaptureMode.VIDEO_AND_LOGS
-                "LOG_ONLY", "LOGS_ONLY" -> CaptureMode.LOGS_ONLY
-                else -> null
-            }
+        val captureMode = when (options["captureMode"]?.trim()?.uppercase()) {
+            null, "VIDEO_AND_LOGS" -> CaptureMode.VIDEO_AND_LOGS
+            "LOG_ONLY", "LOGS_ONLY" -> CaptureMode.LOGS_ONLY
+            else -> null
         }
-        val (videoMaxSize, videoMaxFps) = when (options["videoQuality"]?.trim()?.uppercase()) {
-            "STANDARD" -> 1920 to 30
-            "LIGHTWEIGHT" -> 1024 to 15
-            else -> null to null
-        }
-        val audioEnabled = parseStrictBoolean(options["recordAudio"])
-        val crashAutosaveEnabled = parseStrictBoolean(options["autoSaveOnCrash"])
-        val captureEnabled = parseStrictBoolean(options["enabled"])
+        val (videoMaxSize, videoMaxFps) = parseV1VideoQuality(options["videoQuality"])
+        val audioEnabled = parseStrictBoolean(options["recordAudio"], default = false)
+        val crashAutosaveEnabled = parseStrictBoolean(options["autoSaveOnCrash"], default = false)
+        val captureEnabled = parseStrictBoolean(options["enabled"], default = false)
         val deviceSerialPatch = options["deviceSerial"]?.trim()
             ?.takeIf { it.isNotEmpty() && SAFE_SERIAL_REGEX.matches(it) }
             ?.let { StringPatch.Set(it) }
@@ -224,6 +234,7 @@ object LegacyV1SettingsMigrator {
 
         val screenshotInherit = parseStrictBoolean(
             options["screenshotUsesCommonDestination"] ?: options["screenshotUsesLogcatDestination"],
+            default = true,
         )
         val customScreenshotDir = options["screenshotDirectory"]?.let(::normalizeValidAbsolutePath)
 
@@ -238,30 +249,38 @@ object LegacyV1SettingsMigrator {
             outputDirOverride = outputDirPatch,
             captureEnabled = captureEnabled,
         )
-        val hasDaemonChanges = saveWindowSecs != null ||
-            videoMaxSize != null ||
-            videoMaxFps != null ||
-            audioEnabled != null ||
-            captureMode != null ||
-            deviceSerialPatch != StringPatch.Unchanged ||
-            crashAutosaveEnabled != null ||
-            outputDirPatch != OutputDirPatch.Unchanged ||
-            captureEnabled != null
-
         return ParseOutcome.Found(
             ParsedLegacySettings(
-                daemonPatch = if (hasDaemonChanges) candidatePatch else null,
+                daemonPatch = candidatePatch,
                 screenshotInheritLogcat = screenshotInherit,
                 customScreenshotDir = customScreenshotDir,
             ),
         )
     }
 
-    private fun parseStrictBoolean(raw: String?): Boolean? = when (raw?.trim()?.lowercase()) {
+    /** `null` (absent) yields the v1 [default]; an unparseable value yields `null` (leave unchanged). */
+    private fun parseStrictBoolean(raw: String?, default: Boolean): Boolean? = when (raw?.trim()?.lowercase()) {
+        null -> default
         "true" -> true
         "false" -> false
         else -> null
     }
+
+    /**
+     * v1 `VideoQuality` overrides `toString()`, which IntelliJ's XmlSerializer writes, e.g.
+     * `軽量（1024px / 15fps / 2Mbps）`; enum names are accepted too. Absent means v1 `STANDARD`.
+     */
+    internal fun parseV1VideoQuality(raw: String?): Pair<Int?, Int?> {
+        val value = raw?.trim() ?: return 1920 to 30
+        return when {
+            value.equals("STANDARD", ignoreCase = true) || value.startsWith("標準") -> 1920 to 30
+            value.equals("LIGHTWEIGHT", ignoreCase = true) || value.startsWith("軽量") -> 1024 to 15
+            else -> null to null
+        }
+    }
+
+    /** v1 `ReplaySettingsState.retentionSeconds` default. */
+    private const val V1_DEFAULT_RETENTION_SECS: Int = 180
 
     private fun normalizeValidAbsolutePath(raw: String): String? {
         val trimmed = raw.trim()

@@ -1032,6 +1032,56 @@ class ArbT7cStudioVfrAndLifecycleTest {
         assertFalse(spawnedProcs[1].isAlive)
     }
 
+    @Test
+    fun quickTrayOffThenOnWaitsForOldTrayToExitAndEndsRunning(@TempDir tmp: Path) {
+        // The old arb-tray takes a while to exit after destroy(); while it is alive it holds the
+        // single-instance lock, so a new arb-tray started meanwhile would exit immediately.
+        val fakeTrayBin = Files.writeString(tmp.resolve("arb-tray"), "#!/bin/sh\n")
+        val oldTrayAlive = AtomicBoolean(true)
+        val startedWhileOldAlive = AtomicBoolean(false)
+        val spawned = CopyOnWriteArrayList<Process>()
+        val slowExitTray = object : Process() {
+            override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+            override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+            override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+            override fun waitFor(): Int = 0
+            override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+                Thread.sleep(200L) // exits 200 ms after being asked to
+                oldTrayAlive.set(false)
+                return true
+            }
+            override fun exitValue(): Int = 0
+            override fun destroy() = Unit
+            override fun isAlive(): Boolean = oldTrayAlive.get()
+        }
+        val service = ArbdDaemonService(
+            processManager = ArbdProcessManager(paths = ArbPaths.resolve(os = HostOs.detect())),
+            trayBinaryResolver = { fakeTrayBin },
+            trayProcessStarter = { _, _ ->
+                val proc: Process = if (spawned.isEmpty()) {
+                    slowExitTray
+                } else {
+                    if (oldTrayAlive.get()) startedWhileOldAlive.set(true)
+                    FakeManagedProcess()
+                }
+                spawned += proc
+                proc
+            },
+        )
+        try {
+            service.syncTrayState(true)
+            // Settings applied OFF and then ON again in quick succession.
+            service.syncTrayStateAsync(false)
+            val on = service.syncTrayStateAsync(true)
+            assertNotNull(on).get(5, TimeUnit.SECONDS)
+            assertEquals(2, spawned.size)
+            assertFalse(startedWhileOldAlive.get(), "new arb-tray must not start before the old one exited")
+            assertTrue(service.isManagedTrayRunningForTest(), "tray must be running after OFF -> ON")
+        } finally {
+            service.dispose()
+        }
+    }
+
     // ---------------- Item 7 fallback: arbd without always-on capture ----------------
 
     @Test

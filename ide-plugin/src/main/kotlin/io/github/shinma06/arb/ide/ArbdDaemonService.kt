@@ -21,6 +21,10 @@ import java.util.concurrent.TimeUnit
 import java.io.IOException
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Snapshot of live daemon + device state used by Running Devices & Tools Menu toolbar actions
@@ -71,6 +75,9 @@ open class ArbdDaemonService internal constructor(
     private val logger = Logger.getInstance(ArbdDaemonService::class.java)
     private val lock = Any()
     private val trayLock = Any()
+    private val trayExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "arb-tray-sync").apply { isDaemon = true }
+    }
     private val listeners = CopyOnWriteArrayList<ArbDaemonStateListener>()
 
     @Volatile
@@ -285,22 +292,22 @@ open class ArbdDaemonService internal constructor(
      * Cleanly terminates ONLY the plugin-managed `arb-tray` child process (never stopping `arbd`).
      * Returns `true` if a managed process was present and stopped.
      */
-    open fun stopBundledTray(): Boolean {
-        val proc = synchronized(trayLock) {
-            val current = managedTrayProcess
-            managedTrayProcess = null
-            managedTrayBinaryPath = null
-            current
-        } ?: return false
+    open fun stopBundledTray(): Boolean = synchronized(trayLock) {
+        // Held until the old process has exited: a launch queued right behind this stop must not
+        // start while the old `arb-tray` still owns its single-instance lock (it would just exit).
+        val proc = managedTrayProcess ?: return@synchronized false
+        managedTrayProcess = null
+        managedTrayBinaryPath = null
         if (proc.isAlive) {
             runCatching { proc.destroy() }
             val exited = runCatching { proc.waitFor(TRAY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
                 .getOrDefault(false)
             if (!exited && proc.isAlive) {
                 runCatching { proc.destroyForcibly() }
+                runCatching { proc.waitFor(TRAY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
             }
         }
-        return true
+        true
     }
 
     /**
@@ -317,17 +324,14 @@ open class ArbdDaemonService internal constructor(
         }
     }
 
-    /** Off-EDT helper invoked by Settings Apply to avoid blocking the UI thread. */
-    fun syncTrayStateAsync(enabled: Boolean) {
-        val app = ApplicationManager.getApplication()
-        if (app != null) {
-            app.executeOnPooledThread { syncTrayState(enabled) }
-        } else {
-            Thread({ syncTrayState(enabled) }, "arb-tray-sync").apply {
-                isDaemon = true
-                start()
-            }
-        }
+    /**
+     * Off-EDT helper invoked by Settings Apply. Requests run one at a time in submission order, so
+     * a quick OFF -> ON ends with the tray running.
+     */
+    fun syncTrayStateAsync(enabled: Boolean): Future<*>? = try {
+        trayExecutor.submit { syncTrayState(enabled) }
+    } catch (_: RejectedExecutionException) {
+        null
     }
 
     internal fun isManagedTrayRunningForTest(): Boolean = synchronized(trayLock) {
@@ -387,6 +391,7 @@ open class ArbdDaemonService internal constructor(
 
     override fun dispose() {
         disposed = true
+        trayExecutor.shutdown()
         stopBundledTray()
         disconnect()
     }
