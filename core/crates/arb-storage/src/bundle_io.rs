@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use arb_core::BUNDLE_SCHEMA_VERSION;
 use arb_core::analytics::{
-    CrashMarker, ScreenSpan, extract_crash_markers, extract_foreground_app_logs,
+    CrashMarker, ScreenSpan, extract_app_logs_for_packages, extract_crash_markers,
     extract_screen_spans,
 };
 use arb_core::bundle::{
@@ -440,14 +440,28 @@ impl V2BundleWriter {
     /// `OsError::CommittedParentSyncFailed` when the bundle is already published).
     /// `OsError::AlreadyExists` is returned only when `final_dir` holds something other than
     /// an intact bundle with `draft.bundle_id`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "atomic staging writes media, text/JSONL sidecars, per-app logs, SQLite, and manifest in one transaction"
-    )]
     pub fn write(
         final_dir: impl AsRef<Path>,
         job_id: &str,
         draft: &V2BundleDraft,
+    ) -> Result<ManifestV2, StorageError> {
+        Self::write_with_source_apps(final_dir, job_id, draft, &[])
+    }
+
+    /// Writes a trimmed bundle, preserving the source's app attribution across the cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same staging, integrity, and commit errors as [`Self::write`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "atomic staging writes media, text/JSONL sidecars, per-app logs, SQLite, and manifest in one transaction"
+    )]
+    pub fn write_with_source_apps(
+        final_dir: impl AsRef<Path>,
+        job_id: &str,
+        draft: &V2BundleDraft,
+        source_apps: &[AppLogSummary],
     ) -> Result<ManifestV2, StorageError> {
         let final_dir = final_dir.as_ref();
         validate_simple_id("job_id", job_id)?;
@@ -497,15 +511,12 @@ impl V2BundleWriter {
             .iter()
             .filter(|l| l.bucket == RecordBucket::Main)
             .collect();
-        if !main_logs.is_empty() {
-            let digest = stage_logs_text(
-                &staging,
-                LOGCAT_LOG_FILE,
-                &main_logs,
-                LogTextFormat::Standard,
-            )?;
-            files.push(digest);
-        }
+        files.push(stage_logs_text(
+            &staging,
+            LOGCAT_LOG_FILE,
+            &main_logs,
+            LogTextFormat::Standard,
+        )?);
         let unanchored_logs: Vec<&LogRecord> = draft
             .logs
             .iter()
@@ -522,7 +533,14 @@ impl V2BundleWriter {
         }
 
         // Write per-app foreground / crashed extracted logcat text sidecars (`app-logs/<pkg>.log`).
-        let extracted_apps = extract_foreground_app_logs(&draft.logs, &draft.frames);
+        let extracted_apps = extract_app_logs_for_packages(
+            &draft.logs,
+            &draft.frames,
+            source_apps
+                .iter()
+                .map(|app| app.package_name.clone())
+                .collect(),
+        );
         let mut app_logs = Vec::with_capacity(extracted_apps.len());
         for extracted in &extracted_apps {
             let refs: Vec<&LogRecord> = extracted.logs.iter().collect();
@@ -546,10 +564,8 @@ impl V2BundleWriter {
             arb_os::fs::fsync_dir(&staging.staging_path().join("app-logs"))?;
         }
 
-        // Write compact chronological `events.jsonl` summary when any event exists.
-        if let Some(events_digest) = stage_events_jsonl(&staging, draft)? {
-            files.push(events_digest);
-        }
+        // Write the chronological event summary, including an empty file for a quiet interval.
+        files.push(stage_events_jsonl(&staging, draft)?);
 
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
         write_timeline_sqlite(&timeline_path, draft)?;
@@ -1362,19 +1378,7 @@ pub fn open_bundle(bundle_dir: impl AsRef<Path>) -> Result<Box<dyn BundleReader>
 // ---------------------------------------------------------------------------
 
 fn validate_share_sidecar_name(file_name: &str) -> Result<(), StorageError> {
-    let valid = !file_name.trim().is_empty()
-        && !file_name.contains('/')
-        && !file_name.contains('\\')
-        && file_name != "."
-        && file_name != ".."
-        && file_name != MANIFEST_V2_FILE
-        && file_name != TIMELINE_DB_FILE
-        && file_name != VIDEO_MP4_FILE
-        && file_name != AUDIO_M4A_FILE
-        && Path::new(file_name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"));
-    if !valid {
+    if !matches!(file_name, SHARE_MP4_FILE | SHARE_TAPS_MP4_FILE) {
         return Err(StorageError::InvalidArgument {
             name: "share_mp4.file_name",
             reason: format!("invalid share MP4 sidecar filename `{file_name}`"),
@@ -1521,14 +1525,11 @@ fn swipe_direction_label(tap: &TapRecord) -> Option<&'static str> {
 fn stage_events_jsonl(
     staging: &AtomicStagingDir,
     draft: &V2BundleDraft,
-) -> Result<Option<FileDigest>, StorageError> {
+) -> Result<FileDigest, StorageError> {
     let screens = extract_screen_spans(&draft.logs, &draft.frames);
     let crashes = extract_crash_markers(&draft.logs, &draft.frames);
 
     let total = draft.taps.len() + screens.len() + crashes.len() + draft.discontinuities.len();
-    if total == 0 {
-        return Ok(None);
-    }
 
     let mut entries: Vec<(i64, u8, u64, serde_json::Value)> = Vec::with_capacity(total);
 
@@ -1642,11 +1643,11 @@ fn stage_events_jsonl(
     let _staged_path = staging.write_file_synced(EVENTS_JSONL_FILE, &bytes)?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    Ok(Some(FileDigest {
+    Ok(FileDigest {
         path: EVENTS_JSONL_FILE.to_owned(),
         bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
         sha256: hex_lower(&hasher.finalize()),
-    }))
+    })
 }
 
 fn stage_logs_jsonl(
@@ -2944,6 +2945,11 @@ mod tests {
         V2BundleWriter,
     };
     use crate::error::StorageError;
+
+    #[test]
+    fn share_sidecar_requires_a_portable_share_filename() {
+        assert!(super::validate_share_sidecar_name("Video.MP4").is_err());
+    }
 
     fn sample_logs() -> Vec<LogRecord> {
         vec![

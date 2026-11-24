@@ -400,6 +400,7 @@ fn burn_in_share_video_if_nonempty(
     fs::create_dir_all(&tmp_dir)?;
     let tmp_burned = tmp_dir.join(format!("{}-burned.mp4", next_id("share")));
     let last_frame = u64::try_from(frames.len().saturating_sub(1)).unwrap_or(0);
+    let cleanup = TempFileCleanup(tmp_burned.clone());
     let _report = burn_in_taps_video(
         video_path,
         &tmp_burned,
@@ -410,7 +411,7 @@ fn burn_in_share_video_if_nonempty(
         geom,
         ctx.backend,
     )?;
-    Ok((tmp_burned.clone(), Some(TempFileCleanup(tmp_burned))))
+    Ok((tmp_burned, Some(cleanup)))
 }
 
 #[expect(

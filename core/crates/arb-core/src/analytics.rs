@@ -1253,10 +1253,19 @@ pub fn extract_foreground_app_logs(
     logs: &[LogRecord],
     frames: &[FrameRecord],
 ) -> Vec<ExtractedAppLogs> {
+    extract_app_logs_for_packages(logs, frames, BTreeSet::new())
+}
+
+/// Extracts matching rows for current foreground/crash packages and packages inherited from a source bundle.
+#[must_use]
+pub fn extract_app_logs_for_packages(
+    logs: &[LogRecord],
+    frames: &[FrameRecord],
+    mut target_packages: BTreeSet<String>,
+) -> Vec<ExtractedAppLogs> {
     let screens = extract_screen_spans(logs, frames);
     let crashes = extract_crash_markers(logs, frames);
 
-    let mut target_packages: BTreeSet<String> = BTreeSet::new();
     for span in &screens {
         if !is_excluded_system_ui_package(&span.package_name) {
             target_packages.insert(span.package_name.clone());

@@ -544,6 +544,7 @@ class ArbStudioController(
     }
 
     fun triggerExport() {
+        if (isExporting) return
         val s = viewerState ?: return
         val handler = onExportRequested
         if (handler != null) {

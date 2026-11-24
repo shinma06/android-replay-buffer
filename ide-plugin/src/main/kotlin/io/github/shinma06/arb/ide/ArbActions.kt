@@ -174,7 +174,7 @@ private fun executeConfiguredSave(project: Project?) {
             if (savedId != null) {
                 val openInStudio = config.ideDefaultSaveAction == IdeDefaultSaveAction.SAVE_AND_OPEN &&
                     project != null && !project.isDisposed
-                if (openInStudio && project != null) {
+                if (openInStudio) {
                     SwingUtilities.invokeLater {
                         if (!project.isDisposed) {
                             val vf = ArbBundleVirtualFile(savedId, savedId, isLegacyHint = false)
@@ -290,7 +290,7 @@ private fun executeSaveLogsOnly(project: Project?) {
 }
 
 private fun readToolbarSnapshotOrDefault(): ArbToolbarDaemonSnapshot =
-    runCatching { ArbdDaemonService.getInstance().cachedToolbarSnapshot }.getOrDefault(ArbToolbarDaemonSnapshot())
+    runCatching { ArbdDaemonService.getInstance().toolbarSnapshot() }.getOrDefault(ArbToolbarDaemonSnapshot())
 
 private fun readWindowSecsOrNull(): Int? =
     runCatching { ArbdDaemonService.getInstance().cachedConfig.saveWindowSecs }.getOrNull()

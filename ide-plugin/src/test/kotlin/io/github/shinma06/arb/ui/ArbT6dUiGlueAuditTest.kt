@@ -166,6 +166,18 @@ class ArbT6dUiGlueAuditTest {
             recovery = RecoverySummaryView(),
         )
 
+    @Test
+    fun standaloneToolbarRefreshesDevicesWithoutOpeningThePanel() {
+        val transport = RecordingTransport(defaultResponder(devices = listOf(online("emu-1"))))
+        val (service, rpc) = stubDaemon(transport)
+        try {
+            service.refreshToolbarSnapshot()
+            assertEquals("emu-1", service.cachedToolbarSnapshot.selectedDeviceSerial)
+        } finally {
+            rpc.close()
+        }
+    }
+
     private fun online(serial: String) = AdbDeviceInfo(serial = serial, state = AdbDeviceState.Device)
 
     private fun offlineController(): Pair<ArbToolWindowController, ArbdDaemonService> {

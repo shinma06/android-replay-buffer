@@ -107,6 +107,7 @@ dependencies = [
  "arb-os",
  "arb-storage",
  "png 0.17.16",
+ "rusqlite",
  "rusty_aac",
  "serde",
  "serde_json",

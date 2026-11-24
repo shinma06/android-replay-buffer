@@ -29,7 +29,7 @@ verifies:
    - `export.trim` / `export.share_mp4` で省略時 `dest_dir` が `output_dir_override` → `managed_bundles_root()` の順で解決されるよう統一。
    - `export.trim` に `include_share_mp4` / `burn_taps` / `trash_original` を追加し、トリム時も完全なバンドルディレクトリ（無劣化 `video.mp4` + `audio.m4a` + `timeline.sqlite` + 人間可読サイドカー + 共有用 `share.mp4` / `share-taps.mp4`）を出力し `トリム済み` カタログへ即時登録。
    - `arb-media::burn_in` に純 Rust のアンチエイリアス RGBA バウンディングボックス描画 + BT.601 studio-swing YUV420p/NV12 直接合成を実装し、VideoToolbox（macOS）/ OpenH264（全 OS）の `reencode_frame_range_with_overlay` で GPL 依存ゼロのまま `edts=0/elst=0` faststart H.264+AAC MP4 を生成（タッチ 0 件時は無再エンコード高速パス）。
-   - Android 端末側の `show_touches` 設定変更は一切行わない（`git grep show_touches` は読み取り専用レガシーフィクスチャを除き 0 件）。
+   - タッチ表示は書き出し先の動画に合成する。端末の開発者向け設定は変更しない。
 3. **Part 3 — 統合リッチ通知（`ArbNotifications.kt`）**:
    - Tool Window・Studio FileEditor・Running Devices / Tools Menu アクションの全通知を `ArbNotifications` に集約し、HTML エスケープ・破棄済み Project ガード・非 EDT I/O・OS ゴミ箱専用削除（完全削除なし）・1 クリックアクション（`ビューアで開く` / `画像を開く` / `フォルダを開く` / `パスをコピー` / `ゴミ箱へ` + `元に戻す` / `元バンドルを復元` / `ARB パネルを開く`）を統一。
 4. **Part 4 — Studio 書き出し後 UX & 明示的終了フロー**:
@@ -46,7 +46,6 @@ verifies:
 
 ## 3. ローカル検証結果
 
-- **`git grep show_touches`**: 本番コード 0 件（読み取り専用 `fixtures/legacy-schema4/` のみ）。
 - **`./core/scripts/verify.sh`**: PASS（`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, GPL/AGPL ライセンスゼロ確認, `sara check --strict`, REQ カバレッジ全通過）。
   - `arb-media::burn_in` 単体テスト（Tap 波紋・Swipe 軌跡・奇数サイズ安全クランプ・0 タッチ高速パス・実ピクセル焼き込み差分 & `edts=0/elst=0` 検証）PASS。
   - `arb-storage` 統合テスト（`logcat.log`, `app-logs/<package>.log`, `events.jsonl`, `unanchored.log` 有無制御, `share-taps.mp4` サイドカー SHA-256 検証）PASS。

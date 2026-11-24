@@ -13,6 +13,11 @@ import io.github.shinma06.arb.ipc.ArbdProcessManager
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.SystemHelloResponse
+import io.github.shinma06.arb.state.CaptureBarReducer
+import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.ui.toToolbarSnapshot
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
 import java.io.IOException
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
@@ -82,6 +87,41 @@ open class ArbdDaemonService internal constructor(
     @Volatile
     var cachedToolbarSnapshot: ArbToolbarDaemonSnapshot = ArbToolbarDaemonSnapshot()
         private set
+
+    private val toolbarProbeRunning = AtomicBoolean()
+    @Volatile private var lastToolbarProbeNanos: Long? = null
+    @Volatile private var disposed = false
+
+    fun toolbarSnapshot(): ArbToolbarDaemonSnapshot {
+        val now = System.nanoTime()
+        val stale = lastToolbarProbeNanos?.let { now - it >= TimeUnit.SECONDS.toNanos(2) } ?: true
+        if (!disposed && stale && toolbarProbeRunning.compareAndSet(false, true)) {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    if (!disposed) refreshToolbarSnapshot()
+                } finally {
+                    lastToolbarProbeNanos = System.nanoTime()
+                    toolbarProbeRunning.set(false)
+                }
+            }
+        }
+        return cachedToolbarSnapshot
+    }
+
+    internal fun refreshToolbarSnapshot() {
+        try {
+            withClient { client ->
+                val config = client.configGet().config
+                val status = client.systemStatus()
+                val devices = client.deviceList().devices
+                updateCachedConfig(config)
+                val state = CaptureBarReducer.fromStatus(CaptureBarState(), status, devices, config = config)
+                updateCachedToolbarSnapshot(state.toToolbarSnapshot())
+            }
+        } catch (_: Exception) {
+            updateCachedToolbarSnapshot(ArbToolbarDaemonSnapshot(probed = true))
+        }
+    }
 
     fun addStateListener(listener: ArbDaemonStateListener) {
         listeners.addIfAbsent(listener)
@@ -169,6 +209,7 @@ open class ArbdDaemonService internal constructor(
     fun updateCachedToolbarSnapshot(snapshot: ArbToolbarDaemonSnapshot) {
         val changed = cachedToolbarSnapshot != snapshot || cachedCaptureActive != snapshot.captureActive
         cachedCaptureActive = snapshot.captureActive
+        lastToolbarProbeNanos = System.nanoTime()
         cachedToolbarSnapshot = snapshot
         if (changed) {
             bumpActionToolbarRefresh()
@@ -204,6 +245,7 @@ open class ArbdDaemonService internal constructor(
 
     @Throws(IOException::class)
     open fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {
+        check(!disposed)
         val active = ensureConnectedLocked()
         try {
             block(active)
@@ -246,6 +288,7 @@ open class ArbdDaemonService internal constructor(
     }
 
     override fun dispose() {
+        disposed = true
         disconnect()
     }
 

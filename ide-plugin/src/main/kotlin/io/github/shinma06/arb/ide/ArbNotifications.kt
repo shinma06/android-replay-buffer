@@ -4,6 +4,7 @@ import com.intellij.ide.actions.RevealFileAction
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -61,18 +62,7 @@ object ArbNotifications {
     private val logger = Logger.getInstance(ArbNotifications::class.java)
 
     /** Escapes dynamic strings inserted into IntelliJ notification HTML content. */
-    fun escapeNotificationHtml(raw: String): String = buildString(raw.length + 8) {
-        for (ch in raw) {
-            when (ch) {
-                '&' -> append("&amp;")
-                '<' -> append("&lt;")
-                '>' -> append("&gt;")
-                '"' -> append("&quot;")
-                '\'' -> append("&#39;")
-                else -> append(ch)
-            }
-        }
-    }
+    fun escapeNotificationHtml(raw: String): String = StringUtil.escapeXmlEntities(raw)
 
     // ---------------- Pure spec builders (unit-tested headlessly) ----------------
 
@@ -403,7 +393,7 @@ object ArbNotifications {
             for (actionSpec in spec.actions) {
                 notification.addAction(
                     NotificationAction.createSimpleExpiring(actionSpec.label) {
-                        onAction(actionSpec.id)
+                        if (project?.isDisposed != true) onAction(actionSpec.id)
                     },
                 )
             }

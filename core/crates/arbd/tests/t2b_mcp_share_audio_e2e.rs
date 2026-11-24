@@ -1103,6 +1103,17 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
     let src_lease = opened["lease_id"].as_str().expect("lease_id").to_owned();
     let _ = rpc.call("bundle.close", &json!({ "lease_id": src_lease }));
 
+    let one_log = rpc.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": src_id, "in_frame_index": 9, "out_frame_index": 11
+        }),
+    );
+    let dir = PathBuf::from(one_log["bundle_path"].as_str().unwrap());
+    let app_log = fs::read_to_string(dir.join("app-logs/com.example.shop.log")).unwrap();
+    assert!(app_log.contains("HTTP 500"));
+    assert!(!app_log.contains("CheckoutActivity"));
+
     // 1. Complete Trimmed Bundle Directory with include_share_mp4=true & burn_taps=true
     //    (omitted dest_dir -> MUST land inside output_dir_override!).
     let trim_burned = rpc.call(
@@ -1284,5 +1295,33 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
         "WORM source directory remains intact on disk"
     );
 
+    server.shutdown();
+}
+
+#[test]
+fn trim_stops_before_commit_when_source_clock_anchors_cannot_be_read() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let source = seed_rich_v2_bundle(
+        tmp.path(),
+        &paths.data_dir.join("bundles"),
+        "bad-clock",
+        false,
+    );
+    let db = rusqlite::Connection::open(source.join("timeline.sqlite")).unwrap();
+    db.execute(
+        "INSERT INTO clock_anchors(kind, boot_id, payload_json) VALUES ('device_triple', 'boot-t2b', '{}')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let server = DaemonServer::start(DaemonConfig::new(paths)).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let dest = tmp.path().join("exports");
+    let (_, message) = rpc.call_err("export.trim", &json!({
+        "bundle_id_or_path": source, "in_frame_index": 5, "out_frame_index": 15, "dest_dir": dest
+    }));
+    assert!(message.contains("parse_device_triple"), "{message}");
+    assert!(!dest.exists() || fs::read_dir(dest).unwrap().next().is_none());
     server.shutdown();
 }

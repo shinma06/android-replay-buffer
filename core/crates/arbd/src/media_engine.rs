@@ -507,17 +507,22 @@ pub fn export_trim(
 
     // Enforce REQ-04/07 safety invariant upfront: never trash read-only legacy or uncataloged bundles.
     if params.trash_original {
-        let is_legacy_catalog = source_catalog_id
-            .and_then(|id| catalog.bundle(id).ok().flatten())
-            .is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo);
-        if reader.is_legacy() || is_legacy_catalog {
+        let entry = source_catalog_id
+            .map(|id| catalog.bundle(id))
+            .transpose()?
+            .flatten();
+        if reader.is_legacy()
+            || entry
+                .as_ref()
+                .is_some_and(|e| e.format_version == CatalogFormatVersion::LegacyRo)
+        {
             return Err(DaemonError::Conflict(format!(
                 "refusing trash_original on read-only legacy bundle `{parent_bundle_id}`"
             )));
         }
-        if source_catalog_id.is_none() {
+        if !entry.is_some_and(|e| e.state == arb_core::state::BundleLifecycleState::Active) {
             return Err(DaemonError::Conflict(
-                "refusing trash_original on uncataloged external bundle; open or register it first"
+                "refusing trash_original on uncataloged or non-active bundle; open or register it first"
                     .to_owned(),
             ));
         }
@@ -569,10 +574,8 @@ pub fn export_trim(
     let clock_anchors: Vec<ClockAnchorRecord> = if reader.is_legacy() {
         Vec::new()
     } else {
-        V2BundleReader::open(source_bundle_dir)
-            .ok()
-            .and_then(|v2| v2.clock_anchors().ok())
-            .unwrap_or_default()
+        V2BundleReader::open(source_bundle_dir)?
+            .clock_anchors()?
             .into_iter()
             .filter(|anchor| match anchor {
                 ClockAnchorRecord::DeviceTriple(t) => t.boot_id == frame_window.boot_id(),
@@ -622,6 +625,7 @@ pub fn export_trim(
             };
             let tmp_burned = tmp_dir.join(format!("{trim_job_id}-burned.mp4"));
             let last_trimmed = u64::try_from(trimmed_frames.len().saturating_sub(1)).unwrap_or(0);
+            _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
             let burn_report = burn_in_taps_video(
                 &tmp_trimmed_mp4,
                 &tmp_burned,
@@ -633,7 +637,6 @@ pub fn export_trim(
                 ctx.backend,
             )?;
             burn_taps_applied = burn_report.reencoded;
-            _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
             std::borrow::Cow::Owned(tmp_burned)
         } else {
             std::borrow::Cow::Borrowed(tmp_trimmed_mp4.as_path())
@@ -641,6 +644,7 @@ pub fn export_trim(
 
         let tmp_share_mp4 = tmp_dir.join(format!("{trim_job_id}-{share_name}"));
         let lead_in = trimmed_audio.as_ref().map_or(0, |a| a.lead_in_offset_ns);
+        _tmp_share_guard = Some(FileCleanupGuard(tmp_share_mp4.clone()));
         let _mux_report = mux_share_mp4(
             &video_for_share,
             trimmed_audio.as_ref().map(|a| a.tmp_m4a.as_path()),
@@ -654,7 +658,6 @@ pub fn export_trim(
                 atoms.edts_count, atoms.elst_count
             )));
         }
-        _tmp_share_guard = Some(FileCleanupGuard(tmp_share_mp4.clone()));
         share_sidecar_name = Some(share_name);
         share_sidecar = Some(ShareMp4Sidecar {
             file_name: share_name.to_owned(),
@@ -700,6 +703,7 @@ pub fn export_trim(
         ctx,
         &trim_job_id,
         &draft,
+        &summary.app_logs,
         &NewBundleEntry {
             bundle_id: new_bundle_id.clone(),
             path: dest_bundle_dir.clone(),
@@ -756,9 +760,15 @@ fn commit_trimmed_bundle(
     ctx: &ExportContext<'_>,
     trim_job_id: &str,
     draft: &V2BundleDraft,
+    source_apps: &[arb_core::bundle::AppLogSummary],
     entry: &NewBundleEntry,
 ) -> Result<(usize, Option<String>), DaemonError> {
-    let (app_logs_count, warning) = match V2BundleWriter::write(&entry.path, trim_job_id, draft) {
+    let (app_logs_count, warning) = match V2BundleWriter::write_with_source_apps(
+        &entry.path,
+        trim_job_id,
+        draft,
+        source_apps,
+    ) {
         Ok(manifest) => {
             let count = manifest.app_logs.len();
             match ctx.faults.maybe_fail_parent_sync(&entry.path) {
@@ -1028,9 +1038,26 @@ fn select_trimmed_logs(
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
 ) -> Result<(Vec<arb_core::bundle::LogRecord>, usize, usize, usize), DaemonError> {
-    let source_main = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let source_unanchored =
-        reader.query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)?;
+    let mut source_logs = reader.query_logs(None, TimeRange::all(), None)?;
+    let packages = summary
+        .app_logs
+        .iter()
+        .map(|app| app.package_name.clone())
+        .collect();
+    let resolver = arb_core::analytics::LogPackageResolver::from_logs(&source_logs, &packages);
+    for log in &mut source_logs {
+        if log.package_name.is_none()
+            && let Some(package) = log
+                .pid
+                .and_then(|pid| resolver.package_for_pid(log.boot_id.as_deref(), pid))
+            && packages.contains(package)
+        {
+            log.package_name = Some(package.to_owned());
+        }
+    }
+    let (source_main, source_unanchored): (Vec<_>, Vec<_>) = source_logs
+        .into_iter()
+        .partition(|log| log.bucket == RecordBucket::Main);
     let source_truncated =
         usize::try_from(summary.unanchored_summary.truncated_count).unwrap_or(usize::MAX);
     let part = select_for_trim_with_truncated(
@@ -1135,7 +1162,11 @@ fn filter_discontinuities_for_window(
                 (Some(s), Some(e)) => s <= w_end && e >= w_start,
                 (Some(s), None) => s >= w_start && s <= w_end,
                 (None, Some(e)) => e >= w_start && e <= w_end,
-                (None, None) => true,
+                (None, None) => {
+                    d.pc_cont_start_ns <= window.ingest_end_cont_ns()
+                        && d.pc_cont_end_ns.unwrap_or(d.pc_cont_start_ns)
+                            >= window.ingest_start_cont_ns()
+                }
             }
         })
         .collect()
@@ -1320,6 +1351,33 @@ mod tests {
 
     use super::build_trimmed_frame_records;
     use crate::protocol::ExportTrimParams;
+
+    #[test]
+    fn host_only_gaps_are_trimmed_on_the_ingest_clock() {
+        let window = WindowSpec::RealElapsed {
+            boot_id: "boot".into(),
+            start_boottime_ns: 10,
+            end_boottime_ns: 20,
+            ingest_start_cont_ns: 100,
+            ingest_end_cont_ns: 200,
+        };
+        let gap = |start, end| arb_core::time::DiscontinuityEvent {
+            kind: arb_core::time::DiscontinuityKind::StreamGap,
+            stream: None,
+            boot_id: None,
+            start_boottime_ns: None,
+            end_boottime_ns: None,
+            pc_cont_start_ns: start,
+            pc_cont_end_ns: end,
+            delta_ns: None,
+            detail: None,
+        };
+        let selected = super::filter_discontinuities_for_window(
+            vec![gap(40, Some(90)), gap(50, Some(100)), gap(201, None)],
+            &window,
+        );
+        assert_eq!(selected, vec![gap(50, Some(100))]);
+    }
 
     #[test]
     fn r3_s8b_trimmed_unmatched_frame_uses_unanchored_never_fabricated_anchor() {

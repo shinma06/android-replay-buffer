@@ -4,8 +4,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.intellij.ide.actions.RevealFileAction
-import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileChooser.FileChooser
@@ -317,15 +315,15 @@ class ArbToolWindowController(
                     daemonService.withClient {
                         it.captureStart(CaptureStartParams(serial = serial, captureMode = mode))
                     }
-                    notifyBalloon("キャプチャモードを「$label」に切り替え、録画を再開しました")
+                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に切り替え、録画を再開しました")
                 } else {
-                    notifyBalloon("キャプチャモードを「$label」に設定しました")
+                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に設定しました")
                 }
             } catch (t: Throwable) {
                 logger.warn("ARB capture mode switch to ${mode.wire} failed", t)
-                notifyBalloon(
+                ArbNotifications.notifyWarning(
+                    project,
                     "キャプチャモードを「$label」に切り替えられませんでした: ${t.message ?: "詳細不明"}",
-                    NotificationType.WARNING,
                 )
             } finally {
                 publishOnEdt { captureModeBusy = false }
@@ -425,7 +423,7 @@ class ArbToolWindowController(
     fun launchTray() {
         runAsync {
             val bin = daemonService.launchBundledTray()
-            notifyBalloon("メニューバー / トレイ (arb-tray) を起動しました: ${bin.fileName}")
+            ArbNotifications.notifyInfo(project, "メニューバー / トレイ (arb-tray) を起動しました: ${bin.fileName}")
         }
     }
 
@@ -683,7 +681,7 @@ class ArbToolWindowController(
                     config = config,
                 ).also { rawCaptureState = it }
             }
-            daemonService.updateCachedToolbarSnapshot(buildToolbarSnapshot(nextCapture))
+            daemonService.updateCachedToolbarSnapshot(nextCapture.toToolbarSnapshot())
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(rawRecoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
@@ -735,30 +733,6 @@ class ArbToolWindowController(
         }
     }
 
-    private fun buildToolbarSnapshot(state: CaptureBarState): ArbToolbarDaemonSnapshot {
-        val hint = when (val sel = state.deviceSelection) {
-            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
-                if (state.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
-            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-                "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX"
-            else -> when (state.selectedDevice?.state) {
-                AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
-                AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
-                null -> NO_DEVICES_PLACEHOLDER
-                else -> null
-            }
-        }
-        return ArbToolbarDaemonSnapshot(
-            probed = true,
-            daemonConnected = state.daemonConnected,
-            captureActive = state.capture?.active == true,
-            hasBufferedData = state.ringChunkCount > 0L,
-            hasOnlineDevice = state.isSelectedDeviceOnline,
-            selectedDeviceSerial = state.selectedDevice?.serial,
-            disabledDeviceHint = hint,
-        )
-    }
-
     private fun updateRecovery(next: FailedSaveRecoveryState) {
         rawRecoveryState = next
         publishOnEdt { recoveryState = next }
@@ -770,17 +744,6 @@ class ArbToolWindowController(
             if (!disposed) block()
         } else {
             SwingUtilities.invokeLater { if (!disposed) block() }
-        }
-    }
-
-    private fun notifyBalloon(content: String, type: NotificationType = NotificationType.INFORMATION) {
-        runCatching {
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("Android Replay Buffer")
-                .createNotification("Android Replay Buffer", content, type)
-                .notify(project)
-        }.onFailure {
-            logger.info("ARB notification: $content")
         }
     }
 
@@ -844,4 +807,28 @@ class ArbToolWindowController(
             is AdbDeviceState.Unknown -> "${device.serial} (${st.value})"
         }
     }
+}
+
+internal fun CaptureBarState.toToolbarSnapshot(): ArbToolbarDaemonSnapshot {
+    val hint = when (val sel = this.deviceSelection) {
+        is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+            if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
+        is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}"
+        else -> when (this.selectedDevice?.state) {
+            AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
+            AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+            null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+            else -> null
+        }
+    }
+    return ArbToolbarDaemonSnapshot(
+        probed = true,
+        daemonConnected = this.daemonConnected,
+        captureActive = this.capture?.active == true,
+        hasBufferedData = this.ringChunkCount > 0L,
+        hasOnlineDevice = this.isSelectedDeviceOnline,
+        selectedDeviceSerial = this.selectedDevice?.serial,
+        disabledDeviceHint = hint,
+    )
 }

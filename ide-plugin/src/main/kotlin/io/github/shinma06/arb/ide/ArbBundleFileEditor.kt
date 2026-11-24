@@ -623,11 +623,8 @@ class ArbBundleFileEditor(
         val includeShareMp4 = format == StudioExportFormat.SHARE_MP4
         val burnTapsEnabled = includeShareMp4 && studioController.burnTapsOnExport
         val progressText = if (burnTapsEnabled) "焼き込み書き出し中..." else "書き出し中..."
-        SwingUtilities.invokeLater {
-            if (!disposed) {
-                studioController.setExporting(true, progressText)
-            }
-        }
+        if (disposed || studioController.isExporting) return
+        studioController.setExporting(true, progressText)
 
         submitWork {
             try {

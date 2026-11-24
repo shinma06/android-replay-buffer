@@ -1942,3 +1942,24 @@ fn t6i_bundle_writer_emits_human_readable_sidecars_and_share_mp4_with_sha256_int
         "unanchored.log must NOT be created when unanchored logs are empty"
     );
 }
+
+#[test]
+fn empty_timeline_has_readable_sidecars_but_no_unanchored_log() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("bundle");
+    let mut draft = build_draft("empty", vec![]);
+    draft.logs.clear();
+    draft.taps.clear();
+    draft.discontinuities.clear();
+    let manifest = V2BundleWriter::write(&dir, "job", &draft).unwrap();
+    for name in ["events.jsonl", "logcat.log"] {
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|f| f.path == name && f.bytes == 0)
+        );
+        assert_eq!(fs::metadata(dir.join(name)).unwrap().len(), 0);
+    }
+    assert!(!dir.join("unanchored.log").exists());
+}

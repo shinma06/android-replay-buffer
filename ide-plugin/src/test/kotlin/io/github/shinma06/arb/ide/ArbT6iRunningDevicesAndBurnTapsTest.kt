@@ -254,11 +254,12 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
     @Test
     fun studioControllerBurnTapsBusyStateAndExplicitCloseTabWorkCleanly() {
         var persistedBurnTaps = true
+        var exports = 0
         var closedCount = 0
         val controller = ArbStudioController(
             onScrub = {},
             onSeekExact = {},
-            onTrimExport = { _, _ -> },
+            onTrimExport = { _, _ -> exports++ },
             onPngExport = { _, _ -> },
             initialBurnTapsOnExport = true,
             onBurnTapsToggled = { persistedBurnTaps = it },
@@ -301,6 +302,8 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
 
         controller.setExporting(true, "焼き込み書き出し中...")
         assertFalse(controller.isExportButtonEnabled)
+        controller.triggerExport()
+        assertEquals(0, exports)
         assertEquals("焼き込み書き出し中...", controller.exportButtonLabel)
 
         controller.setExporting(false)

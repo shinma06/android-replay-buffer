@@ -683,6 +683,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                     "in_frame_index": 2,
                     "out_frame_index": 12,
                     "include_share_mp4": true,
+                    "trash_original": true,
                     "burn_taps": true
                 }
             }
@@ -699,6 +700,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     )
     .expect("parse trim bundle json");
     assert_eq!(trim_bundle_json["burn_taps_applied"], true);
+    assert_eq!(trim_bundle_json["original_trashed"], true);
     let share_sidecar = PathBuf::from(
         trim_bundle_json["share_mp4_path"]
             .as_str()

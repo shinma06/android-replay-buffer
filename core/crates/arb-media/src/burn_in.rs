@@ -727,9 +727,13 @@ pub fn composite_touch_overlays_rgb24(
     frame_t_ns: i64,
     display_geometry: BurnInDisplayGeometry,
 ) -> bool {
+    let (Ok(width), Ok(height)) = (usize::try_from(rgb.width), usize::try_from(rgb.height)) else {
+        return false;
+    };
+    if width.checked_mul(height).and_then(|n| n.checked_mul(3)) != Some(rgb.data.len()) {
+        return false;
+    }
     let mapped = map_events(events, rgb.width, rgb.height, display_geometry);
-    let width = usize::try_from(rgb.width).unwrap_or(0);
-    let height = usize::try_from(rgb.height).unwrap_or(0);
     let Some(overlay) = rasterize_frame_overlay(&mapped, frame_t_ns, width, height) else {
         return false;
     };
@@ -980,6 +984,34 @@ mod tests {
     }
 
     #[test]
+    fn openh264_emits_frames_before_reading_the_end_of_the_gop() {
+        use crate::codec::VideoCodecBackend;
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("stream.mp4");
+        build_uniform_video(&src, 64, 64, 15);
+        let track = Mp4VideoTrack::open(&src).unwrap();
+        let cut = track.frame(12).unwrap().offset;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_len(cut)
+            .unwrap();
+        let mut painted = 0;
+        let result = OpenH264Backend::new().reencode_frame_range_with_overlay(
+            &track,
+            0,
+            15,
+            EncodeParams::default(),
+            15,
+            &|_| true,
+            &mut |_, _| painted += 1,
+        );
+        assert!(result.is_err());
+        assert!(painted > 0);
+    }
+
+    #[test]
     fn tap_ripple_and_swipe_trajectory_composite_pixels_and_clamp_odd_dimensions() {
         let mut img = solid_rgb(129, 129, (20, 20, 20));
         let events = vec![
@@ -1020,6 +1052,17 @@ mod tests {
                 ],
             },
         ];
+        let mut truncated = RgbImage {
+            width: 129,
+            height: 129,
+            data: vec![],
+        };
+        assert!(!composite_touch_overlays_rgb24(
+            &mut truncated,
+            &events,
+            1_000_000_000,
+            BurnInDisplayGeometry::default()
+        ));
 
         let changed = composite_touch_overlays_rgb24(
             &mut img,
