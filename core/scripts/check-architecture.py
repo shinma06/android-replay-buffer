@@ -72,12 +72,40 @@ def strip_test_items(src: str) -> str:
     return "".join(out)
 
 
+def join_cfg_predicates(src: str) -> str:
+    """Folds each multi-line `cfg(...)` / `cfg_attr(...)` / `cfg!(...)` onto its first line.
+
+    The removed newlines are re-inserted right after the closing parenthesis, so every later
+    line keeps its number while line-based rules still see the whole OS predicate.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in re.finditer(r"\bcfg(?:_attr)?!?\(", src):
+        if m.start() < pos:
+            continue
+        depth, j = 0, m.end() - 1
+        while j < len(src):
+            if src[j] == "(":
+                depth += 1
+            elif src[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        pred = src[m.start():j + 1]
+        out.append(src[pos:m.start()])
+        out.append(pred.replace("\n", " ") + "\n" * pred.count("\n"))
+        pos = j + 1
+    out.append(src[pos:])
+    return "".join(out)
+
+
 def production_sources():
     for path in sorted(CRATES.glob("*/src/**/*.rs")):
         rel = path.relative_to(CRATES).as_posix()
         if path.name.endswith("tests.rs") or "/tests/" in rel or path.name == "kani_proofs.rs":
             continue
-        src = strip_test_items(strip_comments(path.read_text(encoding="utf-8")))
+        src = join_cfg_predicates(strip_test_items(strip_comments(path.read_text(encoding="utf-8"))))
         yield rel, src
 
 
