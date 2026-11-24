@@ -294,10 +294,8 @@ fn repo_schema4_fixture_dir() -> PathBuf {
         .join("..")
         .join("..")
         .join("..")
-        .join("plugin")
-        .join("src")
-        .join("test")
-        .join("resources")
+        .join("fixtures")
+        .join("legacy-schema4")
         .join("replay-trim-parity")
         .join("replay-20240101-000000-manual-feedface")
 }

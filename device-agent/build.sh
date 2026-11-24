@@ -132,12 +132,12 @@ echo "==> [3/3] Built ${BUILD_DIR}/arb-companion.dex.jar (${COMPANION_BYTES} byt
 
 # 3. Optional Apache-2.0 scrcpy-server-v5.0.1 + patched AudioRecordReader recipe
 if [[ "${WITH_SCRCPY_AUDIO}" -eq 1 ]]; then
-    SCRCPY_SERVER="${REPO_ROOT}/plugin/src/main/resources/replay/deps/scrcpy-server-v5.0.1"
-    AUDIO_PATCH_SRC="${REPO_ROOT}/plugin/src/scrcpy/java/com/genymobile/scrcpy/audio/AudioRecordReader.java"
+    SCRCPY_SERVER="${REPO_ROOT}/third-party/scrcpy/scrcpy-server-v5.0.1"
+    AUDIO_PATCH_SRC="${REPO_ROOT}/third-party/scrcpy/AudioRecordReader.java"
     EXPECTED_SCRCPY_SHA="764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
 
     if [[ ! -f "${SCRCPY_SERVER}" || ! -f "${AUDIO_PATCH_SRC}" ]]; then
-        echo "ERROR: scrcpy-server-v5.0.1 or AudioRecordReader.java not found in plugin/" >&2
+        echo "ERROR: scrcpy-server-v5.0.1 or AudioRecordReader.java not found in third-party/scrcpy/" >&2
         exit 1
     fi
     ACTUAL_SHA="$(shasum -a 256 "${SCRCPY_SERVER}" | awk '{print $1}')"
