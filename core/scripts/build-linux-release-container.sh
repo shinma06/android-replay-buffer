@@ -52,7 +52,7 @@ docker run --rm ${platform[@]+"${platform[@]}"} \
         rustup toolchain install "${ARB_RUST_TOOLCHAIN}" --profile minimal --no-self-update
         rustup default "${ARB_RUST_TOOLCHAIN}"
         rustc --version
-        ldd --version | head -n 1
+        ldd --version | sed -n 1p
         cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
         cargo build --manifest-path core/Cargo.toml --release -p arbd --example arb_gate_bundle
         cp /cache/target/release/arbd /cache/target/release/arb-cli /cache/target/release/arb-tray /out/
