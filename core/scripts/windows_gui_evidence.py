@@ -194,31 +194,36 @@ def tray_evidence(ev: Evidence, root: Path, env: dict[str, str], out: Path) -> N
 
 def play_in_edge(ev: Evidence, edge: str, media: Path, label: str, out: Path, baseline: bytes, record: bool) -> None:
     profile = Path(tempfile.mkdtemp(prefix="edge-profile-"))
-    recorder = None
-    if record:
-        recorder = subprocess.Popen(
-            ["ffmpeg", "-y", "-v", "error", "-f", "gdigrab", "-framerate", "10", "-t", "9", "-i", "desktop", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out / "win-playback.mp4")],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-        )
     proc = subprocess.Popen(edge_command(edge, profile, media), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
     try:
-        time.sleep(3)
         foreground(proc.pid)
         time.sleep(3)
         shot = out / f"win-edge-{label}.png"
-        ok = screenshot(shot)
-        ev.check(f"Edge window playing {media.name}: screenshot taken ({shot.name})", ok, shot)
-        if ok:
-            stats = luma_stats(gray_samples(shot))
-            diff = mean_abs_diff(gray_samples(shot), baseline)
-            ev.check(f"Edge playback of {media.name} is on screen, not black (mean {stats[0]:.1f}, sd {stats[1]:.1f}, diff vs idle desktop {diff:.1f})", is_non_black(stats) and diff >= MIN_DIFF_FROM_BASELINE, stats)
+        deadline = time.monotonic() + 15
+        while True:
+            captured = screenshot(shot)
+            samples = gray_samples(shot) if captured else b""
+            stats = luma_stats(samples)
+            diff = mean_abs_diff(samples, baseline)
+            ready = is_non_black(stats) and diff >= MIN_DIFF_FROM_BASELINE
+            if ready or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        ev.check(f"Edge window playing {media.name}: screenshot taken ({shot.name})", captured, shot)
+        ev.check(f"Edge playback of {media.name} is on screen, not black (mean {stats[0]:.1f}, sd {stats[1]:.1f}, diff vs idle desktop {diff:.1f})", ready, stats)
+        if record and ready:
+            try:
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-f", "gdigrab", "-framerate", "10", "-i", "desktop",
+                     "-t", "9", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out / "win-playback.mp4")],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30,
+                )
+                ev.check("desktop recording finished while Edge was playing", result.returncode == 0,
+                         result.stderr.decode("utf-8", "replace")[-200:])
+            except subprocess.TimeoutExpired:
+                ev.check("desktop recording finished while Edge was playing", False, "timed out after 30 s")
     finally:
         kill_tree(proc)
-        if recorder is not None:
-            try:
-                recorder.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                recorder.terminate()
         shutil.rmtree(profile, ignore_errors=True)
 
 
@@ -290,6 +295,8 @@ def run_evidence(args: argparse.Namespace) -> int:
 
 
 def self_test() -> int:
+    from unittest.mock import MagicMock, patch
+
     black = bytes([0] * 2304)
     desk = bytes([30, 90] * 1152)
     flat = bytes([120] * 2304)
@@ -305,6 +312,29 @@ def self_test() -> int:
         fake.write_bytes(b"x")
         assert find_executable([str(fake)], ["definitely-not-installed-xyz"]) == str(fake)
         assert find_executable(["/nope/tool.exe"], ["definitely-not-installed-xyz"]) is None
+        # The desktop may be black throughout Edge startup. Only record verified playback.
+        events = []
+        frames = iter((black, desk))
+        edge = MagicMock()
+
+        def launch(argv, **kwargs):
+            events.append("record" if argv[0] == "ffmpeg" else "launch")
+            return edge
+
+        def record(*args, **kwargs):
+            events.append("record")
+            return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+        def samples(_):
+            events.append("frame")
+            return next(frames)
+        with (patch.object(subprocess, "Popen", side_effect=launch),
+              patch.object(subprocess, "run", side_effect=record),
+              patch.object(time, "sleep"), patch(__name__ + ".foreground"),
+              patch(__name__ + ".screenshot", return_value=True), patch(__name__ + ".gray_samples", side_effect=samples),
+              patch(__name__ + ".kill_tree", side_effect=lambda _: events.append("close"))):
+            play_in_edge(Evidence(Path(tmp)), "edge", Path("share.mp4"), "share", Path(tmp), black, record=True)
+        assert events == ["launch", "frame", "frame", "record", "close"], events
     ev = Evidence(Path("."))
     assert not ev.passed and ev.check("x", True) and ev.passed and not ev.check("y", False) and not ev.passed
     print("windows_gui_evidence.py --self-test: OK")
