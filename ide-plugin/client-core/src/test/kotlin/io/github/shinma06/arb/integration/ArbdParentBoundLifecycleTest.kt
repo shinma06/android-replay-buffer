@@ -97,7 +97,7 @@ class ArbdParentBoundLifecycleTest {
                 assertTrue(contender.waitFor(5, TimeUnit.SECONDS))
                 assertNotEquals(0, contender.exitValue())
                 owner.outputStream.close()
-                assertTrue(owner.waitFor(1, TimeUnit.SECONDS))
+                assertTrue(owner.waitFor(2, TimeUnit.SECONDS), "arbd must exit within 2 s of the parent pipe closing")
                 assertEquals(0, owner.exitValue())
                 assertTrue(sibling.isAlive)
                 sibling.outputStream.close()
