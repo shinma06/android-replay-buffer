@@ -55,7 +55,7 @@ impl BundleFormatBadge {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::V2 => "v2",
+            Self::V2 => "ARB",
             Self::LegacyRo => "Legacy (RO)",
         }
     }
@@ -133,7 +133,7 @@ pub struct RecentBundleSummary {
     pub bundle_id: String,
     /// On-disk bundle directory path.
     pub path: PathBuf,
-    /// Storage format badge (`v2` or `Legacy (RO)`).
+    /// Storage format badge (`ARB` or `Legacy (RO)`).
     pub format: BundleFormatBadge,
     /// Lifecycle state (`active`, `trashed`, `purging`).
     pub lifecycle: BundleLifecycleState,
@@ -1492,8 +1492,8 @@ mod tests {
             "recent saves must cap at latest 5 active bundles"
         );
         assert_eq!(recent.children[0].label, "bundle-07 [Legacy (RO)]");
-        assert_eq!(recent.children[1].label, "bundle-06 [v2]");
-        assert_eq!(recent.children[4].label, "bundle-03 [v2]");
+        assert_eq!(recent.children[1].label, "bundle-06 [ARB]");
+        assert_eq!(recent.children[4].label, "bundle-03 [ARB]");
         assert!(
             matches!(
                 recent.children[0].event,

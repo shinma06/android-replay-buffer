@@ -1,4 +1,4 @@
-//! Cross-platform OS abstraction layer for Android Replay Buffer (ARB) v2.
+//! Cross-platform OS abstraction layer for Android Replay Buffer (ARB).
 //!
 //! All Linux, macOS, and Windows platform differences live inside this crate:
 //! - [`clock`]: sleep-aware dual host monotonic + wall clock sampling,

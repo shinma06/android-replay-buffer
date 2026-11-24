@@ -1,4 +1,4 @@
-//! GPL-free media container, codec, trim, and playback engine for ARB v2.
+//! GPL-free media container, codec, trim, and playback engine for ARB.
 //!
 //! Provides:
 //! - [`audio`]: Pure-Rust ISO-BMFF AAC-LC (`audio.m4a`) faststart muxer, `AudioSpecificConfig`

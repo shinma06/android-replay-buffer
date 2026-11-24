@@ -3,7 +3,7 @@ name = "arb-os"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Cross-platform OS abstraction layer for ARB v2 (dual clocks, atomic fs, local IPC, shared memory, paths)."
+description = "Cross-platform OS abstraction layer for Android Replay Buffer (ARB) (dual clocks, atomic fs, local IPC, shared memory, paths)."
 
 [dependencies]
 arb-core.workspace = true

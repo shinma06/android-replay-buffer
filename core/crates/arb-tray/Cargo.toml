@@ -3,7 +3,7 @@ name = "arb-tray"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Menu bar and system tray client for Android Replay Buffer (ARB) v2."
+description = "Menu bar and system tray client for Android Replay Buffer (ARB)."
 
 [dependencies]
 arb-core.workspace = true

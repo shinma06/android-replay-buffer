@@ -52,7 +52,7 @@ import javax.swing.SwingUtilities
 import kotlin.math.roundToLong
 
 /**
- * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (v2 and Legacy RO bundles),
+ * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (ARB and Legacy RO bundles),
  * rendered natively with JetBrains Jewel Compose (`JewelComposePanel`).
  *
  * Lifecycle & safety guarantees:

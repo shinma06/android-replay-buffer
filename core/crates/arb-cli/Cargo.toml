@@ -3,7 +3,7 @@ name = "arb-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI client for Android Replay Buffer (ARB) v2 communicating with arbd over local IPC."
+description = "CLI client for Android Replay Buffer (ARB) communicating with arbd over local IPC."
 
 [dependencies]
 arb-core.workspace = true

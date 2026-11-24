@@ -168,7 +168,7 @@ class JvmAudioSink(
  * Cross-OS JDK synchronized PCM audio player driven alongside [PlaybackController].
  *
  * Design guarantees:
- * - Honors `avOffsetMs` honestly using the ARB v2 sign convention
+ * - Honors `avOffsetMs` honestly using the ARB sign convention
  *   (`audio_pts_ns = video_pts_ns - avOffsetMs * 1_000_000L`, matching `arb-core` / `arb-media`).
  * - Immediately flushes the output [AudioSink] on [seek] so no stale buffered audio plays.
  * - Cleanly mutes and silences output during `SCRUBBING` or non-`1.0x` playback speeds

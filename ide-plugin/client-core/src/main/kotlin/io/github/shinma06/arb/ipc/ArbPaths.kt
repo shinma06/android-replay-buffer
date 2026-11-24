@@ -8,7 +8,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * Resolves ARB v2 data, cache, runtime, and local IPC endpoint paths identically to
+ * Resolves ARB data, cache, runtime, and local IPC endpoint paths identically to
  * `core/crates/arb-os/src/paths.rs`.
  */
 data class ArbPaths(

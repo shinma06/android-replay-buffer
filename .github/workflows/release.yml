@@ -145,7 +145,7 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: release-${{ runner.os }}
-          path: dist/arb-v2-*.zip
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 3
 

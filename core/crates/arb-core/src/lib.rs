@@ -1,4 +1,4 @@
-//! Pure domain logic for Android Replay Buffer (ARB) v2.
+//! Pure domain logic for Android Replay Buffer (ARB).
 //!
 //! This crate has zero OS, ADB, SQLite, IPC, or media-codec dependencies.
 //! It owns the dual-layer time model, the shared 3-valued selection engine
@@ -14,7 +14,7 @@ pub mod selection;
 pub mod state;
 pub mod time;
 
-/// Schema version for ARB v2 immutable saved bundles.
+/// Schema version for ARB immutable saved bundles.
 pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
 
 /// Returns the crate identifier and bundle schema version for smoke diagnostics.

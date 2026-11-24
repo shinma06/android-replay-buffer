@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Live headless Android Emulator E2E verification for ARB v2 (Gate G2).
+# Live headless Android Emulator E2E verification for Android Replay Buffer (Gate G2).
 # Exercises the real device-agent -> arbd -> arb-cli pipeline end-to-end on
 # the `arb_api37_arm64` AVD and guarantees full cleanup on exit or error.
 

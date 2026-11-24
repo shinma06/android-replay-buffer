@@ -262,7 +262,7 @@ class ArbUiComponentsTest {
             assertFalse(controller.showGcAction, "GC action must be hidden on ALL tab")
             assertEquals(3, controller.displayedBundles.size)
             assertEquals(LEGACY_READ_ONLY_BADGE_TEXT, controller.displayedBundles[0].formatBadge)
-            assertEquals("v2", controller.displayedBundles[1].formatBadge)
+            assertEquals("ARB", controller.displayedBundles[1].formatBadge)
 
             controller.selectFilter(BundleFilter.TRIMMED)
             javax.swing.SwingUtilities.invokeAndWait {}

@@ -1,4 +1,4 @@
-//! Single-writer local daemon (`arbd`) for Android Replay Buffer (ARB) v2.
+//! Single-writer local daemon (`arbd`) for Android Replay Buffer (ARB).
 //!
 //! Coordinates:
 //! - [`arb_os::fs::SingleInstanceLock`] and [`arb_os::ipc::LocalIpcListener`]

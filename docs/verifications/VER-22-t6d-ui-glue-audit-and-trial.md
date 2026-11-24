@@ -84,5 +84,5 @@ verifies:
 ## 5. 未検証項目（Unverified）
 
 - **実機 Android Studio `2026.2.2.8` への ZIP ドラッグ＆ドロップ導入と GUI 操作**: このセッションでは IDE を起動していないため、Compose / Jewel 描画、Logcat 継承先の反射解決（Android プラグインのクラスローダー可視性）、IntelliJ のプラグイン展開がパーミッションと mtime を保持するかは未確認。保持されない場合も、`ArbdProcessManager.ensureUnixExecutable` が同梱バイナリに実行権限を付け直す。
-- **物理端末 / エミュレータでの `logs_only` 再開、複数端末の固定、`output_dir` への実保存**: 単体テストとスタブ IPC で検証済み。実機確認は `docs/v2/testing/work-device-smoke-checklist.md` で後日行う。
+- **物理端末 / エミュレータでの `logs_only` 再開、複数端末の固定、`output_dir` への実保存**: 単体テストとスタブ IPC で検証済み。実機確認は `docs/testing/work-device-smoke-checklist.md` で後日行う。
 - **Linux / Windows ホスト**: ローカル検証は macOS arm64 のみ。3 OS の同等性は GitHub Actions `v2 CI` で確認する。

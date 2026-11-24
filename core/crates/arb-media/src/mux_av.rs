@@ -1,6 +1,6 @@
 //! Pure-Rust single-file H.264 + AAC-LC `share.mp4` muxer.
 //!
-//! [`mux_share_mp4`] combines an ARB v2 `video.mp4` (single-`stsd` `avc1`, in-band SPS/PPS on
+//! [`mux_share_mp4`] combines an ARB `video.mp4` (single-`stsd` `avc1`, in-band SPS/PPS on
 //! IDR frames) and an optional `audio.m4a` (AAC-LC `mp4a`/`esds`) into ONE standalone,
 //! universally playable ISO-BMFF file:
 //!

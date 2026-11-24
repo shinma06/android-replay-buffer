@@ -3,7 +3,7 @@ name = "arb-adb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "ADB transport, device-agent lifecycle, auto-reconnect, and framed wire protocol for ARB v2."
+description = "ADB transport, device-agent lifecycle, auto-reconnect, and framed wire protocol for Android Replay Buffer (ARB)."
 
 [dependencies]
 arb-core.workspace = true

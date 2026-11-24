@@ -30,8 +30,8 @@ private fun notifyArb(
     openBundleId: String? = null,
 ) {
     val notification = NotificationGroupManager.getInstance()
-        .getNotificationGroup("ARB v2")
-        .createNotification("Android Replay Buffer (v2)", content, type)
+        .getNotificationGroup("Android Replay Buffer")
+        .createNotification("Android Replay Buffer", content, type)
     if (!revealPath.isNullOrBlank()) {
         notification.addAction(
             NotificationAction.createSimple("フォルダを表示") {
@@ -170,16 +170,16 @@ private fun executeSaveLogsOnly(project: Project?) {
     }
 }
 
-class ArbQuickSaveAction : AnAction("ARB v2: 直前の記録を保存", "arbd 経由で設定秒数分の画面・ログ・入力を保存します", AllIcons.Actions.MenuSaveall), DumbAware {
+class ArbQuickSaveAction : AnAction("ARB: 直前の記録を保存", "arbd 経由で設定秒数分の画面・ログ・入力を保存します", AllIcons.Actions.MenuSaveall), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         val windowSecs = runCatching { ArbdDaemonService.getInstance().cachedConfig.saveWindowSecs }.getOrNull()
         e.presentation.icon = AllIcons.Actions.MenuSaveall
         e.presentation.text = if (windowSecs != null) {
-            "ARB v2: 直前 ${ArbFormatters.formatSeconds(windowSecs)} を保存"
+            "ARB: 直前 ${ArbFormatters.formatSeconds(windowSecs)} を保存"
         } else {
-            "ARB v2: 直前の記録を保存"
+            "ARB: 直前の記録を保存"
         }
     }
 
@@ -188,13 +188,13 @@ class ArbQuickSaveAction : AnAction("ARB v2: 直前の記録を保存", "arbd �
     }
 }
 
-class ArbToggleCaptureAction : AnAction("ARB v2: キャプチャ開始 / 停止", "arbd のライブキャプチャを開始または停止します", AllIcons.Actions.Restart), DumbAware {
+class ArbToggleCaptureAction : AnAction("ARB: キャプチャ開始 / 停止", "arbd のライブキャプチャを開始または停止します", AllIcons.Actions.Restart), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         val active = runCatching { ArbdDaemonService.getInstance().cachedCaptureActive }.getOrDefault(false)
         e.presentation.icon = if (active) AllIcons.Actions.Suspend else AllIcons.Actions.Restart
-        e.presentation.text = if (active) "ARB v2: キャプチャを停止" else "ARB v2: キャプチャを開始"
+        e.presentation.text = if (active) "ARB: キャプチャを停止" else "ARB: キャプチャを開始"
     }
 
     override fun actionPerformed(e: AnActionEvent) {
@@ -202,12 +202,12 @@ class ArbToggleCaptureAction : AnAction("ARB v2: キャプチャ開始 / 停止"
     }
 }
 
-class ArbScreenshotAction : AnAction("ARB v2: スクリーンショットを保存", "対象端末の現在画面を PNG として即時保存します", AllIcons.FileTypes.Image), DumbAware {
+class ArbScreenshotAction : AnAction("ARB: スクリーンショットを保存", "対象端末の現在画面を PNG として即時保存します", AllIcons.FileTypes.Image), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         e.presentation.icon = AllIcons.FileTypes.Image
-        e.presentation.text = "ARB v2: スクリーンショットを保存"
+        e.presentation.text = "ARB: スクリーンショットを保存"
     }
 
     override fun actionPerformed(e: AnActionEvent) {
@@ -215,16 +215,16 @@ class ArbScreenshotAction : AnAction("ARB v2: スクリーンショットを保�
     }
 }
 
-class ArbLogcatSaveLogsAction : AnAction("ARB v2: 直前のログのみ保存", "映像キャプチャを中断せず直前のログのみを保存します", AllIcons.FileTypes.Text), DumbAware {
+class ArbLogcatSaveLogsAction : AnAction("ARB: 直前のログのみ保存", "映像キャプチャを中断せず直前のログのみを保存します", AllIcons.FileTypes.Text), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         val windowSecs = runCatching { ArbdDaemonService.getInstance().cachedConfig.saveWindowSecs }.getOrNull()
         e.presentation.icon = AllIcons.FileTypes.Text
         e.presentation.text = if (windowSecs != null) {
-            "ARB v2: 直前 ${ArbFormatters.formatSeconds(windowSecs)} のログのみ保存"
+            "ARB: 直前 ${ArbFormatters.formatSeconds(windowSecs)} のログのみ保存"
         } else {
-            "ARB v2: 直前のログのみ保存"
+            "ARB: 直前のログのみ保存"
         }
     }
 
@@ -234,7 +234,7 @@ class ArbLogcatSaveLogsAction : AnAction("ARB v2: 直前のログのみ保存", 
 }
 
 class ArbLaunchTrayAction : AnAction(
-    "ARB v2: メニューバー (arb-tray) を起動",
+    "ARB: メニューバー (arb-tray) を起動",
     "同梱の arb-tray をターミナル不要で起動します",
     AllIcons.Toolwindows.ToolWindowRun,
 ), DumbAware {
@@ -257,13 +257,13 @@ class ArbLaunchTrayAction : AnAction(
     }
 }
 
-class ArbOpenBundleAction : AnAction("ARB v2: バンドルフォルダを開く...", "v2 バンドルまたは旧形式フォルダを統合スタジオで開きます", AllIcons.Nodes.Folder), DumbAware {
+class ArbOpenBundleAction : AnAction("ARB: バンドルフォルダを開く...", "ARB バンドルまたは旧形式フォルダを統合スタジオで開きます", AllIcons.Nodes.Folder), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
-            title = "ARB v2 / Legacy バンドルフォルダを選択"
+            title = "ARB / Legacy バンドルフォルダを選択"
         }
         val chosen = FileChooser.chooseFile(descriptor, project, null) ?: return
         val vf = ArbBundleVirtualFile(chosen.path, chosen.name)

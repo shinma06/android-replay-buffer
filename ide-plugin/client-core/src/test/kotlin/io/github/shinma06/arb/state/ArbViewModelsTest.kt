@@ -280,7 +280,7 @@ class ArbViewModelsTest {
         )
         assertEquals(LEGACY_READ_ONLY_BADGE_TEXT, catalog.items[0].formatBadge)
         assertTrue(catalog.items[0].isProtectedByLease)
-        assertEquals("v2", catalog.items[1].formatBadge)
+        assertEquals("ARB", catalog.items[1].formatBadge)
         assertTrue(catalog.items[1].canRestore)
         assertFalse(catalog.items[1].canTrash)
     }
