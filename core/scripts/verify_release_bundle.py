@@ -539,7 +539,7 @@ def section_bundle_integrity(report: Report, ctx: dict[str, Any]) -> None:
             sums = {n for n in zf.namelist()}
             license_bytes = {lic: zf.read(f"{stem}/{lic}") for lic in LICENSE_FILES if f"{stem}/{lic}" in sums}
             bin_bytes = {b: zf.read(f"{stem}/bin/{exe(b, bundle_os)}") for b in BINARIES if f"{stem}/bin/{exe(b, bundle_os)}" in sums}
-            plugin_names = [n for n in sums if n.startswith(f"{stem}/arb-ide-plugin-") and n.endswith(".zip")]
+            plugin_names = [n for n in zf.namelist() if Path(n).parent.as_posix() == stem and Path(n).match("arb-ide-plugin-*.zip")]
             embedded_plugin = zf.read(plugin_names[0]) if len(plugin_names) == 1 else None
         for binary in BINARIES:
             path = root / "bin" / exe(binary, bundle_os)
@@ -579,8 +579,8 @@ def section_bundle_integrity(report: Report, ctx: dict[str, Any]) -> None:
             embedded_path = ctx["work_dir"] / "embedded-plugin.zip"
             embedded_path.write_bytes(embedded_plugin)
             plugin_zips.append(("embedded plugin", embedded_path))
-        elif not ctx.get("plugin_zip"):
-            sec.check("bundle embeds exactly one arb-ide-plugin-*.zip", False, plugin_names if "plugin_names" in locals() else "")
+        else:
+            sec.check("bundle embeds exactly one arb-ide-plugin-*.zip", False, plugin_names)
         if ctx.get("plugin_zip"):
             plugin_zips.append(("plugin ZIP", ctx["plugin_zip"]))
             if embedded_plugin is not None:
@@ -1555,6 +1555,7 @@ def build_stub_bundle(tmp: Path, target_os: str, arch: str, plugin_zip: Path | N
         device_agent_dir=agent,
         permissions_doc_path=REPO_ROOT / "docs" / "testing" / "first-run-os-permissions.md",
         out_dir=tmp / f"dist-{target_os}",
+        allow_missing_ide_plugin=plugin_zip is None,
         license_dir=REPO_ROOT,
     )
 
@@ -1669,6 +1670,9 @@ def self_test() -> int:
             rep = run_static(tmp, bundle, universal_plugin, "universal", arch)
             bad = [c for s in rep.sections for c in s.checks if not c["pass"]]
             require(f"static verification passes for {bundle.name}", rep.passed and not bad, bad[:3])
+        incomplete = build_stub_bundle(tmp, "linux", "x86_64", None)
+        rep = run_static(tmp, incomplete, universal_plugin, "universal", "x86_64")
+        require("standalone plugin does not mask missing embedded ZIP", not rep.passed)
         # tampering is detected
         bundle = build_stub_bundle(tmp, "linux", "x86_64", universal_plugin)
         existing = tmp / "existing"

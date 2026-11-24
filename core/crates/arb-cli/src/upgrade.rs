@@ -9,20 +9,29 @@ use sha2::{Digest, Sha256};
 
 use crate::{CliError, RpcClient, auto_start_timeout, rpc, wait_for_daemon};
 
-fn should_replace(build_id: Option<&str>, local_sha: &str, local_version: &str) -> bool {
-    let Some(id) = build_id else {
-        // Earlier builds predate daemon fingerprints.
-        return true;
-    };
-    let Some((running_version, digest)) = id.split_once(":sha256:") else {
-        return false;
-    };
-    if digest.eq_ignore_ascii_case(local_sha) || digest.is_empty() {
+fn should_replace(
+    build_id: Option<&str>,
+    daemon_version: &str,
+    local_sha: &str,
+    local_version: &str,
+) -> bool {
+    let fingerprint = build_id.and_then(|id| id.split_once(":sha256:"));
+    if fingerprint.is_some_and(|(_, sha)| sha.eq_ignore_ascii_case(local_sha)) {
         return false;
     }
-    Version::parse(local_version)
-        .and_then(|local| Version::parse(running_version).map(|old| local.cmp_precedence(&old)))
-        .is_ok_and(std::cmp::Ordering::is_ge)
+    // Older v2 builds used size and timestamp. Only a strictly newer version
+    // justifies replacement when the running binary has no content digest.
+    let running_version = fingerprint.map_or(daemon_version, |(ver, _)| ver);
+    let (Ok(local), Ok(old)) = (
+        Version::parse(local_version),
+        Version::parse(running_version),
+    ) else {
+        return false;
+    };
+    match local.cmp_precedence(&old) {
+        std::cmp::Ordering::Equal => fingerprint.is_some_and(|(_, sha)| !sha.is_empty()),
+        order => order.is_gt(),
+    }
 }
 
 pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(), CliError> {
@@ -38,6 +47,7 @@ pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(),
     let digest = format!("{:x}", hash.finalize());
     if !should_replace(
         hello["build_id"].as_str(),
+        hello["daemon_version"].as_str().unwrap_or_default(),
         &digest,
         env!("CARGO_PKG_VERSION"),
     ) {
@@ -99,12 +109,19 @@ mod tests {
         ] {
             let old_id = format!("{old}:sha256:dead");
             assert_eq!(
-                should_replace(Some(&old_id), "beef", new),
+                should_replace(Some(&old_id), old, "beef", new),
                 expected,
                 "{old} -> {new}"
             );
-            assert!(!should_replace(Some(&old_id), "dead", new));
+            assert!(!should_replace(Some(&old_id), old, "dead", new));
         }
-        assert!(should_replace(None, "beef", "2.0.0"));
+        assert!(should_replace(
+            Some("0.1.0-7756288-318178800"),
+            "0.1.0",
+            "beef",
+            "2.0.0"
+        ));
+        assert!(should_replace(None, "0.1.0", "beef", "2.0.0"));
+        assert!(!should_replace(None, "2.0.0", "beef", "2.0.0"));
     }
 }
