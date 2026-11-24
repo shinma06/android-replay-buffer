@@ -201,6 +201,9 @@ pub enum ConfigValidationError {
 pub struct ArbConfig {
     /// Configuration schema version; must equal [`CONFIG_SCHEMA_VERSION`] (`1`).
     pub config_version: u32,
+    /// Persistently arm capture and attach when a device becomes eligible.
+    #[serde(default)]
+    pub capture_enabled: bool,
     /// Continuous capture mode (`video_and_logs` default, or low-overhead `logs_only`).
     pub capture_mode: CaptureMode,
     /// Optional preferred ADB device serial (USB, Wi-Fi IP:port, IPv6, or mDNS TLS).
@@ -237,6 +240,7 @@ impl ArbConfig {
     pub const fn new() -> Self {
         Self {
             config_version: CONFIG_SCHEMA_VERSION,
+            capture_enabled: false,
             capture_mode: CaptureMode::VideoAndLogs,
             device_serial: None,
             save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
@@ -323,6 +327,9 @@ impl ArbConfig {
     /// Returns [`ConfigValidationError`] if the resulting configuration fails validation.
     pub fn apply_patch(&self, patch: &ArbConfigPatch) -> Result<Self, ConfigValidationError> {
         let mut next = self.clone();
+        if let Some(enabled) = patch.capture_enabled {
+            next.capture_enabled = enabled;
+        }
         if let Some(mode) = patch.capture_mode {
             next.capture_mode = mode;
         }
@@ -479,6 +486,9 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArbConfigPatch {
+    /// Arm or disarm the background capture supervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_enabled: Option<bool>,
     /// Updated continuous capture mode (`video_and_logs` or `logs_only`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_mode: Option<CaptureMode>,

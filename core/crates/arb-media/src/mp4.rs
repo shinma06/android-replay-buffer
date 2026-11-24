@@ -344,50 +344,61 @@ impl Mp4VideoTrack {
 pub(crate) fn read_moov_box(file: &mut File, file_len: u64) -> Result<Vec<u8>, MediaError> {
     let mut pos = 0u64;
     while pos.saturating_add(8) <= file_len {
-        let mut hdr = [0u8; 8];
-        file.seek(SeekFrom::Start(pos))?;
-        file.read_exact(&mut hdr)?;
-        let size32 = u64::from(u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]));
-        let fourcc = [hdr[4], hdr[5], hdr[6], hdr[7]];
-        let (box_size, header_len) = if size32 == 1 {
-            if pos.saturating_add(16) > file_len {
-                return Err(MediaError::InvalidContainer(
-                    "truncated 64-bit top-level box header".to_owned(),
-                ));
-            }
-            let mut ext = [0u8; 8];
-            file.read_exact(&mut ext)?;
-            (u64::from_be_bytes(ext), 16u64)
-        } else if size32 == 0 {
-            (file_len - pos, 8u64)
-        } else {
-            (size32, 8u64)
-        };
-
-        if box_size < header_len || pos.checked_add(box_size).is_none_or(|end| end > file_len) {
-            return Err(MediaError::InvalidContainer(
-                "top-level MP4 box size exceeds file bounds".to_owned(),
-            ));
-        }
-
+        let (fourcc, box_size, header_len) = read_top_header(file, pos, file_len)?;
         if &fourcc == b"moov" {
-            let payload_len = box_size - header_len;
-            if payload_len > MAX_MOOV_BOX_BYTES {
-                return Err(MediaError::InvalidContainer(
-                    "moov box exceeds safety size limit".to_owned(),
-                ));
-            }
-            let payload_usize = usize::try_from(payload_len).map_err(|_| {
-                MediaError::InvalidContainer("moov payload exceeds address space".to_owned())
-            })?;
-            let mut buf = vec![0u8; payload_usize];
-            file.read_exact(&mut buf)?;
-            return Ok(buf);
+            return read_moov_payload(file, box_size - header_len);
         }
         pos += box_size;
     }
 
     Err(MediaError::InvalidContainer("missing moov box".to_owned()))
+}
+
+fn read_top_header(
+    file: &mut (impl Read + Seek),
+    pos: u64,
+    file_len: u64,
+) -> Result<([u8; 4], u64, u64), MediaError> {
+    let mut hdr = [0u8; 8];
+    file.seek(SeekFrom::Start(pos))?;
+    file.read_exact(&mut hdr)?;
+    let size32 = u64::from(u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]));
+    let fourcc = [hdr[4], hdr[5], hdr[6], hdr[7]];
+    let (box_size, header_len) = if size32 == 1 {
+        if pos.saturating_add(16) > file_len {
+            return Err(MediaError::InvalidContainer(
+                "truncated 64-bit top-level box header".to_owned(),
+            ));
+        }
+        let mut ext = [0u8; 8];
+        file.read_exact(&mut ext)?;
+        (u64::from_be_bytes(ext), 16u64)
+    } else if size32 == 0 {
+        (file_len - pos, 8u64)
+    } else {
+        (size32, 8u64)
+    };
+
+    if box_size < header_len || pos.checked_add(box_size).is_none_or(|end| end > file_len) {
+        return Err(MediaError::InvalidContainer(
+            "top-level MP4 box size exceeds file bounds".to_owned(),
+        ));
+    }
+
+    Ok((fourcc, box_size, header_len))
+}
+fn read_moov_payload(file: &mut impl Read, payload_len: u64) -> Result<Vec<u8>, MediaError> {
+    if payload_len > MAX_MOOV_BOX_BYTES {
+        return Err(MediaError::InvalidContainer(
+            "moov box exceeds safety size limit".to_owned(),
+        ));
+    }
+    let payload_usize = usize::try_from(payload_len).map_err(|_| {
+        MediaError::InvalidContainer("moov payload exceeds address space".to_owned())
+    })?;
+    let mut buf = vec![0u8; payload_usize];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 /// Cross-platform positional exact file read (`pread` on Unix, `seek_read` loop on Windows).
@@ -1600,6 +1611,20 @@ enum CopyTransform {
     NormalizeOnly,
 }
 
+fn avcc_sample_has_param_sets(sample: &[u8], nal_length_size: usize) -> Result<bool, MediaError> {
+    let mut has_seq_ps = false;
+    let mut has_pic_ps = false;
+    for_each_avcc_nal(sample, nal_length_size, |nal| {
+        match nal[0] & 0x1F {
+            7 => has_seq_ps = true,
+            8 => has_pic_ps = true,
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(has_seq_ps && has_pic_ps)
+}
+
 fn transform_copied_sample(
     cfg: &AvccConfig,
     sample: &[u8],
@@ -1609,10 +1634,14 @@ fn transform_copied_sample(
     out.clear();
     match transform {
         CopyTransform::WithParamSets => {
-            out.extend_from_slice(&prepend_param_sets_4byte(cfg, sample)?);
+            if avcc_sample_has_param_sets(sample, cfg.nal_length_size)? {
+                normalize_avcc_nal_lengths_into(sample, cfg.nal_length_size, out)?;
+            } else {
+                prepend_param_sets_4byte_into(cfg, sample, out)?;
+            }
         }
         CopyTransform::NormalizeOnly => {
-            out.extend_from_slice(&normalize_avcc_nal_lengths(sample, cfg.nal_length_size)?);
+            normalize_avcc_nal_lengths_into(sample, cfg.nal_length_size, out)?;
         }
     }
     Ok(())
@@ -1669,7 +1698,8 @@ pub fn mux_raw_h264_to_mp4(
 
     let mut sps: Option<Vec<u8>> = None;
     let mut pps: Option<Vec<u8>> = None;
-    let mut samples = Vec::with_capacity(packets.len());
+    let mut segments: Vec<MuxSegment> = Vec::new();
+    let mut leading = Vec::new();
     let mut keyframe_count = 0u64;
 
     for (idx, pkt) in packets.iter().enumerate() {
@@ -1680,7 +1710,34 @@ pub fn mux_raw_h264_to_mp4(
         if is_keyframe {
             keyframe_count += 1;
         }
-        let avcc_data = annexb_to_avcc_sample(&pkt.annex_b, &mut sps, &mut pps)?;
+        let mut sequence_set = None;
+        let mut picture_set = None;
+        let avcc_data = annexb_to_avcc_sample(&pkt.annex_b, &mut sequence_set, &mut picture_set)?;
+        let changed = sequence_set
+            .as_ref()
+            .is_some_and(|v| Some(v) != sps.as_ref())
+            || picture_set
+                .as_ref()
+                .is_some_and(|v| Some(v) != pps.as_ref());
+        if let Some(value) = sequence_set {
+            sps = Some(value);
+        }
+        if let Some(value) = picture_set {
+            pps = Some(value);
+        }
+        if (changed || segments.is_empty())
+            && let (Some(seq), Some(pic)) = (&sps, &pps)
+        {
+            if !segments.is_empty() && !has_idr_nal {
+                return Err(MediaError::InvalidContainer(
+                    "configuration changed without IDR".into(),
+                ));
+            }
+            segments.push(MuxSegment {
+                avcc_payload: build_avcc_payload(seq, pic)?,
+                samples: std::mem::take(&mut leading),
+            });
+        }
         if avcc_data.is_empty() {
             return Err(MediaError::InvalidContainer(format!(
                 "packet {idx} contained no VCL/slice NAL units"
@@ -1700,26 +1757,22 @@ pub fn mux_raw_h264_to_mp4(
             })
             .unwrap_or(default_frame_duration_ticks);
 
-        samples.push(MuxSample {
-            data: avcc_data,
-            duration_ticks,
-            is_keyframe,
-        });
+        segments
+            .last_mut()
+            .map_or(&mut leading, |s| &mut s.samples)
+            .push(MuxSample {
+                data: avcc_data,
+                duration_ticks,
+                is_keyframe,
+            });
     }
 
-    let sps_bytes = sps.ok_or_else(|| {
-        MediaError::InvalidContainer("raw H.264 stream contained no SPS NAL unit".to_owned())
-    })?;
-    let pps_bytes = pps.ok_or_else(|| {
-        MediaError::InvalidContainer("raw H.264 stream contained no PPS NAL unit".to_owned())
-    })?;
-    let avcc_payload = build_avcc_payload(&sps_bytes, &pps_bytes)?;
-    let frame_count = u64::try_from(samples.len()).unwrap_or(0);
-
-    let segments = [MuxSegment {
-        avcc_payload,
-        samples,
-    }];
+    if segments.is_empty() {
+        return Err(MediaError::InvalidContainer(
+            "missing H.264 parameter sets".into(),
+        ));
+    }
+    let frame_count = u64::try_from(packets.len()).unwrap_or(u64::MAX);
     write_single_stsd_avc1_mp4(path, width, height, timescale, &segments)?;
 
     Ok(MuxReport {
@@ -2181,7 +2234,12 @@ pub struct Mp4AtomReport {
 /// Returns [`MediaError::Io`] if the file cannot be read, or [`MediaError::InvalidContainer`] if
 /// the file contains malformed box headers.
 pub fn inspect_mp4_atoms(path: impl AsRef<Path>) -> Result<Mp4AtomReport, MediaError> {
-    let data = std::fs::read(path)?;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    inspect_atoms(&mut file, len)
+}
+
+fn inspect_atoms(file: &mut (impl Read + Seek), len: u64) -> Result<Mp4AtomReport, MediaError> {
     let mut report = Mp4AtomReport {
         boxes: Vec::new(),
         edts_count: 0,
@@ -2194,7 +2252,31 @@ pub fn inspect_mp4_atoms(path: impl AsRef<Path>) -> Result<Mp4AtomReport, MediaE
     let mut moov_offset: Option<u64> = None;
     let mut mdat_offset: Option<u64> = None;
 
-    walk_atoms(&data, 0, 0, &mut report, &mut moov_offset, &mut mdat_offset)?;
+    let mut pos = 0;
+    while pos < len {
+        let (fourcc, size, header) = read_top_header(file, pos, len)?;
+        report.boxes.push(Mp4BoxInfo {
+            fourcc,
+            size,
+            depth: 0,
+            offset: pos,
+        });
+        if &fourcc == b"moov" {
+            moov_offset.get_or_insert(pos);
+            let payload = read_moov_payload(file, size - header)?;
+            walk_atoms(
+                &payload,
+                pos + header,
+                1,
+                &mut report,
+                &mut moov_offset,
+                &mut mdat_offset,
+            )?;
+        } else if &fourcc == b"mdat" {
+            mdat_offset.get_or_insert(pos);
+        }
+        pos += size;
+    }
 
     if let (Some(moov_off), Some(mdat_off)) = (moov_offset, mdat_offset) {
         report.faststart = moov_off < mdat_off;
@@ -2322,4 +2404,91 @@ fn walk_atom_children(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod atom_io_tests {
+    use super::*;
+    #[test]
+    fn sparse_large_mdat_reads_only_headers() {
+        use std::io::Write as _;
+        struct CountingFile {
+            file: File,
+            bytes: usize,
+        }
+        impl Read for CountingFile {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let count = self.file.read(buf)?;
+                self.bytes += count;
+                Ok(count)
+            }
+        }
+        impl Seek for CountingFile {
+            fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+                self.file.seek(pos)
+            }
+        }
+        let mut f = tempfile::tempfile().unwrap();
+        let size = (1u64 << 32) + 1024;
+        f.write_all(b"\x00\x00\x00\x08moov\x00\x00\x00\x01mdat")
+            .unwrap();
+        f.write_all(&(size - 8).to_be_bytes()).unwrap();
+        f.set_len(size).unwrap();
+        let mut reader = CountingFile { file: f, bytes: 0 };
+        let report = inspect_atoms(&mut reader, size).unwrap();
+        assert!(report.faststart);
+        assert_eq!(reader.bytes, 24);
+    }
+
+    #[test]
+    fn trim_preserves_inband_param_sets_across_multi_config_segments() {
+        use crate::codec::{
+            DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat, VideoCodecBackend as _,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("multi.mp4");
+        let trimmed = tmp.path().join("trimmed.mp4");
+        let codec = OpenH264Backend::new();
+        let make_frames = |w: u32, h: u32, y: u8, count: usize| {
+            (0..count)
+                .map(|i| DecodedFrame {
+                    width: w,
+                    height: h,
+                    frame_index: u64::try_from(i).unwrap(),
+                    format: PixelFormat::Yuv420p,
+                    data: vec![y; usize::try_from(w * h * 3 / 2).unwrap()],
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut packets = codec
+            .encode_yuv420p_sequence(
+                &make_frames(64, 96, 40, 2),
+                5,
+                40_000_000,
+                EncodeParams::default(),
+            )
+            .unwrap();
+        let mut second = codec
+            .encode_yuv420p_sequence(
+                &make_frames(96, 64, 180, 2),
+                5,
+                40_000_000,
+                EncodeParams::default(),
+            )
+            .unwrap();
+        for (idx, pkt) in second.iter_mut().enumerate() {
+            pkt.pts_ns = (2 + i64::try_from(idx).unwrap()) * 40_000_000;
+        }
+        packets.extend(second);
+        mux_raw_h264_to_mp4(&src, 96, 96, 90_000, 3600, &packets).unwrap();
+
+        crate::trim::trim_video(&src, &trimmed, 0, 3, &codec).unwrap();
+        let track = Mp4VideoTrack::open(&trimmed).unwrap();
+        let f0 = codec.decode_frame(&track, 0, PixelFormat::Yuv420p).unwrap();
+        assert_eq!((f0.width, f0.height), (64, 96));
+        assert!(f0.data[0].abs_diff(40) <= 4, "frame 0 luma {}", f0.data[0]);
+        let f2 = codec.decode_frame(&track, 2, PixelFormat::Yuv420p).unwrap();
+        assert_eq!((f2.width, f2.height), (96, 64));
+        assert!(f2.data[0].abs_diff(180) <= 4, "frame 2 luma {}", f2.data[0]);
+    }
 }

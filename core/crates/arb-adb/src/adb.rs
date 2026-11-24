@@ -699,6 +699,53 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         }
     }
 
+    /// Creates a pre-journaled forward without replacing an existing mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ADB failure if the requested port is already in use.
+    pub fn create_owned_forward(
+        &self,
+        serial: &str,
+        port: u16,
+        socket: &str,
+    ) -> Result<(), AdbError> {
+        validate_remote_shell_arg("socket", socket)?;
+        self.exec(&[
+            "-s".into(),
+            serial.into(),
+            "forward".into(),
+            "--no-rebind".into(),
+            format!("tcp:{port}"),
+            format!("localabstract:{socket}"),
+        ])?;
+        Ok(())
+    }
+
+    /// Removes only exact serial, port and abstract-socket tuples still registered with ADB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ADB error if listing or removing a mapping fails.
+    pub fn remove_owned_forwards(
+        &self,
+        serial: &str,
+        forwards: &[(u16, String)],
+    ) -> Result<(), AdbError> {
+        if forwards.is_empty() {
+            return Ok(());
+        }
+        let list = self.exec(&["forward".into(), "--list".into()])?;
+        for (port, socket) in forwards {
+            if parse_forward_list_ports(&list.stdout, serial, &format!("localabstract:{socket}"))
+                .contains(port)
+            {
+                self.remove_forward(serial, *port)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Removes a forwarded local TCP port via `adb -s <serial> forward --remove tcp:<port>`.
     ///
     /// # Errors
@@ -2219,6 +2266,26 @@ mod tests {
                 Ok(responses.remove(0))
             }
         }
+    }
+
+    #[test]
+    fn stale_forward_cleanup_matches_serial_port_and_socket() {
+        let runner = MockRunner::with_responses(vec![AdbCommandOutput {
+            exit_code:Some(0),stderr:String::new(),stdout:"A tcp:1234 localabstract:other\nB tcp:1235 localabstract:arb-token\nA tcp:1236 localabstract:arb-token\n".into()
+        }]);
+        let adb = AdbClient::with_runner(PathBuf::from("adb"), runner);
+        adb.remove_owned_forwards(
+            "A",
+            &[
+                (1234, "arb-token".into()),
+                (1235, "arb-token".into()),
+                (1236, "arb-token".into()),
+            ],
+        )
+        .unwrap();
+        let calls = adb.runner.invocations.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1], ["-s", "A", "forward", "--remove", "tcp:1236"]);
     }
 
     #[test]
