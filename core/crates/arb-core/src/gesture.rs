@@ -306,11 +306,11 @@ mod tests {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let single = classify_stroke(&[pt(bad, bad, 7)], 10.0);
             assert_eq!(single.kind, GestureKind::Tap);
-            assert!(single.path.is_empty());
+            assert_eq!(single.path, Vec::new());
             assert_eq!(single.end_t_offset_ns, 7);
             let multi = classify_stroke(&[pt(0.0, 0.0, 0), pt(500.0, bad, 9)], 10.0);
             assert_eq!(multi.kind, GestureKind::Tap, "non-finite sample => tap");
-            assert!(multi.path.is_empty());
+            assert_eq!(multi.path, Vec::new());
         }
     }
 }
