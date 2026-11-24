@@ -141,43 +141,26 @@ mod imp {
         let cache_override = non_empty_env(get_env, ENV_ARB_CACHE_DIR);
         let runtime_override = non_empty_env(get_env, ENV_ARB_RUNTIME_DIR);
 
-        let home =
-            if data_override.is_none() || cache_override.is_none() || runtime_override.is_none() {
-                Some(
-                    non_empty_env(get_env, "HOME").ok_or_else(|| OsError::PathResolution {
-                        reason: "HOME environment variable is unset or empty".to_owned(),
-                    })?,
-                )
-            } else {
-                None
-            };
+        let resolve_home = || -> Result<PathBuf, OsError> {
+            non_empty_env(get_env, "HOME").ok_or_else(|| OsError::PathResolution {
+                reason: "HOME environment variable is unset or empty".to_owned(),
+            })
+        };
 
         let data_dir = match data_override {
             Some(dir) => dir,
-            None => home
-                .as_ref()
-                .expect("HOME resolved when data_dir not overridden")
+            None => resolve_home()?
                 .join("Library")
                 .join("Application Support")
                 .join("arb"),
         };
         let cache_dir = match cache_override {
             Some(dir) => dir,
-            None => home
-                .as_ref()
-                .expect("HOME resolved when cache_dir not overridden")
-                .join("Library")
-                .join("Caches")
-                .join("arb"),
+            None => resolve_home()?.join("Library").join("Caches").join("arb"),
         };
         let runtime_dir = match runtime_override {
             Some(dir) => dir,
-            None => home
-                .as_ref()
-                .expect("HOME resolved when runtime_dir not overridden")
-                .join("Library")
-                .join("Caches")
-                .join("arb"),
+            None => resolve_home()?.join("Library").join("Caches").join("arb"),
         };
 
         Ok(ArbPaths {
@@ -267,43 +250,28 @@ mod imp {
         let cache_override = non_empty_env(get_env, ENV_ARB_CACHE_DIR);
         let runtime_override = non_empty_env(get_env, ENV_ARB_RUNTIME_DIR);
 
-        let base =
-            if data_override.is_none() || cache_override.is_none() || runtime_override.is_none() {
-                let local_app_data = non_empty_env(get_env, "LOCALAPPDATA").or_else(|| {
-                    non_empty_env(get_env, "USERPROFILE")
-                        .map(|home| home.join("AppData").join("Local"))
-                });
-                Some(
-                    local_app_data
-                        .ok_or_else(|| OsError::PathResolution {
-                            reason: "neither LOCALAPPDATA nor USERPROFILE is set".to_owned(),
-                        })?
-                        .join("arb"),
-                )
-            } else {
-                None
-            };
+        let resolve_base = || -> Result<PathBuf, OsError> {
+            let local_app_data = non_empty_env(get_env, "LOCALAPPDATA").or_else(|| {
+                non_empty_env(get_env, "USERPROFILE").map(|home| home.join("AppData").join("Local"))
+            });
+            local_app_data
+                .map(|dir| dir.join("arb"))
+                .ok_or_else(|| OsError::PathResolution {
+                    reason: "neither LOCALAPPDATA nor USERPROFILE is set".to_owned(),
+                })
+        };
 
         let data_dir = match data_override {
             Some(dir) => dir,
-            None => base
-                .as_ref()
-                .expect("base resolved when data_dir not overridden")
-                .clone(),
+            None => resolve_base()?,
         };
         let cache_dir = match cache_override {
             Some(dir) => dir,
-            None => base
-                .as_ref()
-                .expect("base resolved when cache_dir not overridden")
-                .join("cache"),
+            None => resolve_base()?.join("cache"),
         };
         let runtime_dir = match runtime_override {
             Some(dir) => dir,
-            None => base
-                .as_ref()
-                .expect("base resolved when runtime_dir not overridden")
-                .join("runtime"),
+            None => resolve_base()?.join("runtime"),
         };
 
         Ok(ArbPaths {
