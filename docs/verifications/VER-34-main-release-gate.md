@@ -26,7 +26,7 @@ verifies:
 | --- | --- | --- |
 | 製品コード・5 層 PDD の凍結点 | `b9d6300029e8e7f9e702969320d4bf7b7e82909f` | Stage 3 の macOS 実機検証と Linux Devin 初回検証の対象 |
 | 最終配布物・可搬 Linux ビルド | `b17df28099173a282268a36ca5e2f3cf7fc90dae`（`origin/develop`） | `b9d63000` との差分は CI・ビルド補助 5 ファイルのみ（`ci.yml` / `release-gate.yml` / `release.yml` / `core/scripts/build-linux-release-container.sh` / `core/scripts/verify_release_bundle.py`）。本番の Rust・Kotlin・device-agent は 0 変更。`early` の 4 ZIP（`dev.b17df28`）は 2026-11-24T23:02:37〜39Z に公開 |
-| `origin/main` | `6c84530262692b0384f4cb3ff0399d0a68a8d81c` | 未変更。オーナーの最終 GO と `LegacyV1SettingsMigrator.kt` の 1 ファイル撤去を待つ |
+| `origin/main` | `6c84530262692b0384f4cb3ff0399d0a68a8d81c` | 未変更。オーナーの最終 GO と、`LegacyV1SettingsMigrator` の撤去（`docs/testing/main-release-gate.md` の昇格 PR チェックリスト 1）を待つ |
 
 GitHub Actions の `release-gate.yml`（CI 経由）run **`45506749411`** は `b17df280` で `conclusion: success`（`build` 3 OS、`plugin-verifier`、`build-and-assemble (release.yml path)`、`gate-linux`、`gate-macos`、`gate-windows`、`gate-summary` がすべて成功）。以下「GHA」はこの run を指す。
 
@@ -41,7 +41,7 @@ GitHub Actions の `release-gate.yml`（CI 経由）run **`45506749411`** は `b
 | G-M5 Linux 実 GUI | 合格 | §5 |
 | G-M6 macOS 実機デスクトップ | 条件付き（受入条件の相違 3 件を明記） | §6 |
 | G-M7 Windows 実 GUI | 合格 | §7 |
-| G-M8 `release.yml` ドライラン・クロス監査・`main` 準備 | 合格 | §8 |
+| G-M8 `release.yml` ドライラン・クロス監査・オーナー GO | **保留**（準備項目は完了、オーナーの最終 GO は未取得） | §8 |
 | G-M9 v2 → v2 アップグレード・親付きライフサイクル | 合格 | §9 |
 
 ## 3. G-M3: 3 OS の配布 ZIP コールドインストールとクリーン実行
@@ -106,9 +106,19 @@ FHD30 の性能（単位 ms。`open` + `filmstrip` が REQ-11 のサムネイル
 
 ## 8. G-M8: `release.yml` ドライラン・クロス監査・`main` 準備
 
+G-M8 の合格基準は、他ゲートが同一コミットで緑であることとオーナーの明示的な GO までを含む。**オーナーの GO は未取得で、G-M6 も条件付きのため、G-M8 は合格にしない。** 完了した準備項目と保留を分けて記す。
+
+完了した準備項目:
+
 - `package_distribution.py --classify-tag` は 3/3 合格（`v2.0.0`、`v2.0.0-rc.1`、不正タグの拒否）。公開操作は 0。`release.yml` 経路の `build-and-assemble` は GHA で成功。
 - Phase 10 の Trail（M-1、M-2、P-1、P-2、P-3、M-3）はいずれも実装とは別のプロバイダーで監査し、未解決の High / Medium は 0。
-- `LegacyV1SettingsMigrator.kt` は Konsist KON-5 により 1 ファイルに分離されており、`main` への昇格時に 1 ファイルの削除で済む。
+- `LegacyV1SettingsMigrator` は Konsist KON-5 で分離を保っている（撤去の手順は下記）。
+
+保留:
+
+- オーナーの最終 GO。
+- `main` 昇格 PR での G-M1〜G-M9 の再実行（昇格コミットでの結果と、版の引き上げ後の VER 更新）。
+- **`LegacyV1SettingsMigrator` の撤去は 1 ファイルの削除では済まない。** 昇格 PR で、`LegacyV1SettingsMigrator.kt` と `LegacyV1SettingsMigratorTest.kt` の削除、`ArbStartupActivity.kt` の呼び出し 1 行と KDoc の削除、`ArbLocalSettingsState.kt` の `migratedFromV1` の削除、VER / SPEC の記述更新に加えて、KON-5 が 3 クラスの存在を固定集合で検査しているため、その更新が必要になる。
 - **推奨**: `main` の ruleset の必須チェックに `os-parity (macos-latest)` と `os-parity (windows-latest)` を加える（`develop` の必須チェックと揃える）。ruleset の変更は公開設定にあたるため、この PR では行わない。
 
 ## 9. G-M9: v2 → v2 アップグレードと親付きライフサイクル
