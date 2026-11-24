@@ -20,6 +20,12 @@ Sections (each one is reported separately, a crash in one never hides the others
                         mid-GOP trims + open / seek / trim timings
   7  burn-in            share.mp4 vs share-taps.mp4 with Tap + Swipe: decoded RGB pixel proof
   8  tray (--check-tray) arb-tray cold start, single instance, clean exit
+  9  upgrade            G-M9 U3/U4: a running arbd of an older build (a real previous release with
+                        --upgrade-from-zip, otherwise this very build with pseudo-old state) is replaced
+                        in place by the new launcher; config.json (missing + unknown fields,
+                        capture_enabled), catalog.sqlite (saved / trimmed / trashed bundles, a
+                        retry-pending job) and a pre-T-6H 5-column timeline.sqlite survive; with
+                        --check-tray a running arb-tray survives the arbd restart (U4)
 
 Fixture bundles come from `cargo run --release -p arbd --example arb_gate_bundle` (a deterministic
 synthetic FHD30 bundle with audio, Tap and Swipe gestures); see `--fixtures-dir` / `--generator`.
@@ -42,6 +48,7 @@ import platform
 import queue
 import re
 import shutil
+import sqlite3
 import stat
 import struct
 import subprocess
@@ -199,8 +206,9 @@ class Section:
 
 
 class Report:
-    def __init__(self, host: dict[str, Any]) -> None:
+    def __init__(self, host: dict[str, Any], quiet: bool = False) -> None:
         self.host = host
+        self.quiet = quiet
         self.sections: list[Section] = []
         self.perf: dict[str, Any] = {}
         self.artifacts: list[str] = []
@@ -209,7 +217,8 @@ class Report:
     def section(self, name: str, title: str) -> Iterator[Section]:
         sec = Section(name, title)
         started = time.perf_counter()
-        print(f"==> [{name}] {title}", flush=True)
+        if not self.quiet:
+            print(f"==> [{name}] {title}", flush=True)
         try:
             yield sec
         except Exception as exc:  # noqa: BLE001 - a crashed section must be reported, not abort the run
@@ -220,9 +229,10 @@ class Report:
             sec.seconds = round(time.perf_counter() - started, 2)
             self.sections.append(sec)
             bad = [c for c in sec.checks if not c["pass"]]
-            print(f"    {'PASS' if sec.passed else 'FAIL'} ({len(sec.checks)} checks, {len(bad)} failed, {sec.seconds}s)", flush=True)
-            for c in bad:
-                print(f"      FAIL {c['name']}: {c['detail'][:300]}", flush=True)
+            if not self.quiet:
+                print(f"    {'PASS' if sec.passed else 'FAIL'} ({len(sec.checks)} checks, {len(bad)} failed, {sec.seconds}s)", flush=True)
+                for c in bad:
+                    print(f"      FAIL {c['name']}: {c['detail'][:300]}", flush=True)
 
     @property
     def passed(self) -> bool:
@@ -590,20 +600,31 @@ def short_runtime_dir() -> Path:
 
 
 class Isolated:
-    """The isolated ARB_* environment plus every process the harness starts."""
+    """The isolated ARB_* environment plus every process the harness starts.
 
-    def __init__(self, root: Path, work: Path, target_os: str) -> None:
+    `share_with` makes a second view (another extracted release) over the *same* data / cache /
+    runtime directories, which is how an in-place upgrade is exercised."""
+
+    _log_counter = 0
+
+    def __init__(self, root: Path, work: Path, target_os: str, share_with: "Isolated | None" = None) -> None:
         self.root = root
         self.target_os = target_os
-        self.data = work / "data"
-        self.cache = work / "cache"
-        self.runtime = short_runtime_dir()
-        self.data.mkdir(parents=True, exist_ok=True)
-        self.cache.mkdir(parents=True, exist_ok=True)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("ARB_")}
-        self.env.update({"ARB_DATA_DIR": str(self.data), "ARB_CACHE_DIR": str(self.cache), "ARB_RUNTIME_DIR": str(self.runtime)})
+        self.work = work
+        self.owns_runtime = share_with is None
+        if share_with is None:
+            self.data = work / "data"
+            self.cache = work / "cache"
+            self.runtime = short_runtime_dir()
+            self.data.mkdir(parents=True, exist_ok=True)
+            self.cache.mkdir(parents=True, exist_ok=True)
+            self.env = {k: v for k, v in os.environ.items() if not k.startswith("ARB_")}
+            self.env.update({"ARB_DATA_DIR": str(self.data), "ARB_CACHE_DIR": str(self.cache), "ARB_RUNTIME_DIR": str(self.runtime)})
+        else:
+            self.data, self.cache, self.runtime, self.env = share_with.data, share_with.cache, share_with.runtime, dict(share_with.env)
         self.procs: list[subprocess.Popen[bytes]] = []
         self.arbd: subprocess.Popen[bytes] | None = None
+        self.extra_roots: list[Path] = []
 
     def bin(self, name: str) -> Path:
         return self.root / "bin" / exe(name, self.target_os)
@@ -613,10 +634,11 @@ class Isolated:
         return run_proc(cmd, env=self.env, timeout=timeout)
 
     def spawn(self, name: str, *args: Any, logname: str | None = None) -> subprocess.Popen[bytes]:
-        log = (self.runtime.parent / f"{logname or name}.log") if False else None
-        del log
-        out = open(self.data.parent / f"{logname or name}.stdout.log", "wb")
-        err = open(self.data.parent / f"{logname or name}.stderr.log", "wb")
+        Isolated._log_counter += 1
+        stem = f"{self.root.name}-{logname or name}-{Isolated._log_counter}"
+        self.last_logs = (self.work / f"{stem}.stdout.log", self.work / f"{stem}.stderr.log")
+        out = open(self.last_logs[0], "wb")
+        err = open(self.last_logs[1], "wb")
         proc = subprocess.Popen([str(self.bin(name)), *[str(a) for a in args]], env=self.env, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
         self.procs.append(proc)
         return proc
@@ -636,20 +658,22 @@ class Isolated:
     def daemon_down(self) -> bool:
         return self.cli("status", timeout=20).rc != 0
 
-    def stop_arbd(self, timeout: float = 20) -> bool:
+    def arbd_processes(self) -> list[str]:
+        lines: list[str] = []
+        for root in [self.root, *self.extra_roots]:
+            lines += [ln for ln in list_processes_under(root) if re.search(r"[\\/]arbd(\.exe)?(\s|$)", ln)]
+        return lines
+
+    def stop_arbd(self, timeout: float = 30) -> bool:
+        """`daemon stop`, then wait until the socket is gone AND no arbd of this release is alive
+        (the single-instance lock is released only when the process has really exited)."""
         self.cli("daemon", "stop", timeout=30)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.daemon_down():
-                break
-            time.sleep(0.25)
-        exited = True
-        if self.arbd is not None:
-            try:
-                self.arbd.wait(timeout=max(1.0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                exited = False
-        return self.daemon_down() and exited
+            if self.daemon_down() and not self.arbd_processes():
+                return True
+            time.sleep(0.3)
+        return False
 
     def cleanup(self) -> None:
         with contextlib.suppress(Exception):
@@ -662,7 +686,8 @@ class Isolated:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        shutil.rmtree(self.runtime, ignore_errors=True)
+        if self.owns_runtime:
+            shutil.rmtree(self.runtime, ignore_errors=True)
 
 
 def parse_version_line(text: str, name: str) -> str | None:
@@ -1205,6 +1230,7 @@ def section_tray(report: Report, ctx: dict[str, Any], iso: Isolated) -> None:
             kind = lsappinfo_type(tray.pid)
             sec.check("macOS: arb-tray runs as an accessory app (LSUIElement type UIElement, no Dock icon)", kind == "UIElement", kind)
         second = iso.spawn("arb-tray", "--auto-start", logname="tray2")
+        second_stderr = iso.last_logs[1]
         try:
             second.wait(timeout=20)
         except subprocess.TimeoutExpired:
@@ -1212,7 +1238,7 @@ def section_tray(report: Report, ctx: dict[str, Any], iso: Isolated) -> None:
             second.wait()
             sec.check("second arb-tray exits immediately (single instance)", False, "still running after 20 s")
         else:
-            err = (iso.data.parent / "tray2.stderr.log").read_text(encoding="utf-8", errors="replace")
+            err = second_stderr.read_text(encoding="utf-8", errors="replace")
             sec.check("second arb-tray exits immediately (single instance)", second.returncode == 0 and "arb-tray.lock" in err, f"rc={second.returncode} {err.strip()[:160]}")
         sec.check("first arb-tray is still the only tray alive", tray.poll() is None)
         exited = terminate_gracefully(tray)
@@ -1233,6 +1259,264 @@ def section_tray(report: Report, ctx: dict[str, Any], iso: Isolated) -> None:
         time.sleep(1)
         leftovers = list_processes_under(ctx["root"])
         sec.check("0 residual processes from the extracted bundle", not leftovers, leftovers[:5])
+
+
+# --------------------------------------------------------------------------------------------
+# section 9: G-M9 upgrade (v2-old -> v2-new)
+# --------------------------------------------------------------------------------------------
+
+TAPS_COLUMNS_BEFORE_T6H = (
+    "seq INTEGER PRIMARY KEY, boot_id TEXT, event_mono_ns INTEGER, pc_ingest_cont_ns INTEGER NOT NULL, "
+    "aligned_boottime_ns INTEGER, certainty TEXT NOT NULL, bucket TEXT NOT NULL, action TEXT NOT NULL, "
+    "x REAL, y REAL, pointer_id INTEGER, half_width_ns INTEGER, min_boottime_ns INTEGER, "
+    "max_boottime_ns INTEGER, semantics TEXT, uncertainty_reason TEXT"
+)
+TAPS_COLUMNS_ADDED_BY_T6H = ("gesture_kind", "end_x", "end_y", "end_t_offset_ns", "path_json")
+UPGRADE_JOB_ID = "gate-upgrade-failed-retryable-job"
+
+
+def downgrade_timeline_to_5_columns(bundle_dir: Path, new_bundle_id: str) -> list[str]:
+    """Rewrites `timeline.sqlite` into the pre-T-6H layout (taps without the 5 gesture columns),
+    refreshes its manifest digest and gives the bundle a new id. Returns the remaining tap columns."""
+    db = bundle_dir / "timeline.sqlite"
+    con = sqlite3.connect(db)
+    try:
+        con.execute("PRAGMA journal_mode = DELETE")
+        names = [row[1] for row in con.execute("PRAGMA table_info(taps)")]
+        kept = [n for n in names if n not in TAPS_COLUMNS_ADDED_BY_T6H]
+        con.executescript(
+            f"BEGIN; CREATE TABLE taps_old ({TAPS_COLUMNS_BEFORE_T6H}); "
+            f"INSERT INTO taps_old ({', '.join(kept)}) SELECT {', '.join(kept)} FROM taps; "
+            "DROP TABLE taps; ALTER TABLE taps_old RENAME TO taps; "
+            "CREATE INDEX idx_taps_bucket_boottime_ns ON taps(bucket, aligned_boottime_ns); COMMIT;"
+        )
+        con.execute("VACUUM")
+        remaining = [row[1] for row in con.execute("PRAGMA table_info(taps)")]
+    finally:
+        con.close()
+    for suffix in ("-wal", "-shm", "-journal"):
+        (bundle_dir / f"timeline.sqlite{suffix}").unlink(missing_ok=True)
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["bundle_id"] = new_bundle_id
+    for entry in manifest["files"]:
+        if entry["path"] == "timeline.sqlite":
+            entry["sha256"] = sha256_file(db)
+            entry["bytes"] = db.stat().st_size
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return remaining
+
+
+def mutate_config_for_upgrade(config_path: Path, output_dir: Path, *, variant: str) -> dict[str, Any]:
+    """Turns a freshly written `config.json` into what an older build left behind.
+
+    variant "a": newer fields missing (crash cooldown, default save action, screenshot dir) AND unknown
+    extra fields, with capture armed and a custom save window / output directory.
+    variant "b": every known field present plus unknown extras at the top level."""
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    cfg["capture_enabled"] = True
+    cfg["save_window_secs"] = 77
+    cfg["output_dir_override"] = str(output_dir)
+    if variant == "a":
+        for key in ("crash_autosave_cooldown_secs", "ide_default_save_action", "screenshot_dir_override"):
+            cfg.pop(key, None)
+    cfg["future_experimental_flag"] = {"nested": [1, 2, 3], "enabled": True}
+    cfg["future_string_field"] = "from-a-newer-build"
+    config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    return cfg
+
+
+def insert_retry_pending_job(catalog: Path, job_id: str, destination: Path) -> None:
+    con = sqlite3.connect(catalog)
+    try:
+        con.execute(
+            "INSERT INTO save_jobs (job_id, state, destination_path, pinned_chunks_json, error_message, created_at_utc, updated_at_utc, trigger_kind) "
+            "VALUES (?, 'failed_retryable', ?, '[]', 'synthetic upgrade-gate failure', '2026-11-24T00:00:00Z', '2026-11-24T00:00:00Z', 'manual')",
+            (job_id, str(destination)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def catalog_rows(catalog: Path) -> dict[str, str]:
+    con = sqlite3.connect(f"file:{catalog.as_posix()}?mode=ro", uri=True)
+    try:
+        return {row[0]: row[1] for row in con.execute("SELECT bundle_id, state FROM bundles")}
+    finally:
+        con.close()
+
+
+def bundle_states(iso: Isolated) -> dict[str, str]:
+    """bundle_id -> lifecycle state across active and trashed bundles, as the CLI reports them."""
+    states: dict[str, str] = {}
+    for state in ("active", "trashed"):
+        res = iso.cli("bundles", "list", "--state", state)
+        for item in (res.data or {}).get("bundles", []):
+            states[item["bundle_id"]] = state
+    return states
+
+
+def run_new_launcher(ctx: dict[str, Any], iso: Isolated, *launcher_args: str) -> CliResult:
+    root: Path = ctx["root"]
+    if ctx["bundle_os"] == "windows":
+        shell = find_powershell()
+        if shell is None:
+            return CliResult(127, "", "no PowerShell available to run start-arb.ps1", 0.0)
+        cmd: list[Any] = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", root / "start-arb.ps1", *launcher_args]
+    else:
+        cmd = ["bash", root / "start-arb.sh", *launcher_args]
+    return run_proc(cmd, env=iso.env, timeout=180)
+
+
+def status_hello(iso: Isolated) -> dict[str, Any]:
+    return (iso.cli("status", timeout=30).data or {}).get("hello", {})
+
+
+def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: argparse.Namespace) -> None:
+    with report.section("upgrade", "G-M9: v2-old -> v2-new 稼働中 arbd のインプレースアップグレード") as sec:
+        host_os = ctx["bundle_os"]
+        new_root: Path = ctx["root"]
+        work = ctx["work_dir"] / "upgrade"
+        work.mkdir(parents=True, exist_ok=True)
+        real_old = ctx.get("old_root") is not None
+        old_root: Path = ctx["old_root"] if real_old else new_root
+        sec.notes["mode"] = "real previous release" if real_old else "pseudo-old state on the same build"
+        old = Isolated(old_root, work, host_os)
+        new = Isolated(new_root, work, host_os, share_with=old)
+        if real_old:
+            old.extra_roots, new.extra_roots = [new_root], [old_root]
+        tray: subprocess.Popen[bytes] | None = None
+        try:
+            old_sha = sha256_file(old.bin("arbd"))
+            new_sha = sha256_file(new.bin("arbd"))
+            replaced_expected = old_sha != new_sha
+            sec.check("old arbd cold-starts", old.start_arbd(), f"{old.bin('arbd')}")
+            # ---- build the old state with the OLD binaries ---------------------------------
+            managed = old.data / "bundles"
+            managed.mkdir(parents=True, exist_ok=True)
+            saved_a, _ = stage_fixture(fixtures, "gate-gop1s", work / "stage-a")
+            saved_b, _ = stage_fixture(fixtures, "gate-gop5s", work / "stage-b")
+            five_col, _ = stage_fixture(fixtures, "gate-gop1s", work / "stage-c")
+            remaining = downgrade_timeline_to_5_columns(five_col, "legacy-5col-timeline")
+            sec.check("fixture rewritten to the pre-T-6H 5-column timeline.sqlite layout", not set(remaining) & set(TAPS_COLUMNS_ADDED_BY_T6H) and "x" in remaining, remaining)
+            ids = {}
+            for label, src, dest_name in (("saved", saved_a, "saved-a"), ("trash-me", saved_b, "saved-b"), ("five-col", five_col, "five-col")):
+                dest = managed / dest_name
+                shutil.copytree(src, dest)
+                opened = old.cli("bundles", "open", dest)
+                ids[label] = (opened.data or {}).get("bundle_id")
+                sec.check(f"old arbd registers the {label} bundle ({ids[label]})", opened.rc == 0 and bool(ids[label]), opened.err.strip()[:150])
+                if (opened.data or {}).get("lease_id"):
+                    old.cli("bundles", "close", opened.data["lease_id"])
+            trimmed = old.cli("trim", managed / "saved-a", "--in-frame", "47", "--out-frame", "200", "--dest", managed)
+            ids["trimmed"] = (trimmed.data or {}).get("bundle_id")
+            sec.check("old arbd writes a trimmed bundle into the managed directory", trimmed.rc == 0 and bool(ids["trimmed"]), trimmed.err.strip()[:150])
+            trashed = old.cli("bundles", "trash", ids["trash-me"] or "missing")
+            sec.check("old arbd moves a bundle to the trash", trashed.rc == 0, trashed.err.strip()[:150])
+            sec.check("old arbd stops cleanly", old.stop_arbd(), "")
+            # ---- state only an older build could have left behind -------------------------------
+            catalog = old.data / "catalog.sqlite"
+            insert_retry_pending_job(catalog, UPGRADE_JOB_ID, work / "retry-destination")
+            config_path = old.data / "config.json"
+            if not config_path.exists():
+                old.start_arbd()
+                old.cli("config", "set", "--save-window-secs", "300")
+                old.stop_arbd()
+            output_dir = work / "custom-output"
+            output_dir.mkdir(exist_ok=True)
+            cfg_old = mutate_config_for_upgrade(config_path, output_dir, variant="a")
+            sec.check("config.json now looks like an older build's (fields missing, unknown extras, capture armed)", "ide_default_save_action" not in cfg_old and cfg_old["capture_enabled"] is True and "future_experimental_flag" in cfg_old)
+            before_rows = catalog_rows(catalog)
+            sec.check("catalog.sqlite holds saved, trimmed, trashed and five-column bundles", {"trashed"} <= set(before_rows.values()) and len(before_rows) >= 4, before_rows)
+            sec.check("old arbd restarts on that state and serves it", old.start_arbd(), "")
+            old_hello = status_hello(old)
+            old_pid = old_hello.get("pid")
+            before_states = bundle_states(old)
+            sec.check("old arbd lists active and trashed bundles", "trashed" in before_states.values() and len(before_states) >= 4, before_states)
+            sec.check("old arbd build_id is the old binary's", str(old_hello.get("build_id", "")).endswith(f":sha256:{old_sha}") or not old_hello.get("build_id"), old_hello.get("build_id"))
+            # ---- U4: a tray of the new build is already running -----------------------------------
+            if args.check_tray:
+                if has_display():
+                    tray = new.spawn("arb-tray", logname="upgrade-tray")
+                    tray_stderr = new.last_logs[1]
+                    time.sleep(4)
+                    sec.check("U4: arb-tray (connected to the old arbd) is running before the upgrade", tray.poll() is None, f"returncode={tray.returncode}")
+                else:
+                    sec.check("U4: a GUI session / display is available for the tray", False, "use xvfb-run + dbus-run-session on headless Linux")
+            # ---- the upgrade: the NEW launcher meets the running OLD arbd -------------------------
+            launched = run_new_launcher(ctx, new, "cli", "--json", "bundles", "list")
+            sec.check("new launcher runs `cli bundles list` (exit 0)", launched.rc == 0, f"rc={launched.rc} {launched.err.strip()[:300]}")
+            if not new.wait_ready(30):
+                sec.check("an arbd answers after the launcher ran", False, "")
+                return
+            hello = status_hello(new)
+            build_id = str(hello.get("build_id", ""))
+            sec.check("U3: running arbd's build_id is the NEW arbd binary's SHA-256", build_id.endswith(f":sha256:{new_sha}"), f"{build_id} vs {new_sha}")
+            if replaced_expected:
+                sec.check("U3: the old arbd process was replaced (pid changed)", hello.get("pid") != old_pid, f"{old_pid} -> {hello.get('pid')}")
+                time.sleep(1)
+                leftovers = list_processes_under(old_root)
+                sec.check("U3: 0 old arbd processes remain", not [ln for ln in leftovers if "arbd" in ln and str(old_root) in ln], leftovers[:3])
+                sec.check("U3: the launcher announced the replacement", "Replacing the running arbd" in launched.err, launched.err.strip()[:200])
+            else:
+                sec.check("same build: the running arbd was left untouched (non-destructive coexistence)", hello.get("pid") == old_pid, f"{old_pid} -> {hello.get('pid')}")
+                sec.check("same build: the launcher did not announce a replacement", "Replacing the running arbd" not in launched.err, launched.err.strip()[:200])
+            # ---- U3: state survives -----------------------------------------------------------
+            cfg = (new.cli("config", "get").data or {}).get("config", {})
+            sec.check("U3: config keeps save_window_secs=77, capture_enabled=true and the custom output dir", cfg.get("save_window_secs") == 77 and cfg.get("capture_enabled") is True and Path(str(cfg.get("output_dir_override", ""))) == output_dir, cfg)
+            sec.check("U3: fields the old config lacked are filled with safe defaults", cfg.get("crash_autosave_cooldown_secs") == 15 and cfg.get("ide_default_save_action") == "save_and_open", {k: cfg.get(k) for k in ("crash_autosave_cooldown_secs", "ide_default_save_action", "screenshot_dir_override")})
+            after_states = bundle_states(new)
+            sec.check("U3: every catalog bundle and its state survived the upgrade", after_states == before_states, f"{before_states} -> {after_states}")
+            sec.check("U3: catalog.sqlite rows are unchanged by the upgrade", catalog_rows(catalog) == before_rows, "")
+            jobs = new.cli("jobs", "list")
+            sec.check("U3: the retry-pending failed save job is still listed", UPGRADE_JOB_ID in jobs.out and "failed_retryable" in jobs.out, jobs.out.strip()[:200])
+            restored = new.cli("bundles", "restore", ids["trash-me"] or "missing")
+            sec.check("U3: bundle restore of the trashed bundle succeeds after the upgrade", restored.rc == 0, f"rc={restored.rc} {restored.err.strip()[:200]}")
+            sec.check("U3: the restored bundle is active again", bundle_states(new).get(ids["trash-me"]) == "active", bundle_states(new))
+            inspected = new.cli("inspect", ids["five-col"] or "missing")
+            sec.check("U3: the pre-T-6H 5-column timeline.sqlite bundle opens (inspect)", inspected.rc == 0 and (inspected.data or {}).get("format") == "v2", f"rc={inspected.rc} {inspected.err.strip()[:200]}")
+            client = McpClient([new.bin("arb-cli"), "mcp"], new.env)
+            try:
+                client.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
+                overview = tool_text(client.call_tool("arb_timeline_overview", {"bundle_id": ids["five-col"]}))
+                kinds = [t.get("gesture_kind") for t in overview.get("taps", [])]
+                sec.check("U3: the 5-column bundle's taps read back (gesture_kind defaults to tap)", overview.get("frame_count") == 720 and len(kinds) == 4 and set(kinds) == {"tap"}, kinds)
+            finally:
+                client.close()
+            trimmed_inspect = new.cli("inspect", ids["trimmed"] or "missing")
+            sec.check("U3: the trimmed bundle is intact (provenance trimmed)", trimmed_inspect.rc == 0 and "trimmed" in trimmed_inspect.out, trimmed_inspect.err.strip()[:150])
+            discarded = new.cli("jobs", "discard", UPGRADE_JOB_ID)
+            sec.check("U3: the retry-pending job can be discarded with the new CLI", discarded.rc == 0, f"rc={discarded.rc} {discarded.err.strip()[:150]}")
+            # ---- config.json compatibility, variant b (unknown extras only) ---------------------------
+            sec.check("new arbd stops cleanly before the config variant test", new.stop_arbd(), "")
+            cfg_b = mutate_config_for_upgrade(config_path, output_dir, variant="b")
+            sec.check("config variant b written (all known fields + unknown extras)", "future_string_field" in cfg_b)
+            sec.check("new arbd starts on the variant-b config", new.start_arbd(), "")
+            cfg_b_read = (new.cli("config", "get").data or {}).get("config", {})
+            sec.check("config variant b is accepted and read back", cfg_b_read.get("save_window_secs") == 77 and cfg_b_read.get("capture_enabled") is True, cfg_b_read)
+            # ---- U4: the tray survived the restart ----------------------------------------------
+            if tray is not None:
+                time.sleep(4)
+                sec.check("U4: arb-tray is still alive after the arbd restarts", tray.poll() is None, f"returncode={tray.returncode}")
+                second = new.spawn("arb-tray", logname="upgrade-tray2")
+                second_err = new.last_logs[1]
+                try:
+                    second.wait(timeout=20)
+                    err = second_err.read_text(encoding="utf-8", errors="replace")
+                    sec.check("U4: the tray lock is intact (a second arb-tray exits at once, no duplicate)", second.returncode == 0 and "arb-tray.lock" in err, f"rc={second.returncode}")
+                except subprocess.TimeoutExpired:
+                    second.kill()
+                    sec.check("U4: the tray lock is intact (a second arb-tray exits at once, no duplicate)", False, "second tray kept running")
+                log = tray_stderr.read_text(encoding="utf-8", errors="replace")
+                sec.check("U4: the tray noticed the arbd restart and reconnected to the new arbd", "arbd が応答を停止しました" in log and "arbd に再接続しました" in log, log.strip()[-300:])
+                sec.check("U4: the tray logged no panic or crash", "panicked" not in log and "RUST_BACKTRACE" not in log, log.strip()[-200:])
+                sec.check("U4: the tray exits on request after the upgrade", terminate_gracefully(tray), f"returncode={tray.returncode}")
+        finally:
+            old.cleanup()
+            new.cleanup()
+        leftovers = list_processes_under(new_root) + (list_processes_under(old_root) if real_old else [])
+        sec.check("upgrade suite leaves 0 residual processes", not leftovers, leftovers[:5])
 
 
 # --------------------------------------------------------------------------------------------
@@ -1297,7 +1581,7 @@ def run_static(tmp: Path, bundle_zip: Path, plugin_zip: Path | None, scope: str,
     work = tmp / f"static-{bundle_zip.stem}-{time.monotonic_ns()}"
     work.mkdir(parents=True)
     ctx = {"bundle_zip": bundle_zip, "plugin_zip": plugin_zip, "plugin_scope": scope, "bundle_arch": arch, "work_dir": work, "extract_dir": work / "extract"}
-    report = Report({"platform": "selftest"})
+    report = Report({"platform": "selftest"}, quiet=True)
     section_bundle_integrity(report, ctx)
     return report
 
@@ -1409,7 +1693,7 @@ def self_test() -> int:
         rep = run_static(tmp, labelled, universal_plugin, "universal", "x86_64")
         require("retired label in THIRD_PARTY_NOTICES.md is detected", not rep.passed)
         # report rendering
-        report = Report({"platform": "selftest", "bundle": "x", "core_version": "2.0.0-dev"})
+        report = Report({"platform": "selftest", "bundle": "x", "core_version": "2.0.0-dev"}, quiet=True)
         with report.section("demo", "demo section") as sec:
             sec.check("ok", True, "d")
             sec.skip("os only", "reason")
@@ -1445,10 +1729,38 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap.add_argument("--fixtures-dir", type=Path, help="directory holding gate-gop1s / gate-gop5s bundles produced by the arb_gate_bundle example")
     ap.add_argument("--generator", type=Path, help="path to the compiled arb_gate_bundle example (default: core/target/release/examples, else cargo run)")
     ap.add_argument("--legacy-fixtures", type=Path, default=REPO_ROOT / "fixtures" / "legacy-schema4", help="read-only schema 4 fixture tree")
+    ap.add_argument("--upgrade-from-zip", type=Path, help="a previous arb-<os>-<arch>.zip: its arbd is started first and the new launcher must upgrade it in place (omit to self-verify with pseudo-old state)")
     ap.add_argument("--check-tray", action="store_true", help="also verify arb-tray cold start, single instance and clean exit (needs a GUI session or Xvfb)")
     ap.add_argument("--static-only", action="store_true", help="only verify ZIP contents (use when the bundle OS differs from the host)")
     ap.add_argument("--expect-core-version", default=None, help="expected arbd/arb-cli/arb-tray --version (default: core/Cargo.toml when present)")
     return ap.parse_args(argv)
+
+
+def prepare_old_release(report: Report, ctx: dict[str, Any], args: argparse.Namespace) -> None:
+    """Extracts `--upgrade-from-zip` (a real previous release) next to the new bundle."""
+    if not args.upgrade_from_zip:
+        return
+    with report.section("upgrade-source", "旧リリース ZIP の展開") as sec:
+        zip_path = args.upgrade_from_zip.resolve()
+        match = re.match(r"^(arb-(linux|macos|windows)-[a-z0-9_]+)\.zip$", zip_path.name)
+        if not sec.check("previous release ZIP is named arb-<os>-<arch>.zip", zip_path.is_file() and bool(match), zip_path.name):
+            return
+        if not sec.check("previous release is for this OS", match.group(2) == ctx["bundle_os"], match.group(2)):  # type: ignore[union-attr]
+            return
+        old_extract = ctx["work_dir"] / "old-extract"
+        safe_extract(zip_path, old_extract)
+        old_root = old_extract / match.group(1)  # type: ignore[union-attr]
+        ok = all((old_root / "bin" / exe(b, ctx["bundle_os"])).is_file() for b in BINARIES)
+        sec.check("previous release carries arbd / arb-cli / arb-tray", ok, str(old_root))
+        old_sha = sha256_file(old_root / "bin" / exe("arbd", ctx["bundle_os"])) if ok else ""
+        new_sha = sha256_file(ctx["root"] / "bin" / exe("arbd", ctx["bundle_os"]))
+        # A previous release that is byte-identical to the candidate proves nothing: say so loudly
+        # instead of silently turning the upgrade into a self-check.
+        sec.check("previous release arbd differs from the candidate (a real upgrade)", ok and old_sha != new_sha, f"old={old_sha[:12]} new={new_sha[:12]}")
+        sec.notes["old_arbd_sha256"] = old_sha
+        sec.notes["new_arbd_sha256"] = new_sha
+        if ok:
+            ctx["old_root"] = old_root
 
 
 def default_core_version() -> str | None:
@@ -1497,6 +1809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     report = Report(host)
     ctx: dict[str, Any] = {
+        "old_root": None,
         "bundle_zip": args.bundle_zip.resolve(),
         "plugin_zip": args.plugin_zip.resolve() if args.plugin_zip else None,
         "plugin_scope": args.plugin_scope,
@@ -1532,6 +1845,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 with report.section("mcp", "MCP / legacy / suite-b / burn-in") as sec:
                     sec.check("fixtures and a running arbd are available for the runtime suites", False, "see the fixtures / cold-start-ipc sections")
+            if fixtures is not None:
+                iso.stop_arbd()  # the upgrade suite starts its own daemons on separate directories
+                prepare_old_release(report, ctx, args)
+                section_upgrade(report, ctx, fixtures, args)
             if args.check_tray and iso is not None:
                 section_tray(report, ctx, iso)
         else:
