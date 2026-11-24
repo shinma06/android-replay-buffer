@@ -96,7 +96,7 @@ fn acquire_job_lease<'a>(
 }
 
 /// Decodes a bundle's `audio.m4a` to a cached signed 16-bit LE PCM RIFF/WAV file under
-/// `<cache_dir>/audio-pcm/<safe_bundle_id>.wav`.
+/// `<cache_dir>/audio-pcm/<source_sha256>.wav`.
 ///
 /// Returns `{ available: false, ... }` cleanly when the bundle has no audio track.
 ///

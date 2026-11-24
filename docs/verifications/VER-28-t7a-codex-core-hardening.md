@@ -16,11 +16,11 @@ verifies:
 | 指摘 | 修正内容 | 回帰テストで確認する結果 |
 |---|---|---|
 | H1 | 初回の pin で世代、端末情報、UID マップ、表示寸法を固定。世代が変わったら追加 pin を終了する。 | `pending_save_keeps_original_device_across_switch` が、B の初回イベント前の保存と、A の保存中に B を開始する場合を検査する。 |
-| H2 | 窓の前の IDR から復号し、窓の先頭を IDR として再符号化する。先頭参照を得られない場合は映像を部分取得として記録する。 | `save_between_idrs_decodes_window_endpoints` が窓内の枚数と、復号された先頭・末尾の輝度を照合する。 |
+| H2 | 窓の前の IDR から復号し、窓の先頭を IDR として再符号化する。先頭参照を得られない場合は映像を部分取得として記録する。 | `save_between_idrs_decodes_window_endpoints` が窓内の枚数と、復号された先頭・末尾の輝度を照合する。前の参照フレームを欠落させる試験では部分取得を確認する。 |
 | H3 | IDR 時点で有効な SPS/PPS を保持し、変更毎に mux セグメントを分ける。 | `save_separate_configs_decodes_both_dimensions` が別設定パケットを伴う実 H.264 を保存し、前半と後半の解像度、画素を照合する。 |
 | H4 | OpenH264 の単一フレーム seek では目的の画像だけを出力バッファに複製する。 | `sparse_seek_only_materializes_target_yuv` が最後の画像を GOP 全体の復号と照合し、複製対象が 1 枚であることを計数する。 |
 | H5 | atom のヘッダーを順に読み、mdat は seek、moov は上限付きで読む。共有 MP4 の検査は一時ファイルで完了してから公開する。 | `sparse_large_mdat_reads_only_headers` の 4 GiB 超の疎ファイルでは読取りが 24 バイト。`failed_verification_allows_retry_at_same_path` が検査失敗後の同名再試行を確認する。 |
-| H9 | 未登録の旧形式フォルダーも出力先の祖先検査に含める。 | `legacy_ancestors_protect_screenshot_destinations` が schema 3/4 のコピーへのディレクトリ指定・ファイル指定を拒否し、全ファイルのハッシュを照合する。 |
+| H9 | 未登録の旧形式フォルダーも出力先の祖先検査に含める。 | `legacy_ancestors_protect_screenshot_destinations` が schema 3 の模擬バンドルと schema 4 の実フィクスチャのコピーへのディレクトリ指定・ファイル指定を拒否し、全ファイルのハッシュを照合する。 |
 | H10 | manifest、タイムライン、メディア、ログ、digest 対象を正規化したバンドルルート内に制限する。 | `current_bundle_rejects_external_media_and_timeline` が別のバンドルへのファイルリンクを境界エラーとして拒否する。 |
 | M3 | viewport 登録簿のロックを短くし、復号は viewport ごとに直列化する。 | `stalled_thumbnail_decode_allows_status_and_another_viewport_seek` が A のサムネイル生成を停止したまま status と B の seek を完了する。 |
 | M4 | 正常な shutdown を確定してから最終応答を書き込む。 | `shutdown_flag_precedes_client_read_of_final_reply` がクライアントの読取りを保留して終了フラグを確認する。 |
@@ -37,7 +37,7 @@ verifies:
 
 ## 実行範囲
 
-- `./core/scripts/verify.sh` の 6 ゲートに合格。Rust テストは成功 410 件、既存の ignored 3 件。Clippy 警告 0 件。ライセンス検査 330 パッケージ中 GPL/AGPL 違反 0 件。
+- `./core/scripts/verify.sh` の 6 ゲートに合格。Rust テストは成功 411 件、既存の ignored 3 件。Clippy 警告 0 件。ライセンス検査 330 パッケージ中 GPL/AGPL 違反 0 件。
 - `sara check --strict` は VER-28 を含む 46 項目・239 関係で成功。要求 14 件すべてに対応仕様がある。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が成功。
 - JDK 27 の `:client-core:test` は 107 件成功、スキップ 0 件。

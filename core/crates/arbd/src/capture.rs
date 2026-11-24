@@ -3574,11 +3574,36 @@ mod tests {
         );
     }
 
-    fn saved_video_for_window(
+    fn video_frames_with_luma_marker(
+        width: u32,
+        height: u32,
+        initial: u8,
+        count: usize,
+    ) -> Vec<DecodedFrame> {
+        (0..count)
+            .map(|i| DecodedFrame {
+                width,
+                height,
+                frame_index: u64::try_from(i).unwrap(),
+                format: PixelFormat::Yuv420p,
+                data: {
+                    let mut data = vec![initial; usize::try_from(width * height * 3 / 2).unwrap()];
+                    for row in 0..8 {
+                        let start = row * usize::try_from(width).unwrap();
+                        data[start..start + 8].fill(initial + u8::try_from(i * 10).unwrap());
+                    }
+                    data
+                },
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn draft_for_video_window(
         runs: &[(u32, u32, u8, usize)],
         lo: i64,
         hi: i64,
-    ) -> (TempDir, arb_media::mp4::Mp4VideoTrack) {
+        missing_frame: Option<i64>,
+    ) -> (TempDir, super::V2BundleDraft) {
         let tmp = TempDir::new().unwrap();
         let mut params = t6h_gesture_params(None, None);
         params.window = WindowSpec::RealElapsed {
@@ -3604,23 +3629,7 @@ mod tests {
         for &(width, height, initial, count) in runs {
             collector.video_width = u16::try_from(width).unwrap();
             collector.video_height = u16::try_from(height).unwrap();
-            let frames = (0..count)
-                .map(|i| DecodedFrame {
-                    width,
-                    height,
-                    frame_index: u64::try_from(i).unwrap(),
-                    format: PixelFormat::Yuv420p,
-                    data: {
-                        let mut data =
-                            vec![initial; usize::try_from(width * height * 3 / 2).unwrap()];
-                        for row in 0..8 {
-                            let start = row * usize::try_from(width).unwrap();
-                            data[start..start + 8].fill(initial + u8::try_from(i * 10).unwrap());
-                        }
-                        data
-                    },
-                })
-                .collect::<Vec<_>>();
+            let frames = video_frames_with_luma_marker(width, height, initial, count);
             let packets = OpenH264Backend::new()
                 .encode_yuv420p_sequence(&frames, 5, 40_000_000, EncodeParams::default())
                 .unwrap();
@@ -3628,6 +3637,21 @@ mod tests {
                 assert!(!packets[2].is_keyframe && !packets[3].is_keyframe);
             }
             for pkt in packets {
+                if missing_frame == Some(t) {
+                    collector.ingest_one(CaptureEvent::Discontinuity(super::DiscontinuityEvent {
+                        kind: super::DiscontinuityKind::StreamGap,
+                        stream: Some(super::StreamKind::Video),
+                        boot_id: Some("boot-t".into()),
+                        pc_cont_start_ns: t,
+                        pc_cont_end_ns: Some(t),
+                        start_boottime_ns: Some(t),
+                        end_boottime_ns: Some(t),
+                        delta_ns: None,
+                        detail: None,
+                    }));
+                    t += 40_000_000;
+                    continue;
+                }
                 let mut config = Vec::new();
                 let mut picture = Vec::new();
                 for nal in arb_media::mp4::split_annexb_nals(&pkt.annex_b) {
@@ -3665,6 +3689,15 @@ mod tests {
             }
         }
         let draft = collector.build_draft("test", &params, tmp.path()).unwrap();
+        (tmp, draft)
+    }
+
+    fn saved_video_for_window(
+        runs: &[(u32, u32, u8, usize)],
+        lo: i64,
+        hi: i64,
+    ) -> (TempDir, arb_media::mp4::Mp4VideoTrack) {
+        let (tmp, draft) = draft_for_video_window(runs, lo, hi, None);
         let Some(super::MediaPayload::Bytes(bytes)) = draft.video_mp4 else {
             panic!("expected a saved track")
         };
@@ -3684,6 +3717,18 @@ mod tests {
                 .unwrap();
             assert!(frame.data[0].abs_diff(y) <= 4, "luma {}", frame.data[0]);
         }
+    }
+
+    #[test]
+    fn missing_reference_before_window_reports_partial_video() {
+        let (_, draft) = draft_for_video_window(
+            &[(64, 64, 30, 7)],
+            79_000_000,
+            121_000_000,
+            Some(40_000_000),
+        );
+        assert_eq!(draft.streams.video.unwrap().status, StreamStatus::Partial);
+        assert!(draft.video_mp4.is_none());
     }
 
     #[test]

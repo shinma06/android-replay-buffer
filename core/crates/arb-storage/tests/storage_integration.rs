@@ -1976,11 +1976,26 @@ fn current_bundle_rejects_external_media_and_timeline() {
     for dir in [&a, &b] {
         V2BundleWriter::write(dir, "job", &build_draft("copy", vec![1, 2, 3])).unwrap();
     }
-    for name in ["video.mp4", "timeline.sqlite", "manifest.json"] {
+    let opened = V2BundleReader::open(&a).unwrap();
+    for name in [
+        "video.mp4",
+        "timeline.sqlite",
+        "manifest.json",
+        "events.jsonl",
+    ] {
         fs::rename(a.join(name), a.join("original")).unwrap();
         symlink_file(b.join(name), a.join(name)).unwrap();
         let err = V2BundleReader::open(&a).expect_err("external file must be rejected");
         assert!(err.to_string().contains("outside"), "{err}");
+        if name == "events.jsonl" {
+            let digest_error = opened
+                .verify_integrity()
+                .expect_err("check digest target again after opening");
+            assert!(
+                digest_error.to_string().contains("outside"),
+                "{digest_error}"
+            );
+        }
         fs::remove_file(a.join(name)).unwrap();
         fs::rename(a.join("original"), a.join(name)).unwrap();
     }

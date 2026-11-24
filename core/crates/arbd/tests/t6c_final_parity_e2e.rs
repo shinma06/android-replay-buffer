@@ -574,8 +574,8 @@ fn legacy_ancestors_protect_screenshot_destinations() {
         let entry = entry.unwrap();
         fs::copy(entry.path(), legacy.join(entry.file_name())).unwrap();
     }
-    let hashes = || {
-        fs::read_dir(&legacy)
+    let hashes = |dir: &Path| {
+        fs::read_dir(dir)
             .unwrap()
             .map(|entry| {
                 let entry = entry.unwrap();
@@ -586,7 +586,13 @@ fn legacy_ancestors_protect_screenshot_destinations() {
             })
             .collect::<BTreeMap<_, _>>()
     };
-    let before = hashes();
+    let schema3 = tmp.path().join("schema3");
+    fs::create_dir(&schema3).unwrap();
+    fs::write(
+        schema3.join("session.json"),
+        json!({"schema":3,"save_id":"test","parts":[]}).to_string(),
+    )
+    .unwrap();
     let server = DaemonServer::start(
         DaemonConfig::new(isolated_paths(&tmp)).with_screenshot_provider(
             SharedScreenshotProvider::new(Arc::new(StubScreenshotProvider {
@@ -596,16 +602,19 @@ fn legacy_ancestors_protect_screenshot_destinations() {
     )
     .unwrap();
     let mut rpc = RpcClient::connect(server.endpoint());
-    for params in [
-        json!({"output_dir":legacy}),
-        json!({"output_path":legacy.join("replay.json"),"overwrite":true}),
-    ] {
-        assert_eq!(
-            rpc.call_err("save.screenshot", &params).0,
-            i64::from(RPC_ERR_INVALID_PARAMS)
-        );
+    for (dir, manifest) in [(&legacy, "replay.json"), (&schema3, "session.json")] {
+        let before = hashes(dir);
+        for params in [
+            json!({"output_dir":dir}),
+            json!({"output_path":dir.join(manifest),"overwrite":true}),
+        ] {
+            assert_eq!(
+                rpc.call_err("save.screenshot", &params).0,
+                i64::from(RPC_ERR_INVALID_PARAMS)
+            );
+        }
+        assert_eq!(before, hashes(dir));
     }
-    assert_eq!(before, hashes());
 }
 
 #[test]
