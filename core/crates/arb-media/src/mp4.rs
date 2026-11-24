@@ -1611,6 +1611,20 @@ enum CopyTransform {
     NormalizeOnly,
 }
 
+fn avcc_sample_has_param_sets(sample: &[u8], nal_length_size: usize) -> Result<bool, MediaError> {
+    let mut has_seq_ps = false;
+    let mut has_pic_ps = false;
+    for_each_avcc_nal(sample, nal_length_size, |nal| {
+        match nal[0] & 0x1F {
+            7 => has_seq_ps = true,
+            8 => has_pic_ps = true,
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(has_seq_ps && has_pic_ps)
+}
+
 fn transform_copied_sample(
     cfg: &AvccConfig,
     sample: &[u8],
@@ -1620,10 +1634,14 @@ fn transform_copied_sample(
     out.clear();
     match transform {
         CopyTransform::WithParamSets => {
-            out.extend_from_slice(&prepend_param_sets_4byte(cfg, sample)?);
+            if avcc_sample_has_param_sets(sample, cfg.nal_length_size)? {
+                normalize_avcc_nal_lengths_into(sample, cfg.nal_length_size, out)?;
+            } else {
+                prepend_param_sets_4byte_into(cfg, sample, out)?;
+            }
         }
         CopyTransform::NormalizeOnly => {
-            out.extend_from_slice(&normalize_avcc_nal_lengths(sample, cfg.nal_length_size)?);
+            normalize_avcc_nal_lengths_into(sample, cfg.nal_length_size, out)?;
         }
     }
     Ok(())
@@ -2420,5 +2438,57 @@ mod atom_io_tests {
         let report = inspect_atoms(&mut reader, size).unwrap();
         assert!(report.faststart);
         assert_eq!(reader.bytes, 24);
+    }
+
+    #[test]
+    fn trim_preserves_inband_param_sets_across_multi_config_segments() {
+        use crate::codec::{
+            DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat, VideoCodecBackend as _,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("multi.mp4");
+        let trimmed = tmp.path().join("trimmed.mp4");
+        let codec = OpenH264Backend::new();
+        let make_frames = |w: u32, h: u32, y: u8, count: usize| {
+            (0..count)
+                .map(|i| DecodedFrame {
+                    width: w,
+                    height: h,
+                    frame_index: u64::try_from(i).unwrap(),
+                    format: PixelFormat::Yuv420p,
+                    data: vec![y; usize::try_from(w * h * 3 / 2).unwrap()],
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut packets = codec
+            .encode_yuv420p_sequence(
+                &make_frames(64, 96, 40, 2),
+                5,
+                40_000_000,
+                EncodeParams::default(),
+            )
+            .unwrap();
+        let mut second = codec
+            .encode_yuv420p_sequence(
+                &make_frames(96, 64, 180, 2),
+                5,
+                40_000_000,
+                EncodeParams::default(),
+            )
+            .unwrap();
+        for (idx, pkt) in second.iter_mut().enumerate() {
+            pkt.pts_ns = (2 + i64::try_from(idx).unwrap()) * 40_000_000;
+        }
+        packets.extend(second);
+        mux_raw_h264_to_mp4(&src, 96, 96, 90_000, 3600, &packets).unwrap();
+
+        crate::trim::trim_video(&src, &trimmed, 0, 3, &codec).unwrap();
+        let track = Mp4VideoTrack::open(&trimmed).unwrap();
+        let f0 = codec.decode_frame(&track, 0, PixelFormat::Yuv420p).unwrap();
+        assert_eq!((f0.width, f0.height), (64, 96));
+        assert!(f0.data[0].abs_diff(40) <= 4, "frame 0 luma {}", f0.data[0]);
+        let f2 = codec.decode_frame(&track, 2, PixelFormat::Yuv420p).unwrap();
+        assert_eq!((f2.width, f2.height), (96, 64));
+        assert!(f2.data[0].abs_diff(180) <= 4, "frame 2 luma {}", f2.data[0]);
     }
 }

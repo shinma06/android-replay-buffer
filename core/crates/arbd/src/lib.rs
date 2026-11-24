@@ -646,8 +646,13 @@ impl DaemonState {
             let mut guard = self.lock(&self.user_config, "user config")?;
             *guard = candidate.clone();
         }
-        self.lock_capture()?
-            .set_ring_policy(candidate.to_ring_budget_policy());
+        {
+            let mut cap = self.lock_capture()?;
+            cap.set_ring_policy(candidate.to_ring_budget_policy());
+            if patch.capture_enabled == Some(true) {
+                cap.clear_storage_pressure_stop();
+            }
+        }
         if patch.capture_enabled == Some(false)
             || patch.device_serial != arb_core::config::DeviceSerialPatch::Unchanged
         {
@@ -669,6 +674,9 @@ impl DaemonState {
         let request: CaptureStartParams = parse_optional_params(params)?;
         let (reservation, parsed) = {
             let _guard = self.lock(&self.config_update_lock, "config update")?;
+            if self.is_shutting_down() {
+                return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+            }
             let mut live = self.lock(&self.live_capture, "live capture")?;
             if live.handle.as_ref().is_some_and(|h| !h.is_finished()) {
                 return Err(DaemonError::Conflict(
@@ -677,6 +685,7 @@ impl DaemonState {
             }
             let parsed = self.capture_options(request.clone())?;
             self.persist_capture_enabled(CaptureIntent::Armed)?;
+            self.lock_capture()?.clear_storage_pressure_stop();
             live.request = request;
             let ticket = Arc::new(());
             live.reservation = Some(Arc::clone(&ticket));
@@ -1808,8 +1817,15 @@ impl DaemonServer {
     /// Stops capture and closes every viewport. Tolerates poisoned locks so a daemon that
     /// is shutting down because of a panic still releases its devices and SHM files.
     fn cleanup_subsystems(&mut self) {
-        if let Some(thread) = self.attach_thread.take() {
-            thread.thread().unpark();
+        if let Some(attach) = self.attach_thread.take() {
+            attach.thread().unpark();
+            let deadline = Instant::now() + CRASH_WORKER_JOIN_TIMEOUT;
+            while !attach.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if attach.is_finished() {
+                let _ = attach.join();
+            }
         }
         let handle = self
             .state
@@ -2218,5 +2234,159 @@ impl std::fmt::Debug for DaemonState {
             .field("endpoint", &self.endpoint)
             .field("data_dir", &self.paths.data_dir)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod supervisor_hardening_tests {
+    use super::*;
+    use arb_os::error::OsError;
+    use arb_os::fs::DiskSpaceInfo;
+    use arb_os::paths::ArbPaths;
+    use arb_storage::ring::DiskSpaceProvider;
+    use std::sync::atomic::AtomicU64;
+
+    #[derive(Debug)]
+    struct ConfigurableDisk(Arc<AtomicU64>);
+    impl DiskSpaceProvider for ConfigurableDisk {
+        fn disk_space(&self, _path: &Path) -> Result<DiskSpaceInfo, OsError> {
+            let free = self.0.load(Ordering::Acquire);
+            Ok(DiskSpaceInfo {
+                available_bytes: free,
+                total_bytes: free.max(10_000_000_000),
+            })
+        }
+    }
+
+    fn test_paths(tmp: &tempfile::TempDir) -> ArbPaths {
+        ArbPaths {
+            data_dir: tmp.path().join("d"),
+            cache_dir: tmp.path().join("c"),
+            runtime_dir: tmp.path().join("r"),
+        }
+    }
+
+    #[test]
+    fn rearming_after_storage_pressure_stop_survives_auto_attach() {
+        let tmp = tempfile::tempdir().unwrap();
+        let free = Arc::new(AtomicU64::new(1024));
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp)).with_disk_provider(
+            SharedDiskSpaceProvider::new(Arc::new(ConfigurableDisk(Arc::clone(&free)))),
+        ))
+        .unwrap();
+
+        server
+            .state
+            .dispatch(
+                "config.update",
+                json!({ "capture_enabled": true, "device_serial": "absent-test-device" }),
+            )
+            .unwrap();
+        {
+            let mut cap = server.state.lock_capture().unwrap();
+            cap.begin_session("A");
+            let mut source = arb_adb::mock::MockDeviceSource::from_scenario(
+                arb_adb::mock::FaultScenario::NormalFhd30,
+            );
+            while let Some(ev) = source.next_event().unwrap() {
+                cap.ingest_event(ev).unwrap();
+                if cap.is_storage_pressure_stopped() {
+                    break;
+                }
+            }
+            assert!(cap.is_storage_pressure_stopped());
+        }
+
+        // auto_attach must disarm capture_enabled when storage pressure stops capture.
+        let _ = server.state.auto_attach();
+        assert_eq!(
+            server.state.dispatch("system.status", json!({})).unwrap()["capture_enabled"],
+            false
+        );
+
+        // User frees disk space and explicitly re-arms while target device is absent.
+        free.store(10 * 1024 * 1024 * 1024, Ordering::Release);
+        server
+            .state
+            .dispatch("config.update", json!({ "capture_enabled": true }))
+            .unwrap();
+
+        // Subsequent auto_attach ticks must NOT silently disarm capture_enabled back to false.
+        let _ = server.state.auto_attach();
+        let status = server.state.dispatch("system.status", json!({})).unwrap();
+        assert_eq!(
+            status["capture_enabled"], true,
+            "re-armed capture_enabled must survive auto_attach after pressure clears"
+        );
+        assert_eq!(status["capture"]["storage_pressure_stopped"], false);
+
+        // Also verify explicit capture.start re-arms cleanly after a second storage-pressure stop.
+        free.store(1024, Ordering::Release);
+        {
+            let mut cap = server.state.lock_capture().unwrap();
+            cap.begin_session("A");
+            let mut source = arb_adb::mock::MockDeviceSource::from_scenario(
+                arb_adb::mock::FaultScenario::NormalFhd30,
+            );
+            while let Some(ev) = source.next_event().unwrap() {
+                cap.ingest_event(ev).unwrap();
+                if cap.is_storage_pressure_stopped() {
+                    break;
+                }
+            }
+            assert!(cap.is_storage_pressure_stopped());
+        }
+        let _ = server.state.auto_attach();
+        assert_eq!(
+            server.state.dispatch("system.status", json!({})).unwrap()["capture_enabled"],
+            false
+        );
+
+        free.store(10 * 1024 * 1024 * 1024, Ordering::Release);
+        let _ = server
+            .state
+            .handle_capture_start(json!({ "serial": "absent-test-device" }));
+        let _ = server.state.auto_attach();
+        let status = server.state.dispatch("system.status", json!({})).unwrap();
+        assert_eq!(
+            status["capture_enabled"], true,
+            "capture.start re-arm must survive auto_attach after pressure clears"
+        );
+        assert_eq!(status["capture"]["storage_pressure_stopped"], false);
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn capture_start_during_shutdown_does_not_persist_capture_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let state = Arc::clone(&server.state);
+        state.trigger_shutdown();
+        let err = state
+            .handle_capture_start(json!({ "serial": "absent-test-device" }))
+            .expect_err("capture.start during shutdown must fail");
+        assert!(err.to_string().contains("shutting down"), "{err}");
+        let cfg = state.config_store.load_or_default().unwrap();
+        assert!(
+            !cfg.capture_enabled,
+            "failed capture.start during shutdown must not persist capture_enabled"
+        );
+        drop(state);
+        server.shutdown();
+    }
+
+    #[test]
+    fn shutdown_joins_auto_attach_thread_without_leaking_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).unwrap();
+        let weak = Arc::downgrade(&server.state);
+        // Wait briefly so arbd-auto-attach enters park_timeout.
+        thread::sleep(Duration::from_millis(50));
+        server.shutdown();
+        assert!(
+            weak.upgrade().is_none(),
+            "arbd-auto-attach thread must be joined before shutdown returns"
+        );
     }
 }

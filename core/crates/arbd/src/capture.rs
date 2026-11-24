@@ -685,6 +685,11 @@ impl CapturePipeline {
         self.storage_pressure_stopped
     }
 
+    /// Clears a latched `STORAGE_PRESSURE_STOP` when the user explicitly re-arms capture.
+    pub const fn clear_storage_pressure_stop(&mut self) {
+        self.storage_pressure_stopped = false;
+    }
+
     /// Marks the start of a new (replayed / mock) capture session for `serial` whose event
     /// timestamps are in their own `pc_cont_ns` domain, and returns its session generation.
     pub fn begin_session(&mut self, serial: impl Into<String>) -> u64 {
@@ -3742,6 +3747,30 @@ mod tests {
                 .unwrap();
             assert_eq!((frame.width, frame.height), (w, h));
             assert!(frame.data[0].abs_diff(y) <= 2);
+        }
+    }
+
+    #[test]
+    fn save_mid_gop_with_orientation_roundtrip_decodes_all_segments() {
+        use arb_media::codec::VideoCodecBackend as _;
+        let (dir, track) = saved_video_for_window(
+            &[(64, 96, 40, 4), (96, 64, 180, 2), (64, 96, 120, 2)],
+            79_000_000,
+            320_000_000,
+        );
+        let atoms = arb_media::mp4::inspect_mp4_atoms(dir.path().join("saved.mp4")).unwrap();
+        assert_eq!((atoms.edts_count, atoms.elst_count), (0, 0));
+        assert_eq!(track.frame_count(), 6);
+        for (idx, w, h, y) in [(0, 64, 96, 60u8), (2, 96, 64, 180), (4, 64, 96, 120)] {
+            let frame = OpenH264Backend::new()
+                .decode_frame(&track, idx, PixelFormat::Yuv420p)
+                .unwrap();
+            assert_eq!((frame.width, frame.height), (w, h), "frame {idx}");
+            assert!(
+                frame.data[0].abs_diff(y) <= 4,
+                "frame {idx} luma {} expected ~{y}",
+                frame.data[0]
+            );
         }
     }
 
