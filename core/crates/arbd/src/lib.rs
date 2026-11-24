@@ -2028,7 +2028,9 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
             Err(err) => {
                 let resp = RpcResponse::err(Value::Null, RPC_ERR_PARSE, err.to_string());
                 if let Ok(text) = serde_json::to_string(&resp) {
-                    let _ = write_frame_line(&mut writer, &text, DEFAULT_MAX_IPC_LINE_BYTES);
+                    if write_frame_line(&mut writer, &text, DEFAULT_MAX_IPC_LINE_BYTES).is_err() {
+                        break;
+                    }
                     let _ = writer.drain();
                 }
                 continue;
@@ -2068,6 +2070,10 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
             )
         };
 
+        let is_shutdown = is_shutdown && response.error.is_none();
+        if is_shutdown {
+            state.trigger_shutdown();
+        }
         if let Some(text) = encode_response(&response) {
             if write_frame_line(&mut writer, &text, DEFAULT_MAX_IPC_LINE_BYTES).is_err() {
                 break;
@@ -2076,7 +2082,6 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
         }
 
         if is_shutdown {
-            state.trigger_shutdown();
             break;
         }
     }

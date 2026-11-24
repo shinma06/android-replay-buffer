@@ -7,6 +7,7 @@
 //! future GUI/CLI frontends are the only other intended callers.
 
 pub mod controller;
+pub mod instance;
 #[cfg(feature = "native-tray")]
 pub mod native_tray;
 pub mod rpc;

@@ -62,6 +62,13 @@ impl ArbPaths {
         self.runtime_dir.join("arbd.lock")
     }
 
+    /// Returns the single-instance tray lock file path (`<runtime_dir>/arb-tray.lock`), held by
+    /// a running `arb-tray` so repeated launches never create duplicate menu-bar icons.
+    #[must_use]
+    pub fn tray_lock_file(&self) -> PathBuf {
+        self.runtime_dir.join("arb-tray.lock")
+    }
+
     /// Returns the directory used for shared-memory frame ring backing files
     /// (`<runtime_dir>/shm`).
     #[must_use]
@@ -409,6 +416,11 @@ mod tests {
             paths.lock_file(),
             PathBuf::from("/tmp/arb-hermetic/run/arbd.lock"),
             "lock_file should live under runtime_dir"
+        );
+        assert_eq!(
+            paths.tray_lock_file(),
+            PathBuf::from("/tmp/arb-hermetic/run/arb-tray.lock"),
+            "tray_lock_file should live under runtime_dir"
         );
         assert_eq!(
             paths.shm_dir(),
