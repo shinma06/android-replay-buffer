@@ -331,13 +331,7 @@ struct PreparedShareSources {
     _temp_burned_video: Option<TempFileCleanup>,
 }
 
-struct TempFileCleanup(PathBuf);
-
-impl Drop for TempFileCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
+use crate::capture::TempFileGuard as TempFileCleanup;
 
 fn resolve_share_trim_range(
     in_frame_index: Option<u64>,
@@ -435,6 +429,7 @@ fn prepare_share_mp4_sources(
             dest_dir: params.dest_dir.clone(),
             holder_pid: params.holder_pid,
             burn_taps: false,
+            share_output_path: None,
             include_share_mp4: false,
             trash_original: false,
         };
@@ -1004,8 +999,6 @@ fn render_inspect_tap_crop(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let oriented = orient_display_dims(display_dims, video_w, video_h);
-    let (display_w, display_h) = oriented.unwrap_or((None, None));
     let (idx, tx, ty) = if let Some(tap_idx) = params.tap_index {
         let frames = reader.frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -1038,15 +1031,15 @@ fn render_inspect_tap_crop(
                  (device display size) or explicit tap_x/tap_y in video pixels"
             ))
         };
-        let x = match params.tap_x {
-            Some(x) => x,
-            None if oriented.is_none() => return Err(unmapped()),
-            None => map_tap_coord_to_frame(raw_x, display_w, video_w).ok_or_else(unmapped)?,
-        };
-        let y = match params.tap_y {
-            Some(y) => y,
-            None => map_tap_coord_to_frame(raw_y, display_h, video_h).ok_or_else(unmapped)?,
-        };
+        let mapped = mapped_tap(raw_x, raw_y, display_dims, video_w, video_h);
+        let x = params
+            .tap_x
+            .or_else(|| mapped.map(|p| p.0))
+            .ok_or_else(unmapped)?;
+        let y = params
+            .tap_y
+            .or_else(|| mapped.map(|p| p.1))
+            .ok_or_else(unmapped)?;
         (frame_idx, x, y)
     } else {
         let tx = params.tap_x.ok_or_else(|| {
@@ -1099,9 +1092,6 @@ fn build_frame_tap_map(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
-    let Some((display_w, display_h)) = orient_display_dims(display_dims, video_w, video_h) else {
-        return Ok(BTreeMap::new());
-    };
     let frames = reader.frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
@@ -1109,8 +1099,7 @@ fn build_frame_tap_map(
         if let (Some(rx), Some(ry), Some(bt)) = (tap.x, tap.y, tap_boottime_ns(tap))
             && let Some(fi) = nearest_frame_index_for_epoch(&frames, tap_boot_id(tap), bt)
         {
-            let mapped = map_tap_coord_to_frame(rx, display_w, video_w)
-                .zip(map_tap_coord_to_frame(ry, display_h, video_h));
+            let mapped = mapped_tap(rx, ry, display_dims, video_w, video_h);
             if let Some(point) = mapped {
                 map.entry(fi).or_insert(point);
             }
@@ -1378,48 +1367,15 @@ fn clamp_coord_to_frame(raw: f64, dim: u32) -> u32 {
     raw.round().clamp(0.0, max_idx) as u32
 }
 
-/// Maps a recorded tap coordinate (display pixels) onto the encoded video.
-///
-/// With a known `display_dim` the coordinate is scaled by `video_dim / display_dim`. Without it
-/// the coordinate is only trusted when it already lies inside the video frame; a coordinate
-/// beyond the frame proves it is in a larger display space, so `None` is returned instead of
-/// pinning it to the frame edge.
-/// Checks that the (natural-orientation) display size matches the video orientation.
-///
-/// Raw tap axes are never rotated, so a landscape video of a portrait panel (or vice versa)
-/// cannot be mapped faithfully: `None` means "orientation mismatch, leave taps unmapped".
-fn orient_display_dims(
+fn mapped_tap(
+    x: f64,
+    y: f64,
     display: (Option<u32>, Option<u32>),
-    video_w: u32,
-    video_h: u32,
-) -> Option<(Option<u32>, Option<u32>)> {
-    match display {
-        (Some(dw), Some(dh))
-            if video_w != video_h && dw != dh && (dw < dh) != (video_w < video_h) =>
-        {
-            None
-        }
-        other => Some(other),
-    }
-}
-
-fn map_tap_coord_to_frame(raw: f64, display_dim: Option<u32>, video_dim: u32) -> Option<u32> {
-    if !raw.is_finite() || raw < 0.0 || video_dim == 0 {
-        return None;
-    }
-    match display_dim.filter(|d| *d > 0) {
-        Some(display) => {
-            // A value beyond the display proves the coordinate is in another space (e.g. a raw
-            // evdev axis range), so it is unmapped rather than pinned to the frame edge.
-            if raw > f64::from(display) {
-                return None;
-            }
-            let scaled = raw * f64::from(video_dim) / f64::from(display);
-            Some(clamp_coord_to_frame(scaled, video_dim))
-        }
-        None if raw < f64::from(video_dim) => Some(clamp_coord_to_frame(raw, video_dim)),
-        None => None,
-    }
+    w: u32,
+    h: u32,
+) -> Option<(u32, u32)> {
+    arb_core::gesture::map_touch_to_frame(x, y, display.0, display.1, w, h)
+        .map(|(x, y)| (clamp_coord_to_frame(x, w), clamp_coord_to_frame(y, h)))
 }
 
 fn parse_png_dimensions(png_bytes: &[u8]) -> Result<(u32, u32), DaemonError> {
@@ -1443,7 +1399,7 @@ fn write_bytes_atomic(final_path: &Path, bytes: &[u8]) -> Result<(), DaemonError
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
-        fs::rename(&tmp, final_path)?;
+        arb_os::fs::replace_file(&tmp, final_path)?;
         Ok(())
     })();
     if result.is_err() {
@@ -1520,60 +1476,26 @@ fn prune_cache_dir(dir: &Path, max_files: usize, max_bytes: u64, keep: Option<&P
 }
 
 /// Pure-Rust RFC 4648 standard Base64 encoder (zero dependencies).
-pub(crate) fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = usize::from(chunk[0]);
-        let b1 = chunk.get(1).copied().map_or(0, usize::from);
-        let b2 = chunk.get(2).copied().map_or(0, usize::from);
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(char::from(TABLE[(n >> 18) & 0x3F]));
-        out.push(char::from(TABLE[(n >> 12) & 0x3F]));
-        if chunk.len() > 1 {
-            out.push(char::from(TABLE[(n >> 6) & 0x3F]));
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(char::from(TABLE[n & 0x3F]));
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
+pub(crate) use arb_core::base64_encode;
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, map_tap_coord_to_frame, orient_display_dims, prune_cache_dir};
+    use super::{base64_encode, mapped_tap, prune_cache_dir};
 
     #[test]
     fn tap_coords_scale_from_display_space_and_refuse_out_of_frame() {
-        // 1080x2400 display encoded as 460x1024: (540,1200) maps to the frame centre.
-        assert_eq!(map_tap_coord_to_frame(540.0, Some(1080), 460), Some(230));
-        assert_eq!(map_tap_coord_to_frame(1200.0, Some(2400), 1024), Some(512));
-        // Unknown display size: in-frame coordinates pass, out-of-frame ones are refused
-        // instead of being pinned to the bottom-right edge.
-        assert_eq!(map_tap_coord_to_frame(100.0, None, 460), Some(100));
-        assert_eq!(map_tap_coord_to_frame(1200.0, None, 1024), None);
-        assert_eq!(map_tap_coord_to_frame(f64::NAN, Some(10), 5), None);
-        // Raw evdev values beyond the display are unmapped, never edge-clamped.
-        assert_eq!(map_tap_coord_to_frame(16000.0, Some(1080), 460), None);
-        // Orientation mismatch (landscape video of a portrait panel) is unmapped, not guessed.
+        let display = (Some(1080), Some(2400));
         assert_eq!(
-            orient_display_dims((Some(1080), Some(2400)), 2400, 1080),
-            None
+            mapped_tap(540.0, 1200.0, display, 460, 1024),
+            Some((230, 512))
         );
+        assert_eq!(mapped_tap(1.0, 1.0, display, 460, 1024), Some((0, 0)));
         assert_eq!(
-            orient_display_dims((Some(1080), Some(2400)), 460, 1024),
-            Some((Some(1080), Some(2400)))
+            mapped_tap(1.0, 1.0, (None, None), 460, 1024),
+            Some((459, 1023))
         );
-        assert_eq!(
-            orient_display_dims((Some(1080), Some(2400)), 128, 128),
-            Some((Some(1080), Some(2400)))
-        );
-        assert_eq!(map_tap_coord_to_frame(-1.0, None, 5), None);
+        assert_eq!(mapped_tap(2.0, 0.0, (None, None), 460, 1024), None);
+        assert_eq!(mapped_tap(1.0, 1.0, display, 1024, 460), Some((1, 0)));
     }
 
     #[test]

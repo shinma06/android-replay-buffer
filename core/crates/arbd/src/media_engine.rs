@@ -628,8 +628,11 @@ pub fn export_trim(
     let policy = SelectionPolicy::default();
     let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
         select_trimmed_logs(reader.as_ref(), summary, &frame_window, &policy)?;
-    let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) =
-        select_trimmed_taps(reader.as_ref(), &frame_window, &policy)?;
+    let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) = select_trimmed_taps(
+        reader.as_ref(),
+        &frame_window,
+        &policy.after_logs(&trimmed_logs),
+    )?;
     let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
     let clock_anchors: Vec<ClockAnchorRecord> = if reader.is_legacy() {
@@ -661,6 +664,7 @@ pub fn export_trim(
     let mut share_sidecar_name: Option<&'static str> = None;
     let mut share_sidecar: Option<ShareMp4Sidecar> = None;
 
+    let mut av_mux_report = None;
     if emit_share_mp4 && !trimmed_frames.is_empty() {
         let share_name = if params.burn_taps {
             SHARE_TAPS_MP4_FILE
@@ -706,12 +710,12 @@ pub fn export_trim(
         let tmp_share_mp4 = tmp_dir.join(format!("{trim_job_id}-{share_name}"));
         let lead_in = trimmed_audio.as_ref().map_or(0, |a| a.lead_in_offset_ns);
         _tmp_share_guard = Some(FileCleanupGuard(tmp_share_mp4.clone()));
-        let _mux_report = mux_share_mp4(
+        av_mux_report = Some(mux_share_mp4(
             &video_for_share,
             trimmed_audio.as_ref().map(|a| a.tmp_m4a.as_path()),
             lead_in,
             &tmp_share_mp4,
-        )?;
+        )?);
         let atoms = inspect_mp4_atoms(&tmp_share_mp4)?;
         if atoms.edts_count != 0 || atoms.elst_count != 0 {
             return Err(DaemonError::Internal(format!(
@@ -774,6 +778,14 @@ pub fn export_trim(
         },
     )?;
 
+    let mut share_mp4_path = share_sidecar_name.map(|name| dest_bundle_dir.join(name));
+    if let (Some(source), Some(output)) = (&share_mp4_path, &params.share_output_path) {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        arb_media::copy_new(source, output)?;
+        share_mp4_path = Some(output.clone());
+    }
     drop(lease_guard);
 
     let mut original_trashed = false;
@@ -791,7 +803,6 @@ pub fn export_trim(
         }
     }
 
-    let share_mp4_path = share_sidecar_name.map(|name| dest_bundle_dir.join(name));
     let warning = match (commit_warning, trash_warning) {
         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
         (a, b) => a.or(b),
@@ -806,6 +817,7 @@ pub fn export_trim(
         unanchored_log_count,
         main_tap_count,
         unanchored_tap_count,
+        av_mux_report,
         share_mp4_path,
         app_logs_count,
         original_trashed,
@@ -1028,8 +1040,14 @@ fn build_trimmed_bundle_draft(
                 }
                 audio
             }),
-            logcat: summary.streams.logcat.clone(),
-            input: summary.streams.input.clone(),
+            logcat: summary.streams.logcat.clone().map(|mut stream| {
+                stream.tail_may_be_incomplete &= video.includes_source_tail;
+                stream
+            }),
+            input: summary.streams.input.clone().map(|mut stream| {
+                stream.tail_may_be_incomplete &= video.includes_source_tail;
+                stream
+            }),
         },
         unanchored_summary,
         video_mp4: Some(MediaPayload::File(video.tmp_mp4)),
@@ -1050,17 +1068,16 @@ fn build_trimmed_frame_records(
     params: &ExportTrimParams,
 ) -> Vec<FrameRecord> {
     let trimmed_mp4_frames = trimmed_track.frames();
-    let selected_source_frames: Vec<&FrameRecord> = source_frames
-        .iter()
-        .filter(|f| {
-            f.frame_index >= params.in_frame_index && f.frame_index <= params.out_frame_index
-        })
-        .collect();
-
+    let indexed: std::collections::BTreeMap<_, _> =
+        source_frames.iter().map(|f| (f.frame_index, f)).collect();
     let mut trimmed_frames = Vec::with_capacity(trimmed_mp4_frames.len());
     for (idx, mp4_f) in trimmed_mp4_frames.iter().enumerate() {
         let frame_index = u64::try_from(idx).unwrap_or(0);
-        let record = match selected_source_frames.get(idx).copied() {
+        let record = match params
+            .in_frame_index
+            .checked_add(frame_index)
+            .and_then(|id| indexed.get(&id).copied())
+        {
             Some(orig) => FrameRecord {
                 frame_index,
                 boot_id: orig.boot_id.clone(),
@@ -1197,15 +1214,9 @@ impl Drop for LeaseDropGuard<'_> {
     }
 }
 
-struct FileCleanupGuard(PathBuf);
+use crate::capture::TempFileGuard as FileCleanupGuard;
 
-impl Drop for FileCleanupGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-fn filter_discontinuities_for_window(
+pub(super) fn filter_discontinuities_for_window(
     discontinuities: Vec<DiscontinuityEvent>,
     window: &WindowSpec,
 ) -> Vec<DiscontinuityEvent> {
@@ -1519,6 +1530,7 @@ mod tests {
             dest_dir: None,
             holder_pid: None,
             burn_taps: false,
+            share_output_path: None,
             include_share_mp4: false,
             trash_original: false,
         };

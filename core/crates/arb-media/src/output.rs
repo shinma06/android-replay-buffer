@@ -123,28 +123,23 @@ pub(crate) fn write_verified(
     result
 }
 
+/// Publishes a byte-identical copy of a verified media sidecar.
+///
+/// # Errors
+/// Returns an error if the destination already exists or copying fails.
+pub fn copy_new(source: &Path, output: &Path) -> Result<(), MediaError> {
+    let mut file = File::open(source)?;
+    write_atomically(output, Publish::NoReplace, |writer| {
+        io::copy(&mut file, writer)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 fn publish(tmp: &Path, final_path: &Path, mode: Publish) -> Result<(), MediaError> {
     match mode {
-        Publish::Replace => fs::rename(tmp, final_path)?,
-        Publish::NoReplace => match fs::hard_link(tmp, final_path) {
-            // `link` is an atomic create-if-absent on every platform that supports it.
-            Ok(()) => {
-                fs::remove_file(tmp)?;
-            }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(MediaError::Io(err));
-            }
-            // Filesystems without hard links (FAT/exFAT): best-effort check-then-rename.
-            Err(_) => {
-                if final_path.exists() {
-                    return Err(MediaError::Io(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!("output {} already exists", final_path.display()),
-                    )));
-                }
-                fs::rename(tmp, final_path)?;
-            }
-        },
+        Publish::Replace => arb_os::fs::replace_file(tmp, final_path)?,
+        Publish::NoReplace => arb_os::fs::rename_no_replace(tmp, final_path)?,
     }
     Ok(())
 }

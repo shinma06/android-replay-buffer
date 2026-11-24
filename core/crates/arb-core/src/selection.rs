@@ -388,6 +388,23 @@ impl AlignedRecord for LogRecord {
     }
 }
 
+impl SelectionPolicy {
+    /// Debits a bundle's shared quarantine budget before selecting the next stream.
+    #[must_use]
+    pub fn after_logs(mut self, logs: &[LogRecord]) -> Self {
+        for log in logs
+            .iter()
+            .filter(|l| l.bucket == crate::bundle::RecordBucket::Unanchored)
+        {
+            self.max_unanchored_records = self.max_unanchored_records.saturating_sub(1);
+            self.max_unanchored_bytes = self
+                .max_unanchored_bytes
+                .saturating_sub(log.estimated_bytes());
+        }
+        self
+    }
+}
+
 impl AlignedRecord for TapRecord {
     fn time_alignment(&self) -> &TimeAlignment {
         &self.alignment
@@ -398,7 +415,10 @@ impl AlignedRecord for TapRecord {
     }
 
     fn estimated_bytes(&self) -> usize {
-        self.action.len().saturating_add(64)
+        self.action
+            .len()
+            .saturating_add(64)
+            .saturating_add(std::mem::size_of_val(self.path.as_slice()))
     }
 }
 
@@ -521,58 +541,7 @@ pub fn select_records<T: AlignedRecord>(
     window: &WindowSpec,
     policy: &SelectionPolicy,
 ) -> SelectedPartition<T> {
-    let ingest_min =
-        i128::from(window.ingest_start_cont_ns()).min(i128::from(window.ingest_end_cont_ns()));
-    let ingest_max =
-        i128::from(window.ingest_start_cont_ns()).max(i128::from(window.ingest_end_cont_ns()));
-    let margin = i128::from(policy.unanchored_ingest_margin_ns);
-    let prox_lo = ingest_min - margin;
-    let prox_hi = ingest_max + margin;
-
-    let mut main = Vec::new();
-    let mut unanchored = Vec::new();
-    let mut unanchored_bytes: usize = 0;
-    let mut unanchored_truncated_count: usize = 0;
-    let mut excluded_count: usize = 0;
-
-    for record in records {
-        match classify_record(&record, window) {
-            Membership::InRange => main.push(record),
-            Membership::OutOfRange => {
-                excluded_count = excluded_count.saturating_add(1);
-            }
-            Membership::UncertainTime(UncertainPlacement::PartialOverlap) => {
-                try_quarantine(
-                    record,
-                    &mut unanchored,
-                    &mut unanchored_bytes,
-                    &mut unanchored_truncated_count,
-                    policy,
-                );
-            }
-            Membership::UncertainTime(UncertainPlacement::UnanchoredProximity) => {
-                let ingest = i128::from(record.pc_ingest_cont_ns());
-                if ingest >= prox_lo && ingest <= prox_hi {
-                    try_quarantine(
-                        record,
-                        &mut unanchored,
-                        &mut unanchored_bytes,
-                        &mut unanchored_truncated_count,
-                        policy,
-                    );
-                } else {
-                    excluded_count = excluded_count.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    SelectedPartition {
-        main,
-        unanchored,
-        unanchored_truncated_count,
-        excluded_count,
-    }
+    select_for_trim_with_truncated(records, [], 0, window, policy)
 }
 
 /// Applies the exact same selection engine to a trim operation while carrying
@@ -635,16 +604,7 @@ pub fn select_for_trim_with_truncated<T: AlignedRecord>(
             Membership::OutOfRange => {
                 excluded_count = excluded_count.saturating_add(1);
             }
-            Membership::UncertainTime(UncertainPlacement::PartialOverlap) => {
-                try_quarantine(
-                    record,
-                    &mut unanchored,
-                    &mut unanchored_bytes,
-                    &mut unanchored_truncated_count,
-                    policy,
-                );
-            }
-            Membership::UncertainTime(UncertainPlacement::UnanchoredProximity) => {
+            Membership::UncertainTime(_) => {
                 let ingest = i128::from(record.pc_ingest_cont_ns());
                 if ingest >= prox_lo && ingest <= prox_hi {
                     try_quarantine(

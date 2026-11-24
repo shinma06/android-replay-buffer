@@ -1355,7 +1355,7 @@ impl SessionSupervisor {
                             kind: DiscontinuityKind::DeviceReboot,
                             stream: None,
                             boot_id: Some(hello.boot_id.clone()),
-                            start_boottime_ns: self.last_beacon_boottime_ns,
+                            start_boottime_ns: None,
                             end_boottime_ns: None,
                             pc_cont_start_ns: pc_cont_ns,
                             pc_cont_end_ns: Some(pc_cont_ns),

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![expect(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -6,7 +7,8 @@
 
 //! Binary entrypoint for the `arbd` single-writer local daemon.
 
-mod signal;
+use arb_os::signal;
+use std::io::Write as _;
 
 use std::env;
 use std::path::PathBuf;
@@ -114,8 +116,11 @@ OPTIONS:\n  \
         // The thread is not joined: after a normal shutdown it stays blocked in `read`.
         let parent_handle = server.shutdown_handle();
         spawn_stdin_parent_watch("arbd-parent-watch", move |gone| {
-            eprintln!("arbd: parent gone ({gone:?}); shutting down");
             parent_handle.trigger();
+            let _ = writeln!(
+                std::io::stderr(),
+                "arbd: parent gone ({gone:?}); shutting down"
+            );
         })
         .map_err(|e| format!("failed to start the stdin parent watch: {e}"))?;
     }

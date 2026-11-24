@@ -315,7 +315,12 @@ struct SaveJobMaterializeParams {
     /// Physical device display height in pixels (from `wm size`), if observed.
     #[serde(default)]
     display_height: Option<u32>,
+    #[serde(default)]
     fallback_video_config: Option<Vec<u8>>,
+    #[serde(default)]
+    fallback_audio_config: Option<Vec<u8>>,
+    #[serde(default)]
+    trigger_kind: SaveTriggerKind,
     /// Discontinuities that never reached a ring chunk (`StoragePressureStop`, failed ring
     /// writes) and overlap the save window. They are merged into the saved bundle.
     #[serde(default)]
@@ -403,7 +408,8 @@ impl Drop for PinRollbackGuard {
 #[derive(Debug)]
 pub struct PendingSave {
     guard: PinRollbackGuard,
-    generation: u64,
+    initial_flush_failed: bool,
+    pub(super) generation: u64,
     params: SaveJobMaterializeParams,
     dest_bundle_dir: PathBuf,
     trigger_kind: SaveTriggerKind,
@@ -451,7 +457,7 @@ impl PendingSave {
 pub struct Phase2Plan {
     data_dir: PathBuf,
     pin_journal: PinJournal,
-    chunk_paths: Vec<PathBuf>,
+    chunks: Vec<(String, Option<RingChunkDescriptor>)>,
     faults: Arc<FaultInjection>,
 }
 
@@ -582,6 +588,10 @@ pub struct CapturePipeline {
     latest_heartbeat_pc_cont_ns: Option<i64>,
     latest_pc_cont_ns: Option<i64>,
     last_chunk_created_cont_ns: Option<i64>,
+    host_boot_ns: i64,
+    recovered_boot_id: Option<String>,
+    latest_video_config: Option<Vec<u8>>,
+    latest_audio_config: Option<Vec<u8>>,
     last_discontinuities: Vec<DiscontinuityEvent>,
     pressure_discontinuities: Vec<DiscontinuityEvent>,
     chunk_contents: BTreeMap<String, ChunkContent>,
@@ -600,10 +610,24 @@ impl CapturePipeline {
         policy: RingBudgetPolicy,
         disk_provider: SharedDiskSpaceProvider,
     ) -> Result<Self, DaemonError> {
-        let data_dir = data_dir.as_ref().to_path_buf();
+        Self::open_at(
+            data_dir.as_ref(),
+            policy,
+            disk_provider,
+            sample_host_clock()?,
+        )
+    }
+
+    fn open_at(
+        data_dir: &Path,
+        policy: RingBudgetPolicy,
+        disk_provider: SharedDiskSpaceProvider,
+        now: arb_os::clock::HostClockSample,
+    ) -> Result<Self, DaemonError> {
+        let data_dir = data_dir.to_path_buf();
+        let host_boot_ns = now.wall_epoch_ns.saturating_sub(now.continuous_mono_ns);
         let ring = RingStore::open_with_disk_provider(&data_dir, policy, disk_provider)?;
-        let last_chunk_created_cont_ns = ring.chunks().last().map(|c| c.created_cont_ns);
-        Ok(Self {
+        let mut pipeline = Self {
             data_dir,
             ring,
             faults: Arc::new(FaultInjection::default()),
@@ -643,13 +667,73 @@ impl CapturePipeline {
             latest_heartbeat_boottime_ns: None,
             latest_heartbeat_pc_cont_ns: None,
             latest_pc_cont_ns: None,
-            last_chunk_created_cont_ns,
+            last_chunk_created_cont_ns: None,
+            host_boot_ns,
+            recovered_boot_id: None,
+            latest_video_config: None,
+            latest_audio_config: None,
             last_discontinuities: Vec::new(),
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
             crash_notifier: None,
             crash_daemon: std::sync::Weak::new(),
-        })
+        };
+        pipeline.restore_capture(now.continuous_mono_ns);
+        Ok(pipeline)
+    }
+
+    fn restore_capture(&mut self, now: i64) {
+        let chunks = self.ring.chunks();
+        let mut excluded = false;
+        for chunk in chunks {
+            let Some(info) = chunk.capture.filter(|info| {
+                info.host_boot_ns.abs_diff(self.host_boot_ns) < 1_000_000_000
+                    && chunk.created_cont_ns <= now
+            }) else {
+                excluded = true;
+                continue;
+            };
+            if self.serial.as_ref() != Some(&info.device_serial) {
+                self.chunk_contents.clear();
+            }
+            self.serial = Some(info.device_serial.clone());
+            self.device.serial = info.device_serial;
+            self.latest_pc_cont_ns = Some(info.ingest_range.1);
+            self.last_chunk_created_cont_ns = Some(chunk.created_cont_ns);
+            self.clock_domain = if info.host_live {
+                ClockDomain::HostLive
+            } else {
+                ClockDomain::Replayed
+            };
+            self.latest_video_config = info.video_config;
+            self.latest_audio_config = info.audio_config;
+            (self.video_width, self.video_height) = info.video_size;
+            self.recovered_boot_id = info.heartbeat.as_ref().map(|h| h.0.clone());
+            self.latest_heartbeat_boottime_ns = info.heartbeat.as_ref().map(|h| h.1);
+            self.latest_heartbeat_pc_cont_ns = info.heartbeat.map(|h| h.2);
+            self.chunk_contents.insert(
+                chunk.chunk_id,
+                ChunkContent {
+                    picture: if info.has_keyframe {
+                        Some(VideoPacketKind::Keyframe)
+                    } else {
+                        info.has_video.then_some(VideoPacketKind::DeltaFrame)
+                    },
+                    video_config: info.has_video_config,
+                    heartbeat: info.has_anchor,
+                },
+            );
+        }
+        if excluded {
+            self.record_carried_discontinuity(
+                stream_gap(
+                    now,
+                    now,
+                    "以前のホスト起動または時刻不明の録画を除外しました".into(),
+                ),
+                CarriedEffect::KeepCapturing,
+            );
+        }
     }
 
     /// Installs the shared [`FaultInjection`] switches (tests only; defaults to all-off).
@@ -804,8 +888,11 @@ impl CapturePipeline {
         clock_domain: ClockDomain,
         capture_mode: CaptureMode,
     ) -> u64 {
-        if self.serial.as_deref() != Some(&serial) {
+        if self.serial.as_deref().is_some_and(|old| old != serial) {
             let _ = self.flush_pending_chunk();
+            self.recovered_boot_id = None;
+            self.latest_video_config = None;
+            self.latest_audio_config = None;
             self.chunk_contents.clear();
             self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
             self.latest_heartbeat_boottime_ns = None;
@@ -1060,17 +1147,30 @@ impl CapturePipeline {
         flushed
     }
 
+    fn accept_hello(&mut self, payload: &arb_adb::wire::HelloPayload) {
+        if self
+            .timeline
+            .current_boot_id()
+            .or(self.recovered_boot_id.as_deref())
+            .is_some_and(|boot| boot != payload.boot_id)
+        {
+            self.latest_video_config = None;
+            self.latest_audio_config = None;
+        }
+        self.connected = true;
+        self.device.model.clone_from(&payload.model);
+        self.device.api_level = payload.api_level;
+        self.device.is_emulator = payload.is_emulator;
+        if self.device_api_warning.is_none() {
+            self.device_api_warning = unsupported_android_api_warning(payload.api_level);
+        }
+    }
+
     fn apply_live_event_state(&mut self, event: &CaptureEvent) -> bool {
         let mut should_flush = false;
         match event {
             CaptureEvent::Hello { payload, .. } => {
-                self.connected = true;
-                self.device.model.clone_from(&payload.model);
-                self.device.api_level = payload.api_level;
-                self.device.is_emulator = payload.is_emulator;
-                if self.device_api_warning.is_none() {
-                    self.device_api_warning = unsupported_android_api_warning(payload.api_level);
-                }
+                self.accept_hello(payload);
                 should_flush = true;
             }
             CaptureEvent::Heartbeat {
@@ -1088,10 +1188,12 @@ impl CapturePipeline {
                     realtime_ns: payload.realtime_ns,
                 };
                 let _ = self.timeline.ingest_device_triple(triple, *pc_cont_ns);
+                self.timeline.bound_live_history();
                 should_flush = true;
             }
             CaptureEvent::SyncProbe { probe, .. } => {
                 let _ = self.timeline.ingest_pc_sync_probe(probe.clone());
+                self.timeline.bound_live_history();
             }
             CaptureEvent::VideoSession { meta, .. } => {
                 self.video_width = u16::try_from(meta.width).unwrap_or(1920);
@@ -1100,10 +1202,19 @@ impl CapturePipeline {
             }
             CaptureEvent::VideoFrame { packet, .. } => {
                 if packet.is_config() {
+                    self.latest_video_config = Some(packet.data.clone());
                     should_flush = true;
                 } else {
+                    if packet.is_keyframe()
+                        && let Some(config) = embedded_config(&packet.data)
+                    {
+                        self.latest_video_config = Some(config);
+                    }
                     self.video_frames_seen += 1;
                 }
+            }
+            CaptureEvent::AudioConfig { packet, .. } => {
+                self.latest_audio_config = Some(packet.data.clone());
             }
             CaptureEvent::AudioFrame { .. } => {
                 self.audio_frames_seen += 1;
@@ -1211,6 +1322,51 @@ impl CapturePipeline {
         }
     }
 
+    fn capture_info(
+        &self,
+        events: &[CaptureEvent],
+        content: ChunkContent,
+        raw_created_cont_ns: i64,
+    ) -> arb_storage::ring::CaptureChunkInfo {
+        arb_storage::ring::CaptureChunkInfo {
+            host_live: self.clock_domain == ClockDomain::HostLive,
+            host_boot_ns: self.host_boot_ns,
+            device_serial: self.device.serial.clone(),
+            ingest_range: (
+                events
+                    .iter()
+                    .filter_map(capture_event_pc_cont_ns)
+                    .min()
+                    .unwrap_or(raw_created_cont_ns),
+                events
+                    .iter()
+                    .filter_map(capture_event_pc_cont_ns)
+                    .max()
+                    .unwrap_or(raw_created_cont_ns),
+            ),
+            has_video: content.picture.is_some(),
+            has_keyframe: content.picture == Some(VideoPacketKind::Keyframe),
+            has_video_config: content.video_config,
+            has_audio: events
+                .iter()
+                .any(|e| matches!(e, CaptureEvent::AudioFrame { .. })),
+            has_audio_config: events
+                .iter()
+                .any(|e| matches!(e, CaptureEvent::AudioConfig { .. })),
+            has_anchor: content.heartbeat,
+            video_size: (self.video_width, self.video_height),
+            video_config: self.latest_video_config.clone(),
+            audio_config: self.latest_audio_config.clone(),
+            heartbeat: self
+                .timeline
+                .current_boot_id()
+                .or(self.recovered_boot_id.as_deref())
+                .zip(self.latest_heartbeat_boottime_ns)
+                .zip(self.latest_heartbeat_pc_cont_ns)
+                .map(|((b, t), p)| (b.to_owned(), t, p)),
+        }
+    }
+
     /// Flushes any buffered events into an immutable closed Zone-1 ring chunk.
     ///
     /// # Errors
@@ -1252,15 +1408,17 @@ impl CapturePipeline {
             u64::try_from(end_cont_ns.saturating_sub(created_cont_ns).max(0)).unwrap_or(0);
         let event_count = events.len();
         let content = ChunkContent::of(&events);
+        let info = self.capture_info(&events, content, raw_created_cont_ns);
         let payload = encode_ring_chunk(events)?;
         let chunk_id = next_id("chunk");
 
-        match self.ring.write_closed_chunk(
+        match self.ring.write_capture_chunk(
             chunk_id.clone(),
             RingChunkKind::Video,
             created_cont_ns,
             duration_ns,
             &payload,
+            Some(info),
         ) {
             Ok((_desc, evicted)) => {
                 self.last_chunk_created_cont_ns = Some(created_cont_ns);
@@ -1424,7 +1582,8 @@ impl CapturePipeline {
         trigger_kind: SaveTriggerKind,
         window: WindowSpec,
     ) -> Result<PendingSave, DaemonError> {
-        let _ = self.flush_pending_chunk();
+        let initial_flush_failed =
+            self.flush_pending_chunk().is_err() || self.storage_pressure_stopped;
         let chunk_ids = self.select_window_chunks(&window, &policy);
         if chunk_ids.is_empty() {
             return Err(DaemonError::Conflict(
@@ -1443,11 +1602,6 @@ impl CapturePipeline {
             job_id: job_id.clone(),
             armed: false,
         };
-        let _pin_record =
-            self.ring
-                .pin_chunks(&job_id, &dest_bundle_dir, chunk_ids.clone(), &now_utc)?;
-        guard.armed = true;
-
         let (must_drain, drain_decision) = match (self.is_active(), self.is_connected()) {
             (true, true) => (true, TailCompleteness::Complete),
             (true, false) => (false, TailCompleteness::MayBeIncomplete),
@@ -1455,6 +1609,7 @@ impl CapturePipeline {
         };
 
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
+        let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
             bundle_id,
             mode,
@@ -1462,27 +1617,35 @@ impl CapturePipeline {
             trigger_utc: now_utc,
             window,
             policy,
-            tail_may_be_incomplete: false,
+            tail_may_be_incomplete: true,
             device: self.device.clone(),
             video_width: self.video_width,
             video_height: self.video_height,
             display_width: self.display_width,
             display_height: self.display_height,
-            fallback_video_config: None,
+            fallback_video_config: self.latest_video_config.clone(),
+            fallback_audio_config: self.latest_audio_config.clone(),
+            trigger_kind,
             extra_discontinuities,
             uid_packages: self.uid_packages.clone(),
         };
+        write_job_params(&self.data_dir, &job_id, &params)?;
+        guard.armed = true;
+        self.ring.pin_chunks(
+            &job_id,
+            &dest_bundle_dir,
+            chunk_ids.clone(),
+            &params.trigger_utc,
+        )?;
         Ok(PendingSave {
             guard,
+            initial_flush_failed,
             generation: self.session_generation,
             params,
             dest_bundle_dir,
             trigger_kind,
             pinned_chunk_ids: chunk_ids,
-            drain_trigger_boottime_ns: self
-                .latest_heartbeat_boottime_ns
-                .unwrap_or(0)
-                .saturating_add(1),
+            drain_trigger_boottime_ns,
             drain_decision,
             must_drain,
         })
@@ -1502,8 +1665,16 @@ impl CapturePipeline {
         tail: TailCompleteness,
     ) -> Result<(CatalogSaveJob, Phase2Plan), DaemonError> {
         let mut chunk_ids = pending.pinned_chunk_ids.clone();
+        let mut flush_failed = false;
         if pending.generation == self.session_generation {
-            let _ = self.flush_pending_chunk();
+            flush_failed = self.flush_pending_chunk().is_err() || self.storage_pressure_stopped;
+            for gap in
+                self.carried_discontinuities_for(&pending.params.window, &pending.params.policy)
+            {
+                if !pending.params.extra_discontinuities.contains(&gap) {
+                    pending.params.extra_discontinuities.push(gap);
+                }
+            }
             for id in self.select_window_chunks(&pending.params.window, &pending.params.policy) {
                 if !chunk_ids.contains(&id) {
                     chunk_ids.push(id);
@@ -1520,8 +1691,10 @@ impl CapturePipeline {
             )?;
         }
 
-        pending.params.tail_may_be_incomplete =
-            tail.may_be_incomplete() || self.session_generation != pending.generation;
+        pending.params.tail_may_be_incomplete = pending.initial_flush_failed
+            || flush_failed
+            || tail.may_be_incomplete()
+            || self.session_generation != pending.generation;
         write_job_params(&self.data_dir, &job_id, &pending.params)?;
 
         let created = catalog.create_pinned_job_with_trigger(
@@ -1559,21 +1732,14 @@ impl CapturePipeline {
     ///
     /// Returns [`DaemonError::Storage`] (`NotFound`) if a pinned chunk is missing.
     pub fn phase2_plan(&self, chunk_ids: &[String]) -> Result<Phase2Plan, DaemonError> {
-        let chunk_paths = chunk_ids
+        let chunks = chunk_ids
             .iter()
-            .map(|id| {
-                self.ring.chunk_path(id).ok_or_else(|| {
-                    DaemonError::Storage(StorageError::NotFound {
-                        entity: "chunk",
-                        id: id.clone(),
-                    })
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|id| (id.clone(), self.ring.descriptor(id).cloned()))
+            .collect();
         Ok(Phase2Plan {
             data_dir: self.data_dir.clone(),
             pin_journal: self.ring.pin_journal().clone(),
-            chunk_paths,
+            chunks,
             faults: Arc::clone(&self.faults),
         })
     }
@@ -1619,6 +1785,10 @@ impl CapturePipeline {
         let plan = self.phase2_plan(&job.job.pinned_chunk_ids)?;
         let journal = self.ring.pin_journal();
         let previous = journal.load(job_id).ok().map(|r| r.destination_path);
+        arb_storage::bundle_io::remove_stale_staging_sibling(
+            Path::new(&job.job.destination_path),
+            job_id,
+        )?;
         let _ = journal.update_destination(job_id, &new_bundle_dir)?;
         if let Err(err) = catalog.retarget_job(job_id, &new_bundle_dir, &utc_now_iso8601()) {
             if let Some(prev) = previous {
@@ -1641,6 +1811,10 @@ impl CapturePipeline {
     ) -> Result<SaveJobView, DaemonError> {
         let now_utc = utc_now_iso8601();
         let discarded = catalog.discard_job(job_id, &now_utc)?;
+        arb_storage::bundle_io::remove_stale_staging_sibling(
+            Path::new(&discarded.job.destination_path),
+            job_id,
+        )?;
         let _ = self.ring.unpin_job(job_id);
         let _ = remove_job_params(&self.data_dir, job_id);
         Ok(save_job_to_view(&discarded))
@@ -1650,7 +1824,7 @@ impl CapturePipeline {
     /// and the device boottime extrapolated from the latest heartbeat to that instant.
     fn trigger_point(&self) -> TriggerPoint {
         let observed = self.latest_pc_cont_ns.unwrap_or(0);
-        let pc_cont_ns = if self.clock_domain == ClockDomain::HostLive && self.active {
+        let pc_cont_ns = if self.clock_domain == ClockDomain::HostLive {
             sample_host_clock().map_or(observed, |s| s.continuous_mono_ns.max(observed))
         } else {
             observed
@@ -1677,6 +1851,7 @@ impl CapturePipeline {
         let boot_id = self
             .timeline
             .current_boot_id()
+            .or(self.recovered_boot_id.as_deref())
             .unwrap_or("unknown")
             .to_owned();
         let end_boottime_ns = trigger.boottime_ns;
@@ -1704,10 +1879,11 @@ impl CapturePipeline {
         let hi = window.ingest_end_cont_ns().saturating_add(margin);
         let chunks = self.ring.chunks();
         let overlaps = |c: &RingChunkDescriptor| {
-            let end = c
-                .created_cont_ns
-                .saturating_add(i64::try_from(c.duration_ns).unwrap_or(i64::MAX));
-            self.chunk_contents.contains_key(&c.chunk_id) && c.created_cont_ns <= hi && end >= lo
+            c.capture.as_ref().is_some_and(|info| {
+                self.chunk_contents.contains_key(&c.chunk_id)
+                    && info.ingest_range.0 <= hi
+                    && info.ingest_range.1 >= lo
+            })
         };
         let Some(first_idx) = chunks.iter().position(overlaps) else {
             return Vec::new();
@@ -1762,6 +1938,53 @@ impl CapturePipeline {
             .cloned()
             .collect()
     }
+}
+
+fn embedded_config(annex_b: &[u8]) -> Option<Vec<u8>> {
+    let mut config = Vec::new();
+    for nal in arb_media::mp4::split_annexb_nals(annex_b) {
+        if nal.first().is_some_and(|b| matches!(b & 31, 7 | 8)) {
+            config.extend_from_slice(&[0, 0, 0, 1]);
+            config.extend_from_slice(nal);
+        }
+    }
+    (!config.is_empty()).then_some(config)
+}
+
+fn stream_gap(start: i64, end: i64, detail: String) -> DiscontinuityEvent {
+    DiscontinuityEvent {
+        kind: DiscontinuityKind::StreamGap,
+        stream: None,
+        boot_id: None,
+        start_boottime_ns: None,
+        end_boottime_ns: None,
+        pc_cont_start_ns: start,
+        pc_cont_end_ns: Some(end),
+        delta_ns: None,
+        detail: Some(detail),
+    }
+}
+
+pub(super) fn recover_provisional_jobs(
+    data_dir: &Path,
+    catalog: &Catalog,
+    pins: &PinJournal,
+) -> Result<(), DaemonError> {
+    for record in pins.list_all()? {
+        if catalog.save_job(&record.job_id)?.is_none()
+            && job_params_path(data_dir, &record.job_id).try_exists()?
+        {
+            let params = read_job_params(data_dir, &record.job_id)?;
+            catalog.create_pinned_job_with_trigger(
+                &record.job_id,
+                &record.destination_path,
+                &record.pinned_chunk_ids,
+                &record.created_at_utc,
+                params.trigger_kind,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn load_failed_retryable_job(
@@ -1909,11 +2132,44 @@ fn materialize_from_chunks(
     dest_bundle_dir: &Path,
     params: &SaveJobMaterializeParams,
 ) -> Result<Materialized, DaemonError> {
+    if let Some(manifest) =
+        arb_storage::bundle_io::existing_committed_manifest(dest_bundle_dir, &params.bundle_id)
+    {
+        return Ok(Materialized {
+            bundle_id: manifest.bundle_id,
+            unanchored_summary: manifest.unanchored_summary,
+            warning: None,
+        });
+    }
     let mut replayed = ReplayCollector::new(params);
-    for path in &plan.chunk_paths {
-        let bytes = fs::read(path)?;
-        for event in decode_ring_chunk(&bytes)? {
-            replayed.ingest_one(event);
+    let ring_dir = plan.data_dir.join("ring");
+    for (id, desc) in &plan.chunks {
+        let events = match desc.as_ref().map(|chunk| chunk.read_verified(&ring_dir)) {
+            Some(Ok(bytes)) => decode_ring_chunk(&bytes).ok(),
+            Some(Err(StorageError::Io { source, .. }))
+                if source.kind() != std::io::ErrorKind::NotFound =>
+            {
+                return Err(source.into());
+            }
+            _ => None,
+        };
+        if let Some(events) = events {
+            for event in events {
+                replayed.ingest_one(event);
+            }
+        } else {
+            let (start, end) = desc.as_ref().and_then(|c| c.capture.as_ref()).map_or(
+                (
+                    params.window.ingest_start_cont_ns(),
+                    params.window.ingest_end_cont_ns(),
+                ),
+                |info| info.ingest_range,
+            );
+            replayed.discontinuities.push(stream_gap(
+                start,
+                end,
+                format!("チャンク {id} の欠損または整合性エラー"),
+            ));
         }
     }
     let draft = replayed.build_draft(job_id, params, &plan.data_dir)?;
@@ -2129,7 +2385,7 @@ impl ReplayCollector {
             video_height: params.video_height,
             video_config: params.fallback_video_config.clone(),
             raw_video: Vec::new(),
-            audio_config: None,
+            audio_config: params.fallback_audio_config.clone(),
             raw_audio: Vec::new(),
             audio_unavailable: false,
             audio_gap: false,
@@ -2204,14 +2460,7 @@ impl ReplayCollector {
                     if is_keyframe {
                         // Parameter sets embedded in this IDR take effect immediately. Cache
                         // them for later IDRs on devices that omit periodic configuration.
-                        let mut embedded = Vec::new();
-                        for nal in arb_media::mp4::split_annexb_nals(&annex_b) {
-                            if nal.first().is_some_and(|b| matches!(b & 31, 7 | 8)) {
-                                embedded.extend_from_slice(&[0, 0, 0, 1]);
-                                embedded.extend_from_slice(nal);
-                            }
-                        }
-                        if !embedded.is_empty() {
+                        if let Some(embedded) = embedded_config(&annex_b) {
                             self.video_config = Some(embedded);
                         } else if let Some(config) = self.video_config.as_ref() {
                             let mut combined = config.clone();
@@ -2585,6 +2834,7 @@ impl ReplayCollector {
         timeline: &ClockTimeline,
         raw_taps: Vec<RawCapturedTap>,
         params: &SaveJobMaterializeParams,
+        policy: &SelectionPolicy,
     ) -> (Vec<TapRecord>, usize, usize) {
         let aligned: Vec<TapRecord> = raw_taps
             .into_iter()
@@ -2621,7 +2871,7 @@ impl ReplayCollector {
                 }
             })
             .collect();
-        let part = select_records(aligned, &params.window, &params.policy);
+        let part = select_records(aligned, &params.window, policy);
         let unanchored_count = part.unanchored.len();
         let truncated = part.unanchored_truncated_count;
         let mut final_taps = Vec::with_capacity(part.main.len() + unanchored_count);
@@ -2651,10 +2901,14 @@ impl ReplayCollector {
         // an in-progress swipe is never silently dropped (T-6H item 2).
         self.flush_active_strokes();
         let audio_continuity = self.audio_continuity();
-        let mut discontinuities = self.discontinuities;
+        let mut discontinuities = crate::media_engine::filter_discontinuities_for_window(
+            self.discontinuities,
+            &params.window,
+        );
         let (final_logs, unanchored_logs, trunc_logs) =
             Self::select_logs(&self.timeline, self.raw_logs, params);
 
+        let tap_budget = params.policy.after_logs(&final_logs);
         let media = if params.mode == SaveMode::LogsOnly {
             SelectedMediaTracks::logs_only()
         } else {
@@ -2670,6 +2924,7 @@ impl ReplayCollector {
                 self.raw_video,
                 self.raw_audio,
                 self.raw_taps,
+                &tap_budget,
                 &mut discontinuities,
             )?
         };
@@ -2680,7 +2935,7 @@ impl ReplayCollector {
             truncated_count: u64::try_from(
                 trunc_logs
                     .saturating_add(media.trunc_taps)
-                    .saturating_add(media.video_unanchored_excluded),
+                    .saturating_add(media.media_unanchored_excluded),
             )
             .unwrap_or(u64::MAX),
         };
@@ -2760,7 +3015,7 @@ struct SelectedMediaTracks {
     av_lead_in_offset_ns: i64,
     unanchored_taps: usize,
     trunc_taps: usize,
-    video_unanchored_excluded: usize,
+    media_unanchored_excluded: usize,
 }
 
 impl SelectedMediaTracks {
@@ -2776,7 +3031,7 @@ impl SelectedMediaTracks {
             av_lead_in_offset_ns: 0,
             unanchored_taps: 0,
             trunc_taps: 0,
-            video_unanchored_excluded: 0,
+            media_unanchored_excluded: 0,
         }
     }
 }
@@ -2797,6 +3052,7 @@ fn build_full_media_tracks(
     raw_video: Vec<RawCapturedVideo>,
     raw_audio: Vec<RawCapturedAudio>,
     raw_taps: Vec<RawCapturedTap>,
+    tap_budget: &SelectionPolicy,
     discontinuities: &mut Vec<DiscontinuityEvent>,
 ) -> Result<SelectedMediaTracks, DaemonError> {
     let selected_video = ReplayCollector::select_video(timeline, raw_video, params);
@@ -2834,7 +3090,7 @@ fn build_full_media_tracks(
         selected_audio.main,
     )?;
     let (taps, unanchored_taps, trunc_taps) =
-        ReplayCollector::select_taps(timeline, raw_taps, params);
+        ReplayCollector::select_taps(timeline, raw_taps, params, tap_budget);
     Ok(SelectedMediaTracks {
         bundle_kind: BundleKind::Full,
         video_mp4,
@@ -2846,7 +3102,9 @@ fn build_full_media_tracks(
         av_lead_in_offset_ns,
         unanchored_taps,
         trunc_taps,
-        video_unanchored_excluded: selected_video.unanchored_excluded,
+        media_unanchored_excluded: selected_video
+            .unanchored_excluded
+            .saturating_add(selected_audio.unanchored_excluded),
     })
 }
 
@@ -2974,7 +3232,7 @@ impl arb_core::selection::AlignedRecord for AlignedAudioItem {
 }
 
 /// Removes a temporary file on every exit path (R3 M3).
-struct TempFileGuard(PathBuf);
+pub(crate) struct TempFileGuard(pub(crate) PathBuf);
 
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
@@ -3336,7 +3594,7 @@ fn write_job_params(
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&tmp, &path)?;
+        arb_os::fs::replace_file(&tmp, &path)?;
         fsync_dir(parent)?;
         Ok(())
     })();
@@ -3860,6 +4118,218 @@ mod tests {
         );
     }
 
+    fn open_test_pipeline(tmp: &TempDir) -> CapturePipeline {
+        CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn p1_new_boot_can_save_at_sixty_seconds() {
+        let tmp = TempDir::new().unwrap();
+        let open = |uptime, boot| {
+            CapturePipeline::open_at(
+                tmp.path(),
+                RingBudgetPolicy::default(),
+                SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+                arb_os::clock::HostClockSample {
+                    active_mono_ns: uptime,
+                    continuous_mono_ns: uptime,
+                    wall_epoch_ns: boot + uptime,
+                },
+            )
+            .unwrap()
+        };
+        let mut cap = open(5 * 86_400_000_000_000, 0);
+        cap.begin_session("A");
+        cap.ingest_event(video_event(5 * 86_400_000_000_000, vec![1]))
+            .unwrap();
+        cap.mark_stopped();
+        drop(cap);
+        let mut cap = open(60_000_000_000, 5 * 86_400_000_000_000);
+        cap.begin_session("A");
+        cap.ingest_event(video_event(60_000_000_000, vec![2]))
+            .unwrap();
+        let pending = cap
+            .phase1_pin(10, tmp.path(), SelectionPolicy::default())
+            .unwrap();
+        assert_eq!(pending.pinned_chunk_ids.len(), 1);
+    }
+
+    #[test]
+    fn p1_same_boot_reopen_can_pin_old_recording() {
+        let tmp = TempDir::new().unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(video_event(100, vec![1])).unwrap();
+        cap.mark_stopped();
+        drop(cap);
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        assert!(
+            cap.phase1_pin(10, tmp.path(), SelectionPolicy::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn p1_pin_persists_replay_params_with_latest_codec_config() {
+        let tmp = TempDir::new().unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        let config = vec![0, 0, 0, 1, 0x67, 42, 0, 0, 0, 1, 0x68, 1];
+        let mut event = video_event(100, config.clone());
+        if let CaptureEvent::VideoFrame { packet, .. } = &mut event {
+            packet.kind = arb_adb::scrcpy::VideoPacketKind::Config;
+        }
+        cap.ingest_event(event).unwrap();
+        cap.ingest_event(video_event(120, vec![1])).unwrap();
+        let pending = cap
+            .phase1_pin(10, tmp.path(), SelectionPolicy::default())
+            .unwrap();
+        assert_eq!(pending.params.fallback_video_config, Some(config));
+        let params = super::read_job_params(tmp.path(), pending.job_id()).unwrap();
+        assert!(params.tail_may_be_incomplete);
+    }
+
+    fn heartbeat_at(time: i64) -> CaptureEvent {
+        CaptureEvent::Heartbeat {
+            pc_cont_ns: time,
+            boot_id: "boot-t".into(),
+            payload: arb_adb::wire::HeartbeatPayload {
+                boottime_ns: time,
+                monotonic_ns: time,
+                realtime_ns: time,
+                streams: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn save_after_codec_chunk_eviction_replays_video_and_correct_audio() {
+        use arb_adb::scrcpy::{AudioPacket, AudioPacketKind};
+        use arb_media::codec::VideoCodecBackend as _;
+        let tmp = TempDir::new().unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        let source = real_h264_items().remove(0).annex_b;
+        // The first IDR supplies embedded parameter sets. Later IDRs omit them.
+        cap.ingest_event(video_event(1, source.clone())).unwrap();
+        cap.ingest_event(CaptureEvent::AudioConfig {
+            pc_cont_ns: 2,
+            boot_id: "boot-t".into(),
+            packet: AudioPacket {
+                kind: AudioPacketKind::Config,
+                pts_us: 0,
+                data: super::build_aac_lc_audio_specific_config(44_100, 1)
+                    .unwrap()
+                    .to_vec(),
+            },
+        })
+        .unwrap();
+        cap.flush_pending_chunk().unwrap();
+        let limit = RingBudgetPolicy::default().max_ring_bytes;
+        let removed = cap.ring.enforce_budget(limit, 3).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(cap.ring.chunks().len(), 0);
+        cap.video_width = 64;
+        cap.video_height = 64;
+        cap.ingest_event(heartbeat_at(0)).unwrap();
+        let mut picture = vec![];
+        for nal in arb_media::mp4::split_annexb_nals(&source) {
+            if !matches!(nal[0] & 31, 7 | 8) {
+                picture.extend_from_slice(&[0, 0, 0, 1]);
+                picture.extend_from_slice(nal);
+            }
+        }
+        cap.ingest_event(video_event(1_000_000, picture)).unwrap();
+        cap.ingest_event(CaptureEvent::AudioFrame {
+            pc_cont_ns: 1_000_000,
+            boot_id: "boot-t".into(),
+            packet: AudioPacket {
+                kind: AudioPacketKind::Frame,
+                pts_us: 1_000,
+                data: vec![0x21, 0x10, 0x05, 0x44],
+            },
+        })
+        .unwrap();
+        cap.ingest_event(heartbeat_at(2_000_000)).unwrap();
+        let out = tmp.path().join("bundles");
+        let cat = arb_storage::catalog::Catalog::open(tmp.path().join("cat"), &out).unwrap();
+        let (job, plan) = cap
+            .phase1_pin_save(
+                &cat,
+                10,
+                &out,
+                SelectionPolicy::default(),
+                super::TailCompleteness::Complete,
+            )
+            .unwrap();
+        let saved = super::phase2_materialize(&plan, &cat, &job.job.job_id)
+            .unwrap()
+            .bundle_path
+            .unwrap();
+        let video = arb_media::mp4::Mp4VideoTrack::open(saved.join("video.mp4")).unwrap();
+        let frame = OpenH264Backend::new()
+            .decode_frame(&video, 0, PixelFormat::Yuv420p)
+            .unwrap();
+        assert_eq!((frame.width, frame.height), (64, 64));
+        let audio = arb_media::audio::Mp4AudioTrack::open(saved.join("audio.m4a")).unwrap();
+        assert_eq!((audio.sample_rate_hz(), audio.channels()), (44_100, 1));
+    }
+
+    #[test]
+    fn provisional_pin_survives_restart_and_one_damaged_chunk_becomes_a_gap() {
+        use arb_storage::bundle_io::BundleReader as _;
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("bundles");
+        let catalog = arb_storage::catalog::Catalog::open(tmp.path().join("cat"), &out).unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(heartbeat_at(100)).unwrap();
+        cap.ingest_event(heartbeat_at(200)).unwrap();
+        let mut pending = cap
+            .phase1_pin_with_options(
+                10,
+                &out,
+                SelectionPolicy::default(),
+                SaveMode::LogsOnly,
+                super::SaveTriggerKind::Manual,
+            )
+            .unwrap();
+        let job_id = pending.job_id().to_owned();
+        let first = cap.ring.descriptor(&pending.pinned_chunk_ids[0]).unwrap();
+        std::fs::write(tmp.path().join("ring").join(&first.file_name), b"damaged").unwrap();
+        pending.guard.armed = false; // simulate process exit before the SQL transaction
+        drop(pending);
+        drop(cap);
+        let cap = open_test_pipeline(&tmp);
+        let pins = cap.ring.pin_journal();
+        super::recover_provisional_jobs(tmp.path(), &catalog, pins).unwrap();
+        let (recovered, _) = catalog
+            .recover_on_startup_with_pins("2026-01-01T00:00:00Z", pins)
+            .unwrap();
+        assert_eq!(recovered.recovered_job_ids, std::slice::from_ref(&job_id));
+        let plan = cap.prepare_retry(&catalog, &job_id).unwrap();
+        let path = super::phase2_materialize(&plan, &catalog, &job_id)
+            .unwrap()
+            .bundle_path
+            .unwrap();
+        let saved = arb_storage::bundle_io::V2BundleReader::open(path).unwrap();
+        assert_eq!(saved.clock_anchors().unwrap().len(), 1);
+        assert!(
+            saved
+                .discontinuities()
+                .unwrap()
+                .iter()
+                .any(|d| d.kind == DiscontinuityKind::StreamGap && d.pc_cont_start_ns == 100)
+        );
+        assert_eq!(pins.list_all().unwrap().len(), 0);
+    }
+
     #[test]
     fn pending_save_keeps_original_device_across_switch() {
         let tmp = TempDir::new().unwrap();
@@ -4286,6 +4756,8 @@ mod tests {
             display_width,
             display_height,
             fallback_video_config: None,
+            fallback_audio_config: None,
+            trigger_kind: arb_core::state::SaveTriggerKind::Manual,
             extra_discontinuities: Vec::new(),
             uid_packages: BTreeMap::new(),
         }

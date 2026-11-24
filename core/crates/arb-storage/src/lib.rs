@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Three-zone persistence layer for Android Replay Buffer (ARB).
 //!
 //! Owns:

@@ -23,6 +23,7 @@ pub mod contact_sheet;
 pub mod error;
 pub mod mp4;
 pub mod mux_av;
+pub use output::copy_new;
 mod output;
 pub mod playback;
 pub mod trim;

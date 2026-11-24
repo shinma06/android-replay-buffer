@@ -821,6 +821,69 @@ mod imp {
     }
 }
 
+/// Publishes a sibling by atomic rename, replacing an existing file.
+///
+/// # Errors
+/// Returns the filesystem error after bounded retries for transient sharing violations.
+pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient_rename(
+        || fs::rename(from, to),
+        imp::is_transient_rename_error,
+        || false,
+        &RENAME_RETRY_DELAYS_MS,
+        thread::sleep,
+    )
+}
+
+/// Publishes a sibling without replacing an existing destination.
+///
+/// # Errors
+/// Returns an error if the destination exists or the filesystem cannot rename the source.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient_rename(
+        || imp::rename_no_replace(from, to),
+        imp::is_transient_rename_error,
+        || false,
+        &RENAME_RETRY_DELAYS_MS,
+        thread::sleep,
+    )
+}
+
+/// Cross-platform positional exact file read (`pread` on Unix, `seek_read` loop on Windows).
+///
+/// # Errors
+/// Returns the underlying read error if the requested bytes are unavailable.
+pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt as _;
+        file.read_exact_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt as _;
+        let mut remaining = buf;
+        let mut cur_offset = offset;
+        while !remaining.is_empty() {
+            let n = file.seek_read(remaining, cur_offset)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF during positional read",
+                ));
+            }
+            let n_u64 = u64::try_from(n).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "read length overflowed u64")
+            })?;
+            cur_offset = cur_offset.checked_add(n_u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow")
+            })?;
+            remaining = &mut remaining[n..];
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

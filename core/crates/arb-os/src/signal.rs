@@ -10,7 +10,7 @@ static SHUTDOWN_SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns `true` once SIGINT / SIGTERM / SIGHUP (Unix) or a console close event (Windows)
 /// has been delivered to this process.
-pub(crate) fn is_signalled() -> bool {
+pub fn is_signalled() -> bool {
     SHUTDOWN_SIGNALLED.load(Ordering::Acquire)
 }
 
@@ -77,6 +77,6 @@ mod imp {
 
 /// Installs OS termination signal handlers so `arbd` stops capture, cleans remote agents, and
 /// removes SHM files cleanly instead of dying abruptly.
-pub(crate) fn install_shutdown_handlers() {
+pub fn install_shutdown_handlers() {
     imp::install();
 }

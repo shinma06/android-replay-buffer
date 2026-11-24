@@ -26,7 +26,7 @@
 //! a different action, bundle, or job.
 
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io::{self, Read, Write as _};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -804,6 +804,7 @@ fn ipc_worker(
 struct TrayUi<B: TrayBackend> {
     backend: B,
     created: bool,
+    parent_bound: bool,
     shown_menu: Vec<ModelMenuItem>,
     shown_badge: Option<TrayBadge>,
     shown_tooltip: Option<String>,
@@ -817,6 +818,7 @@ impl<B: TrayBackend> TrayUi<B> {
         Self {
             backend,
             created: false,
+            parent_bound: false,
             shown_menu: Vec::new(),
             shown_badge: None,
             shown_tooltip: None,
@@ -832,7 +834,10 @@ impl<B: TrayBackend> TrayUi<B> {
     /// Returns `Err` when the very first tray build fails (e.g. no tray host or GUI session
     /// exists — S6) so the caller can print a clean diagnostic and exit non-zero.
     fn render(&mut self, state: &TrayViewState) -> Result<(), String> {
-        let model = build_menu(state);
+        let mut model = build_menu(state);
+        if self.parent_bound {
+            model.retain(|item| item.event != Some(TrayMenuEvent::StopDaemonAndQuit));
+        }
         let tooltip = state.status_line();
         if !self.created {
             self.backend
@@ -976,11 +981,13 @@ pub fn run(
 
     if options.headless {
         let mut ui = TrayUi::new(HeadlessBackend);
+        ui.parent_bound = options.exit_on_stdin_eof;
         ui.render(&TrayViewState::offline())?;
         return run_polling_loop(ui, &command_tx, &update_rx);
     }
 
-    let ui = TrayUi::new(NativeBackend::new());
+    let mut ui = TrayUi::new(NativeBackend::new());
+    ui.parent_bound = options.exit_on_stdin_eof;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -1059,10 +1066,13 @@ where
     F: FnOnce() + Send + 'static,
 {
     spawn_parent_watch("arb-tray-parent-watch", reader, move |gone| {
-        eprintln!("[arb-tray] parent gone ({gone:?}); quitting");
         let _ = update_tx.send(TrayUpdate::QuitNow);
+        let _ = writeln!(io::stderr(), "[arb-tray] parent gone ({gone:?}); quitting");
         thread::sleep(grace);
-        eprintln!("[arb-tray] UI loop did not quit within {grace:?}; exiting now");
+        let _ = writeln!(
+            io::stderr(),
+            "[arb-tray] UI loop did not quit within {grace:?}; exiting now"
+        );
         force_exit();
     })
     .map(drop)

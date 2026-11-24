@@ -489,6 +489,8 @@ impl V2BundleWriter {
             }
             Err(err) => return Err(err.into()),
         };
+        staging.write_file_synced(STAGING_OWNER, job_id.as_bytes())?;
+        arb_os::fs::fsync_dir(staging.staging_path())?;
         let mut files = Vec::new();
 
         if let Some(video) = &draft.video_mp4 {
@@ -614,26 +616,48 @@ impl V2BundleWriter {
     }
 }
 
-/// Removes `<parent>/.staging-<job_id>` left behind by a crashed earlier attempt (managed
-/// roots are swept by `Catalog::recover_on_startup`; external destinations are not).
-fn remove_stale_staging_sibling(final_dir: &Path, job_id: &str) -> Result<(), StorageError> {
-    let Some(parent) = final_dir.parent().filter(|p| !p.as_os_str().is_empty()) else {
-        return Ok(());
+const STAGING_OWNER: &str = ".arb-staging-owner";
+
+/// Removes a partial staging directory only if it belongs to this job.
+/// A completed or unidentifiable directory is preserved for manual inspection.
+///
+/// # Errors
+/// Returns an error if the directory cannot be inspected or removed.
+pub fn remove_stale_staging_sibling(final_dir: &Path, job_id: &str) -> Result<bool, StorageError> {
+    validate_simple_id("job_id", job_id)?;
+    let Some(parent) = final_dir.parent() else {
+        return Ok(false);
     };
-    let stale = parent.join(format!(".staging-{job_id}"));
-    match fs::symlink_metadata(&stale) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(&stale)
-            .map_err(|source| StorageError::io("remove_stale_staging_dir", &stale, source)),
-        Ok(_) => fs::remove_file(&stale)
-            .map_err(|source| StorageError::io("remove_stale_staging_entry", &stale, source)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(StorageError::io("stat_stale_staging_dir", &stale, source)),
+    let stage = parent.join(format!(".staging-{job_id}"));
+    let meta = match fs::symlink_metadata(&stage) {
+        Ok(meta) => meta,
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(e) => return Err(StorageError::io("stat_staging_dir", &stage, e)),
+    };
+    let marker_path = stage.join(STAGING_OWNER);
+    let owned = meta.is_dir()
+        && fs::symlink_metadata(&marker_path)
+            .is_ok_and(|m| m.is_file() && Some(m.len()) == u64::try_from(job_id.len()).ok())
+        && fs::read(&marker_path).is_ok_and(|v| v == job_id.as_bytes());
+    if !owned || [arb_os::fs::COMMIT_MARKER_FILE, MANIFEST_V2_FILE, "replay.json", "session.json"].iter()
+        .any(|file| !matches!(fs::symlink_metadata(stage.join(file)), Err(e) if e.kind() == io::ErrorKind::NotFound)) {
+        let _ = writeln!(io::stderr(), "未確定の所有情報または完成済みのため保持しました: {}", stage.display());
+        return Ok(false);
     }
+    fs::remove_dir_all(&stage).map_err(|e| StorageError::io("remove_staging_dir", &stage, e))?;
+    Ok(true)
 }
 
 /// Returns the manifest of an already committed, intact bundle with `bundle_id` at
 /// `final_dir`, if that is what is there.
-fn existing_committed_manifest(final_dir: &Path, bundle_id: &str) -> Option<ManifestV2> {
+pub fn existing_committed_manifest(final_dir: &Path, bundle_id: &str) -> Option<ManifestV2> {
     let reader = V2BundleReader::open(final_dir).ok()?;
     if reader.manifest().bundle_id != bundle_id {
         return None;

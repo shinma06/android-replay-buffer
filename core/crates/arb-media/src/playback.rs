@@ -17,6 +17,7 @@ use crate::mp4::Mp4VideoTrack;
 use crate::output::{Publish, write_atomically};
 
 /// File magic header for external `filmstrip.bin` caches.
+const MAX_CACHE_ENTRIES: usize = 1_000_000;
 const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS001";
 
 /// FNV-1a 64-bit offset basis for integrity verification of `filmstrip.bin`.
@@ -241,6 +242,14 @@ impl FilmstripCache {
         let entry_count = usize::try_from(read_u32_le(&bytes, 24)?)
             .map_err(|_| MediaError::CacheCorrupt("entry count overflow".to_owned()))?;
         let mut pos = 28usize;
+        if entry_count > MAX_CACHE_ENTRIES
+            || entry_count > (body_len - pos) / 28
+            || u64::try_from(entry_count).is_ok_and(|n| n > source_frame_count)
+        {
+            return Err(MediaError::CacheCorrupt(
+                "invalid filmstrip entry count".into(),
+            ));
+        }
         let mut entries = Vec::with_capacity(entry_count);
 
         for _ in 0..entry_count {

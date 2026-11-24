@@ -631,6 +631,7 @@ fn t1_save_logs_and_logs_only_trigger_keep_video_running_and_honor_worm_leases()
     let _ = client.call("bundle.restore", &json!({ "bundle_id": bundle_id }));
     let _ = client.call("bundle.close", &json!({ "lease_id": lease_id }));
     let _ = client.call("bundle.trash", &json!({ "bundle_id": bundle_id }));
+    client.call("config.update", &json!({ "gc_grace_secs": 0 }));
     let gc_purged = client.call("bundle.gc", &json!({}));
     assert!(
         gc_purged["purged_bundle_ids"]

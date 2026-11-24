@@ -21,9 +21,9 @@ impl Axis {
         if self.min == 0 && (self.max == self.pixels || self.max == last_pixel) {
             return Some(value.min(last_pixel));
         }
-        let span = i64::from(self.max) - i64::from(self.min);
-        let offset = i64::from(value) - i64::from(self.min);
-        i32::try_from((offset * i64::from(last_pixel) + span / 2) / span).ok()
+        let span = i128::from(self.max) - i128::from(self.min);
+        let offset = i128::from(value) - i128::from(self.min);
+        i32::try_from((offset * i128::from(last_pixel) + span / 2) / span).ok()
     }
 }
 

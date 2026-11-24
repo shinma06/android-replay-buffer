@@ -53,10 +53,18 @@ pub(super) fn prepare(paths: &ArbPaths, start: rpc::AutoStartMode) -> Result<(),
     ) {
         return Ok(());
     }
-    eprintln!("[arb] Replacing the running arbd");
-    client
-        .call("system.shutdown", json!({}))
+    if hello["parent_bound"] == true {
+        eprintln!("Android Studio が録画中のため、デーモンの更新を延期しました。");
+        return Ok(());
+    }
+    let response = client
+        .call("system.shutdown_for_handover", json!({}))
         .map_err(CliError::from_rpc)?;
+    if response["ok"] != true {
+        eprintln!("デーモンの処理が完了するまで更新を延期しました。");
+        return Ok(());
+    }
+    eprintln!("稼働中の arbd を更新します。");
     drop(client);
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {

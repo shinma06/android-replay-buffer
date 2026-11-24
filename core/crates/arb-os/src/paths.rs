@@ -62,6 +62,12 @@ impl ArbPaths {
         self.runtime_dir.join("arbd.lock")
     }
 
+    /// Lock shared by all runtime directories that refer to this recording store.
+    #[must_use]
+    pub fn data_lock_file(&self) -> PathBuf {
+        self.data_dir.join(".arbd-data.lock")
+    }
+
     /// Returns the single-instance tray lock file path (`<runtime_dir>/arb-tray.lock`), held by
     /// a running `arb-tray` so repeated launches never create duplicate menu-bar icons.
     #[must_use]
@@ -320,6 +326,14 @@ mod imp {
         };
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+        struct Token(HANDLE);
+        impl Drop for Token {
+            fn drop(&mut self) {
+                // SAFETY: this guard exclusively owns the handle returned by OpenProcessToken.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+
         // SAFETY: `GetCurrentProcess` returns a pseudo-handle that does not need closing.
         let proc_handle = unsafe { GetCurrentProcess() };
         let mut token: HANDLE = ptr::null_mut();
@@ -329,14 +343,13 @@ mod imp {
             return None;
         }
 
+        let _token_guard = Token(token);
         let mut needed: u32 = 0;
         // SAFETY: Querying required buffer length with a null output buffer is documented Win32 usage.
         let _ =
             unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
         let buf_len = usize::try_from(needed).ok()?;
         if buf_len < std::mem::size_of::<TOKEN_USER>() {
-            // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
-            let _ = unsafe { CloseHandle(token) };
             return None;
         }
 
@@ -351,8 +364,7 @@ mod imp {
                 &raw mut needed,
             )
         };
-        // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
-        let _ = unsafe { CloseHandle(token) };
+
         if ok == 0 {
             return None;
         }
@@ -363,9 +375,18 @@ mod imp {
         if sid_ptr.is_null() {
             return None;
         }
+        let offset = sid_ptr.addr().checked_sub(buf.as_ptr().addr())?;
+        let tail = buf.get(offset..usize::try_from(needed).ok()?)?;
+        // A SID has an 8-byte header followed by SubAuthorityCount DWORDs.
+        if tail.len() < 8 || 8 + usize::from(tail[1]) * 4 > tail.len() {
+            return None;
+        }
         // SAFETY: `sid_ptr` points to a valid SID inside `buf`.
         let sid_len_u32 = unsafe { GetLengthSid(sid_ptr) };
         let sid_len = usize::try_from(sid_len_u32).ok()?;
+        if sid_len > tail.len() {
+            return None;
+        }
         // SAFETY: `sid_ptr` points to `sid_len` readable bytes inside `buf`.
         let sid_slice = unsafe { std::slice::from_raw_parts(sid_ptr.cast::<u8>(), sid_len) };
         Some(sid_slice.to_vec())

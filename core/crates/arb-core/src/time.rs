@@ -139,7 +139,7 @@ impl PcSyncProbe {
 
     /// Synchronization error half-width `rtt_ns / 2`, or `None` if RTT is negative.
     pub fn half_width_ns(&self) -> Option<u64> {
-        self.rtt_ns().map(|rtt| rtt / 2)
+        self.rtt_ns().map(|rtt| rtt.div_ceil(2))
     }
 
     /// Midpoint of host continuous send and receive timestamps.
@@ -428,6 +428,32 @@ impl ClockTimeline {
         }
     }
 
+    /// Keeps recent live anchors while immutable ring chunks retain full replay history.
+    pub fn bound_live_history(&mut self) {
+        const CAP: usize = 2048;
+        self.epochs
+            .retain(|id, _| Some(id) == self.current_boot_id.as_ref());
+        for epoch in self.epochs.values_mut() {
+            if epoch.triples.len() > CAP {
+                epoch.triples.drain(..CAP / 2);
+                epoch.wall_jump_indices.retain_mut(|idx| {
+                    if let Some(new) = idx.checked_sub(CAP / 2) {
+                        *idx = new;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            if epoch.valid_probes.len() > CAP {
+                epoch.valid_probes.drain(..CAP / 2);
+            }
+        }
+        if self.discontinuities.len() > CAP {
+            self.discontinuities.drain(..CAP / 2);
+        }
+    }
+
     /// Returns the active threshold configuration.
     pub const fn config(&self) -> ClockTimelineConfig {
         self.config
@@ -498,6 +524,9 @@ impl ClockTimeline {
             .or_insert_with(BootEpochState::new);
 
         if let Some(prev) = epoch.triples.last() {
+            if triple.monotonic_ns < prev.monotonic_ns || triple.boottime_ns < prev.boottime_ns {
+                return Vec::new();
+            }
             let sleep_delta = triple.sleep_offset_ns() - prev.sleep_offset_ns();
             if sleep_delta > i128::from(self.config.sleep_threshold_ns) {
                 emitted.push(DiscontinuityEvent {
@@ -695,9 +724,12 @@ impl ClockTimeline {
         }
 
         // Look for an adjacent pair bracketing `monotonic_ns` within the same boot epoch.
-        for pair in epoch.triples.windows(2) {
-            let before = &pair[0];
-            let after = &pair[1];
+        let idx = epoch
+            .triples
+            .partition_point(|t| t.monotonic_ns < monotonic_ns)
+            .max(1);
+        if let Some(after) = epoch.triples.get(idx) {
+            let before = &epoch.triples[idx - 1];
             if before.monotonic_ns <= monotonic_ns && monotonic_ns <= after.monotonic_ns {
                 let sleep_delta = after.sleep_offset_ns() - before.sleep_offset_ns();
                 if sleep_delta > i128::from(self.config.sleep_threshold_ns) {
@@ -896,7 +928,7 @@ impl ClockTimeline {
                 epoch.wall_jump_indices.iter().any(|&idx| {
                     let jump_start = epoch.triples[idx].boottime_ns;
                     let jump_end = epoch.triples[idx + 1].boottime_ns;
-                    cand_bt <= jump_end && read_bt >= jump_start && cand_bt < jump_start
+                    cand_bt <= jump_end && read_bt >= jump_start && cand_bt <= jump_start
                 })
             });
 

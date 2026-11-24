@@ -99,7 +99,7 @@ impl PixelFormat {
         let min_row_bytes: u64 = match self {
             Self::Bgra8 | Self::Rgba8 => u64::from(width).checked_mul(4)?,
             Self::Rgb24 => u64::from(width).checked_mul(3)?,
-            Self::Nv12 => u64::from(width),
+            Self::Nv12 => u64::from(width).next_multiple_of(2),
         };
         if u64::from(stride) < min_row_bytes {
             return None;
@@ -1590,6 +1590,10 @@ mod tests {
 
     #[test]
     fn shm_validates_pixel_formats_and_rejects_oversized_frames() {
+        assert_eq!(PixelFormat::Nv12.required_buffer_bytes(1, 1, 1), None);
+        assert_eq!(PixelFormat::Nv12.required_buffer_bytes(1, 1, 2), Some(4));
+        assert_eq!(PixelFormat::Nv12.required_buffer_bytes(3, 3, 3), None);
+        assert_eq!(PixelFormat::Nv12.required_buffer_bytes(3, 3, 4), Some(20));
         assert_eq!(
             PixelFormat::Nv12.required_buffer_bytes(1920, 1080, 1920),
             Some(1920 * (1080 + 540)),

@@ -844,6 +844,8 @@ pub struct ExportTrimParams {
     /// `share-taps.mp4` when `burn_taps` is enabled) directly inside the trimmed bundle directory.
     #[serde(default)]
     pub include_share_mp4: bool,
+    /// Optional additional standalone copy of the verified share MP4.
+    pub share_output_path: Option<PathBuf>,
     /// When `true`, moves the source bundle to non-destructive Trash strictly AFTER the trimmed
     /// bundle is committed and verified (refused for read-only legacy or uncataloged bundles).
     #[serde(default)]
@@ -872,6 +874,9 @@ pub struct ExportTrimResponse {
     /// Path to `share.mp4` or `share-taps.mp4` inside the trimmed bundle when generated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_mp4_path: Option<PathBuf>,
+    /// Verified mux metrics when a share MP4 was produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub av_mux_report: Option<AvMuxReport>,
     /// Number of per-app `app-logs/<package>.log` files emitted in the trimmed bundle.
     #[serde(default)]
     pub app_logs_count: usize,

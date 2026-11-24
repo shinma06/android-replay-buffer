@@ -15,6 +15,9 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum StorageError {
+    /// The connection mutex was poisoned during an earlier operation.
+    #[error("catalog connection mutex poisoned")]
+    CatalogPoisoned,
     /// Underlying OS abstraction failure from `arb-os`.
     #[error("os error: {0}")]
     Os(#[from] OsError),

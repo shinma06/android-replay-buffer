@@ -6,6 +6,7 @@ license.workspace = true
 description = "GPL-free media engine for Android Replay Buffer (ARB) (pure-Rust ISO-BMFF avc1 mux/demux, VideoCodecBackend, frame-accurate zero-elst trim, GOP-LRU playback)."
 
 [dependencies]
+arb-os.workspace = true
 arb-core.workspace = true
 openh264 = "0.9"
 png = "0.17"

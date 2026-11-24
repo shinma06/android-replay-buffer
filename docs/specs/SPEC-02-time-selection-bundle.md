@@ -26,7 +26,7 @@ satisfies:
     - `CLOCK_MONOTONIC` は NTP/adjtime 周波数調整（実測 `-4.365 s` 乖離）と 1000 ns 粒度を持つため `CLOCK_UPTIME_RAW` とのスリープ差分計算に **使用禁止** とする。
 - **時計アンカーと不連続検出**:
   - 端末内 3 時計トリプル `{ boot_id, boottime_ns, monotonic_ns, realtime_ns }` により `DeviceReboot`（`boot_id` 変化）、`DeviceSleep`（`boottime - monotonic` 差分 > 50 ms）、`DeviceWallJump`（`|Δ(realtime - boottime)|` > 50 ms）を検出する。
-  - PC↔端末同期プローブ（1〜2 秒周期）によりオフセットと誤差半幅 `rtt_ns / 2`、および `PcSleep` を検出する。
+  - PC↔端末同期プローブ（1〜2 秒周期）によりオフセットと誤差半幅 `ceil(rtt_ns / 2)`、および `PcSleep` を検出する。
 - **3 段階の時刻確度（`TimeAlignment`）**: 同一 `boot_id` 内の `DeviceBoottime` を基準軸とし、`Anchored { boottime_ns, half_width_ns, semantics }` / `Bounded { min_boottime_ns, max_boottime_ns, reason }` / `Unanchored { pc_ingest_cont_ns, reason }` のいずれかに写像する。
 
 ## 2. 保存・トリム共通の 3 値選別エンジン（`arb-core::selection`）
@@ -43,7 +43,11 @@ satisfies:
 
 - **Zone 1（Live Ring Store）**: 追記専用チャンク（デフォルト上限 `1.5 GiB` / 目安 `10 min`）。ホスト空き容量が `3 GiB` を下回ったら `StoragePressureStop` を記録して新規取得のみ停止し、Pin 済みチャンク・確定バンドルは一切削除しない。保存要求時は即座に対象チャンクを `save_jobs/<job-id>.json` に Phase-1 Pin する。
 - **Zone 2（WORM Bundle v2）**: 同一ファイルシステム上の `.staging-<job-id>/` に全ファイル書き出し・`fsync` → `manifest.json`（`schema_version: 2`, `files` SHA-256, `epochs`, `streams`, `unanchored_summary`）書込 → 原子リネーム（Windows では一時ロックへの指数バックオフリトライ＋コミットマーカー検査）で確定。確定後は完全不変（`manifest.json`, `video.mp4`, 任意の `audio.m4a`, 読取専用 `timeline.sqlite`）。
-- **Zone 3（Catalog / Lease / GC）**: `catalog.sqlite`（WAL）で `bundles` / `leases` / `save_jobs` / `edit_sessions` を管理。削除は論理退避（`trashed`）のみ行い、物理 GC は `active leases == 0` かつ猶予経過時のみ実行する。
+- **Zone 3（Catalog / Lease / GC）**: `catalog.sqlite`（WAL）で `bundles` / `leases` / `save_jobs` / `edit_sessions` を管理。削除は論理退避（`trashed`）のみ行い、管理対象の現行形式は最終退避から `gc_grace_secs`（既定 86,400 秒）が経過し、リース・保存ジョブともに 0 件の場合に物理削除する。同じトランザクションで退避時刻と状態を再確認する。リースは所有プロセスの終了または最終更新から 10 分で失効する。
+
+保存開始時に保存窓・トリガー・デコーダー設定を pin とともに永続化する。ホストの起動時刻と端末が一致するチャンクを復元し、保存時に各 SHA-256 を検証する。欠損区間は `StreamGap` に記録する。起動時には管理域とジョブの外部出力先でジョブ ID が一致する所有マーカーを確認し、未確定の作業ディレクトリだけを削除する。
+
+タッチ座標は表示寸法が既知なら物理ピクセルとして映像の各軸へ線形変換する。旧記録で両寸法が欠けている場合は両座標が 0〜1 の範囲に収まるものを変換する。
 
 ## 4. 旧保存物の読取専用互換（`LegacyBundleReader`）
 

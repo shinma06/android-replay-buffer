@@ -600,8 +600,11 @@ fn fault_concurrent_edit_trash_restore_and_lease_guarded_gc_safety() {
         .trash_bundle("bundle-external-1", "2026-11-22T12:02:00Z")
         .expect("trash external bundle must succeed");
 
+    catalog
+        .renew_lease(&lease_id, "2026-11-22T12:59:00Z")
+        .unwrap();
     let gc1 = catalog
-        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .gc_with_grace("2026-11-22T13:00:00Z", 0)
         .expect("gc_trashed_bundles must succeed");
     assert!(
         gc1.purged_bundle_ids.is_empty(),
@@ -646,7 +649,7 @@ fn fault_concurrent_edit_trash_restore_and_lease_guarded_gc_safety() {
     );
 
     let gc2 = catalog
-        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .gc_with_grace("2026-11-22T13:00:00Z", 0)
         .expect("gc after release must succeed");
     assert_eq!(
         gc2.purged_bundle_ids,
@@ -722,6 +725,18 @@ fn seed_interrupted_jobs(
 }
 
 #[test]
+fn p1_unmarked_staging_survives_recovery() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("db"), &root).unwrap();
+    let stage = root.join(".staging-family");
+    fs::create_dir_all(&stage).unwrap();
+    fs::write(stage.join("keep"), b"mine").unwrap();
+    catalog.recover_on_startup("2026-11-22T12:00:00Z").unwrap();
+    assert_eq!(fs::read(stage.join("keep")).unwrap(), b"mine");
+}
+
+#[test]
 fn fault_orphan_lease_staging_and_interrupted_jobs_recover_on_startup() {
     let tmp = TempDir::new().expect("temp dir must be created");
     let managed_root = tmp.path().join("bundles");
@@ -739,6 +754,7 @@ fn fault_orphan_lease_staging_and_interrupted_jobs_recover_on_startup() {
 
     let orphan_staging = managed_root.join(".staging-crash");
     fs::create_dir_all(&orphan_staging).expect("creating orphan staging dir must succeed");
+    fs::write(orphan_staging.join(".arb-staging-owner"), b"crash").unwrap();
     fs::write(orphan_staging.join("partial.bin"), b"half-written")
         .expect("writing orphan staging file must succeed");
 
@@ -1493,7 +1509,7 @@ fn catalog_gc_protects_legacy_ro_and_active_job_targets_and_supports_retry_job()
     );
 
     let gc = catalog
-        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .gc_with_grace("2026-11-22T13:00:00Z", 0)
         .expect("gc_trashed_bundles must succeed");
     assert!(
         gc.purged_bundle_ids.is_empty(),
@@ -1658,6 +1674,7 @@ fn r2_s14_retry_after_post_rename_crash_is_idempotent_and_stale_staging_is_remov
     // Stale `.staging-<job>` under an external destination (not swept by recovery).
     let stale = external.join(".staging-job-y");
     fs::create_dir_all(&stale).expect("stale staging");
+    fs::write(stale.join(".arb-staging-owner"), b"job-y").unwrap();
     fs::write(stale.join("partial.bin"), b"half").expect("stale file");
     V2BundleWriter::write(
         external.join("bundle-y"),
@@ -1833,7 +1850,7 @@ fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
         .expect("trash");
 
     let report = catalog
-        .gc_trashed_bundles("2026-11-22T12:00:00.25Z")
+        .gc_with_grace("2026-11-22T12:00:00.25Z", 0)
         .expect("gc run must not abort on one failure");
     assert_eq!(
         report.skipped_in_grace_bundle_ids,
@@ -1860,7 +1877,7 @@ fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
     // The obstruction disappears: the next GC retries the Purging row.
     fs::remove_file(&failing_path).expect("unblock");
     let retry = catalog
-        .gc_trashed_bundles("2026-11-22T12:00:01Z")
+        .gc_with_grace("2026-11-22T12:00:01Z", 0)
         .expect("second gc");
     assert!(
         retry.purged_bundle_ids.contains(&"b-fail".to_owned()),
