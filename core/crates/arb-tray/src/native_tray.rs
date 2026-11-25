@@ -818,6 +818,8 @@ struct TrayUi<B: TrayBackend> {
     /// Latest state whose (deferred) parts are not yet fully shown.
     pending: Option<TrayViewState>,
     event_map: HashMap<MenuId, TrayMenuEvent>,
+    /// Last render failure that was logged, so a persistent failure is logged once, not per poll.
+    last_render_error: Option<String>,
 }
 
 impl<B: TrayBackend> TrayUi<B> {
@@ -831,6 +833,7 @@ impl<B: TrayBackend> TrayUi<B> {
             shown_tooltip: None,
             pending: None,
             event_map: HashMap::new(),
+            last_render_error: None,
         }
     }
 
@@ -861,6 +864,7 @@ impl<B: TrayBackend> TrayUi<B> {
 
         let tracking = self.backend.menu_is_tracking();
         let mut deferred = false;
+        let mut failures = Vec::new();
         match plan_menu_update(&self.shown_menu, &model) {
             MenuPlan::Unchanged => {}
             MenuPlan::InPlace(updates) => {
@@ -873,14 +877,17 @@ impl<B: TrayBackend> TrayUi<B> {
                 // A partial native rebuild invalidates the previous click targets.
                 self.shown_menu.clear();
                 self.event_map.clear();
-                self.backend.replace_menu_items(&model)?;
-                self.event_map = event_map_for(&model);
-                self.shown_menu = model;
+                match self.backend.replace_menu_items(&model) {
+                    Ok(()) => {
+                        self.event_map = event_map_for(&model);
+                        self.shown_menu = model;
+                    }
+                    Err(err) => failures.push(err),
+                }
             }
         }
-        // Apply the icon and tooltip independently so one persistent native failure cannot
-        // freeze the other; report every failure together.
-        let mut failures = Vec::new();
+        // Apply the menu, icon and tooltip independently so one persistent native failure cannot
+        // freeze the others; report every failure together.
         if self.shown_badge != Some(state.badge) {
             if tracking {
                 deferred = true;
@@ -914,10 +921,23 @@ impl<B: TrayBackend> TrayUi<B> {
         if self.pending.is_some()
             && !self.backend.menu_is_tracking()
             && let Some(state) = self.pending.take()
-            && let Err(err) = self.render(&state)
         {
-            log_render_failure(&err);
+            let _ = self.render_and_log(&state);
         }
+    }
+
+    /// Renders `state`; a failure is logged once per distinct message until a render succeeds.
+    fn render_and_log(&mut self, state: &TrayViewState) -> Result<(), String> {
+        let result = self.render(state);
+        match &result {
+            Ok(()) => self.last_render_error = None,
+            Err(err) if self.last_render_error.as_deref() != Some(err.as_str()) => {
+                log_render_failure(err);
+                self.last_render_error = Some(err.clone());
+            }
+            Err(_) => {}
+        }
+        result
     }
 }
 
@@ -936,11 +956,8 @@ fn apply_update<B: TrayBackend>(ui: &mut TrayUi<B>, update: TrayUpdate) -> Optio
             for alert in &alerts {
                 eprintln!("[arb-tray] {}", alert.message());
             }
-            if let Err(err) = ui.render(&state) {
-                log_render_failure(&err);
-                if !ui.created {
-                    return Some(1);
-                }
+            if ui.render_and_log(&state).is_err() && !ui.created {
+                return Some(1);
             }
         }
         TrayUpdate::ActionFinished { event, error } => {
@@ -1709,5 +1726,41 @@ mod tests {
         ui.backend.fail_icon = false;
         ui.render(&next).unwrap();
         assert_eq!(ui.shown_badge, Some(next.badge));
+    }
+
+    #[test]
+    fn menu_rebuild_failure_does_not_freeze_icon_and_tooltip() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        let mut old = capturing_state(10);
+        old.jobs.push(failed_job("old-job"));
+        ui.render(&old).unwrap();
+        let icon_sets = ui.backend.icon_sets;
+        let tooltip_sets = ui.backend.tooltip_sets;
+        let mut next = capturing_state(20);
+        next.badge = TrayBadge::Idle;
+        next.jobs = vec![failed_job("new-job")];
+        ui.backend.fail_rebuild_once = true;
+        let err = ui.render(&next).unwrap_err();
+        assert!(err.contains("injected rebuild failure"), "{err}");
+        assert_eq!(ui.backend.icon_sets, icon_sets + 1);
+        assert_eq!(ui.backend.tooltip_sets, tooltip_sets + 1);
+        assert!(ui.shown_menu.is_empty() && ui.event_map.is_empty());
+    }
+
+    #[test]
+    fn persistent_render_failure_is_logged_once_until_it_recovers() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).unwrap();
+        ui.backend.fail_icon = true;
+        let mut next = capturing_state(10);
+        next.badge = TrayBadge::Idle;
+        assert!(ui.render_and_log(&next).is_err());
+        let first = ui.last_render_error.clone();
+        assert!(first.is_some());
+        assert!(ui.render_and_log(&next).is_err());
+        assert_eq!(ui.last_render_error, first);
+        ui.backend.fail_icon = false;
+        ui.render_and_log(&next).unwrap();
+        assert_eq!(ui.last_render_error, None);
     }
 }

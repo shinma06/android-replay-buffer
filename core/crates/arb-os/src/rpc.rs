@@ -147,6 +147,22 @@ struct IncomingError {
 
 fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
     let mut response: serde_json::Map<String, Value> = serde_json::from_str(raw)?;
+    // `arbd` answers frames it cannot attribute to a request (oversized, unparsable) with
+    // `id: null`. Keep its message, but still treat the connection as unusable.
+    if response.get("id").is_some_and(Value::is_null)
+        && let Some(error) = response.get("error").and_then(Value::as_object)
+    {
+        return Err(RpcClientError::InvalidResponse(format!(
+            "arbd rejected the request frame ({}): {}",
+            error
+                .get("code")
+                .map_or_else(|| "?".into(), Value::to_string),
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("no message")
+        )));
+    }
     if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || response.get("id").and_then(Value::as_u64) != Some(id)
         || response.contains_key("method")
@@ -581,6 +597,18 @@ mod tests {
                 "{response}"
             );
         }
+    }
+
+    #[test]
+    fn null_id_daemon_error_keeps_its_message_and_closes_the_connection() {
+        let raw =
+            json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"frame too large"}})
+                .to_string();
+        let err = super::parse_response(&raw, 1).unwrap_err();
+        assert!(
+            matches!(&err, RpcClientError::InvalidResponse(m) if m.contains("frame too large") && m.contains("-32600")),
+            "{err}"
+        );
     }
 
     #[test]
