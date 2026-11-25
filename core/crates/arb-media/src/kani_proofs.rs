@@ -335,3 +335,46 @@ fn k9_avcc_sample_to_annexb_bounded() {
         );
     }
 }
+
+/// K10. A symbolic three-frame table covers both continuous holds and adjacent boundaries.
+#[kani::proof]
+#[kani::unwind(5)]
+fn k10_frame_and_trim() {
+    use crate::timeline::{end_ns, frame_at_time, out_frame, out_time};
+    let a = i64::from(kani::any::<u16>()) + 1;
+    let b = a + i64::from(kani::any::<u16>()) + 1;
+    let pts = [0, a, b];
+    let end = end_ns(&pts, Some(i64::from(kani::any::<u16>()) + 1), 1);
+    let t = i64::from(kani::any::<u32>());
+    let u = i64::from(kani::any::<u32>());
+    kani::assume(t <= u && u <= end);
+    let i = frame_at_time(&pts, t).unwrap();
+    let j = frame_at_time(&pts, u).unwrap();
+    assert!(i <= j && j < pts.len());
+    assert!(pts[i] <= t && (t < out_time(&pts, end, i) || t == end));
+    assert!(pts[i] < out_time(&pts, end, j) && out_time(&pts, end, j) <= end);
+    assert_eq!(out_frame(&pts, out_time(&pts, end, j)), Some(j));
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn k10_normalization() {
+    use crate::timeline::{end_ns, viewport_timestamps};
+    let table = viewport_timestamps(kani::any::<[i64; 3]>().into_iter());
+    assert_eq!(table[0], 0);
+    assert!(table[1] > 0 && table[2] > table[1]);
+    assert!(end_ns(&table, Some(kani::any()), 1) > table[2]);
+}
+
+#[kani::proof]
+fn k10_fraction() {
+    use crate::timeline::{end_ns, fraction_to_time, time_to_fraction};
+    let end = end_ns(&[0], Some(if kani::any() { 7 } else { 4 }), 1);
+    let t = i64::from(kani::any::<u8>() & 7);
+    let u = i64::from(kani::any::<u8>() & 7);
+    kani::assume(t <= u && u <= end);
+    assert!(time_to_fraction(t, end) <= time_to_fraction(u, end));
+    assert_eq!(time_to_fraction(0, end), 0.0);
+    assert_eq!(time_to_fraction(end, end), 1.0);
+    assert_eq!(fraction_to_time(time_to_fraction(t, end), end), t);
+}

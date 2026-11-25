@@ -338,6 +338,7 @@ object ProtocolJson {
                 slotCapacity = obj.requireLong("slot_capacity").toInt(),
                 frameCount = obj.requireLong("frame_count"),
                 keyframeCount = obj.requireLong("keyframe_count").toInt(),
+                timelineDurationNs = obj.get("timeline_duration_ns")?.takeUnless { it.isJsonNull }?.asLong,
                 lastFrameDurationNs = obj.get("last_frame_duration_ns")?.takeUnless { it.isJsonNull }?.asLong,
                 framePtsNs = pts?.map { element ->
                     if (!element.isJsonPrimitive || !element.asJsonPrimitive.isNumber) {

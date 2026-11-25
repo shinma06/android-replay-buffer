@@ -576,6 +576,16 @@ fn verify_shm_scrub_and_seek(client: &mut TestIpcClient, bundle_id: &str, cache_
         pts.windows(2).all(|w| w[0].as_i64() < w[1].as_i64()),
         "fixture presentation timestamps are increasing"
     );
+    let last_start = pts.last().and_then(Value::as_i64).expect("last start");
+    let tail = vp["last_frame_duration_ns"]
+        .as_i64()
+        .expect("last frame duration");
+    assert!(tail > 0, "fixture's final sample has a positive duration");
+    assert_eq!(
+        vp["timeline_duration_ns"].as_i64(),
+        Some(last_start + tail),
+        "the exclusive media end includes the final sample's hold"
+    );
     let vp_id = vp["viewport_id"].as_str().expect("viewport_id");
     let shm_path = PathBuf::from(vp["shm_path"].as_str().expect("shm_path"));
     let shm_reader = ShmFrameRingReader::open(&shm_path).expect("open SHM reader");

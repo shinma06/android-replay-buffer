@@ -720,7 +720,7 @@ class ArbT6dUiGlueAuditTest {
 
     @Test
     fun uniqueKeysPreventDuplicateLazyColumnKeyCrash() {
-        val crash = SyncedEventRow(SyncedEventKind.CRASH, seq = 9L, boottimeNs = 5L, relativeMs = null, frameIndex = null, title = "E", detail = "d")
+        val crash = SyncedEventRow(SyncedEventKind.CRASH, seq = 9L, boottimeNs = 5L, mediaTimeNs = null, frameIndex = null, title = "E", detail = "d")
         val log = crash.copy(kind = SyncedEventKind.LOG)
         val keys = ArbStudioController.uniqueKeys(listOf(crash, crash, log, crash), ArbStudioController::syncedRowKey)
         assertEquals(listOf("CRASH-9-5", "CRASH-9-5#2", "LOG-9-5", "CRASH-9-5#3"), keys)

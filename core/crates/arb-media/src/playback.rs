@@ -1342,11 +1342,7 @@ impl PresentationClock {
         if frames.is_empty() || track.has_b_frames() {
             return None;
         }
-        let idx = frames.partition_point(|f| f.pts_ns <= position_ns);
-        if idx == 0 {
-            Some(frames[0].frame_index)
-        } else {
-            Some(frames[idx - 1].frame_index)
-        }
+        crate::timeline::frame_at_time_by(frames, position_ns, |frame| frame.pts_ns)
+            .map(|index| frames[index].frame_index)
     }
 }

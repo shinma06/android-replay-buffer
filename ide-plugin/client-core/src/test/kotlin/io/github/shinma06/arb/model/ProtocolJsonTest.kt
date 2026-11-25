@@ -243,6 +243,19 @@ class ProtocolJsonTest {
     }
 
     @Test
+    fun mediaOpenViewportParsesTimelineEndAndToleratesOlderDaemons() {
+        val json = """{$viewportBase,"frame_pts_ns":[0,10,1000],"last_frame_duration_ns":999,"timeline_duration_ns":1999}"""
+        val resp = gson.fromJson(json, MediaOpenViewportResponse::class.java)
+        assertEquals(1_999L, resp.timelineDurationNs)
+        assertEquals(999L, resp.lastFrameDurationNs)
+        assertEquals(null, gson.fromJson("""{$viewportBase}""", MediaOpenViewportResponse::class.java).timelineDurationNs)
+        assertEquals(
+            null,
+            gson.fromJson("""{$viewportBase,"timeline_duration_ns":null}""", MediaOpenViewportResponse::class.java).timelineDurationNs,
+        )
+    }
+
+    @Test
     fun rejectsMalformedFrameTimestamps() {
         for (value in listOf("[1.5]", "[9223372036854775808]", "42")) {
             assertFailsWith<com.google.gson.JsonParseException> {

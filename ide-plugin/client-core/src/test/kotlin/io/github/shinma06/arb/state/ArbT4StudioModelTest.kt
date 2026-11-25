@@ -370,7 +370,7 @@ class ArbT4StudioModelTest {
     }
 
     @Test
-    fun boottimeMappingUsesFilmstripAcrossEpochs() {
+    fun boottimeMappingUsesBootAnchorsAcrossEpochs() {
         val base = healthySummary()
         val summary = base.copy(
             epochs = listOf(
@@ -390,7 +390,7 @@ class ArbT4StudioModelTest {
         )
         assertEquals(25L, state.boottimeNsToFrameIndex(6_000_000_000L))
         assertTrue(state.boottimeNsToFrameIndex(905_000_000_000L) in 74L..76L)
-        assertEquals(100L, state.boottimeNsToFrameIndex(2_000_000_000_000L))
+        assertNull(state.boottimeNsToFrameIndex(2_000_000_000_000L), "unknown epoch stays unsynchronized")
     }
 
     @Test
@@ -471,6 +471,38 @@ class ArbT4StudioModelTest {
         assertEquals(listOf("trim-1"), catalog.copy(activeFilter = BundleFilter.TRIMMED).filteredItems.map { it.bundleId })
         assertEquals(listOf("crash-1"), catalog.copy(activeFilter = BundleFilter.CRASH).filteredItems.map { it.bundleId })
         assertEquals(listOf("trash-1"), catalog.copy(activeFilter = BundleFilter.TRASH).filteredItems.map { it.bundleId })
+    }
+
+    @Test
+    fun screenSpansCrossingTheRecordingEdgesAreClippedNotHidden() {
+        val s = 1_000_000_000L
+        val range = io.github.shinma06.arb.model.EpochFrameRange(0, "boot-0", 0L, 9L, 100 * s, 101 * s)
+        fun state(withRanges: Boolean) = TimelineViewerState(
+            bundleId = "b-clip",
+            path = "/tmp/b-clip",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l-clip",
+            summary = healthySummary().copy(
+                epochs = listOf(EpochSpan("boot-0", 100 * s, 101 * s)),
+                epochFrameRanges = if (withRanges) listOf(range) else emptyList(),
+            ),
+            frameCount = 10L,
+            axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(10, List(10) { it * s / 10 }, lastDurationNs = s / 10),
+        )
+        fun span(start: Long, end: Long) = ScreenSpan(start, end, packageName = "p", activityName = "p.A", shortName = "A")
+        for (withRanges in listOf(true, false)) {
+            val st = state(withRanges)
+            // Already in the foreground when capture started: starts at media 0.
+            assertEquals(0L, st.screenTime(span(99 * s, 100 * s + s / 2)))
+            assertEquals(s / 2, st.screenTime(span(99 * s, 100 * s + s / 2), end = true))
+            // Still in the foreground at the end: ends at the exclusive media end.
+            assertEquals(s / 2, st.screenTime(span(100 * s + s / 2, 105 * s)))
+            assertEquals(s, st.screenTime(span(100 * s + s / 2, 105 * s), end = true))
+            // Entirely outside the recording, and pre-roll point events, stay unmapped.
+            assertNull(st.screenTime(span(90 * s, 95 * s)))
+            assertNull(st.eventTime(99 * s, "boot-0"))
+        }
     }
 
     @Test
@@ -583,7 +615,7 @@ class ArbT4StudioModelTest {
         assertNull(overlapping.boottimeNsToFrameIndex(10_000_000_000L))
 
         // Total duration sums both epochs cleanly (10s + 10s = 20s) even though epoch 1 reset boottime!
-        assertEquals(20_000L, state.totalDurationMs)
+        assertEquals(20_200L, state.totalDurationMs, "duration includes the inferred final sample")
         assertTrue(state.primaryCrashFrameIndex() in 75L..76L)
 
         // Tap overlay at epoch-0 frame 25 shows ONLY Tap #1; at epoch-1 frame 76 shows ONLY Tap #2.
