@@ -36,7 +36,7 @@ data class AuxStreamFailure(val stream: AuxStream, val reason: String)
 object StudioLoadMessages {
     /** Shown when a log bucket hit the per-bucket display limit and rows were dropped. */
     fun logLimitNotice(limit: Int): String =
-        "ログは表示上限（${formatLimit(limit)} 行）に達したため一部省略しています（フィルタで絞り込んでください）"
+        "ログは表示上限（${formatLimit(limit)} 行）に達したため一部省略しています。検索対象は各区分の先頭から表示上限までです。"
 
     fun streamFailureNotice(failure: AuxStreamFailure): String =
         "${failure.stream.label}を取得できませんでした（${failure.reason}）。0 件ではなく未取得です。"

@@ -46,10 +46,10 @@ class ArbSettingsPartialApplyTest {
             if (!world.daemonUp) throw IOException("arbd unreachable")
             world.daemon
         },
-        daemonConfigWriter = { baseline, draft ->
+        daemonConfigWriter = { _, draft ->
             if (!world.daemonUp) throw ArbdIoException("config.update", IOException("connection reset"))
             world.daemonWrites.incrementAndGet()
-            val updated = baseline.copy(saveWindowSecs = draft.saveWindowSecs)
+            val updated = world.daemon.copy(saveWindowSecs = draft.saveWindowSecs)
             world.daemon = updated
             updated
         },
@@ -116,6 +116,7 @@ class ArbSettingsPartialApplyTest {
         val form = configurable.createFormModel()
         form.saveWindowText.setTextAndPlaceCursorAtEnd("450")
         form.trayEnabled = true
+        world.daemon = world.daemon.copy(deviceSerial = "device-B")
         world.trayWriterFails = true
 
         val error = assertFailsWith<ConfigurationException> { configurable.apply() }
@@ -126,6 +127,7 @@ class ArbSettingsPartialApplyTest {
         assertEquals(450, world.daemon.saveWindowSecs, "the daemon part really was persisted")
         assertFalse(world.tray, "the failed value is not persisted")
         assertTrue(configurable.isModified, "only the failed tray change keeps the page modified")
+        assertEquals("device-B", form.currentDraft().deviceSerial)
         assertTrue(form.trayEnabled, "the failed value stays on screen as an unsaved edit, never as saved")
 
         // Retry after the fault clears: the daemon is not written again, only the failed writer runs.
@@ -158,6 +160,27 @@ class ArbSettingsPartialApplyTest {
         val text = ArbSettingsConfigurable.partialApplyMessage(emptyList(), listOf("トレイアイコン（x）"))
         assertContains(text, "保存済み: なし")
         assertContains(text, "未保存: トレイアイコン（x）")
+    }
+
+    @Test
+    fun restartKeepsDraftAndRequiresSuccessfulConfigRead() {
+        val world = World()
+        val configurable = configurable(world)
+        val form = configurable.createFormModel()
+        form.saveWindowText.setTextAndPlaceCursorAtEnd("450")
+        form.trayEnabled = true
+        world.daemonUp = false
+        configurable.restartDaemonAndReload()
+        assertFalse(form.daemonOnline)
+        assertEquals(450, form.currentDraft().saveWindowSecs)
+        world.daemon = world.daemon.copy(videoMaxFps = 12, deviceSerial = "device-B")
+        world.daemonUp = true
+        configurable.restartDaemonAndReload()
+        assertTrue(form.daemonOnline)
+        assertTrue(form.trayEnabled)
+        assertEquals(450, form.currentDraft().saveWindowSecs)
+        assertEquals(12, form.currentDraft().videoMaxFps)
+        assertEquals("device-B", form.currentDraft().deviceSerial)
     }
 
     @Test

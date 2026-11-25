@@ -385,26 +385,18 @@ class ArbSettingsConfigurable internal constructor(
         }
         val restarted = runCatching { blockingRunner.run { daemonRestarter() } }
         if (restarted.isSuccess) {
-            // Keep the baseline that the user edited: Apply sends only its differences.
-            // Replacing it with the restarted daemon's config would drop the pending draft.
-            if (hasDaemonBaseline && currentForm.currentDraft().isDaemonModifiedAgainst(baselineConfig)) {
-                currentForm.setDaemonStatus(online = true)
-            } else {
-                val screenshot = currentForm.currentLocalScreenshotSettings()
-                val tray = currentForm.trayEnabled
-                val screenshotChanged = screenshot != (baselineScreenshotInherit to baselineCustomScreenshotDir)
-                val trayChanged = tray != baselineTrayEnabled
-                reset()
-                if (screenshotChanged || trayChanged) {
-                    currentForm.loadFromDraft(
-                        currentForm.currentDraft(),
-                        if (screenshotChanged) screenshot.first else baselineScreenshotInherit,
-                        if (screenshotChanged) screenshot.second else baselineCustomScreenshotDir,
-                        if (trayChanged) tray else baselineTrayEnabled,
-                    )
-                    refreshScreenshotStatus(currentForm)
-                }
+            val draft = currentForm.currentDraft()
+            val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
+            val refreshed = loaded.getOrElse {
+                currentForm.setDaemonStatus(online = false, detailMessage = classifyDaemonError(it).message)
+                return
             }
+            val rebased = if (hasDaemonBaseline) draft.rebase(baselineConfig, refreshed)
+            else ArbSettingsDraft.fromConfig(refreshed, draft.customArbdBinaryPath)
+            baselineConfig = refreshed
+            hasDaemonBaseline = true
+            currentForm.loadFromDraft(rebased)
+            currentForm.setDaemonStatus(online = true)
         } else {
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
             currentForm.setDaemonStatus(
@@ -460,6 +452,7 @@ class ArbSettingsConfigurable internal constructor(
             try {
                 baselineConfig = blockingRunner.run { daemonConfigWriter(baselineConfig, draft) }
                 currentForm.setDaemonStatus(online = true)
+                currentForm.loadFromDraft(ArbSettingsDraft.fromConfig(baselineConfig, newCustomPath))
                 saved += DAEMON_SETTINGS_LABEL
             } catch (t: Throwable) {
                 // The daemon is the first writer: nothing local was written yet, and the baselines

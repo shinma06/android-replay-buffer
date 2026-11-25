@@ -796,7 +796,17 @@ class ArbBundleFileEditor internal constructor(
         studioController.updateState {
             it.copy(inFrameIndex = range.first, outFrameIndex = range.last, currentFrameIndex = playhead)
         }
-        submitWork { currentPlaybackController()?.let(applyPlayback) }
+        submitWork {
+            val playback = currentPlaybackController() ?: return@submitWork
+            try {
+                applyPlayback(playback)
+            } catch (error: Exception) {
+                val displayed = playback.state.displayedFrameIndex
+                publishEdt {
+                    if (!disposed) studioController.showError("選択範囲へのシークに失敗しました。表示中の映像はフレーム #$displayed です（${error.message}）。")
+                }
+            }
+        }
         persistEditSession(range.first, range.last, playhead)
     }
 
@@ -807,15 +817,14 @@ class ArbBundleFileEditor internal constructor(
         val before = current.estimatedFps.roundToLong().coerceAtLeast(1L)
         val after = (current.estimatedFps * 2.0).roundToLong().coerceAtLeast(1L)
         val range = PlaybackController.paddedRange(frames.min(), frames.max(), before, after, current.frameCount)
-        val playhead = if (studioController.playbackState.mode == io.github.shinma06.arb.playback.PlaybackMode.PLAYING &&
-            current.currentFrameIndex !in range
-        ) range.first else current.currentFrameIndex
-        selectPreset(range, playhead) { it.selectTapRange(frames, before, after) }
+        val playhead = current.currentFrameIndex.takeIf { it in range } ?: range.first
+        selectPreset(range, playhead) { it.selectTapRange(frames, before, after, playhead) }
     }
 
     private fun applySelectAroundCrash() {
         val current = viewerState ?: return
-        val crash = current.primaryCrashFrameIndex() ?: return
+        if (current.frameCount <= 0) return
+        val crash = current.primaryCrashFrameIndex()?.coerceIn(0L, current.frameCount - 1L) ?: return
         val before = (current.estimatedFps * 5.0).roundToLong().coerceAtLeast(1L)
         val after = (current.estimatedFps * 2.0).roundToLong().coerceAtLeast(1L)
         val range = PlaybackController.paddedRange(crash, crash, before, after, current.frameCount)
@@ -1014,7 +1023,7 @@ class ArbBundleFileEditor internal constructor(
 
     private class EditSessionWrites(val id: String) {
         val revision = java.util.concurrent.atomic.AtomicLong()
-        var lastSaved = 0L
+        var lastSubmitted = 0L
     }
 
     private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
@@ -1059,8 +1068,9 @@ class ArbBundleFileEditor internal constructor(
     private fun flushEditSession(session: EditSessionWrites, closing: Boolean): Boolean {
         val edit = synchronized(editPersistLock) { pendingEdit } ?: return true
         return try {
-            val superseded = edit.revision < session.lastSaved
+            val superseded = edit.revision < session.lastSubmitted
             if (!superseded) {
+                session.lastSubmitted = edit.revision
                 daemonService.withClient {
                     it.editUpdateSession(
                         EditUpdateSessionParams(
@@ -1072,9 +1082,10 @@ class ArbBundleFileEditor internal constructor(
                         ),
                     )
                 }
-                session.lastSaved = edit.revision
             }
-            if (superseded && !closing) updateViewerState { it.copy(lastActionMessage = "別のタブで保存された新しい編集範囲が優先されます。") }
+            if (superseded && !closing) publishEdt {
+                if (!disposed) studioController.showTimelineWarning("別のタブに新しい編集があるため、このタブの範囲は再保存しませんでした。")
+            }
             val drained = synchronized(editPersistLock) {
                 if (pendingEdit === edit) pendingEdit = null
                 pendingEdit == null

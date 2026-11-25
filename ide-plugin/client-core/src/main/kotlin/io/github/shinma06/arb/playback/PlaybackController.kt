@@ -63,6 +63,8 @@ class PlaybackController(
     private var anchorMediaPtsNs: Long = 0L
     private var loopThread: Thread? = null
 
+    private var audioSubscription: AutoCloseable? = null
+
     @Volatile
     private var currentState: PlaybackState
 
@@ -102,6 +104,7 @@ class PlaybackController(
             avOffsetMs = initialAvOffsetMs,
             audioState = audioPlayer?.audioState ?: AudioState.UNAVAILABLE,
         )
+        audioPlayer?.let(::observeAudioFailure)
     }
 
     val state: PlaybackState
@@ -588,6 +591,18 @@ class PlaybackController(
      * syncing its A/V offset, playback speed, mute state, playhead PTS, and active transport mode.
      * If this controller is already closed, [player] is closed immediately to avoid leaking resources.
      */
+    private fun observeAudioFailure(player: AudioSyncPlayer) {
+        audioSubscription = player.addStateListener { state ->
+            if (state == AudioState.UNAVAILABLE) {
+                val snapshot = stateLock.withLock {
+                    if (closed || audioPlayer !== player) null
+                    else publishStateLocked(currentState.copy(audioState = currentAudioState()))
+                }
+                snapshot?.let(::notifyListeners)
+            }
+        }
+    }
+
     fun attachAudioPlayer(player: AudioSyncPlayer, avOffsetMs: Long = player.avOffsetMs) {
         var oldToClose: AudioSyncPlayer? = null
         var rejectNew = false
@@ -597,7 +612,9 @@ class PlaybackController(
                 null
             } else {
                 oldToClose = audioPlayer
+                audioSubscription?.close()
                 audioPlayer = player
+                observeAudioFailure(player)
                 val cur = currentState
                 val curPtsNs = frameRelativePtsNs(cur.currentFrameIndex)
                 player.setAvOffsetMs(avOffsetMs)
@@ -639,6 +656,7 @@ class PlaybackController(
         tapFrameIndices: List<Long>,
         padBeforeFrames: Long,
         padAfterFrames: Long,
+        playhead: Long? = null,
     ): Boolean {
         require(padBeforeFrames >= 0L) { "padBeforeFrames must be non-negative: $padBeforeFrames" }
         require(padAfterFrames >= 0L) { "padAfterFrames must be non-negative: $padAfterFrames" }
@@ -653,8 +671,10 @@ class PlaybackController(
         stateLock.withLock {
             if (closed) return false
             var nextCur = currentState.currentFrameIndex
-            seekTarget = if (currentState.mode == PlaybackMode.PLAYING && (nextCur < newIn || nextCur > newOut)) {
-                nextCur = newIn
+            val target = playhead?.coerceIn(newIn, newOut) ?:
+                if (currentState.mode == PlaybackMode.PLAYING && nextCur !in range) newIn else nextCur
+            seekTarget = if (nextCur != target) {
+                nextCur = target
                 val pts = frameRelativePtsNs(nextCur)
                 anchorWallNs = clock.nowNs()
                 anchorMediaPtsNs = pts
@@ -868,6 +888,8 @@ class PlaybackController(
         stateLock.withLock {
             if (closed) return
             closed = true
+            audioSubscription?.close()
+            audioSubscription = null
             seekGeneration.incrementAndGet()
             threadToJoin = loopThread
             loopThread = null

@@ -133,6 +133,8 @@ class ArbToolWindowController(
     // queued, so two clicks in the same EDT turn can never both submit).
     private val saveInFlight = AtomicBoolean(false)
     private val logSaveInFlight = AtomicBoolean(false)
+    private val deviceChangeInFlight = AtomicBoolean(false)
+    private var deviceChangeBusy by mutableStateOf(false)
     private val screenshotInFlight = AtomicBoolean(false)
     private val captureModeInFlight = AtomicBoolean(false)
     private val restartInFlight = AtomicBoolean(false)
@@ -224,7 +226,7 @@ class ArbToolWindowController(
         get() = captureState.devices.isNotEmpty()
 
     val deviceDropdownEnabled: Boolean
-        get() = hasRealDevices
+        get() = hasRealDevices && !deviceChangeBusy
 
     /**
      * Device dropdown entries derived strictly from `client-core`'s [DeviceSelectionPolicy] outcome:
@@ -276,7 +278,7 @@ class ArbToolWindowController(
         get() = if (isLogsOnlyMode) LOGS_ONLY_CHIP_TEXT else null
 
     val captureModeToggleEnabled: Boolean
-        get() = captureState.daemonConnected && !captureModeBusy
+        get() = captureState.daemonConnected && !deviceChangeBusy && !captureModeBusy
 
     val canUseSelectedDevice: Boolean
         get() = captureState.daemonConnected && captureState.isSelectedDeviceOnline
@@ -322,10 +324,10 @@ class ArbToolWindowController(
 
     /** Always enabled while `arbd` is connected so Capture ON can be armed even with 0 devices. */
     val startStopEnabled: Boolean
-        get() = captureState.daemonConnected
+        get() = captureState.daemonConnected && !deviceChangeBusy
 
     val screenshotEnabled: Boolean
-        get() = if (isCaptureActive) captureState.daemonConnected else canUseSelectedDevice
+        get() = !deviceChangeBusy && (if (isCaptureActive) captureState.daemonConnected else canUseSelectedDevice)
 
     val startStopLabel: String
         get() = if (isCaptureOn) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
@@ -400,7 +402,7 @@ class ArbToolWindowController(
         // in a second device still prompts instead of silently keeping a pin nobody asked for.
         val current = captureState
         if (serial == current.selectedSerial && serial == current.autoSelectedSerial) return
-        runAsync(operation = "録画対象端末の変更") {
+        runGuarded(deviceChangeInFlight, { deviceChangeBusy = it }, operation = "録画対象端末の変更") {
             val config = if (rawCaptureState.config.deviceSerial == serial) rawCaptureState.config else {
                 daemonService.withClient {
                     it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
@@ -425,6 +427,7 @@ class ArbToolWindowController(
      * mode only takes effect when a capture starts.
      */
     fun setCaptureMode(mode: CaptureMode) {
+        if (deviceChangeInFlight.get()) return
         val snapshot = captureState
         val wasActive = snapshot.capture?.active == true
         val runningMode = snapshot.capture?.captureMode
@@ -474,11 +477,12 @@ class ArbToolWindowController(
     }
 
     fun toggleCapture() {
+        if (deviceChangeInFlight.get()) return
         val currentlyOn = isCaptureOn
         val currentlyActive = isCaptureActive
         val canStartNow = canUseSelectedDevice
         val serial = selectedDeviceSerial
-        runAsync {
+        runAsync(operation = "録画の切り替え") {
             setCaptureEnabled(
                 daemonService,
                 enable = !currentlyOn,
@@ -490,6 +494,7 @@ class ArbToolWindowController(
     }
 
     fun captureScreenshot() {
+        if (deviceChangeInFlight.get()) return
         val serial = selectedDeviceSerial
         runGuarded(screenshotInFlight, { screenshotBusy = it }) {
             try {
@@ -881,7 +886,7 @@ class ArbToolWindowController(
      * The guard and the observable busy flag are always released afterwards, whatever [action]
      * throws, and also when the worker drops the task.
      */
-    private fun runGuarded(inFlight: AtomicBoolean, setBusy: (Boolean) -> Unit, action: () -> Unit) {
+    private fun runGuarded(inFlight: AtomicBoolean, setBusy: (Boolean) -> Unit, operation: String? = null, action: () -> Unit) {
         if (!inFlight.compareAndSet(false, true)) return
         publishOnEdt { setBusy(true) }
         val release = {
@@ -890,7 +895,7 @@ class ArbToolWindowController(
                 inFlight.set(false)
             }
         }
-        runAsync(onDropped = release) {
+        runAsync(operation = operation, onDropped = release) {
             try {
                 action()
             } finally {

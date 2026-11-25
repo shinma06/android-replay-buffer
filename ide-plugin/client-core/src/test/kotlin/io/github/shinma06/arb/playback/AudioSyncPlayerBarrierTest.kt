@@ -230,8 +230,8 @@ class AudioSyncPlayerBarrierTest {
         controller.play()
         failRead.countDown()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (player.audioState != AudioState.UNAVAILABLE && System.nanoTime() < deadline) Thread.sleep(5)
-        assertEquals(AudioState.UNAVAILABLE, player.audioState, "the failure is surfaced, not silent")
+        while (controller.state.audioState != AudioState.UNAVAILABLE && System.nanoTime() < deadline) Thread.sleep(5)
+        assertEquals(AudioState.UNAVAILABLE, controller.state.audioState, "the failure reaches Studio before the next tick")
 
         val before = controller.state.currentFrameIndex
         clock.advanceMs(600)
