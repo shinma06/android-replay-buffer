@@ -14,7 +14,7 @@ Sections (each one is reported separately, a crash in one never hides the others
                         plugin.xml metadata, byte-identical host binaries)
   2  launchers          start-arb.sh / start-arb-tray.command / start-arb.ps1
   3  cold-start-ipc     arbd cold start, `status`, `config get` / `config set`, `bundles list`
-  4  mcp                `arb-cli mcp`: initialize, 17 tools, stderr 0 B, real-bundle overview + contact sheet
+  4  mcp                `arb-cli mcp`: initialize, 19 tools, stderr 0 B, real-bundle overview + contact sheet
   5  legacy-read-only   schema 3 / schema 4 bundles: every file SHA-256 identical before and after
   6  suite-b            devin_verify_player_matrix.py 17/17 for 1 s GOP and 5 s GOP FHD30 `[47..=647]`
                         mid-GOP trims + open / seek / trim timings
@@ -85,6 +85,8 @@ EXPECTED_MCP_TOOLS = (
     "arb_list_bundles",
     "arb_trash_bundle",
     "arb_restore_bundle",
+    "arb_gc_bundles",
+    "arb_forget_bundle",
     "arb_timeline_overview",
     "arb_query_logs",
     "arb_inspect_frames",
@@ -962,7 +964,7 @@ def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> No
 # --------------------------------------------------------------------------------------------
 
 def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Path, meta: dict[str, Any]) -> None:
-    with report.section("mcp", "MCP 17 ツールと実バンドル") as sec:
+    with report.section("mcp", "MCP 19 ツールと実バンドル") as sec:
         cfg_cli = (iso.cli("config", "get").data or {}).get("config", {})
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
@@ -973,7 +975,7 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
             sec.check("notifications/initialized emitted no stray frame", ping.get("id") is not None and not client.stray_frames, client.stray_frames)
             tools = client.request("tools/list", {})["result"]["tools"]
             names = [t["name"] for t in tools]
-            sec.check("tools/list returns exactly the 17 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
+            sec.check("tools/list returns exactly the 19 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
             status = client.call_tool("arb_status", {})
             sec.check("arb_status isError=false", status["result"]["isError"] is False)
             cfg_mcp = tool_text(client.call_tool("arb_config_get", {}))

@@ -1178,7 +1178,10 @@ impl Model for S2Model {
                 }
                 if n.bundle.is_some_and(|b| b.state == BState::Purged)
                     && s.bundle.is_some_and(|b| b.state != BState::Purged)
-                    && !s.bundle.is_some_and(|b| s.purge_allowed_for_immediate(&b))
+                    && (s.active_jobs() != 0
+                        || s.bundle.is_some_and(|b| {
+                            b.leases != 0 || b.legacy || !b.managed || b.state != BState::Trashed
+                        }))
                 {
                     n.bad_purge = true;
                 }
@@ -1294,6 +1297,15 @@ impl Model for S2Model {
                 "S2 stale GC mark rejected after restore",
                 |_: &S2Model, s: &S2State| {
                     s.gc_marked && s.bundle.is_some_and(|b| b.state == BState::Active)
+                },
+            ),
+            Property::sometimes(
+                "S2 immediate purge before grace",
+                |_: &S2Model, s: &S2State| {
+                    s.bundle.is_some_and(|b| {
+                        b.state == BState::Purged
+                            && s.clock.saturating_sub(b.trashed_at) < GRACE_STEPS
+                    })
                 },
             ),
             Property::sometimes("S2 bundle purged", |_: &S2Model, s: &S2State| {

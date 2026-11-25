@@ -309,6 +309,15 @@ impl McpServer {
                     self.call_daemon("bundle.restore", &json!({ "bundle_id": bundle_id }))?;
                 Ok(vec![text_block(&resp)])
             }
+            "arb_gc_bundles" => {
+                let params = match args.get("ignore_grace") {
+                    None | Some(Value::Bool(false)) => json!({}),
+                    Some(Value::Bool(true)) => json!({ "ignore_grace": true }),
+                    _ => return Err("ignore_grace must be a boolean".to_owned()),
+                };
+                let resp = self.call_daemon("bundle.gc", &params)?;
+                Ok(vec![text_block(&resp)])
+            }
             "arb_forget_bundle" => {
                 let all_missing = args
                     .get("all_missing")
@@ -780,6 +789,7 @@ const KNOWN_TOOLS: &[&str] = &[
     "arb_list_bundles",
     "arb_trash_bundle",
     "arb_restore_bundle",
+    "arb_gc_bundles",
     "arb_forget_bundle",
     "arb_timeline_overview",
     "arb_query_logs",
@@ -802,7 +812,7 @@ fn tool_def(name: &str, description: &str, input_schema: &Value) -> Value {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "single declarative JSON Schema registry for all 18 MCP tools"
+    reason = "single declarative JSON Schema registry for all 19 MCP tools"
 )]
 fn tool_definitions() -> Vec<Value> {
     vec![
@@ -960,6 +970,15 @@ fn tool_definitions() -> Vec<Value> {
                     "bundle_id": { "type": "string", "description": "Catalog bundle_id to restore from Trash." }
                 },
                 "required": ["bundle_id"],
+                "additionalProperties": false
+            }),
+        ),
+        tool_def(
+            "arb_gc_bundles",
+            "Purge eligible trashed bundles. Set ignore_grace only for an explicit immediate purge.",
+            &json!({
+                "type": "object",
+                "properties": { "ignore_grace": { "type": "boolean", "default": false } },
                 "additionalProperties": false
             }),
         ),

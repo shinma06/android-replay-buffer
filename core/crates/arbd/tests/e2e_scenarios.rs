@@ -2665,7 +2665,7 @@ fn empty_trash_ignore_grace_and_protections_e2e() {
 
     // Manually deleting trashed external bundle lets GC clean its dead row without disk ops.
     fs::remove_dir_all(&ext_path).expect("manual delete trashed external bundle");
-    let gc_clean = client.call("bundle.gc", &json!({}));
+    let gc_clean = client.call("bundle.gc", &json!({"ignore_grace": true}));
     assert!(
         gc_clean["purged_bundle_ids"]
             .as_array()

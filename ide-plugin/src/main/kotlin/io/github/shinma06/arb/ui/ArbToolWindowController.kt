@@ -352,7 +352,7 @@ class ArbToolWindowController(
         get() = captureState.daemonConnected && trashCount > 0 && !gcBusy
 
     val showEmptyTrashConfirmation: Boolean
-        get() = activeFilter == BundleFilter.TRASH && confirmEmptyTrashVisible && trashCount > 0
+        get() = activeFilter == BundleFilter.TRASH && confirmEmptyTrashVisible && emptyTrashEnabled
 
     private fun disabledDeviceHint(): String? {
         deviceSelectionNotice?.let { return it }
@@ -605,7 +605,7 @@ class ArbToolWindowController(
     }
 
     fun requestEmptyTrash() {
-        if (!emptyTrashEnabled) return
+        if (!showGcAction || !emptyTrashEnabled) return
         publishOnEdt { confirmEmptyTrashVisible = true }
     }
 
@@ -614,11 +614,15 @@ class ArbToolWindowController(
     }
 
     fun confirmEmptyTrash() {
-        if (gcBusy) return
         publishOnEdt {
+            if (!showEmptyTrashConfirmation) return@publishOnEdt
             confirmEmptyTrashVisible = false
             gcBusy = true
+            executeEmptyTrash()
         }
+    }
+
+    private fun executeEmptyTrash() {
         runAsync {
             try {
                 val gc = daemonService.withClient { it.bundleGc(ignoreGrace = true) }
@@ -640,10 +644,6 @@ class ArbToolWindowController(
                 publishOnEdt { gcBusy = false }
             }
         }
-    }
-
-    fun runGc() {
-        confirmEmptyTrash()
     }
 
     fun forgetBundle(bundleId: String) {
@@ -923,7 +923,8 @@ class ArbToolWindowController(
                 captureState = nextCapture
                 captureEnabled = armed
                 recoveryState = nextRecovery
-                catalogState = nextCatalog
+                catalogState = nextCatalog.copy(activeFilter = activeFilter)
+                if (trashCount == 0) confirmEmptyTrashVisible = false
                 staleDaemonMessage = staleWarning
                 if (note != null) {
                     catalogNote = note
@@ -954,6 +955,7 @@ class ArbToolWindowController(
         )
         publishOnEdt {
             captureState = next
+            confirmEmptyTrashVisible = false
             if (stale != null) {
                 staleDaemonMessage = stale
             }

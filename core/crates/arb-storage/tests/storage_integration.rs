@@ -2092,6 +2092,11 @@ fn current_bundle_rejects_external_media_and_timeline() {
 fn probe_bundle_disk_state_distinguishes_present_missing_and_storage_unavailable() {
     use arb_storage::catalog::{BundleDiskState, probe_bundle_disk_state};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+
     let tmp = TempDir::new().expect("tempdir");
     let parent = tmp.path().join("bundles");
     fs::create_dir_all(&parent).expect("create parent");
@@ -2109,6 +2114,23 @@ fn probe_bundle_disk_state_distinguishes_present_missing_and_storage_unavailable
         probe_bundle_disk_state(&bundle_dir),
         BundleDiskState::Missing,
         "manually deleted bundle under existing parent must report Missing"
+    );
+
+    fs::write(&bundle_dir, "replacement file").expect("create file");
+    assert_eq!(
+        probe_bundle_disk_state(&bundle_dir),
+        BundleDiskState::StorageUnavailable
+    );
+
+    let link = parent.join("linked-bundle");
+    let target = tmp.path().join("removable-target");
+    fs::create_dir(&target).expect("create symlink target");
+    symlink_dir(&target, &link).expect("create directory link");
+    assert_eq!(probe_bundle_disk_state(&link), BundleDiskState::Present);
+    fs::remove_dir(&target).expect("disconnect link target");
+    assert_eq!(
+        probe_bundle_disk_state(&link),
+        BundleDiskState::StorageUnavailable
     );
 
     let unmounted_bundle = tmp.path().join("unmounted-volume").join("bundle-ext");
@@ -2298,6 +2320,13 @@ fn gc_cleans_missing_unmanaged_and_legacy_trashed_rows_without_touching_present_
             .expect("trash");
     }
 
+    let retained = catalog.gc_trashed_bundles("2026-11-25T00:00:05Z").unwrap();
+    assert!(
+        retained.purged_bundle_ids.is_empty(),
+        "ordinary GC retains missing rows during grace"
+    );
+    assert_eq!(retained.skipped_in_grace_bundle_ids.len(), 2);
+
     let gc = catalog
         .gc_with_grace("2026-11-25T00:00:05Z", 0)
         .expect("gc must succeed");
@@ -2315,4 +2344,31 @@ fn gc_cleans_missing_unmanaged_and_legacy_trashed_rows_without_touching_present_
     assert!(leg_present.is_dir(), "present legacy dir untouched");
     assert!(catalog.bundle("ext-missing").expect("lookup").is_none());
     assert!(catalog.bundle("leg-missing").expect("lookup").is_none());
+}
+
+#[test]
+fn gc_keeps_catalog_rows_when_managed_parent_is_unavailable() {
+    let tmp = TempDir::new().unwrap();
+    let managed = tmp.path().join("bundles");
+    let db = tmp.path().join("catalog.sqlite");
+    let catalog = Catalog::open(&db, &managed).unwrap();
+    for id in ["trashed", "purging"] {
+        register_v2_bundle(&catalog, id, &managed.join(id), id, b"data");
+        catalog.trash_bundle(id, "2026-11-25T00:00:00Z").unwrap();
+    }
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute(
+            "UPDATE bundles SET state='purging' WHERE bundle_id='purging'",
+            [],
+        )
+        .unwrap();
+    fs::rename(&managed, tmp.path().join("offline")).unwrap();
+    catalog.gc_with_grace("2026-11-25T00:00:05Z", 0).unwrap();
+    for id in ["trashed", "purging"] {
+        assert!(
+            catalog.bundle(id).unwrap().is_some(),
+            "offline {id} retained"
+        );
+    }
 }

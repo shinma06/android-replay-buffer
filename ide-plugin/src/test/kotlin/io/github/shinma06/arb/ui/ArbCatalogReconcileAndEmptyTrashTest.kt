@@ -219,6 +219,8 @@ class ArbCatalogReconcileAndEmptyTrashTest {
                     activeFilter = BundleFilter.TRASH,
                 ),
             )
+            controller.requestEmptyTrash()
+            SwingUtilities.invokeAndWait {}
             controller.confirmEmptyTrash()
             waitUntil { errors.isNotEmpty() && !controller.gcBusy }
             assertEquals("ゴミ箱を空にする", errors[0].first)

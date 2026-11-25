@@ -426,7 +426,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let tools = tools_resp["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 18, "expected all 18 MCP tools");
+    assert_eq!(tools.len(), 19, "expected all 19 MCP tools");
     for required in [
         "arb_status",
         "arb_devices",
@@ -440,6 +440,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "arb_list_bundles",
         "arb_trash_bundle",
         "arb_restore_bundle",
+        "arb_gc_bundles",
         "arb_forget_bundle",
         "arb_timeline_overview",
         "arb_query_logs",
