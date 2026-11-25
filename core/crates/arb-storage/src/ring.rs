@@ -183,7 +183,7 @@ pub struct PinJournalRecord {
 #[derive(Debug, Default)]
 struct PinJournalCache {
     pinned: BTreeSet<String>,
-    files: Vec<(PathBuf, SystemTime, u64)>,
+    files: Vec<(PathBuf, arb_os::fs::FileStamp)>,
     generation: u64,
     dir_mtime: Option<SystemTime>,
     disk_reloads: u64,
@@ -248,12 +248,9 @@ fn list_pin_records_from_disk(
 
     let mut files = Vec::new();
     for path in paths {
-        let meta = fs::metadata(&path)
+        let stamp = arb_os::fs::FileStamp::read(&path)
             .map_err(|source| StorageError::io("stat_pin_journal", &path, source))?;
-        let modified = meta
-            .modified()
-            .map_err(|source| StorageError::io("stat_pin_journal", &path, source))?;
-        files.push((path.clone(), modified, meta.len()));
+        files.push((path.clone(), stamp));
         let bytes = fs::read(&path)
             .map_err(|source| StorageError::io("read_pin_journal", &path, source))?;
         let record: PinJournalRecord = serde_json::from_slice(&bytes)
@@ -312,14 +309,16 @@ impl PinJournal {
         })
     }
 
+    // SPEC-01: daemon.lock admits a single writer; this mutex serializes its journal
+    // operations with eviction. Between operations we detect ordinary external edits
+    // through directory mtime, file identity, length and mtime. Concurrent raw writes
+    // and in-place same-size edits that deliberately restore mtime are outside this TCB.
     fn sync_cache_locked(&self, cache: &mut PinJournalCache) -> Result<(), StorageError> {
         let stamp = read_dir_mtime(&self.jobs_dir);
         if stamp.is_none()
             || stamp != cache.dir_mtime
-            || cache.files.iter().any(|(path, time, len)| {
-                fs::metadata(path).map_or(true, |m| {
-                    m.len() != *len || m.modified().ok() != Some(*time)
-                })
+            || cache.files.iter().any(|(path, previous)| {
+                arb_os::fs::FileStamp::read(path).map_or(true, |current| current != *previous)
             })
         {
             list_pin_records_from_disk(&self.jobs_dir, cache)?;
@@ -910,7 +909,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         }
         let journal = self.pin_journal.clone();
         let mut pins = journal.lock_cache()?;
-        list_pin_records_from_disk(&journal.jobs_dir, &mut pins)?;
+        journal.sync_cache_locked(&mut pins)?;
         self.sync_pin_state(&pins);
         let mut purged = Vec::new();
         for chunk_id in chunk_ids {
@@ -1041,14 +1040,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         let disk = self.disk_provider.disk_space(&self.ring_dir)?;
         let journal = self.pin_journal.clone();
         let mut pins = journal.lock_cache()?;
-        if self.total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes)
-            || self.total_duration_ns > u128::from(self.policy.max_ring_duration_ns)
-        {
-            // A destructive decision must also see in-place edits with preserved timestamps.
-            list_pin_records_from_disk(&journal.jobs_dir, &mut pins)?;
-        } else {
-            journal.sync_cache_locked(&mut pins)?;
-        }
+        journal.sync_cache_locked(&mut pins)?;
         self.sync_pin_state(&pins);
 
         let pinned_bytes = u64::try_from(self.pinned_bytes).unwrap_or(u64::MAX);

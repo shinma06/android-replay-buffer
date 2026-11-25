@@ -130,6 +130,33 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
                 package_name: None,
                 message: "unknown owner in a different boot".into(),
             },
+            11..=13 => {
+                expected_target_seqs.push(seq);
+                let (tag, message) = match seq {
+                    11 => (
+                        "wm_on_resume_called",
+                        "[0,com.vendor.LibraryActivity,RESUME_ACTIVITY]".into(),
+                    ),
+                    12 => ("Worker", "before crash".into()),
+                    _ => (
+                        "AndroidRuntime",
+                        format!(
+                            "FATAL EXCEPTION: main\nProcess: {TARGET_PKG}, PID: 8123\njava.lang.IllegalStateException: failed"
+                        ),
+                    ),
+                };
+                LogRowSpec {
+                    seq,
+                    boot_id: "boot-1",
+                    bt_ns,
+                    level: "I",
+                    tag,
+                    pid: 8123,
+                    uid: None,
+                    package_name: None,
+                    message,
+                }
+            }
             10 => LogRowSpec {
                 seq,
                 boot_id: "boot-1",

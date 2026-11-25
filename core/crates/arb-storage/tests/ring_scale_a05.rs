@@ -191,6 +191,7 @@ fn run_append_burst_and_transient_save(
     policy: RingBudgetPolicy,
 ) {
     let initial_chunks = seeded.len();
+    let initial_reloads = ring.work_counters().pin_journal_disk_reloads;
     let mut all_evicted = Vec::new();
     for step in 0..APPEND_BURST {
         let global_idx = u64::try_from(initial_chunks + step).expect("u64");
@@ -228,6 +229,11 @@ fn run_append_burst_and_transient_save(
             "pinned chunk count must remain constant during live appends"
         );
     }
+    assert_eq!(
+        ring.work_counters().pin_journal_disk_reloads,
+        initial_reloads,
+        "steady-state eviction must reuse the pin snapshot"
+    );
     assert!(
         all_evicted.len() >= 16,
         "expected steady-state evictions (>=16), got {} at scale {initial_chunks}",
@@ -287,7 +293,9 @@ fn run_scale_case(initial_chunks: usize) -> ScaleSample {
     let mut ring = RingStore::open_with_disk_provider(tmp.path(), policy, disk.clone())
         .expect("open seeded ring");
 
-    let pinned_indices = [0usize, 1, 2, initial_chunks / 2, initial_chunks - 1];
+    let pinned_indices: Vec<_> = (0..initial_chunks)
+        .filter(|&i| i < 3 || (i >= 5 && i % 2 == 1))
+        .collect();
     let pinned_ids: Vec<String> = pinned_indices
         .iter()
         .map(|&idx| seeded[idx].0.clone())
@@ -373,9 +381,8 @@ fn a05_ring_append_status_save_scales_without_quadratic_scans() {
 
     for sample in [&s1k, &s4k, &s8k] {
         assert_eq!(
-            sample.pin_reloads_during_ops,
-            sample.chunks_evicted_during_ops + 2,
-            "scale {}: hot appends and status checks must reload only before destructive checks and after journal mutations",
+            sample.pin_reloads_during_ops, 2,
+            "scale {}: hot appends and status checks must reload only after the transient pin and unpin",
             sample.initial_chunks
         );
         assert_eq!(
@@ -402,7 +409,7 @@ fn a05_ring_append_status_save_scales_without_quadratic_scans() {
         s8k.in_memory_budget_and_status_us <= max_allowed_8k_us,
         "8k in-memory budget+status ({} us) grew too fast vs 1k ({} us)",
         s8k.in_memory_budget_and_status_us,
-        s4k.in_memory_budget_and_status_us
+        s1k.in_memory_budget_and_status_us
     );
 }
 
