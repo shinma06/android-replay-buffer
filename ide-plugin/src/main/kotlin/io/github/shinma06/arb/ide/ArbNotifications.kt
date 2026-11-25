@@ -413,9 +413,29 @@ object ArbNotifications {
         }
     }
 
+    /**
+     * Why [imagePath] cannot be opened (blank / malformed path, or the file is gone), or `null`
+     * when it can be tried. The user always gets this as a warning instead of a click that does nothing.
+     */
+    internal fun imagePathProblem(imagePath: String): String? {
+        if (imagePath.isBlank()) return "画像のパスが空のため開けません。"
+        val path = runCatching { Path.of(imagePath) }.getOrNull()
+            ?: return "画像のパスが不正なため開けません: $imagePath"
+        if (!Files.isRegularFile(path)) {
+            return "画像ファイルが見つかりません（移動または削除された可能性があります）: $imagePath"
+        }
+        return null
+    }
+
     private fun openImageFile(project: Project?, imagePath: String) {
         runOffEdt {
-            val path = runCatching { Path.of(imagePath) }.getOrNull() ?: return@runOffEdt
+            val problem = imagePathProblem(imagePath)
+            if (problem != null) {
+                logger.warn("ARB cannot open image: $problem ($imagePath)")
+                notifyWarning(project, problem)
+                return@runOffEdt
+            }
+            val path = Path.of(imagePath)
             val vFile = runCatching { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path) }.getOrNull()
             if (vFile != null && project != null && !project.isDisposed) {
                 runOnEdt {

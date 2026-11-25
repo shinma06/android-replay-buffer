@@ -58,7 +58,6 @@ import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Path
-import java.util.Locale
 import javax.swing.JComponent
 
 /**
@@ -126,7 +125,7 @@ class ArbSettingsFormModel(
     var showRestartAction by mutableStateOf(false)
 
     val isBannerVisible: Boolean
-        get() = !daemonOnline && daemonBannerMessage.isNotBlank()
+        get() = daemonBannerMessage.isNotBlank()
 
     val isDaemonControlsEnabled: Boolean
         get() = daemonOnline
@@ -140,7 +139,7 @@ class ArbSettingsFormModel(
         showRestart: Boolean = !online,
     ) {
         daemonOnline = online
-        if (!online) {
+        if (!online || detailMessage != null) {
             daemonBannerMessage = detailMessage
                 ?: "arbd デーモンに接続できません（オフライン）。ローカルの arbd バイナリパス設定を変更するか、arbd を再起動してください。"
             showRestartAction = showRestart
@@ -228,7 +227,7 @@ class ArbSettingsFormModel(
         const val CLI_PATH_UNAVAILABLE_TEXT: String = "arb-cli が見つかりません（プラグイン再インストールまたはビルドが必要）"
 
         private fun formatDecimal(value: Double): String =
-            if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.0f", value) else String.format(Locale.ROOT, "%.1f", value)
+            java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
     }
 }
 
@@ -282,7 +281,7 @@ class ArbSettingsConfigurable internal constructor(
             ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath.orEmpty()
         },
         localBinaryWriter = { newPath ->
-            ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath = newPath
+            checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }.customArbdBinaryPath = newPath
             runCatching { ArbdDaemonService.getInstance().notifyBinaryPathChanged() }
         },
         localScreenshotReader = {
@@ -290,16 +289,15 @@ class ArbSettingsConfigurable internal constructor(
             (st?.screenshotInheritLogcat ?: true) to st?.customScreenshotDir.orEmpty()
         },
         localScreenshotWriter = { inherit, customDir ->
-            ArbLocalSettingsState.getInstanceOrNull()?.let { st ->
-                st.screenshotInheritLogcat = inherit
-                st.customScreenshotDir = customDir
-            }
+            val st = checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }
+            st.screenshotInheritLogcat = inherit
+            st.customScreenshotDir = customDir
         },
         localTrayReader = {
             ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled ?: false
         },
         localTrayWriter = { enabled ->
-            ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled = enabled
+            checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }.trayEnabled = enabled
             runCatching { ArbdDaemonService.getInstance().syncTrayStateAsync(enabled) }
         },
         daemonRestarter = {
@@ -314,7 +312,7 @@ class ArbSettingsConfigurable internal constructor(
     private var baselineScreenshotInherit: Boolean = true
     private var baselineCustomScreenshotDir: String = ""
     private var baselineTrayEnabled: Boolean = false
-    private var daemonOnline: Boolean = false
+    private var hasDaemonBaseline: Boolean = false
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
@@ -364,23 +362,46 @@ class ArbSettingsConfigurable internal constructor(
     internal fun restartDaemonAndReload() {
         val currentForm = form ?: return
         val draftPath = currentForm.currentDraft().normalizedCustomArbdPath()
+        var localBinarySavedForRestart = false
         // An emptied path is a change too: it switches back to the bundled arbd on restart.
         if (draftPath != baselineCustomBinary) {
             val usable = draftPath.isEmpty() || runCatching { Path.of(draftPath).isAbsolute }.getOrDefault(false)
             if (usable) {
-                blockingRunner.run { localBinaryWriter(draftPath) }
-                baselineCustomBinary = draftPath
+                val wrote = runCatching { blockingRunner.run { localBinaryWriter(draftPath) } }
+                if (wrote.isSuccess) {
+                    baselineCustomBinary = draftPath
+                    localBinarySavedForRestart = true
+                } else {
+                    val why = wrote.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
+                    currentForm.setDaemonStatus(
+                        online = currentForm.daemonOnline,
+                        detailMessage = "arbd バイナリパスを保存できませんでした（$why）。再起動は行っていません。",
+                        showRestart = true,
+                    )
+                    return
+                }
             }
         }
         val restarted = runCatching { blockingRunner.run { daemonRestarter() } }
         if (restarted.isSuccess) {
-            reset()
+            val draft = currentForm.currentDraft()
+            val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
+            val refreshed = loaded.getOrElse {
+                currentForm.setDaemonStatus(online = false, detailMessage = classifyDaemonError(it).message)
+                return
+            }
+            val rebased = if (hasDaemonBaseline) draft.rebase(baselineConfig, refreshed)
+            else ArbSettingsDraft.fromConfig(refreshed, draft.customArbdBinaryPath)
+            baselineConfig = refreshed
+            hasDaemonBaseline = true
+            currentForm.loadFromDraft(rebased)
+            currentForm.setDaemonStatus(online = true)
         } else {
-            daemonOnline = false
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
             currentForm.setDaemonStatus(
                 online = false,
-                detailMessage = "arbd の再起動に失敗しました（$err）。ローカルの arbd バイナリパスを確認してください。",
+                detailMessage = "arbd の再起動に失敗しました（$err）。ローカルの arbd バイナリパスを確認してください。" +
+                    if (localBinarySavedForRestart) "（バイナリパスの変更は保存済みです）" else "",
                 showRestart = true,
             )
         }
@@ -393,7 +414,7 @@ class ArbSettingsConfigurable internal constructor(
         val localBinaryChanged = draft.normalizedCustomArbdPath() != baselineCustomBinary
         val localScreenshotChanged = inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir
         val localTrayChanged = currentForm.trayEnabled != baselineTrayEnabled
-        val daemonChanged = daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)
+        val daemonChanged = hasDaemonBaseline && draft.isDaemonModifiedAgainst(baselineConfig)
         return localBinaryChanged || localScreenshotChanged || localTrayChanged || daemonChanged
     }
 
@@ -419,32 +440,58 @@ class ArbSettingsConfigurable internal constructor(
             }
         }
 
-        if (daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)) {
+        val saved = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+
+        if (hasDaemonBaseline && draft.isDaemonModifiedAgainst(baselineConfig)) {
             val validationError = draft.validateDaemonFields()
             if (validationError != null) {
                 throw ConfigurationException(validationError)
             }
             try {
                 baselineConfig = blockingRunner.run { daemonConfigWriter(baselineConfig, draft) }
+                currentForm.setDaemonStatus(online = true)
+                currentForm.loadFromDraft(ArbSettingsDraft.fromConfig(baselineConfig, newCustomPath))
+                saved += DAEMON_SETTINGS_LABEL
             } catch (t: Throwable) {
-                throw ConfigurationException("arbd への設定保存に失敗しました: ${t.message}")
+                // The daemon is the first writer: nothing local was written yet, and the baselines
+                // are untouched, so the form keeps the unsaved values and stays "modified".
+                val diagnostic = classifyDaemonError(t)
+                if (generateSequence(t) { it.cause }.none { it is ArbdRpcException } ||
+                    diagnostic.kind == DaemonDiagnosticKind.STALE_OR_MISMATCHED
+                ) {
+                    currentForm.setDaemonStatus(online = false, detailMessage = diagnostic.message, showRestart = true)
+                }
+                throw ConfigurationException(
+                    "arbd への設定保存に失敗しました: ${t.message ?: "詳細不明"}。" +
+                        "arbd への保存を確認できません。ローカル設定は未保存です。再適用できます。",
+                )
             }
         }
 
         if (newCustomPath != baselineCustomBinary) {
-            blockingRunner.run { localBinaryWriter(newCustomPath) }
-            baselineCustomBinary = newCustomPath
+            if (applyLocal("arbd バイナリパス", saved, failed) { blockingRunner.run { localBinaryWriter(newCustomPath) } }) {
+                baselineCustomBinary = newCustomPath
+            }
         }
 
         if (inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir) {
-            localScreenshotWriter(inherit, customShot)
-            baselineScreenshotInherit = inherit
-            baselineCustomScreenshotDir = customShot
+            if (applyLocal("スクリーンショット保存先", saved, failed) { localScreenshotWriter(inherit, customShot) }) {
+                baselineScreenshotInherit = inherit
+                baselineCustomScreenshotDir = customShot
+            }
         }
 
         if (trayEnabled != baselineTrayEnabled) {
-            localTrayWriter(trayEnabled)
-            baselineTrayEnabled = trayEnabled
+            if (applyLocal("トレイアイコン", saved, failed) { localTrayWriter(trayEnabled) }) {
+                baselineTrayEnabled = trayEnabled
+            }
+        }
+
+        if (failed.isNotEmpty()) {
+            // Keep the typed values (they differ from the baselines, so the page stays modified and a
+            // second Apply retries only what failed); never show a failed value as saved.
+            throw ConfigurationException(partialApplyMessage(saved, failed))
         }
 
         currentForm.loadFromDraft(
@@ -456,6 +503,16 @@ class ArbSettingsConfigurable internal constructor(
         refreshScreenshotStatus(currentForm)
     }
 
+    private fun applyLocal(label: String, saved: MutableList<String>, failed: MutableList<String>, write: () -> Unit): Boolean =
+        try {
+            write()
+            saved += label
+            true
+        } catch (t: Throwable) {
+            failed += "$label（${t.message?.takeIf { it.isNotBlank() } ?: "詳細不明"}）"
+            false
+        }
+
     override fun reset() {
         val currentForm = form ?: return
         baselineCustomBinary = localBinaryReader().trim()
@@ -466,11 +523,11 @@ class ArbSettingsConfigurable internal constructor(
 
         val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
         if (loaded.isSuccess) {
-            daemonOnline = true
+            hasDaemonBaseline = true
             baselineConfig = loaded.getOrThrow()
             currentForm.setDaemonStatus(online = true)
         } else {
-            daemonOnline = false
+            hasDaemonBaseline = false
             baselineConfig = ArbConfig()
             val diagnostic = classifyDaemonError(loaded.exceptionOrNull())
             currentForm.setDaemonStatus(
@@ -553,6 +610,15 @@ class ArbSettingsConfigurable internal constructor(
     )
 
     companion object {
+        const val DAEMON_SETTINGS_LABEL: String = "arbd 設定"
+
+        /** Wording of a partially applied Apply: what is persisted, what is not. */
+        fun partialApplyMessage(saved: List<String>, failed: List<String>): String {
+            val savedText = if (saved.isEmpty()) "なし" else saved.joinToString("、")
+            return "一部の設定を保存できませんでした。保存済み: $savedText ／ 未保存: ${failed.joinToString("、")}。" +
+                "未保存の値は画面に残していますが、まだ反映されていません。もう一度「適用」してください。"
+        }
+
         fun classifyDaemonError(error: Throwable?): DaemonDiagnostic {
             var cur: Throwable? = error
             while (cur != null) {

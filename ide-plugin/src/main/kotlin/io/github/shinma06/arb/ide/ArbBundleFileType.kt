@@ -237,20 +237,22 @@ class ArbBundlePreCloseCheck : VirtualFilePreCloseCheck {
         for (project in openProjects) {
             val fem = project.getServiceIfCreated(FileEditorManager::class.java) ?: continue
             val editors = fem.getAllEditors(file).filterIsInstance<ArbBundleFileEditor>()
-            val dirtyEditor = editors.firstOrNull { it.hasUnexportedTrimRange() } ?: continue
-            val (inFrame, outFrame) = dirtyEditor.currentTrimRange()
-            val allowed = evaluatePreClose(hasUnexportedTrim = true) {
-                Messages.showYesNoDialog(
-                    project,
-                    "選択したトリム範囲（#$inFrame .. #$outFrame）はまだ書き出されていません。\n" +
-                        "このままタブを閉じますか？（元のバンドルは変更されず保持されます）",
-                    "未書き出しのトリム範囲",
-                    "閉じる",
-                    "キャンセル",
-                    Messages.getQuestionIcon(),
-                ) == Messages.YES
+            for (editor in editors) {
+                val saved = editor.flushBeforeClose()
+                val unexported = editor.hasUnexportedTrimRange()
+                val (inFrame, outFrame) = editor.currentTrimRange()
+                val reason = buildString {
+                    if (!saved) append("編集範囲（IN/OUT）を保存できませんでした。再度開くと以前の範囲に戻る場合があります。\n")
+                    if (unexported) append("選択したトリム範囲（#$inFrame .. #$outFrame）はまだ書き出されていません。\n")
+                    append("このままタブを閉じますか？")
+                }
+                val allowed = evaluatePreClose(unexported || !saved) {
+                    Messages.showYesNoDialog(
+                        project, reason, "トリム範囲の確認", "閉じる", "キャンセル", Messages.getQuestionIcon(),
+                    ) == Messages.YES
+                }
+                if (!allowed) return false
             }
-            if (!allowed) return false
         }
         return true
     }

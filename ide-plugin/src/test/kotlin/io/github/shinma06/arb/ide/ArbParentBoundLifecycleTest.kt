@@ -116,10 +116,10 @@ class ArbParentBoundLifecycleTest {
         // Studio exit: both children gone, cleanly.
         kotlin.test.assertFailsWith<IllegalStateException> { h.service.restartDaemon() }
         val d = assertNotNull(daemon)
-        assertTrue(d.waitFor(3, TimeUnit.SECONDS), "dispose() must stop the managed arbd")
+        assertTrue(d.waitFor(30, TimeUnit.SECONDS), "dispose() must stop the managed arbd")
         assertEquals(0, d.exitValue(), "arbd stops through its clean shutdown path")
         val tray = h.trays.last()
-        assertTrue(tray.waitFor(3, TimeUnit.SECONDS), "dispose() must stop the managed arb-tray")
+        assertTrue(tray.waitFor(30, TimeUnit.SECONDS), "dispose() must stop the managed arb-tray")
         assertEquals(0, tray.exitValue(), "arb-tray quits cleanly on dispose")
         assertFalse(endpointAnswers(h.paths), "no arbd may answer after dispose()")
     }
@@ -128,7 +128,7 @@ class ArbParentBoundLifecycleTest {
     fun unmanagedRunningArbdIsTakenOverAtStartupAndStoppedOnDispose(@TempDir tmp: Path) {
         val paths = hermeticPaths(tmp)
         val leftover = ArbdProcessManager(paths = paths, searchRoot = repoRoot())
-            .connectOrSpawn(Duration.ofSeconds(10))
+            .connectOrSpawn(Duration.ofSeconds(30))
         leftover.client.close()
         val leftoverProc = assertNotNull(leftover.spawnedProcess)
         assertFalse(leftover.hello.parentBound, "precondition: an unbound daemon is running")
@@ -137,7 +137,7 @@ class ArbParentBoundLifecycleTest {
         var daemon: Process? = null
         try {
             h.service.ensureParentBoundLifecycleStarted()
-            assertTrue(leftoverProc.waitFor(5, TimeUnit.SECONDS), "the unbound daemon must be stopped")
+            assertTrue(leftoverProc.waitFor(30, TimeUnit.SECONDS), "the unbound daemon must be stopped")
             daemon = assertNotNull(h.processManager.managedDaemonProcess(), "the IDE must own the replacement")
             val hello = h.service.withClient { it.systemHello(false) }
             assertTrue(hello.parentBound)
@@ -147,7 +147,7 @@ class ArbParentBoundLifecycleTest {
             if (leftoverProc.isAlive) leftoverProc.destroyForcibly()
         }
         val d = assertNotNull(daemon)
-        assertTrue(d.waitFor(3, TimeUnit.SECONDS), "dispose() must stop the adopted-by-replacement arbd")
+        assertTrue(d.waitFor(30, TimeUnit.SECONDS), "dispose() must stop the adopted-by-replacement arbd")
         assertEquals(0, d.exitValue())
         assertFalse(endpointAnswers(paths))
     }

@@ -377,6 +377,8 @@ data class BundleCatalogItem(
     val parentBundleId: String?,
     val durationSecs: Long? = null,
     val hasCrash: Boolean = false,
+    /** `timeline.crashes` could not be queried yet: "no crash" is unknown, not confirmed. */
+    val crashStatusUnknown: Boolean = false,
     val bundleKind: BundleKind = BundleKind.FULL,
     val displayTitle: String = bundleId,
     val diskState: BundleDiskState = BundleDiskState.PRESENT,
@@ -408,6 +410,7 @@ data class BundleCatalogItem(
             if (isStorageUnavailable) add(STORAGE_UNAVAILABLE_BADGE_TEXT)
             if (isTrimmed) add("トリム済み")
             if (hasCrash) add("クラッシュ")
+            if (crashStatusUnknown && !hasCrash) add(CRASH_STATUS_UNKNOWN_BADGE_TEXT)
             if (bundleKind == BundleKind.LOGS_ONLY) add("ログのみ")
             if (isLegacyReadOnly) add(LEGACY_READ_ONLY_BADGE_TEXT)
             if (isProtectedByLease) add("使用中")
@@ -428,6 +431,7 @@ data class BundleCatalogItem(
     companion object {
         const val MISSING_ON_DISK_BADGE_TEXT: String = "フォルダなし"
         const val STORAGE_UNAVAILABLE_BADGE_TEXT: String = "保存先未接続"
+        const val CRASH_STATUS_UNKNOWN_BADGE_TEXT: String = "クラッシュ判定不明"
     }
 }
 
@@ -467,6 +471,7 @@ data class BundleCatalogState(
             showTrashed: Boolean = true,
             activeFilter: BundleFilter = BundleFilter.ALL,
             crashBundleIds: Set<String> = emptySet(),
+            crashUnknownBundleIds: Set<String> = emptySet(),
             durationsByBundleId: Map<String, Long> = emptyMap(),
             kindsByBundleId: Map<String, BundleKind> = emptyMap(),
         ): BundleCatalogState = BundleCatalogState(
@@ -481,6 +486,7 @@ data class BundleCatalogState(
                     parentBundleId = e.parentBundleId,
                     durationSecs = durationsByBundleId[e.bundleId],
                     hasCrash = e.bundleId in crashBundleIds,
+                    crashStatusUnknown = e.bundleId in crashUnknownBundleIds,
                     bundleKind = kindsByBundleId[e.bundleId] ?: BundleKind.FULL,
                     diskState = e.diskState,
                 )
@@ -635,7 +641,32 @@ data class TimelineViewerState(
     val lastActionMessage: String? = null,
     val relativeFramePtsNs: List<Long> = emptyList(),
     val playbackDurationNs: Long? = null,
+    /** Per-stream load status; a stream absent from the map has not been requested ([StreamLoadState.Pending]). */
+    val auxStreams: Map<AuxStream, StreamLoadState> = emptyMap(),
+    /** `true` when the MAIN log bucket hit the display limit and rows were dropped. */
+    val mainLogsLimited: Boolean = false,
+    /** `true` when the UNANCHORED log bucket hit the display limit and rows were dropped. */
+    val unanchoredLogsLimited: Boolean = false,
+    val logLimitUnknown: Boolean = false,
 ) {
+    fun streamState(stream: AuxStream): StreamLoadState = auxStreams[stream] ?: StreamLoadState.Pending
+
+    /** Streams whose last load failed (empty while loading or when everything loaded). */
+    val failedAuxStreams: List<AuxStreamFailure>
+        get() = AuxStream.entries.mapNotNull { stream ->
+            (auxStreams[stream] as? StreamLoadState.Failed)?.let { AuxStreamFailure(stream, it.reason) }
+        }
+
+    /** The log display-limit notice, or `null` when no bucket was cut. */
+    val logLimitNotice: String?
+        get() = if (mainLogsLimited || unanchoredLogsLimited) {
+            StudioLoadMessages.logLimitNotice(LOG_DISPLAY_LIMIT)
+        } else if (logLimitUnknown) {
+            "ログは表示上限の 5,000 行です。続きの有無を確認できませんでした。"
+        } else {
+            null
+        }
+
     /**
      * Mandatory ARB requirement (`SPEC-03`): show approximate-preview badge whenever `isApproximate == true`,
      * and clear ONLY when a settled frame with `isApproximate == false` arrives.
@@ -1237,6 +1268,13 @@ object TimelineViewerReducer {
         return state.copy(inFrameIndex = adjustedIn, outFrameIndex = clamped)
     }
 
+    /** Records the outcome of one auxiliary stream load without touching the other streams. */
+    fun withStreamState(
+        state: TimelineViewerState,
+        stream: AuxStream,
+        load: StreamLoadState,
+    ): TimelineViewerState = state.copy(auxStreams = state.auxStreams + (stream to load))
+
     fun setTrashOriginalAfterExport(state: TimelineViewerState, enabled: Boolean): TimelineViewerState =
         state.copy(trashOriginalAfterExport = if (state.isLegacy) false else enabled)
 
@@ -1246,7 +1284,13 @@ object TimelineViewerReducer {
         unanchoredLogs: List<LogRecord>,
         mainTaps: List<TapRecord>,
         unanchoredTaps: List<TapRecord>,
+        mainLogsLimited: Boolean = state.mainLogsLimited,
+        unanchoredLogsLimited: Boolean = state.unanchoredLogsLimited,
+        logLimitUnknown: Boolean = state.logLimitUnknown,
     ): TimelineViewerState = state.copy(
+        mainLogsLimited = mainLogsLimited,
+        unanchoredLogsLimited = unanchoredLogsLimited,
+        logLimitUnknown = logLimitUnknown,
         // Enforce strict separation: never mix unanchored records into main!
         mainLogs = mainLogs.filter { it.bucket == RecordBucket.MAIN },
         unanchoredLogs = unanchoredLogs.filter { it.bucket == RecordBucket.UNANCHORED },

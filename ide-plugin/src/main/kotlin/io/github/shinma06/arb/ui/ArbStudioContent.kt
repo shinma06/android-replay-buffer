@@ -92,6 +92,9 @@ import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.DiscontinuityFormatter
 import io.github.shinma06.arb.state.EventStreamFilter
+import io.github.shinma06.arb.state.AuxStream
+import io.github.shinma06.arb.state.StreamLoadState
+import io.github.shinma06.arb.state.StudioLoadMessages
 import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.HonestySeverity
 import io.github.shinma06.arb.state.ProvenanceFormatter
@@ -191,6 +194,63 @@ fun ArbStudioContent(controller: ArbStudioController) {
             ) {
                 Text(
                     text = err,
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        // Inline (non-modal) notices: a failed stream is "not loaded", never "0 items"; the video
+        // and the other streams keep working while these are shown.
+        controller.failedAuxStreams.forEach { failure ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.warningAmberSoft(),
+                accent = ArbJewelPalette.warningAmber(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = StudioLoadMessages.streamFailureNotice(failure),
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+                ArbSubtleAction(
+                    label = "再読込",
+                    iconKey = AllIconsKeys.Actions.Refresh,
+                    compact = true,
+                    tooltip = "${failure.stream.label}を再取得します",
+                    onClick = { controller.retryAuxStream(failure.stream) },
+                )
+            }
+        }
+        controller.editSaveFailure?.let { reason ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.recRedSoft(),
+                accent = ArbJewelPalette.recRed(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = StudioLoadMessages.editSaveFailureNotice(reason),
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+                ArbSubtleAction(
+                    label = "再保存",
+                    enabled = !controller.editRetryBusy,
+                    iconKey = AllIconsKeys.Actions.Refresh,
+                    compact = true,
+                    tooltip = "IN/OUT 範囲をもう一度保存します",
+                    onClick = { controller.retryEditSave() },
+                )
+            }
+        }
+        controller.logLimitNotice?.let { notice ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.warningAmberSoft(),
+                accent = ArbJewelPalette.warningAmber(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = notice,
                     style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
                     modifier = Modifier.weight(1f),
                 )
@@ -1152,7 +1212,11 @@ private fun Tier3DetailsTab(state: TimelineViewerState?) {
                 Text("不連続・欠損イベント", style = ArbJewelPalette.bodyStyle(11.5f, bold = true))
                 if (state.discontinuities.isEmpty()) {
                     Text(
-                        text = "不連続・欠損イベントなし",
+                        text = when (state.streamState(AuxStream.DISCONTINUITIES)) {
+                            StreamLoadState.Loaded -> "不連続・欠損イベントなし"
+                            StreamLoadState.Pending -> "不連続・欠損イベントを取得中"
+                            is StreamLoadState.Failed -> "不連続・欠損イベントは未取得"
+                        },
                         style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.mutedText()),
                     )
                 } else {

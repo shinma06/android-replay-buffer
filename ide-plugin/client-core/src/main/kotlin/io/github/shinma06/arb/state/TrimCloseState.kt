@@ -167,6 +167,25 @@ data class ArbSettingsDraft(
             normalizedScreenshotDir() != baseline.screenshotDirOverride ||
             ideDefaultSaveAction != baseline.ideDefaultSaveAction
 
+    /** Preserve edited controls and refresh untouched fields (including CLI-managed values). */
+    fun rebase(previous: ArbConfig, refreshed: ArbConfig): ArbSettingsDraft {
+        val base = fromConfig(previous)
+        val next = fromConfig(refreshed, customArbdBinaryPath)
+        return next.copy(
+            saveWindowSecs = if (saveWindowSecs == base.saveWindowSecs) next.saveWindowSecs else saveWindowSecs,
+            ringBudgetBytes = if (ringBudgetBytes == base.ringBudgetBytes) next.ringBudgetBytes else ringBudgetBytes,
+            minFreeDiskBytes = if (minFreeDiskBytes == base.minFreeDiskBytes) next.minFreeDiskBytes else minFreeDiskBytes,
+            videoMaxSize = if (videoMaxSize == base.videoMaxSize) next.videoMaxSize else videoMaxSize,
+            videoMaxFps = if (videoMaxFps == base.videoMaxFps) next.videoMaxFps else videoMaxFps,
+            audioEnabled = if (audioEnabled == base.audioEnabled) next.audioEnabled else audioEnabled,
+            captureMode = if (captureMode == base.captureMode) next.captureMode else captureMode,
+            crashAutosaveEnabled = if (crashAutosaveEnabled == base.crashAutosaveEnabled) next.crashAutosaveEnabled else crashAutosaveEnabled,
+            crashAutosaveCooldownSecs = if (crashAutosaveCooldownSecs == base.crashAutosaveCooldownSecs) next.crashAutosaveCooldownSecs else crashAutosaveCooldownSecs,
+            outputDirOverride = if (outputDirOverride == base.outputDirOverride) next.outputDirOverride else outputDirOverride,
+            ideDefaultSaveAction = if (ideDefaultSaveAction == base.ideDefaultSaveAction) next.ideDefaultSaveAction else ideDefaultSaveAction,
+        )
+    }
+
     fun toConfigPatch(baseline: ArbConfig): ArbConfigPatch {
         val nextDir = normalizedOutputDir()
         val dirPatch = when {

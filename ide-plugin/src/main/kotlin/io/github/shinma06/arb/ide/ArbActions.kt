@@ -32,6 +32,7 @@ data class ArbActionPresentation(
 
 object ArbToolbarPresentationState {
     fun toggleCapture(snapshot: ArbToolbarDaemonSnapshot): ArbActionPresentation {
+        if (snapshot.deviceChangeBusy) return ArbActionPresentation("ARB: キャプチャ開始 / 停止", "対象端末を変更中です", AllIcons.Actions.Restart, enabled = false)
         val toggleState = snapshot.captureToggleState
         if (!snapshot.probed) {
             return ArbActionPresentation(
@@ -117,6 +118,7 @@ object ArbToolbarPresentationState {
 
     fun screenshot(snapshot: ArbToolbarDaemonSnapshot): ArbActionPresentation {
         val text = "ARB: スクリーンショットを保存"
+        if (snapshot.deviceChangeBusy) return ArbActionPresentation(text, "対象端末を変更中です", AllIcons.FileTypes.Image, enabled = false)
         if (!snapshot.probed || !snapshot.daemonConnected) {
             return ArbActionPresentation(
                 text = text,
@@ -215,6 +217,7 @@ private fun executeConfiguredSave(project: Project?) {
 }
 
 private fun executeSetCaptureState(project: Project?, desiredActive: Boolean) {
+    if (ArbdDaemonService.getInstance().deviceChangeBusy) return
     ApplicationManager.getApplication().executeOnPooledThread {
         val service = ArbdDaemonService.getInstance()
         try {
@@ -248,14 +251,16 @@ private fun executeSetCaptureState(project: Project?, desiredActive: Boolean) {
 }
 
 private fun executeScreenshot(project: Project?) {
+    if (ArbdDaemonService.getInstance().deviceChangeBusy) return
     ApplicationManager.getApplication().executeOnPooledThread {
         val service = ArbdDaemonService.getInstance()
         try {
             val outputDir = runCatching { ArbScreenshotDestinationResolver.resolveOutputDir(project) }.getOrNull()
-            val serial = service.cachedToolbarSnapshot.selectedDeviceSerial
             val res = service.withClient {
+                if (service.deviceChangeBusy) return@withClient null
+                val serial = service.cachedToolbarSnapshot.selectedDeviceSerial
                 it.saveScreenshot(SaveScreenshotParams(serial = serial, outputDir = outputDir))
-            }
+            } ?: return@executeOnPooledThread
             ArbNotifications.notifyImageSaved(
                 project = project,
                 imagePath = res.path,
