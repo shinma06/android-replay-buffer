@@ -475,7 +475,11 @@ fn assert_well_formed(al: &TimeAlignment) {
 }
 
 /// Split per concrete triple count: the symbolic-count variant exceeded the 15-minute CBMC
-/// timebox (three fully symbolic `ingest_device_triple` calls).
+/// timebox (three fully symbolic `ingest_device_triple` calls). Even one triple stays
+/// `kani-extended`: building any `ClockTimeline` goes through `ingest_device_triple`, whose
+/// `BTreeMap<String, BootEpochState>` entry, `String` clone and `Vec<DiscontinuityEvent>`
+/// drop glue exhaust CBMC memory (> 30 GB), with or without a `std::fmt::format` stub; a
+/// single concrete-key `BTreeMap` insert alone takes ~31 s.
 fn k3_map_device_boot_isolated(n: usize) {
     let tl = timeline_with_triples(n);
     let mono: i64 = kani::any();
@@ -537,8 +541,361 @@ fn k3_map_logcat_wall_no_panic_and_causal_ceiling() {
     assert!(matches!(cross, TimeAlignment::Unanchored { .. }));
 }
 
+// K3 slice level: the real `map_*_in_epoch` bodies that `map_device_monotonic` /
+// `map_logcat_wall` call once `epochs.get(boot_id)` has selected a boot epoch, run on fixed
+// stack arrays instead of a `ClockTimeline` built through `ingest_device_triple`.
+fn any_triple() -> DeviceClockTriple {
+    DeviceClockTriple {
+        boot_id: "a".to_owned(),
+        boottime_ns: kani::any(),
+        monotonic_ns: kani::any(),
+        realtime_ns: kani::any(),
+    }
+}
+
+fn any_config() -> ClockTimelineConfig {
+    ClockTimelineConfig {
+        sleep_threshold_ns: kani::any(),
+        wall_jump_threshold_ns: kani::any(),
+        pc_sleep_threshold_ns: kani::any(),
+        max_half_width_ns: kani::any(),
+        max_anchor_age_ns: kani::any(),
+    }
+}
+
+/// Every placement carries the queried boot epoch's id and an Unanchored result keeps the
+/// caller's PC ingest time.
+fn assert_tagged(al: &TimeAlignment, boot_id: &str, pc_ingest_cont_ns: i64) {
+    match al {
+        TimeAlignment::Anchored { boot_id: b, .. } | TimeAlignment::Bounded { boot_id: b, .. } => {
+            assert_eq!(b, boot_id, "placed only on the queried boot");
+        }
+        TimeAlignment::Unanchored {
+            pc_ingest_cont_ns: pc,
+            ..
+        } => assert_eq!(*pc, pc_ingest_cont_ns),
+    }
+}
+
+fn k3_slice_monotonic_no_panic(triples: &[DeviceClockTriple], mono: i64) -> TimeAlignment {
+    let cfg = any_config();
+    let al = ClockTimeline::map_monotonic_in_epoch(
+        &cfg,
+        triples,
+        "a",
+        mono,
+        TimestampSemantics::InputEventTime,
+        7,
+    );
+    assert_well_formed(&al);
+    assert_tagged(&al, "a", 7);
+    if let TimeAlignment::Anchored { semantics, .. } = &al {
+        assert_eq!(*semantics, TimestampSemantics::InputEventTime);
+    }
+    al
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_monotonic_one_triple_no_panic_and_boot_tagged() {
+    let t = any_triple();
+    let mono: i64 = kani::any();
+    let al = k3_slice_monotonic_no_panic(core::slice::from_ref(&t), mono);
+    match al {
+        TimeAlignment::Anchored {
+            boottime_ns,
+            half_width_ns,
+            ..
+        } => {
+            assert_eq!(
+                mono, t.monotonic_ns,
+                "one triple anchors only its own sample"
+            );
+            assert_eq!(boottime_ns, t.boottime_ns);
+            assert_eq!(half_width_ns, 0);
+        }
+        _ => assert_ne!(mono, t.monotonic_ns, "its own sample is always anchored"),
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_monotonic_two_triples_no_panic_and_boot_tagged() {
+    k3_slice_monotonic_no_panic(&[any_triple(), any_triple()], kani::any());
+}
+
+/// Domain: the ingest invariant. `ingest_device_triple` drops a triple whose `monotonic_ns` or
+/// `boottime_ns` is below the previous one, so an epoch's triples are non-decreasing in both.
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_monotonic_monotone_on_two_ingest_ordered_triples() {
+    let triples = [any_triple(), any_triple()];
+    kani::assume(triples[0].monotonic_ns <= triples[1].monotonic_ns);
+    kani::assume(triples[0].boottime_ns <= triples[1].boottime_ns);
+    let cfg = any_config();
+    let (m1, m2): (i64, i64) = (kani::any(), kani::any());
+    kani::assume(m1 <= m2);
+    let map = |m| {
+        ClockTimeline::map_monotonic_in_epoch(
+            &cfg,
+            &triples,
+            "a",
+            m,
+            TimestampSemantics::InputEventTime,
+            0,
+        )
+    };
+    if let (
+        TimeAlignment::Anchored {
+            boottime_ns: b1, ..
+        },
+        TimeAlignment::Anchored {
+            boottime_ns: b2, ..
+        },
+    ) = (map(m1), map(m2))
+    {
+        assert!(b1 <= b2, "anchored monotonic mapping is order preserving");
+    }
+}
+
+/// `wall_jump_indices` ranges over every strictly increasing index set with `idx + 1 < n`
+/// (what `ingest_device_triple` can record), independent of the triples: a superset of the
+/// reachable epochs.
+fn k3_slice_logcat_ceiling(
+    triples: &[DeviceClockTriple],
+    wall_jump_indices: &[usize],
+    read: Option<i64>,
+    cfg: &ClockTimelineConfig,
+) -> TimeAlignment {
+    let header: i64 = kani::any();
+    let al = ClockTimeline::map_logcat_wall_in_epoch(
+        cfg,
+        triples,
+        wall_jump_indices,
+        "a",
+        header,
+        read,
+        3,
+    );
+    assert_well_formed(&al);
+    assert_tagged(&al, "a", 3);
+    if let Some(read_bt) = read {
+        match &al {
+            TimeAlignment::Anchored {
+                boottime_ns,
+                semantics,
+                ..
+            } => {
+                assert_eq!(*semantics, TimestampSemantics::LogcatHeaderWall);
+                assert!(
+                    i128::from(*boottime_ns)
+                        <= i128::from(read_bt) + i128::from(cfg.wall_jump_threshold_ns),
+                    "never after read ceiling"
+                );
+            }
+            TimeAlignment::Bounded {
+                max_boottime_ns, ..
+            } => assert_eq!(*max_boottime_ns, read_bt, "bounded by the read ceiling"),
+            TimeAlignment::Unanchored { .. } => {}
+        }
+    }
+    al
+}
+
+fn any_read() -> Option<i64> {
+    if kani::any() { Some(kani::any()) } else { None }
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_logcat_wall_one_triple_no_panic_and_causal_ceiling() {
+    k3_slice_logcat_ceiling(&[any_triple()], &[], any_read(), &any_config());
+}
+
+/// No wall jump recorded: `map_logcat_stable_epoch` over a two-triple wall-stable epoch.
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_logcat_wall_two_triples_stable_epoch_causal_ceiling() {
+    k3_slice_logcat_ceiling(
+        &[any_triple(), any_triple()],
+        &[],
+        any_read(),
+        &any_config(),
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn k3_slice_map_logcat_wall_three_triples_stable_epoch_causal_ceiling() {
+    k3_slice_logcat_ceiling(
+        &[any_triple(), any_triple(), any_triple()],
+        &[],
+        any_read(),
+        &any_config(),
+    );
+}
+
+/// Read time relative to the recorded jump `[triples[0].boottime_ns, triples[1].boottime_ns]`.
+/// The three regions plus the no-read harness partition every input, and `forward_jump` (wall
+/// offset `realtime - boottime` non-decreasing across the jump, or decreasing: a rollback) splits
+/// a region in two: split only for solve time.
+#[derive(Clone, Copy)]
+enum ReadRegion {
+    BeforeJump,
+    InsideJump,
+    AfterJump,
+}
+
+/// Jump recorded between the two triples: the multi-segment candidate path. Domain: the ingest
+/// invariant (`boottime_ns` non-decreasing within an epoch). Returns the mapping, the config,
+/// the read time and the jump start.
+fn k3_slice_logcat_jump_between(
+    region: Option<ReadRegion>,
+    forward_jump: Option<bool>,
+) -> (TimeAlignment, ClockTimelineConfig, Option<i64>, i64) {
+    let triples = [any_triple(), any_triple()];
+    let [t0, t1] = &triples;
+    let (jump_start, jump_end) = (t0.boottime_ns, t1.boottime_ns);
+    kani::assume(jump_start <= jump_end);
+    if let Some(forward) = forward_jump {
+        kani::assume((t0.wall_offset_ns() <= t1.wall_offset_ns()) == forward);
+    }
+    let read = region.map(|r| {
+        let read_bt: i64 = kani::any();
+        match r {
+            ReadRegion::BeforeJump => kani::assume(read_bt < jump_start),
+            ReadRegion::InsideJump => kani::assume(jump_start <= read_bt && read_bt <= jump_end),
+            ReadRegion::AfterJump => kani::assume(jump_end < read_bt),
+        }
+        read_bt
+    });
+    let cfg = any_config();
+    let al =
+        ClockTimeline::map_logcat_wall_in_epoch(&cfg, &triples, &[0], "a", kani::any(), read, 3);
+    assert_well_formed(&al);
+    (al, cfg, read, jump_start)
+}
+
+/// A read time outside the jump always places the line on the queried boot, never after the read
+/// ceiling and never at or before a jump the read has already passed.
+fn k3_slice_logcat_read_outside_jump(region: ReadRegion, forward_jump: bool) {
+    let (al, cfg, read, jump_start) =
+        k3_slice_logcat_jump_between(Some(region), Some(forward_jump));
+    let read_bt = read.unwrap_or_default();
+    let (boot, causal) = match &al {
+        TimeAlignment::Anchored {
+            boot_id,
+            boottime_ns,
+            semantics,
+            ..
+        } => (
+            Some(boot_id.as_str()),
+            *semantics == TimestampSemantics::LogcatHeaderWall
+                && i128::from(*boottime_ns)
+                    <= i128::from(read_bt) + i128::from(cfg.wall_jump_threshold_ns)
+                && !(read_bt >= jump_start && *boottime_ns <= jump_start),
+        ),
+        TimeAlignment::Bounded {
+            boot_id,
+            max_boottime_ns,
+            ..
+        } => (Some(boot_id.as_str()), *max_boottime_ns == read_bt),
+        TimeAlignment::Unanchored { .. } => (None, false),
+    };
+    assert_eq!(
+        boot,
+        Some("a"),
+        "a read time places the line on the queried boot"
+    );
+    assert!(
+        causal,
+        "never after the read ceiling, never at or before a jump the read has passed"
+    );
+}
+
+/// A read time inside the jump has no trustworthy lower bound: `(i64::MIN, read]`.
+fn k3_slice_logcat_read_inside_jump(forward_jump: bool) {
+    let (al, _, read, _) =
+        k3_slice_logcat_jump_between(Some(ReadRegion::InsideJump), Some(forward_jump));
+    assert!(
+        matches!(
+            &al,
+            TimeAlignment::Bounded {
+                boot_id,
+                min_boottime_ns: i64::MIN,
+                max_boottime_ns,
+                ..
+            } if boot_id == "a" && Some(*max_boottime_ns) == read
+        ),
+        "read inside a jump: bounded by (i64::MIN, read] on the queried boot"
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_before_jump_wall_forward() {
+    k3_slice_logcat_read_outside_jump(ReadRegion::BeforeJump, true);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_before_jump_wall_rollback() {
+    k3_slice_logcat_read_outside_jump(ReadRegion::BeforeJump, false);
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_inside_jump_wall_forward() {
+    k3_slice_logcat_read_inside_jump(true);
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_inside_jump_wall_rollback() {
+    k3_slice_logcat_read_inside_jump(false);
+}
+
+/// Covers the `cand_bt <= jump_start` causal-ceiling rejection.
+#[kani::proof]
+#[kani::unwind(3)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_after_jump_wall_forward() {
+    k3_slice_logcat_read_outside_jump(ReadRegion::AfterJump, true);
+}
+
+/// Covers the `cand_bt <= jump_start` causal-ceiling rejection.
+#[kani::proof]
+#[kani::unwind(3)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_read_after_jump_wall_rollback() {
+    k3_slice_logcat_read_outside_jump(ReadRegion::AfterJump, false);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+fn k3_slice_map_logcat_wall_two_triples_jump_between_without_read() {
+    let (al, ..) = k3_slice_logcat_jump_between(None, None);
+    assert_tagged(&al, "a", 3);
+}
+
+/// Three triples, every reachable wall-jump index set (`idx + 1 < 3`).
+#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(5))]
+fn k3_slice_map_logcat_wall_three_triples_with_jumps_causal_ceiling() {
+    let jumps: &[usize] = match kani::any::<u8>() % 3 {
+        0 => &[0],
+        1 => &[1],
+        _ => &[0, 1],
+    };
+    k3_slice_logcat_ceiling(
+        &[any_triple(), any_triple(), any_triple()],
+        jumps,
+        any_read(),
+        &any_config(),
+    );
+}
+
 // ---------------------------------------------------------------- K4
-const IDS: [&str; 4] = ["c0", "c1", "c2", "c3"];
+/// One-byte chunk IDs: `chunk_id` breaks `created_cont_ns` ties in the planner's sort and is
+/// compared for pin protection, so longer IDs only add `memcmp` work.
+const IDS: [&str; 4] = ["a", "b", "c", "d"];
 
 fn any_chunks(n: usize, small: bool) -> Vec<RingChunkMeta> {
     let mut v = Vec::new();
@@ -574,8 +931,51 @@ fn any_chunks(n: usize, small: bool) -> Vec<RingChunkMeta> {
     v
 }
 
-fn check_plan(small: bool) {
-    let n = usize::from(kani::any::<u8>() % 5);
+/// Index of the chunk with ID `id`. IDs are `IDS[i]` (one distinct byte each), so the byte
+/// identifies the chunk without a `memcmp` over a symbolically chosen `String`.
+fn chunk_index(chunks: &[RingChunkMeta], id: &str) -> usize {
+    assert_eq!(id.len(), 1, "evicted ID must name an input chunk");
+    let i = usize::from(id.as_bytes()[0].wrapping_sub(b'a'));
+    assert!(i < chunks.len(), "evicted ID must name an input chunk");
+    i
+}
+
+/// `(created_cont_ns, chunk_id)` order of the planner; IDs are `IDS[i]`, so comparing the
+/// indices compares the IDs.
+fn older(chunks: &[RingChunkMeta], a: usize, b: usize) -> bool {
+    (chunks[a].created_cont_ns, a) < (chunks[b].created_cont_ns, b)
+}
+
+#[expect(
+    unused_extern_crates,
+    reason = "names `alloc::slice::stable_sort` for `kani::stub`"
+)]
+extern crate alloc;
+
+/// Stable insertion sort standing in for `alloc::slice::stable_sort`, the body of
+/// `<[T]>::sort_by` (TCB: std's stable sort is correct).
+fn stable_sort_stub<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
+    let mut i = 1;
+    while i < v.len() {
+        let mut j = i;
+        while j > 0 && is_less(&v[j], &v[j - 1]) {
+            v.swap(j - 1, j);
+            j -= 1;
+        }
+        i += 1;
+    }
+}
+
+/// One K4 input: concrete chunk count, symbolic chunk metadata, policy and write, and the plan.
+struct K4Case {
+    chunks: Vec<RingChunkMeta>,
+    policy: RingBudgetPolicy,
+    incoming: u64,
+    free: u64,
+    decision: RingWriteDecision,
+}
+
+fn k4_case(n: usize, small: bool) -> K4Case {
     let chunks = any_chunks(n, small);
     let policy = RingBudgetPolicy {
         max_ring_bytes: if small {
@@ -592,53 +992,47 @@ fn check_plan(small: bool) {
     };
     let (incoming, free): (u64, u64) = (kani::any(), kani::any());
     let decision = RingEvictionPlanner::new(policy).plan(&chunks, incoming, free);
-    let mut eligible: Vec<&RingChunkMeta> = chunks.iter().filter(|c| c.is_evictable()).collect();
-    eligible.sort_by(|a, b| {
-        a.created_cont_ns
-            .cmp(&b.created_cont_ns)
-            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
-    });
-    let total: u128 = chunks.iter().map(|c| u128::from(c.bytes)).sum();
-    match decision {
+    K4Case {
+        chunks,
+        policy,
+        incoming,
+        free,
+        decision,
+    }
+}
+
+/// Safety half of K4: every evicted ID names an evictable input chunk (REQ-04), an allowed
+/// write fits the byte quota and the free-space floor, and every stop decision is justified.
+fn check_plan_safety(c: &K4Case) {
+    let total: u128 = c.chunks.iter().map(|m| u128::from(m.bytes)).sum();
+    match &c.decision {
         RingWriteDecision::Allow { evict_chunk_ids } => {
-            assert!(evict_chunk_ids.len() <= eligible.len());
             let mut freed: u128 = 0;
-            let mut i = 0;
-            while i < evict_chunk_ids.len() {
-                assert_eq!(
-                    evict_chunk_ids[i], eligible[i].chunk_id,
-                    "oldest-first prefix"
-                );
-                freed += u128::from(eligible[i].bytes);
-                i += 1;
+            for id in evict_chunk_ids {
+                let i = chunk_index(&c.chunks, id);
+                assert!(c.chunks[i].is_evictable(), "REQ-04 pin protection");
+                freed += u128::from(c.chunks[i].bytes);
             }
-            for c in &chunks {
-                if c.pin == PinStatus::Pinned || c.status == RingChunkStatus::Open {
-                    assert!(
-                        !evict_chunk_ids.contains(&c.chunk_id),
-                        "REQ-04 pin protection"
-                    );
-                }
-            }
-            assert!(total - freed + u128::from(incoming) <= u128::from(policy.max_ring_bytes));
-            assert!(free.saturating_sub(incoming) >= policy.min_free_disk_bytes);
+            assert!(total - freed + u128::from(c.incoming) <= u128::from(c.policy.max_ring_bytes));
+            assert!(c.free.saturating_sub(c.incoming) >= c.policy.min_free_disk_bytes);
         }
         RingWriteDecision::StopStoragePressure { .. } => {
             assert!(
-                free < policy.min_free_disk_bytes
-                    || free.saturating_sub(incoming) < policy.min_free_disk_bytes
+                c.free < c.policy.min_free_disk_bytes
+                    || c.free.saturating_sub(c.incoming) < c.policy.min_free_disk_bytes
             );
         }
         RingWriteDecision::ChunkTooLarge => {
-            assert!(incoming > policy.max_ring_bytes);
+            assert!(c.incoming > c.policy.max_ring_bytes);
         }
         RingWriteDecision::StopRingFullPinned { .. } => {
-            let protected: u128 = chunks
+            let protected: u128 = c
+                .chunks
                 .iter()
-                .filter(|c| !c.is_evictable())
-                .map(|c| u128::from(c.bytes))
+                .filter(|m| !m.is_evictable())
+                .map(|m| u128::from(m.bytes))
                 .sum();
-            assert!(protected + u128::from(incoming) > u128::from(policy.max_ring_bytes));
+            assert!(protected + u128::from(c.incoming) > u128::from(c.policy.max_ring_bytes));
             assert!(
                 protected > 0,
                 "only pinned/open data can block a fitting write"
@@ -647,14 +1041,125 @@ fn check_plan(small: bool) {
     }
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k4_ring_eviction_plan_realistic_sizes() {
-    check_plan(true);
+/// Ordering half of K4 (reachable only with two or more chunks): evicted IDs are strictly
+/// increasing in planner order and older than every evictable chunk kept. For distinct keys
+/// this is "oldest-first prefix of the evictable chunks", checked without re-sorting a
+/// symbolic-length `Vec`.
+fn check_plan_order(c: &K4Case) {
+    if let RingWriteDecision::Allow { evict_chunk_ids } = &c.decision {
+        let n = c.chunks.len();
+        let mut evicted = [false; IDS.len()];
+        let mut prev: Option<usize> = None;
+        for id in evict_chunk_ids {
+            let i = chunk_index(&c.chunks, id);
+            if let Some(p) = prev {
+                assert!(older(&c.chunks, p, i), "oldest-first order");
+            }
+            prev = Some(i);
+            evicted[i] = true;
+        }
+        let mut kept = 0;
+        while kept < n {
+            if c.chunks[kept].is_evictable() && !evicted[kept] {
+                let mut e = 0;
+                while e < n {
+                    if evicted[e] {
+                        assert!(older(&c.chunks, e, kept), "oldest-first prefix");
+                    }
+                    e += 1;
+                }
+            }
+            kept += 1;
+        }
+    }
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k4_ring_eviction_plan_extreme_u64() {
-    check_plan(false);
+fn check_plan(n: usize, small: bool) {
+    let c = k4_case(n, small);
+    check_plan_safety(&c);
+    check_plan_order(&c);
+}
+
+/// One chunk: the safety half only, since the ordering obligations need two chunks.
+#[kani::proof]
+#[kani::unwind(6)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_ring_eviction_plan_realistic_sizes_n1() {
+    check_plan_safety(&k4_case(1, true));
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n2() {
+    check_plan(2, true);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n3() {
+    check_plan(3, true);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n4() {
+    check_plan(4, true);
+}
+
+/// Same one-chunk safety half over full-`u64` sizes. Kept `kani-extended` conservatively: it took
+/// 24 s locally but 68 s on the CI Linux runner (docs/proofs/tcb-axioms.md §3.1). Splitting it per
+/// `(status, pin)` or per evictable/protected chunk, or switching to MiniSat or Kissat, did not
+/// bring a single harness below 17 s locally (one SAT call dominates).
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n1() {
+    check_plan_safety(&k4_case(1, false));
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n2() {
+    check_plan(2, false);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n3() {
+    check_plan(3, false);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n4() {
+    check_plan(4, false);
 }
 
 // ---------------------------------------------------------------- K5
@@ -667,17 +1172,19 @@ const STATES: [SaveJobState; 6] = [
     SaveJobState::Discarded,
 ];
 
+/// Both payload strings are allocated before the match so a symbolic `k` selects among fixed
+/// heap objects instead of merging per-branch allocations.
 fn event(k: u8, path: &str) -> SaveJobEvent {
+    let error_message = "e".to_owned();
+    let new_destination_path = path.to_owned();
     match k % 7 {
         0 => SaveJobEvent::BeginDrain,
         1 => SaveJobEvent::BeginMaterialize,
         2 => SaveJobEvent::Complete,
-        3 => SaveJobEvent::FailRetryable {
-            error_message: "e".to_owned(),
-        },
+        3 => SaveJobEvent::FailRetryable { error_message },
         4 => SaveJobEvent::Retry,
         5 => SaveJobEvent::Retarget {
-            new_destination_path: path.to_owned(),
+            new_destination_path,
         },
         _ => SaveJobEvent::Discard,
     }
@@ -689,36 +1196,203 @@ fn job_in(state: SaveJobState) -> SaveJob {
     job
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof)]
-fn k5_save_job_apply_matches_transition_table() {
-    let from = STATES[usize::from(kani::any::<u8>() % 6)];
-    let k: u8 = kani::any();
-    let path = match kani::any::<u8>() % 3 {
-        0 => "",
-        1 => "  ",
-        _ => "/new",
-    };
-    let before = job_in(from);
+/// Job in `state` holding the first `pins` (0–2) of two fixed chunk IDs.
+fn k5_job(state: SaveJobState, pins: usize) -> SaveJob {
+    let ids: Vec<String> = ["c0", "c1"][..pins]
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+    let mut job = SaveJob::new("j", "/d", ids);
+    job.state = state;
+    job
+}
+
+/// K5 body for one concrete source state and retarget path over every event (`k` is symbolic;
+/// only `k % 7` matters) and 0–2 pins. The path stays concrete: `str::trim` over a path chosen
+/// symbolically among literals did not finish in 4 min, and the 6×7 state×event product in one
+/// harness exhausted CBMC memory (31 GB). Each obligation is an implication asserted on every
+/// path, so none sits in a branch that a concrete `from` makes dead (terminal states reject
+/// every event, so for them the obligations reduce to rejection and immutability).
+fn k5_case(from: SaveJobState, pins: usize, path: &str) {
+    let before = k5_job(from, pins);
     let mut job = before.clone();
-    match job.apply(event(k, path)) {
-        Ok(to) => {
-            assert!(from.can_transition_to(to), "apply ⊆ can_transition_to");
-            assert_eq!(job.state, to);
-            assert!(!from.is_terminal(), "terminal states reject every event");
-            if !matches!(to, SaveJobState::Completed | SaveJobState::Discarded) {
-                assert_eq!(
-                    job.pinned_chunk_ids, before.pinned_chunk_ids,
-                    "pins conserved"
-                );
-            } else {
-                assert!(job.pinned_chunk_ids.is_empty(), "terminal releases pins");
-            }
-            if k % 7 == 5 {
-                assert!(!path.trim().is_empty(), "empty retarget rejected");
-            }
-        }
-        Err(_) => assert_eq!(job, before, "rejected transition leaves job unchanged"),
-    }
+    let k: u8 = kani::any();
+    let accepted = job.apply(event(k, path)).ok();
+    let ok = accepted.is_some();
+    let to = accepted.unwrap_or(from);
+    let released = matches!(to, SaveJobState::Completed | SaveJobState::Discarded);
+    let pins_kept = job.pinned_chunk_ids == before.pinned_chunk_ids;
+    let pins_empty = job.pinned_chunk_ids.is_empty();
+    let unchanged = job == before;
+    let path_blank = path.trim().is_empty();
+    let retarget = k % 7 == 5;
+    assert!(
+        !ok || from.can_transition_to(to),
+        "apply ⊆ can_transition_to"
+    );
+    assert!(!ok || job.state == to, "job.state is the returned target");
+    assert!(
+        !ok || !from.is_terminal(),
+        "terminal states reject every event"
+    );
+    assert!(!ok || released || pins_kept, "pins conserved");
+    assert!(!ok || !released || pins_empty, "terminal releases pins");
+    assert!(!ok || !retarget || !path_blank, "empty retarget rejected");
+    assert!(ok || unchanged, "rejected transition leaves job unchanged");
+}
+
+/// K5 for one source state and pin count over every event and an empty, blank or real
+/// retarget path. Pin counts get separate harnesses: looping 0–2 pins in one harness took
+/// 74–81 s for `FailedRetryable` (CBMC cost grows faster than the number of cases).
+fn k5_apply_from(from: SaveJobState, pins: usize) {
+    k5_case(from, pins, "");
+    k5_case(from, pins, "  ");
+    k5_case(from, pins, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins0() {
+    k5_apply_from(SaveJobState::Pinned, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins1() {
+    k5_apply_from(SaveJobState::Pinned, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins2() {
+    k5_apply_from(SaveJobState::Pinned, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins0() {
+    k5_apply_from(SaveJobState::Draining, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins1() {
+    k5_apply_from(SaveJobState::Draining, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins2() {
+    k5_apply_from(SaveJobState::Draining, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins0() {
+    k5_apply_from(SaveJobState::Materializing, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins1() {
+    k5_apply_from(SaveJobState::Materializing, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins2() {
+    k5_apply_from(SaveJobState::Materializing, 2);
+}
+
+/// `FailedRetryable` is also split per path: it is the only state accepting `Retarget`.
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins0() {
+    k5_apply_from(SaveJobState::Completed, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins1() {
+    k5_apply_from(SaveJobState::Completed, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins2() {
+    k5_apply_from(SaveJobState::Completed, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins0() {
+    k5_apply_from(SaveJobState::Discarded, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins1() {
+    k5_apply_from(SaveJobState::Discarded, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins2() {
+    k5_apply_from(SaveJobState::Discarded, 2);
 }
 
 #[kani::proof]
@@ -759,6 +1433,9 @@ fn k5_bundle_lifecycle() {
 }
 
 // ---------------------------------------------------------------- K6 (arb-core half)
+/// The bounds half is promoted as `k6_map_touch_to_frame_bounds_and_domain`. Monotonicity
+/// compares two symbolic `f64` divisions and stays `kani-extended`: it did not finish within
+/// 250 s even with fixed `1080 -> 460` dimensions.
 #[cfg_attr(feature = "kani-extended", kani::proof)]
 fn k6_map_touch_to_frame_bounds_and_monotonic() {
     let dw: u32 = kani::any();
@@ -784,6 +1461,37 @@ fn k6_map_touch_to_frame_bounds_and_monotonic() {
     }
 }
 
+/// Bounds half of K6 with symbolic display/frame dimensions (`<= 2^14`, including `0`), every
+/// display-geometry shape and arbitrary `f64` coordinates (including NaN and infinities).
+#[kani::proof]
+fn k6_map_touch_to_frame_bounds_and_domain() {
+    let dw: u32 = kani::any();
+    let dh: u32 = kani::any();
+    let fw: u32 = kani::any();
+    let fh: u32 = kani::any();
+    kani::assume(dw <= 1 << 14 && dh <= 1 << 14 && fw <= 1 << 14 && fh <= 1 << 14);
+    let (display_w, display_h) = match kani::any::<u8>() % 4 {
+        0 => (Some(dw), Some(dh)),
+        1 => (None, None),
+        2 => (Some(dw), None),
+        _ => (None, Some(dh)),
+    };
+    let x: f64 = kani::any();
+    let y: f64 = kani::any();
+    let r = map_touch_to_frame(x, y, display_w, display_h, fw, fh);
+    let extent = match (display_w, display_h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((f64::from(w), f64::from(h))),
+        (None, None) => Some((1.0, 1.0)),
+        _ => None,
+    };
+    let accepted =
+        fw > 0 && fh > 0 && extent.is_some_and(|(w, h)| x >= 0.0 && x <= w && y >= 0.0 && y <= h);
+    assert_eq!(r.is_some(), accepted, "Some exactly for in-display touches");
+    if let Some((px, py)) = r {
+        assert!(px >= 0.0 && px <= f64::from(fw - 1) && py >= 0.0 && py <= f64::from(fh - 1));
+    }
+}
+
 #[kani::proof]
 fn k6_physical_one_pixel_never_jumps_to_bottom_right() {
     let dw: u32 = kani::any();
@@ -799,6 +1507,115 @@ fn k6_physical_one_pixel_never_jumps_to_bottom_right() {
     assert!(px < f64::from(fw - 1) || fw <= 2);
     assert!(py <= f64::from(fh) / 2.0, "physical (1,1) stays top-left");
     assert!(px <= f64::from(fw) / 2.0);
+}
+
+/// One axis of `map_touch_to_frame` (the other axis pinned to a `1 -> 1` mapping of `0.0`):
+/// one division and one multiplication per call instead of four.
+fn k6_axis(axis_x: bool, coord: f64, display: u32, frame: u32) -> Option<f64> {
+    if axis_x {
+        map_touch_to_frame(coord, 0.0, Some(display), Some(1), frame, 1).map(|(px, _)| px)
+    } else {
+        map_touch_to_frame(0.0, coord, Some(1), Some(display), 1, frame).map(|(_, py)| py)
+    }
+}
+
+/// Monotonic non-decreasing for two in-range coordinates on one axis. Both must map (in-range
+/// input on a known display), so the order check is never skipped.
+fn k6_axis_monotone(axis_x: bool, c1: f64, c2: f64, display: u32, frame: u32) {
+    let (Some(p1), Some(p2)) = (
+        k6_axis(axis_x, c1, display, frame),
+        k6_axis(axis_x, c2, display, frame),
+    ) else {
+        panic!("in-range coordinate on a known display maps")
+    };
+    assert!(p1 <= p2, "monotonic non-decreasing");
+}
+
+/// Domain: integer pixel coordinates `0..=display` (as `f64`), concrete dimensions.
+fn k6_axis_monotone_on_integer_pixels(axis_x: bool, display: u32, frame: u32) {
+    let (u1, u2): (u32, u32) = (kani::any(), kani::any());
+    kani::assume(u1 <= u2 && u2 <= display);
+    k6_axis_monotone(axis_x, f64::from(u1), f64::from(u2), display, frame);
+}
+
+/// Domain: every `f64` in `0.0..=display` (`NaN` / out of range map to `None`, covered by
+/// `k6_map_touch_to_frame_bounds_and_monotonic`'s bounds half), concrete dimensions.
+fn k6_axis_monotone_on_any_f64(axis_x: bool, display: u32, frame: u32) {
+    let (c1, c2): (f64, f64) = (kani::any(), kani::any());
+    let d = f64::from(display);
+    kani::assume(0.0 <= c1 && c1 <= c2 && c2 <= d);
+    k6_axis_monotone(axis_x, c1, c2, display, frame);
+}
+
+#[kani::proof]
+fn k6_monotonic_x_integer_pixels_1080_to_460() {
+    k6_axis_monotone_on_integer_pixels(true, 1080, 460);
+}
+
+#[kani::proof]
+fn k6_monotonic_y_integer_pixels_2400_to_1024() {
+    k6_axis_monotone_on_integer_pixels(false, 2400, 1024);
+}
+
+#[kani::proof]
+fn k6_monotonic_x_integer_pixels_1080_to_1080() {
+    k6_axis_monotone_on_integer_pixels(true, 1080, 1080);
+}
+
+#[kani::proof]
+fn k6_monotonic_y_integer_pixels_1920_to_1920() {
+    k6_axis_monotone_on_integer_pixels(false, 1920, 1920);
+}
+
+#[kani::proof]
+fn k6_monotonic_x_integer_pixels_3840_to_1920() {
+    k6_axis_monotone_on_integer_pixels(true, 3840, 1920);
+}
+
+#[kani::proof]
+fn k6_monotonic_y_integer_pixels_2160_to_1080() {
+    k6_axis_monotone_on_integer_pixels(false, 2160, 1080);
+}
+
+/// Domain: integer pixels, symbolic dimensions up to 4096. CBMC ceiling: symbolic divisor
+/// exceeded five minutes.
+#[cfg_attr(feature = "kani-extended", kani::proof)]
+fn k6_monotonic_x_integer_pixels_symbolic_dims_le_4096() {
+    let (display, frame): (u32, u32) = (kani::any(), kani::any());
+    kani::assume(0 < display && display <= 4096 && 0 < frame && frame <= 4096);
+    let (u1, u2): (u32, u32) = (kani::any(), kani::any());
+    kani::assume(u1 <= u2 && u2 <= display);
+    k6_axis_monotone(true, f64::from(u1), f64::from(u2), display, frame);
+}
+
+/// Power-of-two dimensions: `/ 1024` and `* 512` only shift the exponent. (A `1 -> 1` frame
+/// is not a monotonicity check: `min(frame - 1)` clamps every output to `0`.)
+#[kani::proof]
+fn k6_monotonic_x_any_f64_pow2_1024_to_512() {
+    k6_axis_monotone_on_any_f64(true, 1024, 512);
+}
+
+#[kani::proof]
+fn k6_monotonic_y_any_f64_pow2_2048_to_1024() {
+    k6_axis_monotone_on_any_f64(false, 2048, 1024);
+}
+
+/// Unit-wide display (the `0.0..=1.0` coordinate range of a normalized touch) onto 1024 pixels.
+#[kani::proof]
+fn k6_monotonic_x_any_f64_pow2_1_to_1024() {
+    k6_axis_monotone_on_any_f64(true, 1, 1024);
+}
+
+/// CBMC ceiling: symbolic `f64` division by a non-power-of-two constant (`/ 1080`) alone
+/// exceeded five minutes.
+#[cfg_attr(feature = "kani-extended", kani::proof)]
+fn k6_monotonic_x_any_f64_1080_to_460() {
+    k6_axis_monotone_on_any_f64(true, 1080, 460);
+}
+
+#[cfg_attr(feature = "kani-extended", kani::proof)]
+fn k6_monotonic_y_any_f64_2400_to_1024() {
+    k6_axis_monotone_on_any_f64(false, 2400, 1024);
 }
 
 // ---------------------------------------------------------------- K7
@@ -837,31 +1654,87 @@ fn k7_empty_and_single_sample_strokes_are_taps() {
     assert_eq!(one.end_t_offset_ns, p.t_offset_ns);
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k7_decimate_keeps_endpoints_and_cap() {
-    let len = usize::from(kani::any::<u8>() % 5) + 1;
-    let cap = usize::from(kani::any::<u8>() % 3) + 2;
-    let mut samples = Vec::new();
+/// Every output sample is an unmodified input sample at a strictly increasing index, the first
+/// and last inputs are kept, and the length is `cap` exactly when decimation applies.
+fn k7_decimate_exact_stride(len: usize, cap: usize) {
+    let mut samples = Vec::with_capacity(len);
     let mut i = 0;
     while i < len {
         samples.push(TouchPoint {
-            x: 0.0,
-            y: 0.0,
-            t_offset_ns: i64::try_from(i).unwrap_or(0),
+            x: kani::any(),
+            y: kani::any(),
+            t_offset_ns: i64::try_from(i).unwrap_or(-1),
         });
         i += 1;
     }
     let out = decimate(&samples, cap);
-    assert!(out.len() <= cap.max(len));
-    if len > cap {
-        assert_eq!(out.len(), cap);
+    let expected = if len <= cap || cap <= 1 { len } else { cap };
+    assert_eq!(out.len(), expected);
+    let mut k = 0;
+    while k < out.len() {
+        let idx = usize::try_from(out[k].t_offset_ns).unwrap_or(usize::MAX);
+        assert!(idx < len, "output is drawn from the input");
+        assert_eq!(out[k].x.to_bits(), samples[idx].x.to_bits());
+        assert_eq!(out[k].y.to_bits(), samples[idx].y.to_bits());
+        if k == 0 {
+            assert_eq!(idx, 0, "first sample kept");
+        } else {
+            assert!(
+                out[k - 1].t_offset_ns < out[k].t_offset_ns,
+                "strictly increasing"
+            );
+        }
+        if k + 1 == out.len() {
+            assert_eq!(idx, len - 1, "last sample kept");
+        }
+        k += 1;
     }
-    assert_eq!(out[0].t_offset_ns, 0, "first sample kept");
-    assert_eq!(
-        out[out.len() - 1].t_offset_ns,
-        samples[len - 1].t_offset_ns,
-        "last sample kept"
-    );
+}
+
+/// One harness per concrete `(len, cap)` pair: with both symbolic, the `u128` stride division
+/// in `decimate` is bit-blasted symbolically and CBMC exhausts memory. Together the pairs
+/// cover the former symbolic domain `len ∈ 2..=5`, `cap ∈ 2..=4` exactly, plus the
+/// pass-through caps `0` and `1`; `len == 1` is covered for every `cap` below.
+macro_rules! k7_decimate_harnesses {
+    ($($name:ident => ($len:literal, $cap:literal);)*) => {$(
+        #[kani::proof]
+        #[kani::unwind(7)]
+        fn $name() {
+            k7_decimate_exact_stride($len, $cap);
+        }
+    )*};
+}
+
+k7_decimate_harnesses! {
+    k7_decimate_keeps_endpoints_and_cap_len2_cap2 => (2, 2);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap2 => (3, 2);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap2 => (4, 2);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap2 => (5, 2);
+    k7_decimate_keeps_endpoints_and_cap_len2_cap3 => (2, 3);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap3 => (3, 3);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap3 => (4, 3);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap3 => (5, 3);
+    k7_decimate_keeps_endpoints_and_cap_len2_cap4 => (2, 4);
+    k7_decimate_keeps_endpoints_and_cap_len3_cap4 => (3, 4);
+    k7_decimate_keeps_endpoints_and_cap_len4_cap4 => (4, 4);
+    k7_decimate_keeps_endpoints_and_cap_len5_cap4 => (5, 4);
+    k7_decimate_passes_through_len3_cap0 => (3, 0);
+    k7_decimate_passes_through_len3_cap1 => (3, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+fn k7_decimate_passes_through_single_sample() {
+    let p = TouchPoint {
+        x: kani::any(),
+        y: kani::any(),
+        t_offset_ns: kani::any(),
+    };
+    let out = decimate(&[p], kani::any());
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].x.to_bits(), p.x.to_bits());
+    assert_eq!(out[0].y.to_bits(), p.y.to_bits());
+    assert_eq!(out[0].t_offset_ns, p.t_offset_ns);
 }
 
 #[kani::proof]
