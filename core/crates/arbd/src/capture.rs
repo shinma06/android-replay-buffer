@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 use crate::protocol::{
-    AudioCaptureState, CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse,
+    AudioCaptureState, AudioCause, CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse,
 };
 use crate::time_util::{next_id, utc_now_iso8601};
 
@@ -562,6 +562,7 @@ pub struct CapturePipeline {
     capture_mode: CaptureMode,
     last_video_error: Option<String>,
     audio_state: AudioCaptureState,
+    audio_cause: Option<AudioCause>,
     audio_reason: Option<String>,
     device_api_warning: Option<String>,
     clock_domain: ClockDomain,
@@ -638,6 +639,7 @@ impl CapturePipeline {
             capture_mode: CaptureMode::VideoAndLogs,
             last_video_error: None,
             audio_state: AudioCaptureState::Unknown,
+            audio_cause: None,
             audio_reason: None,
             device_api_warning: None,
             clock_domain: ClockDomain::Replayed,
@@ -866,16 +868,18 @@ impl CapturePipeline {
         }
     }
 
-    /// Records the live audio capture availability state and optional diagnostic reason
-    /// for `system.status`.
+    /// Records the live audio capture availability state, its machine-readable cause
+    /// (decided by `arb_core::audio_policy`) and optional diagnostic reason for `system.status`.
     pub fn set_audio_status_for_session(
         &mut self,
         generation: u64,
         state: AudioCaptureState,
+        cause: AudioCause,
         reason: Option<String>,
     ) {
         if generation == self.session_generation {
             self.audio_state = state;
+            self.audio_cause = Some(cause);
             self.audio_reason = reason;
         }
     }
@@ -918,10 +922,10 @@ impl CapturePipeline {
         self.storage_pressure_stopped = false;
         self.capture_mode = capture_mode;
         self.last_video_error = None;
-        self.audio_state = if capture_mode == CaptureMode::LogsOnly {
-            AudioCaptureState::Disabled
+        (self.audio_state, self.audio_cause) = if capture_mode == CaptureMode::LogsOnly {
+            (AudioCaptureState::Disabled, Some(AudioCause::LogsOnly))
         } else {
-            AudioCaptureState::Unknown
+            (AudioCaptureState::Unknown, None)
         };
         self.audio_reason = None;
         self.device_api_warning = None;
@@ -1003,7 +1007,9 @@ impl CapturePipeline {
             capture_mode: self.capture_mode,
             last_video_error: self.last_video_error.clone(),
             audio_state: self.audio_state,
+            audio_cause: self.audio_cause,
             audio_reason: self.audio_reason.clone(),
+            device_api_level: (self.device.api_level > 0).then_some(self.device.api_level),
             device_api_warning: self.device_api_warning.clone(),
             video_frames: self.video_frames_seen,
             audio_frames: self.audio_frames_seen,
@@ -1212,10 +1218,14 @@ impl CapturePipeline {
             CaptureEvent::AudioFrame { .. } => {
                 self.audio_frames_seen += 1;
                 self.audio_state = AudioCaptureState::Available;
+                self.audio_cause = Some(AudioCause::None);
                 self.audio_reason = None;
             }
             CaptureEvent::AudioUnavailable { status, .. } => {
                 self.audio_state = AudioCaptureState::Unavailable;
+                if matches!(self.audio_cause, None | Some(AudioCause::None)) {
+                    self.audio_cause = Some(default_audio_unavailable_cause(*status));
+                }
                 if self.audio_reason.is_none() {
                     self.audio_reason = Some(default_audio_unavailable_reason(*status));
                 }
@@ -3462,6 +3472,20 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
     }
 }
 
+/// Cause for an `AudioUnavailable` event whose sender did not already record one.
+fn default_audio_unavailable_cause(status: AudioTunnelStatus) -> AudioCause {
+    match status {
+        // Only a known level below the floor is an OS limitation (PDD G8-1 / G8-2).
+        AudioTunnelStatus::UnavailableApiLevel { api_level, .. }
+            if arb_core::audio_policy::api_is_below_audio_floor(Some(api_level)) =>
+        {
+            AudioCause::ApiBelowMin
+        }
+        AudioTunnelStatus::DisabledByDevice => AudioCause::DeviceCaptureFailed,
+        _ => AudioCause::Unknown,
+    }
+}
+
 fn default_audio_unavailable_reason(status: AudioTunnelStatus) -> String {
     match status {
         AudioTunnelStatus::UnavailableApiLevel { api_level, .. } => {
@@ -3472,8 +3496,7 @@ fn default_audio_unavailable_reason(status: AudioTunnelStatus) -> String {
             })
         }
         AudioTunnelStatus::DisabledByDevice => {
-            "Device disabled or refused audio capture (codec_id = 0). Continuing with video + logs + taps."
-                .to_owned()
+            arb_core::audio_policy::runtime_failure_reason(AudioCause::DeviceCaptureFailed, None, None)
         }
         AudioTunnelStatus::DeviceError => {
             "Device audio capture failed to initialize. Continuing with video + logs + taps."
@@ -4957,6 +4980,11 @@ mod tests {
             )
         );
         assert_eq!(view.device_api_warning, None);
+        assert_eq!(
+            view.audio_cause,
+            Some(crate::protocol::AudioCause::ApiBelowMin),
+            "API 28 is the only OS-limitation cause"
+        );
 
         // API < 28 (e.g. API 27) sets a non-blocking warning without blocking capture.
         let gen2 = pipeline.begin_live_session("aos8-legacy");
@@ -4995,6 +5023,66 @@ mod tests {
             "API 27 must surface non-blocking warning: {:?}",
             view27.device_api_warning
         );
+    }
+
+    /// G8-1 / G8-2 (status view): an `UnavailableApiLevel` event for API >= 33 or an unknown
+    /// API never becomes `api_below_min`; the device API level and `logs_only` cause are reported.
+    #[test]
+    fn g8_status_view_never_reports_api_below_min_for_api_33_plus_or_unknown() {
+        use crate::protocol::AudioCause;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut pipeline = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .expect("open pipeline");
+        for api_level in [0_u32, 33, 34, u32::MAX] {
+            let _ = pipeline.begin_live_session("aos13-dev");
+            assert_eq!(
+                pipeline.status_view().audio_cause,
+                None,
+                "fresh session has no cause"
+            );
+            pipeline
+                .ingest_event(CaptureEvent::AudioUnavailable {
+                    pc_cont_ns: 1_000,
+                    boot_id: "boot-1".to_owned(),
+                    status: arb_adb::scrcpy::AudioTunnelStatus::UnavailableApiLevel {
+                        api_level,
+                        min_required: 33,
+                    },
+                })
+                .expect("ingest AudioUnavailable");
+            let view = pipeline.status_view();
+            assert_ne!(
+                view.audio_cause,
+                Some(AudioCause::ApiBelowMin),
+                "API {api_level} must not be reported as unsupported"
+            );
+        }
+        let generation = pipeline
+            .begin_live_session_with_mode("aos13-dev", arb_core::config::CaptureMode::LogsOnly);
+        let view = pipeline.status_view();
+        assert_eq!(
+            view.audio_cause,
+            Some(AudioCause::LogsOnly),
+            "logs_only cause"
+        );
+        pipeline.set_audio_status_for_session(
+            generation,
+            crate::protocol::AudioCaptureState::Unavailable,
+            AudioCause::DeviceCaptureFailed,
+            Some("codec_id = 0".to_owned()),
+        );
+        assert_eq!(
+            pipeline.status_view().audio_cause,
+            Some(AudioCause::DeviceCaptureFailed),
+            "the recorded cause is reported verbatim"
+        );
+        let json = serde_json::to_value(pipeline.status_view()).expect("serialize");
+        assert_eq!(json["audio_cause"], "device_capture_failed", "wire value");
     }
 
     // -- T-6H item 2: per-pointer stroke accumulation (`ActiveStroke`/`ingest_touch_sample`) --

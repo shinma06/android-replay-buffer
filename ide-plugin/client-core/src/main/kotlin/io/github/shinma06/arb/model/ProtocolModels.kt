@@ -73,6 +73,31 @@ enum class AudioCaptureState(val wire: String) {
     }
 }
 
+/**
+ * Machine-readable cause behind [CaptureStatusView.audioState] (`capture.audio_cause`), decided by
+ * `arb_core::audio_policy` (PDD G8). Only [API_BELOW_MIN] means the device OS is unsupported;
+ * wire values unknown to this build map to [UNKNOWN].
+ */
+enum class AudioCause(val wire: String) {
+    NONE("none"),
+    USER_DISABLED("user_disabled"),
+    LOGS_ONLY("logs_only"),
+    API_BELOW_MIN("api_below_min"),
+    DEVICE_CAPTURE_FAILED("device_capture_failed"),
+    ENCODER_FATAL("encoder_fatal"),
+    HANDSHAKE_IO("handshake_io"),
+    TUNNEL_CONNECT_FAILED("tunnel_connect_failed"),
+    LAUNCH_FAILED_AUDIO_TRUE("launch_failed_audio_true"),
+    LAUNCH_FAILED_BOTH("launch_failed_both"),
+    RUNTIME_STICKY_DISABLED("runtime_sticky_disabled"),
+    UNKNOWN("unknown");
+
+    companion object {
+        /** Forward compatible: a cause added by a newer daemon is [UNKNOWN], never a parse error. */
+        fun fromWire(value: String): AudioCause = entries.firstOrNull { it.wire == value } ?: UNKNOWN
+    }
+}
+
 data class CaptureStatusView(
     val active: Boolean,
     val connected: Boolean,
@@ -89,7 +114,11 @@ data class CaptureStatusView(
     val staticHoldEvents: Long,
     val ringWriteErrors: Long = 0L,
     val audioState: AudioCaptureState? = null,
+    /** `null` from daemons older than PDD G8 (treated as an unknown runtime failure when unavailable). */
+    val audioCause: AudioCause? = null,
     val audioReason: String? = null,
+    /** Detected Android API level of the capturing device, once known. */
+    val deviceApiLevel: Int? = null,
     val deviceApiWarning: String? = null,
 ) {
     val effectiveAudioState: AudioCaptureState

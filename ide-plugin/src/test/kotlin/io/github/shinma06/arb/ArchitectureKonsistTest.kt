@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Layer-4 PDD (KON-1..KON-5): architecture rules over the plugin and `client-core` sources.
+ * Layer-4 PDD (KON-1..KON-6): architecture rules over the plugin and `client-core` sources.
  * Each rule reports the offending files so a regression names its own fix site.
  */
 class ArchitectureKonsistTest {
@@ -112,5 +112,25 @@ class ArchitectureKonsistTest {
             .map { it.name }
             .toSet()
         assertEquals(setOf("LegacyV1SettingsMigrator", "ArbStartupActivity", "LegacyV1SettingsMigratorTest"), legacyUsers)
+    }
+
+    /**
+     * KON-6 (PDD G8-7): audio "unsupported" wording is produced only by `AudioPolicyTable`, which
+     * shows it solely for `AudioCause.API_BELOW_MIN`; no other UI code may label audio unsupported.
+     */
+    @Test
+    fun kon6AudioUnsupportedWordingLivesOnlyInAudioPolicyTable() {
+        val wording = Regex("""音声キャプチャ非対応|音声: 非対応""")
+        assertNone(
+            "KON-6",
+            main().filter { it.name != "AudioPolicyTable" && wording.containsMatchIn(it.code()) }.map { it.rel() },
+        )
+        val table = main().single { it.name == "AudioPolicyTable" }.code()
+        assertTrue(wording.containsMatchIn(table), "AudioPolicyTable owns the unsupported wording")
+        assertTrue(
+            Regex("""fun classOf\(cause: AudioCause\): AudioLabelClass = when \(cause\) \{[^}]*\}""")
+                .find(table)?.value?.contains("else") == false,
+            "AudioPolicyTable.classOf is an exhaustive `when` without `else`",
+        )
     }
 }

@@ -1,4 +1,5 @@
-//! Layer-1 PDD: Kani bounded model-checking harnesses for `arb-core` (K1–K7).
+//! Layer-1 PDD: Kani bounded model-checking harnesses for `arb-core` (K1–K7, and K11 in
+//! `kani_proofs/k11_audio_policy.rs`).
 //!
 //! Compiled only under `cargo kani` (`cfg(kani)`); unwinding assertions stay enabled.
 //!
@@ -7,6 +8,9 @@
 //! `cargo kani -p <crate> --features kani-extended` and in the non-blocking `kani-extended`
 //! job of `.github/workflows/pdd-kani.yml`; `docs/proofs/tcb-axioms.md` §3 lists them.
 #![cfg_attr(not(feature = "kani-extended"), allow(dead_code))]
+
+// K11 (PDD G8): live audio policy harnesses, kept in their own file.
+mod k11_audio_policy;
 
 use crate::gesture::{TouchPoint, classify_stroke, decimate, map_touch_to_frame, touch_slop};
 use crate::selection::{

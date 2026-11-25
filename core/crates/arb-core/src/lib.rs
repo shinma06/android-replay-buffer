@@ -9,6 +9,7 @@
 //! parsing helpers, and save/lease/ring-budget state machines.
 
 pub mod analytics;
+pub mod audio_policy;
 pub mod bundle;
 pub mod config;
 pub mod device;

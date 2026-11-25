@@ -184,11 +184,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = when {
-                            controller.isLogsOnlyMode -> "映像・音声なし"
-                            capture.config.audioEnabled -> "音声 ON"
-                            else -> "音声 OFF"
-                        },
+                        text = capture.audioStatusLabel,
                         style = ArbJewelPalette.bodyStyle(
                             sizeSp = 10.5f,
                             color = if (capture.config.audioEnabled) ArbJewelPalette.mutedText() else ArbJewelPalette.dimmedText(),

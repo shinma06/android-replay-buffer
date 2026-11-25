@@ -43,13 +43,13 @@ pub const AUDIO_CODEC_ERROR: u32 = 1;
 /// alongside an honest non-blocking diagnostic warning.
 pub const MIN_SUPPORTED_ANDROID_API_LEVEL: u32 = 28;
 
-/// Minimum Android API level at which upstream `scrcpy-server` can capture audio at all
-/// (Android 11 / API 30). ARB only captures audio from [`MIN_AUDIO_PLAYBACK_API_LEVEL`],
-/// because below it capture would mute the device's own playback.
-pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 = 30;
-
-/// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true` (Android 13 / API 33).
-pub const MIN_AUDIO_PLAYBACK_API_LEVEL: u32 = 33;
+/// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true`
+/// (Android 13 / API 33).
+///
+/// Re-exported from [`arb_core::audio_policy`], the single audio decision source (PDD G8).
+/// Upstream `scrcpy-server` can capture audio from API 30, but only by muting the device's own
+/// playback below API 33, so ARB never asks for audio below this level.
+pub use arb_core::audio_policy::MIN_AUDIO_PLAYBACK_API_LEVEL;
 
 /// Maximum permitted H.264 video packet byte length (`16 MiB`).
 pub const MAX_VIDEO_PACKET_LEN: usize = 16 * 1024 * 1024;
@@ -190,17 +190,10 @@ pub fn unsupported_android_api_warning(api_level: u32) -> Option<String> {
 /// disabled for `api_level`, or `None` when `api_level == 0` (unknown) or `>= 33`.
 #[must_use]
 pub fn audio_unavailable_reason_for_api(api_level: u32) -> Option<String> {
-    if api_level == 0 {
-        return None;
-    }
     // `scrcpy-server` can capture audio from API 30, but only `audio_source=playback
     // audio_dup=true` (API 33+) keeps the device's own audio playing, so ARB never captures
     // audio below API 33 and the reason must not suggest Android 11/12 would.
-    (api_level < MIN_AUDIO_PLAYBACK_API_LEVEL).then(|| {
-        format!(
-            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API {api_level}. Continuing with video + logs + taps."
-        )
-    })
+    arb_core::audio_policy::api_below_min_reason(api_level)
 }
 
 /// Video session metadata header emitted before video packets and on rotation/resize.

@@ -25,6 +25,7 @@ object ProtocolJson {
         .registerWireEnum(IdeDefaultSaveAction::class.java, IdeDefaultSaveAction::wire, IdeDefaultSaveAction::fromWire)
         .registerWireEnum(CaptureMode::class.java, CaptureMode::wire, CaptureMode::fromWire)
         .registerWireEnum(AudioCaptureState::class.java, AudioCaptureState::wire, AudioCaptureState::fromWire)
+        .registerWireEnum(AudioCause::class.java, AudioCause::wire, AudioCause::fromWire)
         .registerWireEnum(SaveMode::class.java, SaveMode::wire, SaveMode::fromWire)
         .registerWireEnum(SaveTriggerKind::class.java, SaveTriggerKind::wire, SaveTriggerKind::fromWire)
         .registerWireEnum(BundleKind::class.java, BundleKind::wire, BundleKind::fromWire)
