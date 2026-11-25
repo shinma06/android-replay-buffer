@@ -18,7 +18,7 @@ use crate::output::{Publish, write_atomically};
 
 /// File magic header for external `filmstrip.bin` caches.
 const MAX_CACHE_ENTRIES: usize = 1_000_000;
-const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS002";
+pub(crate) const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS002";
 
 /// FNV-1a 64-bit offset basis for integrity verification of `filmstrip.bin`.
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -217,13 +217,28 @@ impl FilmstripCache {
         expected_source_digest: &[u8; 32],
     ) -> Result<Self, MediaError> {
         let bytes = fs::read(path)?;
+        Self::from_bytes(
+            &bytes,
+            expected_source_file_len,
+            expected_frame_count,
+            expected_source_digest,
+        )
+    }
+
+    /// Validates the raw contents of a `filmstrip.bin` file (see [`Self::load_from_file`]).
+    pub(crate) fn from_bytes(
+        bytes: &[u8],
+        expected_source_file_len: u64,
+        expected_frame_count: u64,
+        expected_source_digest: &[u8; 32],
+    ) -> Result<Self, MediaError> {
         if bytes.len() < 8 + 8 + 8 + 32 + 4 + 8 {
             return Err(MediaError::CacheCorrupt(
                 "filmstrip cache file is truncated".to_owned(),
             ));
         }
         let body_len = bytes.len() - 8;
-        let stored_checksum = read_u64_le(&bytes, body_len)?;
+        let stored_checksum = read_u64_le(bytes, body_len)?;
         let actual_checksum = fnv1a_64(&bytes[..body_len]);
         if stored_checksum != actual_checksum {
             return Err(MediaError::CacheCorrupt(
@@ -236,8 +251,8 @@ impl FilmstripCache {
                 "filmstrip cache magic mismatch".to_owned(),
             ));
         }
-        let source_file_len = read_u64_le(&bytes, 8)?;
-        let source_frame_count = read_u64_le(&bytes, 16)?;
+        let source_file_len = read_u64_le(bytes, 8)?;
+        let source_frame_count = read_u64_le(bytes, 16)?;
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[24..56]);
         if source_file_len != expected_source_file_len
@@ -248,7 +263,7 @@ impl FilmstripCache {
                 "filmstrip cache fingerprint does not match source track".to_owned(),
             ));
         }
-        let entry_count = usize::try_from(read_u32_le(&bytes, 56)?)
+        let entry_count = usize::try_from(read_u32_le(bytes, 56)?)
             .map_err(|_| MediaError::CacheCorrupt("entry count overflow".to_owned()))?;
         let mut pos = 60usize;
         if entry_count > MAX_CACHE_ENTRIES
@@ -262,11 +277,11 @@ impl FilmstripCache {
         let mut entries = Vec::with_capacity(entry_count);
 
         for _ in 0..entry_count {
-            let frame_index = read_u64_le(&bytes, pos)?;
-            let pts_ns = read_i64_le(&bytes, pos + 8)?;
-            let width = read_u32_le(&bytes, pos + 16)?;
-            let height = read_u32_le(&bytes, pos + 20)?;
-            let rgb_len = usize::try_from(read_u32_le(&bytes, pos + 24)?)
+            let frame_index = read_u64_le(bytes, pos)?;
+            let pts_ns = read_i64_le(bytes, pos + 8)?;
+            let width = read_u32_le(bytes, pos + 16)?;
+            let height = read_u32_le(bytes, pos + 20)?;
+            let rgb_len = usize::try_from(read_u32_le(bytes, pos + 24)?)
                 .map_err(|_| MediaError::CacheCorrupt("rgb_len overflow".to_owned()))?;
             pos += 28;
             let end = pos
@@ -444,7 +459,7 @@ fn canonicalize_lenient(path: &Path) -> Result<PathBuf, MediaError> {
     }
 }
 
-fn fnv1a_64(data: &[u8]) -> u64 {
+pub(crate) fn fnv1a_64(data: &[u8]) -> u64 {
     let mut hash = FNV1A_OFFSET_BASIS;
     for &byte in data {
         hash ^= u64::from(byte);
@@ -552,13 +567,123 @@ struct ForwardWindow {
 
 impl ForwardWindow {
     fn cached(&self, index: u64) -> Option<&DecodedFrame> {
-        let offset = index.checked_sub(self.frames.front()?.frame_index)?;
-        self.frames.get(usize::try_from(offset).ok()?)
+        window_frame(&self.frames, index)
     }
 }
 
+/// Frame retained by the forward decode window.
+pub(crate) trait WindowFrame {
+    /// Zero-based frame index in the source track.
+    fn index(&self) -> u64;
+    /// Decoded payload size counted against the cache budget.
+    fn bytes(&self) -> usize;
+}
+
+impl WindowFrame for DecodedFrame {
+    fn index(&self) -> u64 {
+        self.frame_index
+    }
+
+    fn bytes(&self) -> usize {
+        self.byte_len()
+    }
+}
+
+/// FIFO of the frames retained by the forward decode window (`VecDeque` in production).
+pub(crate) trait FrameWindow {
+    type Frame: WindowFrame;
+    fn front(&self) -> Option<&Self::Frame>;
+    fn get(&self, offset: usize) -> Option<&Self::Frame>;
+    fn push_back(&mut self, frame: Self::Frame);
+    fn pop_front(&mut self) -> Option<Self::Frame>;
+}
+
+impl<F: WindowFrame> FrameWindow for VecDeque<F> {
+    type Frame = F;
+
+    fn front(&self) -> Option<&F> {
+        VecDeque::front(self)
+    }
+
+    fn get(&self, offset: usize) -> Option<&F> {
+        VecDeque::get(self, offset)
+    }
+
+    fn push_back(&mut self, frame: F) {
+        VecDeque::push_back(self, frame);
+    }
+
+    fn pop_front(&mut self) -> Option<F> {
+        VecDeque::pop_front(self)
+    }
+}
+
+/// Frame `index` of a contiguous forward window, if it is still retained.
+pub(crate) fn window_frame<W: FrameWindow>(frames: &W, index: u64) -> Option<&W::Frame> {
+    let offset = index.checked_sub(frames.front()?.index())?;
+    frames.get(usize::try_from(offset).ok()?)
+}
+
+/// Whether the forward window of `window_key = (gop, format)` positioned at `next` serves
+/// `target` in `key` without restarting from the GOP's IDR frame.
+pub(crate) fn reuses_forward_window<W: FrameWindow>(
+    window_key: (u64, PixelFormat),
+    frames: &W,
+    next: u64,
+    key: (u64, PixelFormat),
+    target: u64,
+) -> bool {
+    window_key.0 == key.0
+        && window_key.1 == key.1
+        && (target >= next || window_frame(frames, target).is_some())
+}
+
+/// Decodes frames `*next..=target` in order, evicting the oldest retained frames so
+/// `*cached_bytes` stays within `max_bytes`. A frame larger than `max_bytes` is never retained:
+/// it is returned when it is `target` and dropped otherwise.
+pub(crate) fn advance_forward_window<W: FrameWindow, E>(
+    frames: &mut W,
+    next: &mut u64,
+    cached_bytes: &mut usize,
+    max_bytes: usize,
+    target: u64,
+    mut decode: impl FnMut(u64) -> Result<W::Frame, E>,
+) -> Result<Option<W::Frame>, E> {
+    while *next <= target {
+        let frame = decode(*next)?;
+        *next += 1;
+        while cached_bytes.saturating_add(frame.bytes()) > max_bytes {
+            let Some(old) = frames.pop_front() else {
+                break;
+            };
+            *cached_bytes -= old.bytes();
+        }
+        if frame.bytes() <= max_bytes {
+            *cached_bytes += frame.bytes();
+            frames.push_back(frame);
+        } else if frame.index() == target {
+            return Ok(Some(frame));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether decoding the whole `gop_start..=gop_end` GOP in `format` is estimated to exceed
+/// `max_bytes`, so it must be streamed through the bounded forward window.
+pub(crate) fn full_gop_exceeds_budget(
+    width: u16,
+    height: u16,
+    format: PixelFormat,
+    (gop_start, gop_end): (u64, u64),
+    max_bytes: usize,
+) -> bool {
+    let gop_len = usize::try_from(gop_end - gop_start + 1).unwrap_or(usize::MAX);
+    let estimate = estimated_frame_bytes(width, height, format).saturating_mul(gop_len);
+    estimate > max_bytes
+}
+
 /// Decoded byte size of one `width x height` frame in `format` (4:2:0 chroma rounded up).
-fn estimated_frame_bytes(width: u16, height: u16, format: PixelFormat) -> usize {
+pub(crate) fn estimated_frame_bytes(width: u16, height: u16, format: PixelFormat) -> usize {
     let (w, h) = (usize::from(width), usize::from(height));
     match format {
         PixelFormat::Yuv420p => w * h + 2 * w.div_ceil(2) * h.div_ceil(2),
@@ -653,10 +778,13 @@ impl GopLruCache {
         }
 
         let (gop_start, gop_end) = track.decodable_gop_range(gop_id)?;
-        let gop_len = usize::try_from(gop_end - gop_start + 1).unwrap_or(usize::MAX);
-        let estimate = estimated_frame_bytes(track.width(), track.height(), output_format)
-            .saturating_mul(gop_len);
-        if estimate > self.max_bytes {
+        if full_gop_exceeds_budget(
+            track.width(),
+            track.height(),
+            output_format,
+            (gop_start, gop_end),
+            self.max_bytes,
+        ) {
             return self.fetch_forward(
                 track,
                 backend,
@@ -758,9 +886,13 @@ impl GopLruCache {
         self.uncached = None;
         let mut window = match self.cursor.take() {
             Some(window)
-                if window.gop == gop
-                    && window.format == format
-                    && (target >= window.next || window.cached(target).is_some()) =>
+                if reuses_forward_window(
+                    (window.gop, window.format),
+                    &window.frames,
+                    window.next,
+                    (gop, format),
+                    target,
+                ) =>
             {
                 window
             }
@@ -781,27 +913,23 @@ impl GopLruCache {
             CacheLookup::Hit
         } else {
             self.cache_misses += 1;
-            while window.next <= target {
-                let frame = match window.decoder.next(track, window.next, format) {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        self.clear();
-                        return Err(error);
-                    }
-                };
-                window.next += 1;
-                while self.cached_bytes.saturating_add(frame.byte_len()) > self.max_bytes {
-                    let Some(old) = window.frames.pop_front() else {
-                        break;
-                    };
-                    self.cached_bytes -= old.byte_len();
-                }
-                if frame.byte_len() <= self.max_bytes {
-                    self.cached_bytes += frame.byte_len();
-                    window.frames.push_back(frame);
-                } else if frame.frame_index == target {
+            let decoder = &mut window.decoder;
+            match advance_forward_window(
+                &mut window.frames,
+                &mut window.next,
+                &mut self.cached_bytes,
+                self.max_bytes,
+                target,
+                |index| decoder.next(track, index, format),
+            ) {
+                Ok(None) => {}
+                Ok(Some(frame)) => {
                     self.cursor = Some(window);
                     return Ok((&*self.uncached.insert(frame), CacheLookup::Miss));
+                }
+                Err(error) => {
+                    self.clear();
+                    return Err(error);
                 }
             }
             CacheLookup::Miss

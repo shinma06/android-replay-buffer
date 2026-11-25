@@ -17,6 +17,8 @@ use crate::selection::{
     AlignedRecord, Membership, SelectionPolicy, TimestampedRecord, UncertainPlacement, WindowSpec,
     classify_alignment, classify_record, select_for_trim_with_truncated, select_records,
 };
+use crate::selection::{Lane, partition_with};
+use crate::state::RingPlan;
 use crate::state::{
     BundleLifecycleState, PinStatus, RingBudgetPolicy, RingChunkMeta, RingChunkStatus,
     RingEvictionPlanner, RingWriteDecision, SaveJob, SaveJobEvent, SaveJobState,
@@ -394,6 +396,267 @@ fn k2_prior_sidecar_one_consumes_budget_first() {
 #[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(4))]
 fn k2_prior_sidecar_two_consumes_budget_first() {
     k2_prior_sidecar(2, 1);
+}
+
+// K2 slice level: the real `partition_with` core that `select_records` /
+// `select_for_trim_with_truncated` call, run on fixed stack arrays of `Copy` records whose
+// membership is symbolic (the composed classifier `classify_record` is K1's job). No `String`,
+// `TimeAlignment` or output `Vec` is built, which is what ran the full-`Vec` harnesses above
+// out of memory.
+#[derive(Debug, Clone, Copy)]
+struct K2Rec {
+    tag: u8,
+    membership: Membership,
+    ingest: i64,
+    bytes: usize,
+}
+
+/// Never read: `partition_with` takes membership from its `classify` argument.
+static K2_ALIGNMENT: TimeAlignment = TimeAlignment::Unanchored {
+    pc_ingest_cont_ns: 0,
+    reason: UncertaintyReason::NoClockAnchor,
+};
+
+impl AlignedRecord for K2Rec {
+    fn time_alignment(&self) -> &TimeAlignment {
+        &K2_ALIGNMENT
+    }
+    fn pc_ingest_cont_ns(&self) -> i64 {
+        self.ingest
+    }
+    fn estimated_bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+/// Prior sidecar records carry tags `>= K2_PRIOR`.
+const K2_PRIOR: u8 = 100;
+const K2_MAX: usize = 4;
+
+fn any_k2_rec(tag: u8) -> K2Rec {
+    K2Rec {
+        tag,
+        membership: match kani::any::<u8>() % 4 {
+            0 => Membership::InRange,
+            1 => Membership::OutOfRange,
+            2 => Membership::UncertainTime(UncertainPlacement::PartialOverlap),
+            _ => Membership::UncertainTime(UncertainPlacement::UnanchoredProximity),
+        },
+        ingest: i64::from(kani::any::<i8>()),
+        bytes: usize::from(kani::any::<u8>() % 16),
+    }
+}
+
+fn any_k2_recs<const N: usize>(base: u8) -> [K2Rec; N] {
+    let mut v = [K2Rec {
+        tag: 0,
+        membership: Membership::InRange,
+        ingest: 0,
+        bytes: 0,
+    }; N];
+    let mut i = 0;
+    while i < N {
+        v[i] = any_k2_rec(base + u8::try_from(i).unwrap_or(0));
+        i += 1;
+    }
+    v
+}
+
+/// Position of the record tagged `tag` in the `prior ++ main` input sequence.
+fn k2_rank<const P: usize>(tag: u8) -> usize {
+    if tag >= K2_PRIOR {
+        usize::from(tag - K2_PRIOR)
+    } else {
+        P + usize::from(tag)
+    }
+}
+
+/// Runs `partition_with` on `P` prior sidecar and `M` main records and checks every emitted
+/// record and counter against a record-by-record reference walk of the SPEC-02 rules, plus the
+/// K2 invariants (conservation, caps, prior first and never classified, input order).
+fn k2_slice_case<const P: usize, const M: usize>(prior_truncated: usize) -> K2Outcome {
+    let prior: [K2Rec; P] = any_k2_recs(K2_PRIOR);
+    let main: [K2Rec; M] = any_k2_recs(0);
+    let policy = any_policy();
+    let ingest_window = (i64::from(kani::any::<i8>()), i64::from(kani::any::<i8>()));
+
+    let mut out = [(Lane::Main, 0_u8); K2_MAX];
+    let mut out_len = 0;
+    let tally = partition_with(
+        main,
+        prior,
+        prior_truncated,
+        ingest_window,
+        &policy,
+        |r| {
+            assert!(
+                r.tag < K2_PRIOR,
+                "prior sidecar records are never classified"
+            );
+            r.membership
+        },
+        |lane, r| {
+            out[out_len] = (lane, r.tag);
+            out_len += 1;
+        },
+    );
+
+    // Reference walk: prior first (quarantine only), then main in input order.
+    let lo = i128::from(ingest_window.0.min(ingest_window.1))
+        - i128::from(policy.unanchored_ingest_margin_ns);
+    let hi = i128::from(ingest_window.0.max(ingest_window.1))
+        + i128::from(policy.unanchored_ingest_margin_ns);
+    let (mut kept, mut kept_bytes, mut truncated, mut excluded) = (0, 0, prior_truncated, 0);
+    let mut new_truncated_after_prior = false;
+    let mut cursor = 0;
+    let mut i = 0;
+    while i < P + M {
+        let (r, is_prior) = if i < P {
+            (prior[i], true)
+        } else {
+            (main[i - P], false)
+        };
+        let lane = if !is_prior && r.membership == Membership::InRange {
+            Some(Lane::Main)
+        } else if !is_prior
+            && (r.membership == Membership::OutOfRange
+                || i128::from(r.ingest) < lo
+                || i128::from(r.ingest) > hi)
+        {
+            excluded += 1;
+            None
+        } else if kept < policy.max_unanchored_records
+            && kept_bytes + r.bytes <= policy.max_unanchored_bytes
+        {
+            kept += 1;
+            kept_bytes += r.bytes;
+            Some(Lane::Unanchored)
+        } else {
+            truncated += 1;
+            new_truncated_after_prior |= !is_prior && kept > 0 && P > 0;
+            None
+        };
+        if let Some(lane) = lane {
+            assert!(cursor < out_len, "admitted record emitted");
+            assert!(
+                out[cursor] == (lane, r.tag),
+                "emitted in input order to its lane"
+            );
+            cursor += 1;
+        }
+        i += 1;
+    }
+    assert_eq!(cursor, out_len, "only admitted records emitted");
+    assert_eq!(tally.unanchored_records, kept, "quarantined count");
+    assert_eq!(tally.unanchored_bytes, kept_bytes, "quarantined bytes");
+    assert_eq!(
+        tally.unanchored_truncated_count, truncated,
+        "truncated count"
+    );
+    assert_eq!(tally.excluded_count, excluded, "excluded count");
+
+    assert_eq!(
+        out_len + tally.unanchored_truncated_count + tally.excluded_count,
+        P + M + prior_truncated,
+        "conservation incl. prior sidecar and prior truncated count"
+    );
+    assert!(tally.unanchored_records <= policy.max_unanchored_records);
+    assert!(tally.unanchored_bytes <= policy.max_unanchored_bytes);
+    // Implications asserted on every path, so none sits in a branch an empty sidecar makes dead.
+    let mut seen_new = false;
+    let mut j = 0;
+    while j < out_len {
+        let (lane, tag) = out[j];
+        let is_prior = tag >= K2_PRIOR;
+        assert!(
+            !is_prior || lane == Lane::Unanchored,
+            "prior sidecar never promoted to main"
+        );
+        assert!(
+            !is_prior || !seen_new,
+            "prior sidecar entries are quarantined before new records"
+        );
+        assert!(
+            is_prior
+                || lane != Lane::Main
+                || main[usize::from(tag)].membership == Membership::InRange,
+            "main holds InRange records only"
+        );
+        assert!(
+            j == 0 || k2_rank::<P>(out[j - 1].1) < k2_rank::<P>(tag),
+            "input order preserved"
+        );
+        seen_new |= !is_prior;
+        j += 1;
+    }
+    K2Outcome {
+        truncated_new: tally.unanchored_truncated_count > prior_truncated,
+        new_truncated_after_prior,
+        excluded_and_admitted: tally.excluded_count > 0 && out_len > 0,
+        two_main: out_len > 1 && out[0].0 == Lane::Main && out[1].0 == Lane::Main,
+    }
+}
+
+/// Branch witnesses of one `k2_slice_case` run, for `kani::cover!` in the harnesses.
+struct K2Outcome {
+    truncated_new: bool,
+    new_truncated_after_prior: bool,
+    excluded_and_admitted: bool,
+    two_main: bool,
+}
+
+fn k2_cover_common(o: &K2Outcome) {
+    kani::cover!(o.truncated_new, "quarantine cap truncates a record");
+    kani::cover!(
+        o.excluded_and_admitted,
+        "exclusion next to an admitted record"
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k2_slice_select_records_partition_empty_sidecar_n2() {
+    let o = k2_slice_case::<0, 2>(0);
+    k2_cover_common(&o);
+    kani::cover!(o.two_main, "two main records kept in order");
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn k2_slice_select_records_partition_empty_sidecar_n3() {
+    let o = k2_slice_case::<0, 3>(0);
+    k2_cover_common(&o);
+    kani::cover!(o.two_main, "two main records kept in order");
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k2_slice_prior_sidecar_none_main_two() {
+    let o = k2_slice_case::<0, 2>(usize::from(kani::any::<u8>() % 4));
+    k2_cover_common(&o);
+    kani::cover!(o.two_main, "two main records kept in order");
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k2_slice_prior_sidecar_one_consumes_budget_first() {
+    let o = k2_slice_case::<1, 1>(usize::from(kani::any::<u8>() % 4));
+    k2_cover_common(&o);
+    kani::cover!(
+        o.new_truncated_after_prior,
+        "prior sidecar consumed the budget a new record needed"
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn k2_slice_prior_sidecar_two_consumes_budget_first() {
+    let o = k2_slice_case::<2, 1>(usize::from(kani::any::<u8>() % 4));
+    k2_cover_common(&o);
+    kani::cover!(
+        o.new_truncated_after_prior,
+        "prior sidecar consumed the budget a new record needed"
+    );
 }
 
 // ---------------------------------------------------------------- K3
@@ -1164,6 +1427,282 @@ fn k4_ring_eviction_plan_extreme_u64_n3() {
 )]
 fn k4_ring_eviction_plan_extreme_u64_n4() {
     check_plan(4, false);
+}
+
+// K4 slice level: the real `plan_refs` core that `RingEvictionPlanner::plan` calls, run on a
+// fixed stack array of chunks and a stack array of references. `plan` only collects the
+// references into a `Vec` and clones the evicted prefix's IDs, so no `Vec<&RingChunkMeta>`,
+// `Vec<String>` or ID clone is built here.
+fn any_chunk(i: usize, pin: Option<bool>, small: bool) -> RingChunkMeta {
+    RingChunkMeta {
+        chunk_id: IDS[i].to_owned(),
+        created_cont_ns: i64::from(kani::any::<i8>()),
+        duration_ns: if small {
+            u64::from(kani::any::<u8>())
+        } else {
+            kani::any()
+        },
+        bytes: if small {
+            u64::from(kani::any::<u8>())
+        } else {
+            kani::any()
+        },
+        status: if kani::any() {
+            RingChunkStatus::Open
+        } else {
+            RingChunkStatus::Closed
+        },
+        pin: if pin.unwrap_or_else(kani::any) {
+            PinStatus::Pinned
+        } else {
+            PinStatus::Unpinned
+        },
+    }
+}
+
+/// Checks one `plan_refs` run on `N` realistic-size chunks (`u8` bytes and durations,
+/// `u16` quotas, full-`u64` free space, floor and write): REQ-04 pin protection, capacity,
+/// free-space floor, stop-reason soundness, oldest-first prefix order and no over-eviction.
+fn k4_slice_case<const N: usize>(chunks: &[RingChunkMeta; N], small: bool) -> RingPlan {
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: if small {
+            u64::from(kani::any::<u16>())
+        } else {
+            kani::any()
+        },
+        max_ring_duration_ns: if small {
+            u64::from(kani::any::<u16>())
+        } else {
+            kani::any()
+        },
+        min_free_disk_bytes: kani::any(),
+    };
+    let (incoming, free): (u64, u64) = (kani::any(), kani::any());
+    let mut order: [&RingChunkMeta; N] = core::array::from_fn(|i| &chunks[i]);
+    let plan = RingEvictionPlanner::new(policy).plan_refs(&mut order, incoming, free);
+
+    let mut total: u128 = 0;
+    let mut total_dur: u128 = 0;
+    let mut protected: u128 = 0;
+    let mut pinned: u64 = 0;
+    let mut evictable_n = 0;
+    let mut i = 0;
+    while i < N {
+        total += u128::from(chunks[i].bytes);
+        total_dur += u128::from(chunks[i].duration_ns);
+        if chunks[i].is_evictable() {
+            evictable_n += 1;
+        } else {
+            protected += u128::from(chunks[i].bytes);
+        }
+        if chunks[i].pin == PinStatus::Pinned {
+            pinned = pinned.saturating_add(chunks[i].bytes);
+        }
+        i += 1;
+    }
+    let pressure = free < policy.min_free_disk_bytes
+        || free.saturating_sub(incoming) < policy.min_free_disk_bytes;
+    let max_bytes = u128::from(policy.max_ring_bytes);
+    let max_dur = u128::from(policy.max_ring_duration_ns);
+    let inc = u128::from(incoming);
+
+    match plan {
+        RingPlan::Allow { evict_count } => {
+            assert!(!pressure, "free-space floor");
+            assert!(incoming <= policy.max_ring_bytes, "fits the quota alone");
+            assert!(evict_count <= evictable_n, "evicts evictable chunks only");
+            let mut evicted = [false; IDS.len()];
+            let (mut freed, mut freed_dur): (u128, u128) = (0, 0);
+            let mut j = 0;
+            while j < evict_count {
+                let e = chunk_index(chunks, &order[j].chunk_id);
+                assert!(e < N, "evicted index names an input chunk");
+                assert!(chunks[e].is_evictable(), "REQ-04 pin protection");
+                assert!(
+                    j == 0 || older(chunks, chunk_index(chunks, &order[j - 1].chunk_id), e),
+                    "oldest-first order"
+                );
+                assert!(
+                    total - freed + inc > max_bytes || total_dur - freed_dur > max_dur,
+                    "no over-eviction: every eviction was needed"
+                );
+                evicted[e] = true;
+                freed += u128::from(chunks[e].bytes);
+                freed_dur += u128::from(chunks[e].duration_ns);
+                j += 1;
+            }
+            assert!(total - freed + inc <= max_bytes, "capacity");
+            assert!(
+                evict_count == evictable_n || total_dur - freed_dur <= max_dur,
+                "stops only once both quotas hold or nothing evictable is left"
+            );
+            let mut kept = 0;
+            while kept < N {
+                let mut e = 0;
+                while e < N {
+                    assert!(
+                        !chunks[kept].is_evictable()
+                            || evicted[kept]
+                            || !evicted[e]
+                            || older(chunks, e, kept),
+                        "oldest-first prefix"
+                    );
+                    e += 1;
+                }
+                kept += 1;
+            }
+        }
+        RingPlan::StopStoragePressure { pinned_bytes } => {
+            assert!(pressure, "storage pressure justified");
+            assert_eq!(pinned_bytes, pinned, "pinned bytes reported");
+        }
+        RingPlan::ChunkTooLarge => {
+            assert!(
+                !pressure && incoming > policy.max_ring_bytes,
+                "too large justified"
+            );
+        }
+        RingPlan::StopRingFullPinned {
+            remaining_bytes,
+            pinned_bytes,
+        } => {
+            assert!(
+                !pressure && incoming <= policy.max_ring_bytes,
+                "checked in order"
+            );
+            assert!(
+                protected + inc > max_bytes,
+                "pinned/open data blocks the write"
+            );
+            assert!(
+                protected > 0,
+                "only pinned/open data can block a fitting write"
+            );
+            assert_eq!(
+                u128::from(remaining_bytes),
+                protected.min(u128::from(u64::MAX)),
+                "every evictable evicted"
+            );
+            assert_eq!(pinned_bytes, pinned, "pinned bytes reported");
+        }
+    }
+    plan
+}
+
+fn k4_cover_order<const N: usize>(chunks: &[RingChunkMeta; N], plan: RingPlan) {
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count } if evict_count >= 2),
+        "two chunks evicted oldest first"
+    );
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count: 1 })
+            && chunks.iter().filter(|c| c.is_evictable()).count() >= 2,
+        "oldest evicted, younger evictable kept"
+    );
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count } if evict_count >= 1)
+            && chunks[N - 2].is_evictable()
+            && chunks[N - 1].is_evictable()
+            && chunks[N - 2].created_cont_ns == chunks[N - 1].created_cont_ns,
+        "created_cont_ns tie broken by chunk_id"
+    );
+}
+
+/// Two chunks with a concrete pin mask `(pin0, pin1)`; one harness per mask.
+fn k4_slice_n2(pin0: bool, pin1: bool) -> ([RingChunkMeta; 2], RingPlan) {
+    let chunks = [
+        any_chunk(0, Some(pin0), true),
+        any_chunk(1, Some(pin1), true),
+    ];
+    let plan = k4_slice_case(&chunks, true);
+    (chunks, plan)
+}
+
+fn k4_cover_pin_blocks(plan: RingPlan) {
+    kani::cover!(
+        matches!(plan, RingPlan::StopRingFullPinned { pinned_bytes, .. } if pinned_bytes > 0),
+        "pinned chunk blocks the write"
+    );
+}
+
+fn k4_cover_pin_skipped(chunks: &[RingChunkMeta; 2], pinned: usize, plan: RingPlan) {
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count: 1 })
+            && chunks[1 - pinned].is_evictable()
+            && older(chunks, pinned, 1 - pinned),
+        "older pinned chunk skipped, younger chunk evicted"
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_slice_plan_n2_unpinned_unpinned() {
+    let (chunks, plan) = k4_slice_n2(false, false);
+    k4_cover_order(&chunks, plan);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_slice_plan_n2_pinned_unpinned() {
+    let (chunks, plan) = k4_slice_n2(true, false);
+    k4_cover_pin_blocks(plan);
+    k4_cover_pin_skipped(&chunks, 0, plan);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_slice_plan_n2_unpinned_pinned() {
+    let (chunks, plan) = k4_slice_n2(false, true);
+    k4_cover_pin_blocks(plan);
+    k4_cover_pin_skipped(&chunks, 1, plan);
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_slice_plan_n2_pinned_pinned() {
+    let (_, plan) = k4_slice_n2(true, true);
+    assert!(
+        !matches!(plan, RingPlan::Allow { evict_count } if evict_count > 0),
+        "REQ-04: nothing is evicted when every chunk is pinned"
+    );
+    k4_cover_pin_blocks(plan);
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count: 0 }),
+        "both pinned and the write still fits"
+    );
+}
+
+/// Full-`u64` sizes, one chunk: the slice core replaces the `Vec`/`String` path of
+/// `k4_ring_eviction_plan_extreme_u64_n1` and proves the full contract, not only safety.
+#[kani::proof]
+#[kani::unwind(2)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_slice_plan_extreme_u64_n1() {
+    let chunks = [any_chunk(0, None, false)];
+    let plan = k4_slice_case(&chunks, false);
+    kani::cover!(
+        matches!(plan, RingPlan::Allow { evict_count: 1 }),
+        "full-u64 chunk evicted"
+    );
+    k4_cover_pin_blocks(plan);
+}
+
+/// Full-`u64` sizes, two chunks. Kept `kani-extended`: 18 s locally, too little margin for the
+/// ~2.8x slower CI runner.
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(3),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_slice_plan_extreme_u64_n2() {
+    let chunks = [any_chunk(0, None, false), any_chunk(1, None, false)];
+    let plan = k4_slice_case(&chunks, false);
+    k4_cover_order(&chunks, plan);
 }
 
 // ---------------------------------------------------------------- K5
