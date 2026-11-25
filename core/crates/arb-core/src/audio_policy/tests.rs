@@ -91,7 +91,7 @@ fn g8_8_golden_table_cause_list_matches_rust_enum_and_label_classes() {
 fn g8_8_golden_table_rows_match_evaluate() {
     let table = table();
     let rows = table["rows"].as_array().expect("rows array");
-    assert!(rows.len() >= 30, "golden table keeps its coverage");
+    assert!(rows.len() >= 43, "golden table keeps its coverage");
     let mut ids = BTreeSet::new();
     let mut covered_outcomes = BTreeSet::new();
     let mut covered_causes = BTreeSet::new();

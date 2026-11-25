@@ -843,21 +843,13 @@ fn runtime_audio_failure(
     (verdict, reason)
 }
 
-/// Waits up to `timeout` for `scrcpy-server` stderr to arrive (it is relayed through
-/// `adb shell` and can trail the socket bytes), then returns a snapshot of it.
+/// Give the stderr relay time to deliver the failure line, even if startup output is present.
 fn wait_for_scrcpy_stderr(buf: &Mutex<String>, timeout: Duration) -> Option<String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let snapshot = buf
-            .lock()
-            .ok()
-            .map(|guard| guard.clone())
-            .filter(|s| !s.trim().is_empty());
-        if snapshot.is_some() || Instant::now() >= deadline {
-            return snapshot;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
+    thread::sleep(timeout);
+    buf.lock()
+        .ok()
+        .map(|guard| guard.clone())
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// Sticky audio degradation shared by every session of one capture start (PDD G8-6).
@@ -872,13 +864,6 @@ struct AudioRuntimeLatch {
 
 type SharedAudioLatch = Arc<Mutex<AudioRuntimeLatch>>;
 
-/// State carried across the sessions of one supervised capture.
-#[derive(Debug, Default)]
-struct SessionCarry {
-    cached_sdk: Option<u32>,
-    audio_latch: SharedAudioLatch,
-}
-
 fn run_supervised_adb_loop(
     adb: &AdbClient,
     cfg: &LiveCaptureConfig,
@@ -887,7 +872,7 @@ fn run_supervised_adb_loop(
 ) {
     let mut supervisor = SessionSupervisor::new(cfg.serial.clone(), supervisor_config_for(cfg));
     let mut tracker = LiveTracker::new();
-    let mut carry = SessionCarry::default();
+    let audio_latch = SharedAudioLatch::default();
 
     while !stop_flag.load(Ordering::Acquire) {
         if !sink.session_is_current() {
@@ -902,7 +887,7 @@ fn run_supervised_adb_loop(
             sink,
             &mut supervisor,
             &mut tracker,
-            &mut carry,
+            &audio_latch,
         );
         if stop_flag.load(Ordering::Acquire) || sink.has_failed() {
             break;
@@ -959,11 +944,8 @@ fn run_single_adb_session(
     sink: &LiveSink,
     supervisor: &mut SessionSupervisor,
     tracker: &mut LiveTracker,
-    carry: &mut SessionCarry,
+    audio_latch: &SharedAudioLatch,
 ) -> Result<(), DaemonError> {
-    if carry.cached_sdk.is_none() {
-        carry.cached_sdk = adb.query_sdk_version(&cfg.serial);
-    }
     let scrcpy = cfg.scrcpy_jar.as_deref();
     let resources = crate::adb_resources::SessionResources::new(&cfg.serial, scrcpy);
     let session_token = resources.deployed.session_token.clone();
@@ -978,14 +960,12 @@ fn run_single_adb_session(
     adb.deploy_session_agents(&cfg.serial, &session_token, &cfg.companion_jar, scrcpy)?;
 
     // 1. Forward and launch arb-companion and complete initial Hello handshake.
-    let (mut companion_reader, mut companion_writer, hello) =
+    let (mut companion_reader, mut companion_writer, mut hello) =
         launch_and_handshake_companion(adb, cfg, &session_token, &mut guard, stop_flag)?;
-    let detected_sdk = carry
-        .cached_sdk
-        .or_else(|| (hello.api_level > 0).then_some(hello.api_level));
-    if carry.cached_sdk.is_none() {
-        carry.cached_sdk = detected_sdk;
-    }
+    let detected_sdk = (hello.api_level > 0)
+        .then_some(hello.api_level)
+        .or_else(|| adb.query_sdk_version(&cfg.serial).filter(|api| *api > 0));
+    hello.api_level = detected_sdk.unwrap_or(0);
     sink.set_device_api_warning(detected_sdk.and_then(unsupported_android_api_warning));
     sink.push_all(tracker.on_hello(supervisor, hello, sample_cont_ns()));
     tracker.touch_calibration = crate::touch_calibration::TouchCalibration::default();
@@ -1021,7 +1001,7 @@ fn run_single_adb_session(
         tracker,
         media_tx,
         &scrcpy_stderr,
-        &carry.audio_latch,
+        audio_latch,
     );
 
     // 3. Companion control/logcat/input loop with periodic Ping/Pong RTT sync probes.
@@ -1283,23 +1263,25 @@ fn spawn_scrcpy_stderr_collector(stderr: ChildStderr, buf: Arc<Mutex<String>>) {
 ///
 /// Reads raw bytes (lossily decoded) so invalid UTF-8 never stops the drain: the child's stderr
 /// is a pipe, and an undrained pipe would eventually block `scrcpy-server`'s writes.
-fn collect_scrcpy_stderr<R: BufRead>(mut reader: R, buf: &Mutex<String>) {
-    let mut raw = Vec::new();
+fn collect_scrcpy_stderr<R: Read>(mut reader: R, buf: &Mutex<String>) {
+    let mut tail = Vec::with_capacity(MAX_SCRCPY_STDERR_BYTES);
+    let mut chunk = [0; 2048];
     loop {
-        raw.clear();
-        match reader.read_until(b'\n', &mut raw) {
+        let n = match reader.read(&mut chunk) {
             Ok(0) => break,
-            Ok(_) => {}
+            Ok(n) => n,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
-        }
-        if let Ok(mut guard) = buf.lock()
-            && guard.len() < MAX_SCRCPY_STDERR_BYTES
-        {
-            let line = String::from_utf8_lossy(&raw);
-            let remaining = MAX_SCRCPY_STDERR_BYTES - guard.len();
-            let take = line.floor_char_boundary(remaining.min(line.len()));
-            guard.push_str(&line[..take]);
+        };
+        let discard = (tail.len() + n).saturating_sub(MAX_SCRCPY_STDERR_BYTES);
+        tail.drain(..discard);
+        tail.extend_from_slice(&chunk[..n]);
+        if let Ok(mut guard) = buf.lock() {
+            let decoded = String::from_utf8_lossy(&tail);
+            let start =
+                decoded.ceil_char_boundary(decoded.len().saturating_sub(MAX_SCRCPY_STDERR_BYTES));
+            guard.clear();
+            guard.push_str(&decoded[start..]);
         }
     }
 }
@@ -1338,6 +1320,10 @@ fn launch_scrcpy_streams(
         effective_api_level,
     } = plan
     {
+        ctx.sink.set_audio_status(
+            runtime_audio_verdict(detected_sdk, ScrcpyAudioOutcome::NotAttempted),
+            None,
+        );
         return launch_scrcpy_with_audio_fallback(
             adb,
             cfg,
@@ -1923,8 +1909,8 @@ fn run_audio_reader_loop(stream: TcpStream, boot_id: &str, ctx: &MediaThreadCtx)
             r
         }
         Err(err) => {
-            if ctx.should_stop() {
-                // A deliberate stop or reconnect closed the tunnel: not an audio failure.
+            if ctx.should_stop() && !matches!(err, ScrcpyError::AudioServerError) {
+                // Shutdown can cause an I/O error, but never a device-sent fatal codec ID.
                 return;
             }
             // R1 (`codec_id = 0`), R2 (`codec_id = 1`) and R3 (handshake I/O) all carry the
@@ -2653,6 +2639,19 @@ mod tests {
     }
 
     #[test]
+    fn g8_stderr_retains_delayed_failure_after_initial_warning() {
+        let buf = std::sync::Mutex::new(String::from("startup warning"));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(10));
+                buf.lock().expect("stderr").push_str("\naudio failure");
+            });
+            let tail = super::wait_for_scrcpy_stderr(&buf, Duration::from_millis(250));
+            assert_eq!(tail.as_deref(), Some("startup warning\naudio failure"));
+        });
+    }
+
+    #[test]
     fn t6c_scrcpy_stderr_collector_keeps_draining_after_invalid_utf8_and_caps_bytes() {
         use std::io::Cursor;
         use std::sync::Mutex;
@@ -2669,13 +2668,18 @@ mod tests {
             "collector must keep draining past invalid UTF-8 (pipe must never back up): {text:?}"
         );
 
-        let mut cursor_consumed = Cursor::new(vec![b'x'; super::MAX_SCRCPY_STDERR_BYTES * 3]);
+        let mut verbose = vec![b'x'; super::MAX_SCRCPY_STDERR_BYTES * 3];
+        verbose.extend_from_slice(" 音声エラー".as_bytes());
+        let length = verbose.len();
+        let mut cursor_consumed = Cursor::new(verbose);
         let capped = Mutex::new(String::new());
         super::collect_scrcpy_stderr(&mut cursor_consumed, &capped);
-        assert!(capped.lock().expect("capped").len() <= super::MAX_SCRCPY_STDERR_BYTES);
+        let tail = capped.lock().expect("capped");
+        assert!(tail.len() <= super::MAX_SCRCPY_STDERR_BYTES);
+        assert!(tail.ends_with(" 音声エラー"));
         assert_eq!(
             usize::try_from(cursor_consumed.position()).expect("pos"),
-            super::MAX_SCRCPY_STDERR_BYTES * 3,
+            length,
             "collector must drain the whole stream to EOF"
         );
     }

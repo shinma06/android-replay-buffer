@@ -43,6 +43,9 @@ pub const AUDIO_CODEC_ERROR: u32 = 1;
 /// alongside an honest non-blocking diagnostic warning.
 pub const MIN_SUPPORTED_ANDROID_API_LEVEL: u32 = 28;
 
+/// First API supported by upstream scrcpy audio capture (including muting sources).
+pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 = 30;
+
 /// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true`
 /// (Android 13 / API 33).
 ///

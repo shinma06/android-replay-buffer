@@ -120,17 +120,15 @@ class ArchitectureKonsistTest {
      */
     @Test
     fun kon6AudioUnsupportedWordingLivesOnlyInAudioPolicyTable() {
-        val wording = Regex("""音声キャプチャ非対応|音声: 非対応""")
-        assertNone(
-            "KON-6",
-            main().filter { it.name != "AudioPolicyTable" && wording.containsMatchIn(it.code()) }.map { it.rel() },
-        )
-        val table = main().single { it.name == "AudioPolicyTable" }.code()
-        assertTrue(wording.containsMatchIn(table), "AudioPolicyTable owns the unsupported wording")
-        assertTrue(
-            Regex("""fun classOf\(cause: AudioCause\): AudioLabelClass = when \(cause\) \{[^}]*\}""")
-                .find(table)?.value?.contains("else") == false,
-            "AudioPolicyTable.classOf is an exhaustive `when` without `else`",
-        )
+        val wording = Regex("""音声(?:キャプチャ)?[のは：:\s]*非対応""")
+        val table = main().single { it.rel() == "client-core/src/main/kotlin/io/github/shinma06/arb/state/AudioPolicyTable.kt" }
+        // Skip comments before inspecting string literals, including multiline strings.
+        val tokens = Regex("""//[^\n]*|/\*[\s\S]*?\*/|"{3}[\s\S]*?"{3}|"(?:\\.|[^"\\])*" """.trimEnd())
+        fun hasWording(file: KoFileDeclaration) =
+            tokens.findAll(file.text).any { it.value.startsWith('"') && wording.containsMatchIn(it.value) }
+        assertNone("KON-6", main().filter { it.rel() != table.rel() && hasWording(it) }.map { it.rel() })
+        assertTrue(hasWording(table), "AudioPolicyTable owns the unsupported wording")
+        val classOf = table.objects().single { it.name == "AudioPolicyTable" }.functions().single { it.name == "classOf" }
+        assertTrue(!Regex("""\belse\s*->""").containsMatchIn(classOf.text), "classOf handles every AudioCause explicitly")
     }
 }

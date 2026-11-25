@@ -118,7 +118,7 @@ data class CaptureStatusView(
     val audioCause: AudioCause? = null,
     val audioReason: String? = null,
     /** Detected Android API level of the capturing device, once known. */
-    val deviceApiLevel: Int? = null,
+    val deviceApiLevel: Long? = null,
     val deviceApiWarning: String? = null,
 ) {
     val effectiveAudioState: AudioCaptureState

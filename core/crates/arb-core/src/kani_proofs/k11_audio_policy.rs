@@ -7,8 +7,7 @@
 
 use crate::audio_policy::{
     AudioCaptureState, AudioCause, AudioLabelClass, AudioLaunchPolicy, AudioPolicyInput,
-    MIN_AUDIO_PLAYBACK_API_LEVEL, ScrcpyAudioOutcome, StickyAudioLatch, evaluate,
-    plan_requested_launch,
+    ScrcpyAudioOutcome, StickyAudioLatch, evaluate, plan_requested_launch,
 };
 use crate::config::CaptureMode;
 
@@ -58,7 +57,7 @@ fn any_input(api: Option<u32>) -> AudioPolicyInput {
 #[kani::proof]
 fn k11_g8_1_api_33_plus_is_never_api_below_min() {
     let api: u32 = kani::any();
-    kani::assume(api >= MIN_AUDIO_PLAYBACK_API_LEVEL);
+    kani::assume(api >= 33);
     let verdict = evaluate(any_input(Some(api)));
     assert!(
         verdict.cause != AudioCause::ApiBelowMin,
@@ -162,7 +161,7 @@ const K: usize = 4;
 #[kani::unwind(5)]
 fn k11_g8_6_fatal_audio_failure_is_sticky_until_restart() {
     let api: u32 = kani::any();
-    kani::assume(api >= MIN_AUDIO_PLAYBACK_API_LEVEL);
+    kani::assume(api >= 33);
     let mut latch: StickyAudioLatch<u8> = StickyAudioLatch::new();
     // Oracle state: boot that saw a fatal outcome since the last explicit restart.
     let mut fatal_boot: Option<u8> = None;

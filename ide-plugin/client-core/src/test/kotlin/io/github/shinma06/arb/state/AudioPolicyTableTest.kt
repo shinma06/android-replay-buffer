@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
 class AudioPolicyTableTest {
     private val unsupportedWord = "非対応"
 
-    private fun capture(state: AudioCaptureState?, cause: AudioCause?, api: Int? = 33, active: Boolean = true) =
+    private fun capture(state: AudioCaptureState?, cause: AudioCause?, api: Long? = 33, active: Boolean = true) =
         CaptureStatusView(
             active = active,
             connected = true,
@@ -52,7 +52,7 @@ class AudioPolicyTableTest {
         val causes: List<AudioCause?> = AudioCause.entries + listOf(null)
         for (cause in causes) {
             for (state in AudioCaptureState.entries + listOf(null)) {
-                for (api in listOf(null, 0, 28, 32, 33, 34, 37)) {
+                for (api in listOf(null, 0L, 28L, 32L, 33L, 34L, 37L)) {
                     val status = capture(state, cause, api)
                     val banner = AudioPolicyTable.banner(status)
                     val label = AudioPolicyTable.statusLabel(audioEnabled = true, logsOnly = false, capture = status)
@@ -108,7 +108,11 @@ class AudioPolicyTableTest {
 
     @Test
     fun g8_7ToolWindowLabelShowsLiveStateNextToTheSetting() {
-        assertEquals("音声 OFF", AudioPolicyTable.statusLabel(false, false, capture(AudioCaptureState.AVAILABLE, AudioCause.NONE)))
+        assertEquals("音声 ON（設定 OFF）", AudioPolicyTable.statusLabel(false, false, capture(AudioCaptureState.AVAILABLE, AudioCause.NONE)))
+        val disconnected = capture(AudioCaptureState.UNAVAILABLE, AudioCause.ENCODER_FATAL).copy(connected = false)
+        assertNull(AudioPolicyTable.banner(disconnected))
+        assertEquals("音声: 接続待ち", AudioPolicyTable.statusLabel(true, false, disconnected))
+        assertNull(AudioPolicyTable.banner(disconnected.copy(active = false, connected = true)))
         assertEquals("映像・音声なし", AudioPolicyTable.statusLabel(true, true, null))
         assertEquals("音声 ON", AudioPolicyTable.statusLabel(true, false, null))
         assertEquals("音声 ON", AudioPolicyTable.statusLabel(true, false, capture(AudioCaptureState.AVAILABLE, AudioCause.NONE)))
@@ -157,14 +161,14 @@ class AudioPolicyTableTest {
     @Test
     fun g8_8GoldenTableRowsMatchKotlinPresentation() {
         val rows = goldenTable().getAsJsonArray("rows").map { it.asJsonObject }
-        assertTrue(rows.size >= 30, "golden table keeps its coverage")
+        assertTrue(rows.size >= 43, "golden table keeps its coverage")
         for (row in rows) {
             val id = row.get("id").asString
             val state = AudioCaptureState.fromWire(row.get("state").asString)
             val cause = AudioCause.fromWire(row.get("cause").asString)
             assertEquals(row.get("cause").asString, cause.wire, "$id: cause is known to the client")
             assertEquals(row.get("label_class").asString, AudioPolicyTable.labelClass(state, cause).wire, "$id: label class")
-            val api = row.get("api").takeUnless { it.isJsonNull }?.asLong?.takeIf { it <= Int.MAX_VALUE }?.toInt()
+            val api = row.get("api").takeUnless { it.isJsonNull }?.asLong
             val banner = AudioPolicyTable.banner(capture(state, cause, api))
             val cls = AudioPolicyTable.classOf(cause)
             assertEquals(
@@ -187,7 +191,7 @@ class AudioPolicyTableTest {
         """.trimIndent()
         val parsed = ProtocolJson.gson.fromJson(json, CaptureStatusView::class.java)
         assertEquals(AudioCause.UNKNOWN, parsed.audioCause)
-        assertEquals(33, parsed.deviceApiLevel)
+        assertEquals(33L, parsed.deviceApiLevel)
         for (cause in AudioCause.entries) {
             val reparsed = ProtocolJson.gson.fromJson(ProtocolJson.gson.toJson(cause), AudioCause::class.java)
             assertEquals(cause, reparsed, "round trip $cause")

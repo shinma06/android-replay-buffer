@@ -60,7 +60,7 @@ object AudioPolicyTable {
         effectiveCause(state, cause)?.let(::classOf) ?: AudioLabelClass.NONE
 
     /** Banner title for a cause that warrants one, or `null` for no banner. */
-    fun bannerTitle(cause: AudioCause, apiLevel: Int?): String? = when (cause) {
+    fun bannerTitle(cause: AudioCause, apiLevel: Long?): String? = when (cause) {
         AudioCause.NONE -> null
         AudioCause.USER_DISABLED -> null
         AudioCause.LOGS_ONLY -> null
@@ -86,7 +86,7 @@ object AudioPolicyTable {
 
     /** Audio banner for [capture], or `null` when audio is healthy, pending or intentionally off. */
     fun banner(capture: CaptureStatusView): CaptureBanner? {
-        if (capture.effectiveAudioState != AudioCaptureState.UNAVAILABLE) return null
+        if (!capture.active || !capture.connected || capture.effectiveAudioState != AudioCaptureState.UNAVAILABLE) return null
         val cause = effectiveCause(capture.effectiveAudioState, capture.audioCause) ?: return null
         val title = bannerTitle(cause, capture.deviceApiLevel) ?: return null
         return CaptureBanner(
@@ -102,13 +102,13 @@ object AudioPolicyTable {
      */
     fun statusLabel(audioEnabled: Boolean, logsOnly: Boolean, capture: CaptureStatusView?): String {
         if (logsOnly) return "映像・音声なし"
-        if (!audioEnabled) return "音声 OFF"
-        if (capture == null || !capture.active) return "音声 ON"
+        if (capture == null || !capture.active) return if (audioEnabled) "音声 ON" else "音声 OFF"
+        if (!capture.connected) return "音声: 接続待ち"
         val state = capture.effectiveAudioState
         val cause = effectiveCause(state, capture.audioCause)
-        return when (state) {
+        val live = when (state) {
             AudioCaptureState.AVAILABLE -> "音声 ON"
-            AudioCaptureState.UNKNOWN -> "音声 ON（確認中）"
+            AudioCaptureState.UNKNOWN -> if (audioEnabled) "音声 ON（確認中）" else "音声 OFF（確認中）"
             AudioCaptureState.DISABLED -> "音声 OFF"
             AudioCaptureState.UNAVAILABLE -> when {
                 cause == null -> "音声: 失敗（映像のみ）"
@@ -117,6 +117,11 @@ object AudioPolicyTable {
                 classOf(cause) == AudioLabelClass.RUNTIME_FAILURE -> "音声: 失敗（映像のみ）"
                 else -> "音声 OFF"
             }
+        }
+        return when {
+            state == AudioCaptureState.DISABLED && audioEnabled -> "$live（設定 ON）"
+            state != AudioCaptureState.DISABLED && state != AudioCaptureState.UNKNOWN && !audioEnabled -> "$live（設定 OFF）"
+            else -> live
         }
     }
 }

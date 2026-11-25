@@ -1240,6 +1240,14 @@ impl CapturePipeline {
                 self.static_hold_seen += 1;
             }
             CaptureEvent::Discontinuity(disc) => {
+                if disc.kind == DiscontinuityKind::StreamGap
+                    && disc.stream == Some(StreamKind::Audio)
+                    && self.audio_state == AudioCaptureState::Available
+                {
+                    self.audio_state = AudioCaptureState::Unavailable;
+                    self.audio_cause = Some(AudioCause::Unknown);
+                    self.audio_reason.clone_from(&disc.detail);
+                }
                 self.discontinuities_seen += 1;
                 self.push_live_discontinuity(disc.clone());
                 if disc.kind == DiscontinuityKind::ConnectionLost {
