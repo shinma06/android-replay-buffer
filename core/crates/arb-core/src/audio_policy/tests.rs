@@ -297,7 +297,20 @@ fn failure_outcome() -> impl Strategy<Value = ScrcpyAudioOutcome> {
     )
 }
 
+fn miri_safe_proptest_config() -> ProptestConfig {
+    let mut cfg = ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    };
+    if cfg!(miri) {
+        cfg.cases = 8;
+    }
+    cfg
+}
+
 proptest! {
+    #![proptest_config(miri_safe_proptest_config())]
+
     /// G8-1 (sampled; Kani proves it for every `u32`): API >= 33 never yields `api_below_min`.
     #[test]
     fn g8_1_api_33_plus_is_never_api_below_min(
