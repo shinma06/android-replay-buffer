@@ -95,7 +95,7 @@ class PddContractTablesTest {
 
     @Test
     fun deviceSelectionRowsMatchKotlinPolicyAndCaptureBarProjection() {
-        for (row in table("device-selection-policy-table.json").rows("selection_rows", 25)) {
+        for (row in table("device-selection-policy-table.json").rows("selection_rows", 26)) {
             val id = row["id"].asString
             val preferred = row.str("preferred_serial")
             val armed = row["capture_enabled"].asBoolean

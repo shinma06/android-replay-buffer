@@ -157,15 +157,14 @@ fn disk_state_rows_match_probe_and_non_destructive_forget() {
             BundleDiskState::Missing => managed.join(&view.bundle_id),
             _ => tmp.path().join("unmounted").join(&view.bundle_id),
         };
-        catalog
-            .register_bundle(&NewBundleEntry {
-                bundle_id: view.bundle_id.clone(),
-                path: bundle_path.clone(),
-                format_version: CatalogFormatVersion::V2,
-                parent_bundle_id: None,
-                created_at_utc: view.created_at_utc.clone(),
-            })
-            .expect("contract table");
+        let entry = NewBundleEntry {
+            bundle_id: view.bundle_id.clone(),
+            path: bundle_path.clone(),
+            format_version: CatalogFormatVersion::V2,
+            parent_bundle_id: None,
+            created_at_utc: view.created_at_utc.clone(),
+        };
+        catalog.register_bundle(&entry).expect("contract table");
         assert_eq!(
             probe_bundle_disk_state(&bundle_path),
             effective,
@@ -196,10 +195,32 @@ fn disk_state_rows_match_probe_and_non_destructive_forget() {
             json!(bucket == "forgotten_bundle_ids"),
             "{id}: only a forgettable entry may be forgotten"
         );
-        let bulk = catalog.prune_missing_bundles(now).expect("contract table");
+        let bulk_catalog =
+            Catalog::open(tmp.path().join("bulk.sqlite"), &managed).expect("catalog");
+        bulk_catalog.register_bundle(&entry).expect("register");
+        let bulk = bulk_catalog
+            .prune_missing_bundles(now)
+            .expect("bulk forget");
+        let expected_ids = |field| {
+            if bucket == field {
+                vec![view.bundle_id.clone()]
+            } else {
+                vec![]
+            }
+        };
+        assert_eq!(
+            bulk.forgotten_bundle_ids,
+            expected_ids("forgotten_bundle_ids"),
+            "{id}: bulk forgotten"
+        );
+        assert_eq!(
+            bulk.skipped_storage_unavailable_bundle_ids,
+            expected_ids("skipped_storage_unavailable_bundle_ids"),
+            "{id}: bulk unmounted"
+        );
         assert!(
-            bulk.forgotten_bundle_ids.is_empty(),
-            "{id}: all_missing never forgets present / unavailable entries"
+            bulk.skipped_present_bundle_ids.is_empty(),
+            "{id}: all_missing excludes present entries from the report"
         );
         assert_eq!(expected["disk_untouched"], true);
         assert_eq!(

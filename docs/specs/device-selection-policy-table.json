@@ -662,6 +662,34 @@
           "has_online_device": false
         }
       }
+    },
+    {
+      "id": "DS-26",
+      "description": "recovery と unauthorized の 2 台は未接続の端末一覧と区別する",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "recovery"
+        },
+        {
+          "serial": "phone2",
+          "state": "unauthorized"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting",
+          "hint_contains": "オンラインにして選択",
+          "has_online_device": false
+        }
+      }
     }
   ],
   "serial_validation_rows": [

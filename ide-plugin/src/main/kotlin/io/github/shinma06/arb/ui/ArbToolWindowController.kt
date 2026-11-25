@@ -1129,9 +1129,9 @@ class ArbToolWindowController(
                 devices.isEmpty() ->
                     entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
             }
-            devices.mapTo(entries) { device ->
+            devices.mapIndexedTo(entries) { index, device ->
                 val serial = device.serial.takeIf(DeviceSelectionPolicy::isValidAdbSerial)
-                if (serial == null) DeviceDropdownEntry("無効な端末 serial", null)
+                if (serial == null) DeviceDropdownEntry("端末 ${index + 1}（無効な serial）", null)
                 else DeviceDropdownEntry(formatDeviceLabel(device), serial)
             }
             return entries
@@ -1239,7 +1239,8 @@ private fun CaptureBarState.deviceStateHint(): String? {
     return when {
         devices.isNotEmpty() && devices.all { !DeviceSelectionPolicy.isValidAdbSerial(it.serial) } ->
             "有効な serial の端末がありません。ADB の端末一覧を確認してください。"
-        state == null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+        devices.isEmpty() -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+        state == null -> "録画に使う端末をオンラインにして選択してください。"
         state == AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
         state == AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
         state == AdbDeviceState.Device -> null
