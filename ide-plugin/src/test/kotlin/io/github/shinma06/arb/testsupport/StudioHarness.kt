@@ -105,7 +105,7 @@ fun openStudioEditor(
     clock: PlaybackClock = VirtualClock(),
     publishEdt: (() -> Unit) -> Unit = { it() },
 ): ArbBundleFileEditor {
-    val rpc = ArbdRpcClient(daemon.transport)
+    val rpc = daemon.transport.newConnection()
     val service = object : ArbdDaemonService() {
         override fun openMediaClient() = daemon.transport.newConnection()
         override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
@@ -125,7 +125,7 @@ fun openStudioEditor(
 }
 
 fun ArbBundleFileEditor.awaitReady() {
-    awaitTrue({ "editor never became ready" }) {
+    awaitTrue({ "editor never became ready: ${studioController.errorMessage}" }) {
         studioController.viewerState != null && playbackControllerForTest() != null
     }
 }
