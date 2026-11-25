@@ -698,11 +698,11 @@
       "preferred_serial": "bad/serial",
       "devices": [
         {
-          "serial": "bad/serial",
+          "serial": "192.168.1.50:5555",
           "state": "device"
         },
         {
-          "serial": "192.168.1.50:5555",
+          "serial": "bad/serial",
           "state": "device"
         }
       ],
@@ -720,7 +720,8 @@
           "selected_device_online": false,
           "toggle_state": "armed_waiting",
           "has_online_device": true,
-          "hint_contains": "serial が無効"
+          "hint_contains": "serial が無効",
+          "dropdown_serial": null
         }
       }
     }

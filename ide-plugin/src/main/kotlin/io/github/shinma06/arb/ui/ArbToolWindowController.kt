@@ -1105,6 +1105,8 @@ class ArbToolWindowController(
                 ?.preferredSerial
                 ?.takeIf { pinned -> devices.none { it.serial == pinned } }
             when {
+                state.selectedSerial?.let { !DeviceSelectionPolicy.isValidAdbSerial(it) } == true ->
+                    entries += DeviceDropdownEntry(INVALID_SELECTED_SERIAL_HINT, null)
                 pinnedMissing != null ->
                     entries += DeviceDropdownEntry("$pinnedMissing — $WAITING_FOR_PINNED_SUFFIX", pinnedMissing)
                 selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection && state.selectedSerial == null ->
@@ -1119,6 +1121,7 @@ class ArbToolWindowController(
             }
             return entries
         }
+        internal const val INVALID_SELECTED_SERIAL_HINT = "選択した端末の serial が無効です。"
         private const val META_BUDGET_PER_POLL = 24
         const val DEFAULT_POLL_INTERVAL_MS: Long = 2_000L
 
@@ -1221,7 +1224,9 @@ private fun CaptureBarState.selectionNotice(): String? = when (val sel = deviceS
     is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
         if (selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
     is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-        if (devices.none { it.serial == sel.preferredSerial }) {
+        if (!DeviceSelectionPolicy.isValidAdbSerial(sel.preferredSerial)) {
+            ArbToolWindowController.INVALID_SELECTED_SERIAL_HINT
+        } else if (devices.none { it.serial == sel.preferredSerial }) {
             "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}。別の端末へは自動で切り替えません。"
         } else {
             null
@@ -1238,7 +1243,6 @@ private fun CaptureBarState.deviceStateHint(): String? {
         state == null -> "録画に使う端末をオンラインにして選択してください。"
         state == AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
         state == AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
-        state == AdbDeviceState.Device && !isSelectedDeviceOnline -> "選択した端末の serial が無効です。"
         state == AdbDeviceState.Device -> null
         else -> "端末が録画できる状態ではありません（${state.wireName}）。"
     }

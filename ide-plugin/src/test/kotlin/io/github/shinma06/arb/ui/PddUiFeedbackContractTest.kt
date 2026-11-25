@@ -377,22 +377,23 @@ class PddUiFeedbackContractTest {
             assertEquals(armed, snapshot.captureEnabled, "$id: capture_enabled kept")
             assertEquals(ide["selected_device_online"].asBoolean, snapshot.hasOnlineDevice, "$id: can start now")
             assertEquals(ide.str("selected_serial"), bar.selectedSerial, "$id: selected serial")
-            ide.str("hint_contains")?.let { token ->
-                assertTrue(token in snapshot.disabledDeviceHint.orEmpty(), "$id: hint must identify $token")
-                val h = Harness(ScriptTransport { _, method, _ -> error("unexpected $method") })
-                try {
-                    h.controller.applyStateForTest(capture = bar)
-                    assertEquals(snapshot.disabledDeviceHint, h.controller.deviceTooltip, "$id: same disabled reason")
-                } finally {
-                    h.close()
+            val h = Harness(ScriptTransport { _, method, _ -> error("unexpected $method") })
+            try {
+                h.controller.applyStateForTest(capture = bar)
+                val entry = h.controller.deviceDropdownEntries[h.controller.selectedDeviceIndex]
+                val dropdownSerial = ide.str(if (ide.has("dropdown_serial")) "dropdown_serial" else "selected_serial")
+                assertEquals(dropdownSerial, entry.serial, "$id: displayed selection")
+                if (!snapshot.hasOnlineDevice) {
+                    val hint = assertNotNull(snapshot.disabledDeviceHint, "$id: disabled start explains why")
+                    assertEquals(hint, h.controller.deviceTooltip, "$id: same disabled reason")
+                    ide.str("hint_contains")?.let { token ->
+                        assertTrue(token in hint, "$id: hint must identify $token")
+                        if (entry.serial == null) assertTrue(token in entry.label, "$id: dropdown reason")
+                    }
                 }
-                if (bar.selectedSerial == null) {
-                    val first = ArbToolWindowController.buildDeviceDropdownEntries(bar).first()
-                    assertEquals(null, first.serial, "$id: no device selected")
-                    assertTrue(token in first.label, "$id: dropdown explains the empty selection")
-                }
+            } finally {
+                h.close()
             }
-            if (!snapshot.hasOnlineDevice) assertNotNull(snapshot.disabledDeviceHint, "$id: disabled start explains why")
             assertEquals(
                 ide["toggle_state"].asString,
                 CaptureToggleState.of(active = false, armed = armed, connected = false).name.lowercase(),
