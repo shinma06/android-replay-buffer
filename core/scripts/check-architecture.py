@@ -184,6 +184,14 @@ def main() -> int:
         clients |= set(RPC_NAME.findall(kt.read_text(encoding="utf-8")))
     for rs in (CRATES / "arb-cli" / "src").glob("*.rs"):
         clients |= set(RPC_NAME.findall(rs.read_text(encoding="utf-8")))
+    # The catalog reconciliation and purge operations are required on each surface.
+    for source in (
+        next((REPO / "ide-plugin").rglob("src/main/kotlin/**/ArbdRpcClient.kt")),
+        CRATES / "arb-cli/src/main.rs",
+        CRATES / "arb-cli/src/mcp.rs",
+    ):
+        for method in sorted({"bundle.gc", "bundle.forget"} - set(RPC_NAME.findall(source.read_text(encoding="utf-8")))):
+            fail("RS-5", f"{source.name} lacks catalog RPC `{method}`")
     clients -= CLIENT_NON_RPC
     for method in sorted(rpc_dispatched - clients - set(RPC_EXCLUDED)):
         fail("RS-5", f"arbd RPC `{method}` has no GUI (ArbdRpcClient) / CLI / MCP caller")

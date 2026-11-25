@@ -229,6 +229,69 @@ pub struct EditSession {
     pub updated_at_utc: String,
 }
 
+/// Observed on-disk availability of a cataloged bundle directory.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleDiskState {
+    /// The bundle directory exists on disk.
+    #[default]
+    Present,
+    /// The bundle directory is absent (`NotFound`), while its parent directory exists.
+    /// Typically indicates manual deletion, rename, or move by the user.
+    Missing,
+    /// The parent directory is absent or inaccessible (for example, an unmounted external drive
+    /// or permission error). Entries in this state must never be auto-pruned or forgotten.
+    StorageUnavailable,
+}
+
+/// Inspects whether a cataloged bundle directory exists on disk without mutating anything.
+///
+/// Distinguishes individual bundle removal ([`BundleDiskState::Missing`], parent exists) from
+/// an unmounted or inaccessible parent volume ([`BundleDiskState::StorageUnavailable`]).
+#[must_use]
+pub fn probe_bundle_disk_state(path: &Path) -> BundleDiskState {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.is_dir()
+                || (meta.file_type().is_symlink() && fs::metadata(path).is_ok_and(|m| m.is_dir()))
+            {
+                BundleDiskState::Present
+            } else {
+                BundleDiskState::StorageUnavailable
+            }
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+                return BundleDiskState::StorageUnavailable;
+            };
+            match fs::metadata(parent) {
+                Ok(parent_meta) if parent_meta.is_dir() => BundleDiskState::Missing,
+                _ => BundleDiskState::StorageUnavailable,
+            }
+        }
+        Err(_) => BundleDiskState::StorageUnavailable,
+    }
+}
+
+/// Summary report returned by [`Catalog::forget_missing_bundle`] and
+/// [`Catalog::prune_missing_bundles`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ForgetReport {
+    /// Missing catalog bundle IDs removed from `SQLite` (zero filesystem mutations).
+    pub forgotten_bundle_ids: Vec<String>,
+    /// Requested bundle IDs skipped because their directories still exist on disk.
+    pub skipped_present_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because their parent storage is currently unavailable.
+    pub skipped_storage_unavailable_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because active reader/export leases were present.
+    pub skipped_leased_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because active save jobs targeted their path.
+    pub skipped_active_job_bundle_ids: Vec<String>,
+    /// Expired or dead-PID leases reaped before evaluating forget eligibility.
+    pub reaped_lease_ids: Vec<String>,
+}
+
 /// Summary report returned by [`Catalog::gc_trashed_bundles`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GcReport {
@@ -730,31 +793,22 @@ impl Catalog {
             ..GcReport::default()
         };
 
-        for bundle in self.list_bundles(Some(BundleLifecycleState::Purging))? {
-            if !self.is_purgeable_location(&bundle) {
-                report
-                    .skipped_unmanaged_or_legacy_bundle_ids
-                    .push(bundle.bundle_id);
-                continue;
-            }
-            match self.finish_purge(&bundle) {
-                Ok(()) => report.purged_bundle_ids.push(bundle.bundle_id),
-                Err(err) => report.failed.push(GcFailure {
-                    bundle_id: bundle.bundle_id,
-                    error: err.to_string(),
-                }),
-            }
-        }
-
-        for bundle in self.list_bundles(Some(BundleLifecycleState::Trashed))? {
-            let outcome = self
-                .try_mark_purging(&bundle, cutoff)
-                .and_then(|gate| match gate {
-                    PurgeGate::Marked => self.finish_purge(&bundle).map(|()| gate),
-                    other => Ok(other),
-                });
+        let purging = self.list_bundles(Some(BundleLifecycleState::Purging))?;
+        let trashed = self.list_bundles(Some(BundleLifecycleState::Trashed))?;
+        for bundle in purging.into_iter().chain(trashed) {
+            let outcome = if bundle.state == BundleLifecycleState::Purging {
+                self.finish_purge(&bundle)
+            } else {
+                self.try_mark_purging(&bundle, cutoff)
+                    .and_then(|gate| match gate {
+                        PurgeGate::Marked => self.finish_purge(&bundle),
+                        other => Ok(other),
+                    })
+            };
             match outcome {
-                Ok(PurgeGate::Marked) => report.purged_bundle_ids.push(bundle.bundle_id),
+                Ok(PurgeGate::Marked | PurgeGate::ForgottenMissing) => {
+                    report.purged_bundle_ids.push(bundle.bundle_id);
+                }
                 Ok(PurgeGate::Leased) => report.skipped_leased_bundle_ids.push(bundle.bundle_id),
                 Ok(PurgeGate::ActiveJobs) => {
                     report.skipped_active_job_bundle_ids.push(bundle.bundle_id);
@@ -772,6 +826,126 @@ impl Catalog {
         }
 
         Ok(report)
+    }
+
+    /// Non-destructively removes a single catalog row whose bundle directory is currently
+    /// [`BundleDiskState::Missing`].
+    ///
+    /// Never modifies or deletes files on disk. Present bundles, bundles on unavailable storage,
+    /// leased bundles, and bundles targeted by active save jobs are left intact and reported in
+    /// the corresponding `skipped_*` lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidArgument`] if `now_utc` is not an ISO-8601 timestamp,
+    /// [`StorageError::NotFound`] if `bundle_id` is not in the catalog, or [`StorageError::Sqlite`]
+    /// on database errors.
+    pub fn forget_missing_bundle(
+        &self,
+        bundle_id: &str,
+        now_utc: &str,
+    ) -> Result<ForgetReport, StorageError> {
+        let now_ns =
+            parse_utc_timestamp_ns(now_utc).ok_or_else(|| StorageError::InvalidArgument {
+                name: "now_utc",
+                reason: format!("`{now_utc}` is not an ISO-8601 UTC timestamp"),
+            })?;
+        let mut report = ForgetReport {
+            reaped_lease_ids: self.reap_dead_leases(now_ns)?,
+            ..ForgetReport::default()
+        };
+        let bundle = self
+            .bundle(bundle_id)?
+            .ok_or_else(|| StorageError::NotFound {
+                entity: "bundle",
+                id: bundle_id.to_owned(),
+            })?;
+        self.apply_forget_candidate(&bundle, ForgetScope::SingleTarget, &mut report)?;
+        Ok(report)
+    }
+
+    /// Non-destructively removes every catalog row whose bundle directory is currently
+    /// [`BundleDiskState::Missing`] and free of active leases and save jobs.
+    ///
+    /// Never modifies or deletes files on disk. Present bundles are left untouched; entries on
+    /// unavailable storage (`storage_unavailable`), leased entries, and active-job targets are
+    /// reported in the corresponding `skipped_*` lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidArgument`] if `now_utc` is not an ISO-8601 timestamp, or
+    /// [`StorageError::Sqlite`] on database errors.
+    pub fn prune_missing_bundles(&self, now_utc: &str) -> Result<ForgetReport, StorageError> {
+        let now_ns =
+            parse_utc_timestamp_ns(now_utc).ok_or_else(|| StorageError::InvalidArgument {
+                name: "now_utc",
+                reason: format!("`{now_utc}` is not an ISO-8601 UTC timestamp"),
+            })?;
+        let mut report = ForgetReport {
+            reaped_lease_ids: self.reap_dead_leases(now_ns)?,
+            ..ForgetReport::default()
+        };
+        for bundle in self.list_bundles(None)? {
+            self.apply_forget_candidate(&bundle, ForgetScope::AllMissing, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    fn apply_forget_candidate(
+        &self,
+        bundle: &BundleEntry,
+        scope: ForgetScope,
+        report: &mut ForgetReport,
+    ) -> Result<(), StorageError> {
+        match self.try_forget_missing_row(bundle)? {
+            ForgetGate::Forgotten => report.forgotten_bundle_ids.push(bundle.bundle_id.clone()),
+            ForgetGate::Present => {
+                if scope == ForgetScope::SingleTarget {
+                    report
+                        .skipped_present_bundle_ids
+                        .push(bundle.bundle_id.clone());
+                }
+            }
+            ForgetGate::StorageUnavailable => report
+                .skipped_storage_unavailable_bundle_ids
+                .push(bundle.bundle_id.clone()),
+            ForgetGate::Leased => report
+                .skipped_leased_bundle_ids
+                .push(bundle.bundle_id.clone()),
+            ForgetGate::ActiveJobs => report
+                .skipped_active_job_bundle_ids
+                .push(bundle.bundle_id.clone()),
+            ForgetGate::Gone => {}
+        }
+        Ok(())
+    }
+
+    fn try_forget_missing_row(&self, bundle: &BundleEntry) -> Result<ForgetGate, StorageError> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|source| StorageError::sqlite("begin_forget_tx", source))?;
+
+        let Some(current) = fetch_bundle(&tx, &bundle.bundle_id)? else {
+            return Ok(ForgetGate::Gone);
+        };
+        match probe_bundle_disk_state(&current.path) {
+            BundleDiskState::Present => return Ok(ForgetGate::Present),
+            BundleDiskState::StorageUnavailable => return Ok(ForgetGate::StorageUnavailable),
+            BundleDiskState::Missing => {}
+        }
+        let active_leases = count_active_leases(&tx, &current.bundle_id)?;
+        if active_leases > 0 {
+            return Ok(ForgetGate::Leased);
+        }
+        let active_jobs = count_active_jobs_for_path(&tx, &current.path)?;
+        if active_jobs > 0 {
+            return Ok(ForgetGate::ActiveJobs);
+        }
+        delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
+        tx.commit()
+            .map_err(|source| StorageError::sqlite("commit_forget_tx", source))?;
+        Ok(ForgetGate::Forgotten)
     }
 
     /// Deletes every lease whose `holder_pid` is no longer alive and returns their IDs.
@@ -822,8 +996,18 @@ impl Catalog {
         if current.state != BundleLifecycleState::Trashed {
             return Ok(PurgeGate::Gone);
         }
-        if current.path != bundle.path || !self.is_purgeable_location(&current) {
+        let disk_state = probe_bundle_disk_state(&current.path);
+        if current.path != bundle.path
+            || (disk_state != BundleDiskState::Missing && !self.is_purgeable_location(&current))
+        {
             return Ok(PurgeGate::Unmanaged);
+        }
+        if disk_state == BundleDiskState::StorageUnavailable && !current.path.is_file() {
+            return Err(StorageError::io(
+                "probe_managed_bundle",
+                &current.path,
+                io::Error::other("bundle storage is unavailable"),
+            ));
         }
         let active_leases = count_active_leases(&tx, &bundle.bundle_id)?;
         if active_leases > 0 {
@@ -843,6 +1027,12 @@ impl Catalog {
         {
             return Ok(PurgeGate::Grace);
         }
+        if disk_state == BundleDiskState::Missing {
+            delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
+            tx.commit()
+                .map_err(|source| StorageError::sqlite("commit_gc_forget_missing", source))?;
+            return Ok(PurgeGate::ForgottenMissing);
+        }
         let purging = current.state.begin_purge(active_leases, active_jobs)?;
         tx.execute(
             "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
@@ -855,24 +1045,42 @@ impl Catalog {
     }
 
     /// Physically removes a `Purging` bundle directory, then deletes its catalog rows.
-    fn finish_purge(&self, bundle: &BundleEntry) -> Result<(), StorageError> {
-        remove_dir_if_exists(&bundle.path)?;
+    fn finish_purge(&self, bundle: &BundleEntry) -> Result<PurgeGate, StorageError> {
         let mut conn = self.lock_conn()?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|source| StorageError::sqlite("begin_gc_delete_tx", source))?;
-        tx.execute(
-            "DELETE FROM edit_sessions WHERE bundle_id = ?1",
-            params![bundle.bundle_id],
-        )
-        .map_err(|source| StorageError::sqlite("delete_bundle_edit_sessions", source))?;
-        tx.execute(
-            "DELETE FROM bundles WHERE bundle_id = ?1",
-            params![bundle.bundle_id],
-        )
-        .map_err(|source| StorageError::sqlite("delete_purged_bundle", source))?;
+        let Some(current) = fetch_bundle(&tx, &bundle.bundle_id)? else {
+            return Ok(PurgeGate::Gone);
+        };
+        if current.state != BundleLifecycleState::Purging || current.path != bundle.path {
+            return Ok(PurgeGate::Gone);
+        }
+        if !self.is_purgeable_location(&current) {
+            return Ok(PurgeGate::Unmanaged);
+        }
+        if count_active_leases(&tx, &current.bundle_id)? > 0 {
+            return Ok(PurgeGate::Leased);
+        }
+        if count_active_jobs_for_path(&tx, &current.path)? > 0 {
+            return Ok(PurgeGate::ActiveJobs);
+        }
+        match probe_bundle_disk_state(&current.path) {
+            BundleDiskState::StorageUnavailable => {
+                return Err(StorageError::io(
+                    "probe_managed_bundle",
+                    &current.path,
+                    io::Error::other("bundle directory is inaccessible or is not a directory"),
+                ));
+            }
+            BundleDiskState::Missing => {}
+            BundleDiskState::Present => fs::remove_dir_all(&current.path)
+                .map_err(|source| StorageError::io("remove_managed_dir", &current.path, source))?,
+        }
+        delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
         tx.commit()
-            .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))
+            .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))?;
+        Ok(PurgeGate::Marked)
     }
 
     /// Reconciles durable pin journals (`save_jobs/<job>.json`) with the catalog's
@@ -1381,7 +1589,7 @@ impl Catalog {
         for bundle in purging_bundles {
             // A bundle that cannot be removed right now (e.g. locked by another process)
             // stays `Purging`; `gc_trashed_bundles` retries it and reports the failure.
-            if self.is_purgeable_location(&bundle) && self.finish_purge(&bundle).is_ok() {
+            if matches!(self.finish_purge(&bundle), Ok(PurgeGate::Marked)) {
                 completed.push(bundle.bundle_id);
             }
         }
@@ -1522,9 +1730,45 @@ enum PurgeGate {
     Grace,
     Unmanaged,
     Marked,
+    ForgottenMissing,
     Leased,
     ActiveJobs,
     Gone,
+}
+
+/// Whether `apply_forget_candidate` is evaluating one explicit target or a bulk missing sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForgetScope {
+    SingleTarget,
+    AllMissing,
+}
+
+/// Outcome of the transactional eligibility check in `try_forget_missing_row`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForgetGate {
+    Forgotten,
+    Present,
+    StorageUnavailable,
+    Leased,
+    ActiveJobs,
+    Gone,
+}
+
+fn delete_bundle_catalog_rows(
+    tx: &rusqlite::Transaction<'_>,
+    bundle_id: &str,
+) -> Result<(), StorageError> {
+    tx.execute(
+        "DELETE FROM edit_sessions WHERE bundle_id = ?1",
+        params![bundle_id],
+    )
+    .map_err(|source| StorageError::sqlite("delete_bundle_edit_sessions", source))?;
+    tx.execute(
+        "DELETE FROM bundles WHERE bundle_id = ?1",
+        params![bundle_id],
+    )
+    .map_err(|source| StorageError::sqlite("delete_purged_bundle", source))?;
+    Ok(())
 }
 
 /// Parses an ISO-8601 timestamp (`YYYY-MM-DD[T ]HH:MM:SS[.fraction](Z|±HH:MM|±HHMM)`; no
@@ -1897,14 +2141,6 @@ fn normalize_lexical(path: &Path) -> PathBuf {
         }
     }
     out
-}
-
-fn remove_dir_if_exists(path: &Path) -> Result<(), StorageError> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(StorageError::io("remove_managed_dir", path, source)),
-    }
 }
 
 const fn bundle_state_to_str(state: BundleLifecycleState) -> &'static str {
