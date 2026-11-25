@@ -93,6 +93,7 @@ open class ArbdDaemonService internal constructor(
     },
     /** Opens the shared connection (adopting or spawning `arbd`); injectable for tests. */
     private val connector: () -> ArbdProcessManager.ConnectedDaemon = { processManager.connectOrSpawn() },
+    private val connectMedia: (String) -> ArbdRpcClient = ArbdRpcClient.Companion::connectVerified,
 ) : Disposable {
     constructor() : this(
         ArbdProcessManager(
@@ -587,11 +588,11 @@ open class ArbdDaemonService internal constructor(
         check(!disposed)
         val endpoint = processManager.paths.ipcEndpoint()
         return try {
-            ArbdRpcClient.connectVerified(endpoint)
+            connectMedia(endpoint)
         } catch (_: IOException) {
             // The daemon may have exited. Only recovery needs the shared spawn/adoption path.
             withClient { it.systemHello() }
-            ArbdRpcClient.connectVerified(endpoint)
+            connectMedia(endpoint)
         }
     }
 

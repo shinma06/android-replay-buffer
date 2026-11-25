@@ -404,10 +404,10 @@ class ArbBundleFileEditor internal constructor(
                         override fun seekExact(frameIndex: Long): FrameSeekResult = seekExact(frameIndex) {}
 
                         override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
-                            val (resp, frame, replacementId) = mediaSession.request(onRecovery) { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
-                            if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
-                            readShmAndRender(frame)
-                            return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate, recovered = replacementId != null)
+                            return mediaSession.seekFrame(frameIndex, onRecovery) { (_, frame, replacementId) ->
+                                if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
+                                readShmAndRender(frame)
+                            }
                         }
 
                         override fun scrubApprox(frameIndex: Long): FrameSeekResult {
@@ -474,15 +474,12 @@ class ArbBundleFileEditor internal constructor(
 
                 // Render initial frame right away before decoupled timeline/log pagination starts!
                 if (activeCtrl != null && !disposed) {
-                    runCatching { activeCtrl.seekToFrame(initialPlayhead) }
-                        .onFailure { t ->
-                            logger.warn("ARB initial seek_frame failed", t)
-                            if (!disposed) {
-                                publishEdt {
-                                    studioController.showError("フレームシークに失敗しました: ${t.message}")
-                                }
-                            }
-                        }
+                    try {
+                        activeCtrl.seekToFrame(initialPlayhead)
+                    } catch (e: Exception) {
+                        // PlaybackController.onPlaybackError already surfaced the reason on the Studio.
+                        logger.warn("ARB initial seek_frame failed", e)
+                    }
                 }
 
                 // Phase 2 (M2): Decoupled background loading of filmstrip, events, and paged logs.
@@ -781,10 +778,7 @@ class ArbBundleFileEditor internal constructor(
                 runCatching { ctrl.scrubToTime(timeNs) }.onFailure { logger.debug("ARB scrub failed", it) }
                 return@submitWork
             }
-            runCatching { ctrl.seekToTime(timeNs) }.onFailure { error ->
-                logger.warn("ARB seek_frame failed", error)
-                publishEdt { if (!disposed) studioController.showPlaybackError(error.message ?: "シークに失敗しました") }
-            }
+            runCatching { ctrl.seekToTime(timeNs) }.onFailure { logger.debug("ARB seek_frame failed", it) }
         }
     }
 
@@ -800,12 +794,7 @@ class ArbBundleFileEditor internal constructor(
         val ctrl = currentPlaybackController() ?: return
         submitWork {
             runCatching { ctrl.seekToFrame(frameIndex) }
-                .onFailure { error ->
-                    logger.warn("ARB seek_frame failed", error)
-                    publishEdt {
-                        if (!disposed) studioController.showError("フレーム #$frameIndex のシークに失敗しました（${error.message}）")
-                    }
-                }
+                .onFailure { logger.debug("ARB seek_frame failed", it) }
         }
     }
 

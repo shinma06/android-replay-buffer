@@ -51,7 +51,7 @@ K3〜K9 の一部は、完了しなかった元の形を次のように組み替
 - K4 スライス層: `RingEvictionPlanner::plan` の本体を `plan_refs`（`pub(crate)`、`&mut [&RingChunkMeta]` を受け取り、退避数と停止理由だけを返す）として抽出した。退避可能チャンクの抽出は `filter().collect()` から同じ順序を保つその場の前詰めに変わり、`plan` は参照を `Vec` に集めて先頭 `evict_count` 件の ID を複製するだけになった（判定順序、`u128` の合計、`(created_cont_ns, chunk_id)` の安定ソート、`pinned_bytes`、各停止理由の値は不変）。ハーネスは固定長のチャンク配列と参照配列を渡すため、`Vec<&RingChunkMeta>` も ID の `String` 複製も展開しない。2 チャンクはピンの組 4 通りに分け（`pinned_pinned` では退避可能なチャンクがないため、退避ループ内の表明は構造上到達せず、代わりに「何も退避しない」を表明する）、`u64` 全域は 1 チャンクを必須、2 チャンクを拡張集合とする。3 チャンク以上は必須集合にない。
 - K12 `playback.rs`: `GopLruCache::fetch_forward` の窓操作を `reuses_forward_window`（窓を再利用できるか）と `advance_forward_window`（`next..=target` を順に復号し、古いフレームを捨てて予算内に保つ）、`fetch_frame` の全 GOP 判定を `full_gop_exceeds_budget`、`FilmstripCache::load_from_file` の検査を `from_bytes` として抽出した（挙動不変のリファクタ。窓は `FrameWindow` トレイトを通し、本番は `VecDeque<DecodedFrame>` そのもの。`frame.byte_len()` → `bytes()`、`frame.frame_index` → `index()` の置き換えのみ）。ハーネスは固定長配列の FIFO モデル `Window` と、`fetch_forward` の再利用・IDR 再起動の分岐を写した `ForwardModel` を使う（TCB-20）。逐次復号は「冷えたシーク」と「保持 3 枚までの任意の窓からの `+1` 歩」の基底・帰納段に分け、GOP 長は `u32::MAX` まで、フレームサイズと予算は記号値のまま検証する。予算は `1..=isize::MAX`（Rust の確保上限）に限る。`usize::MAX` では飽和した比較が発火せず計数が溢れうるが、本番の予算は 128 MiB 定数である。`filmstrip.bin` はエントリ 0 件・正しいチェックサムの 68 バイトに固定し、期待側のファイル長・フレーム数・指紋 32 バイトを記号値にする（エントリ解析部は到達しない）。
 
-### 2.2 Layer 2: Stateright（`core/crates/arbd/tests/pdd_stateright_models.rs`）
+### 2.2 Layer 2: Stateright
 
 | ID | モデル | 検査する性質 |
 |---|---|---|
@@ -62,6 +62,11 @@ K3〜K9 の一部は、完了しなかった元の形を次のように組み替
 | S3 attach | 遅延アタッチ（`(serial, generation)` トークン）・端末切替・ストレージ圧迫・再有効化 | 選択中の端末・現世代のみ稼働する、再有効化状態は遅延アタッチ完了後も保持される。到達性: 別端末の古いアタッチが棄却される／圧迫回復後に再開できる |
 | S4 | 2 接続 × 2 世代のビューポート開閉・書き出し完了・接続 EOF・ハンドオーバー | ビューポートまたは書き出し稼働中のハンドオーバーは拒否される、EOF と完了のドレインで必ずアイドルに収束する、1 要求あたりの公開は高々 1 回。到達性: EOF 後も書き出しが生存する／両世代で両クライアントが公開できる |
 | S5 | クラッシュ自動保存の検出・永続 pin・再起動リプレイ・端末再起動（設計前提、TCB-16） | 同一 boot 内の同一クラッシュ確定は高々 1 回、永続 pin は再起動後に必ずリプレイされる。到達性: 別 boot の同一署名は 2 回保存される |
+| S6 | Studio の再生時計、seek 世代、共有 RPC の再接続、編集タブが所有する viewport と SHM reader | 遅延応答が意図時刻と新しい再生を保つ。同一フレームの保持中に seek を追加しない。失敗時は有限回で理由を表示して停止し、再生再開時はループが起床する。再取得と破棄が競合しても資源を解放する。 |
+
+S6 は `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright_playback_s6 -- --nocapture` で再現できる。PTS を 0・3 ns、終端を 4 ns とした 2 枚の VFR 映像について、通常再生 5,157 状態、ループ 5,157 状態、単一フレーム区間ループ 4,334 状態を探索した（Apple Silicon の debug ビルドで合計 0.12 秒）。世代は実行中の要求が現行か旧世代かで区別する。`seekLock` の待ち行列では、世代照合を通れる最新の要求を保持する。復旧と解放の収束は RPC が返り、待機スレッドが実行されることを前提とする。SHM 所有数はセッションが保持する reader と開いたファイルチャネルを数える。JVM が `MappedByteBuffer` の OS マッピングを回収する時刻は検証範囲外。
+
+[共有トレース](../specs/playback-s6-traces.json) の16本では、同じ操作と障害の順序から Stateright が発行する seek 列を再構成し、最終状態を Kotlin と照合する。`PddS6PlaybackTraceReplayTest` は本番の再生・表示状態、接続サービス、viewport セッションと SHM reader を実行する。時計と daemon 側の応答・接続 EOF はテストで制御する。3個の変異（到着フレーム時刻の書き戻し、古い失敗の受理、再取得中の解放漏れ）に対して反例を確認する。
 
 ### 2.3 Layer 3: Proptest / Miri
 

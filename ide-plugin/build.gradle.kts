@@ -174,6 +174,7 @@ tasks.buildPlugin {
 }
 
 tasks.test {
+    inputs.file(rootProject.file("../docs/specs/playback-s6-traces.json"))
     useJUnitPlatform()
     systemProperty("java.awt.headless", "true")
     inputs.files(rootProject.fileTree("../docs/specs") { include("*-table.json") })

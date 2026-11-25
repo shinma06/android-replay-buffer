@@ -3,6 +3,8 @@ package io.github.shinma06.arb.ide
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.MediaOpenViewportResponse
+import io.github.shinma06.arb.model.MediaSeekFrameResponse
+import io.github.shinma06.arb.playback.FrameSeekResult
 import io.github.shinma06.arb.shm.ShmFrame
 import io.github.shinma06.arb.shm.ShmFrameRingReader
 import java.io.Closeable
@@ -50,30 +52,53 @@ internal class StudioViewportSession(
     @Synchronized
     fun <T> request(onRecovery: () -> Unit = {}, call: (ArbdRpcClient, String) -> T): ReadResult<T> {
         check(!disposed())
-        val reopened = current == null
-        if (reopened) {
-            onRecovery()
-            open(checkNotNull(sourceBundleId))
+        current?.let { generation ->
+            try {
+                return read(generation, call, replacementId = null)
+            } catch (e: Exception) {
+                if (current != null) throw e
+            }
         }
-        val generation = checkNotNull(current)
+        onRecovery()
+        val viewport = try {
+            open(checkNotNull(sourceBundleId))
+        } catch (e: Exception) {
+            throw IllegalStateException("映像接続を復元できませんでした（${e.message}）", e)
+        }
+        return try {
+            read(checkNotNull(current), call, viewport.viewportId)
+        } catch (e: Exception) {
+            if (current == null) {
+                throw IllegalStateException("映像接続を復元できませんでした（${e.message}）", e)
+            }
+            throw e
+        }
+    }
+
+    private fun <T> read(generation: Generation, call: (ArbdRpcClient, String) -> T, replacementId: String?): ReadResult<T> {
         val result = try {
             call(generation.rpc, generation.viewport.viewportId)
         } catch (e: Exception) {
-            if (e !is IOException && (e !is ArbdRpcException || e.code != VIEWPORT_NOT_FOUND)) throw e
-            // Disconnecting the owning socket also reclaims a viewport whose reply was lost.
-            onRecovery()
-            generation.rpc.close()
-            generation.reader.close()
-            current = null
-            try {
-                open(generation.viewport.bundleId)
-                val fresh = checkNotNull(current)
-                return ReadResult(call(fresh.rpc, fresh.viewport.viewportId), fresh.reader.readLatest(), fresh.viewport.viewportId)
-            } catch (recovery: Exception) {
-                throw IllegalStateException("映像接続を復元できませんでした（${recovery.message}）", recovery)
+            if (e is IOException || (e is ArbdRpcException && e.code == VIEWPORT_NOT_FOUND)) {
+                // Socket EOF also reclaims a viewport whose reply was lost.
+                current = null
+                runCatching { generation.rpc.close() }
+                runCatching { generation.reader.close() }
             }
+            throw e
         }
-        return ReadResult(result, generation.reader.readLatest(), generation.viewport.viewportId.takeIf { reopened })
+        return ReadResult(result, generation.reader.readLatest(), replacementId)
+    }
+
+    fun seekFrame(
+        frameIndex: Long,
+        onRecovery: () -> Unit,
+        onRead: (ReadResult<MediaSeekFrameResponse>) -> Unit,
+    ): FrameSeekResult {
+        val result = request(onRecovery) { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
+        onRead(result)
+        val displayed = result.frame?.meta?.frameIndex ?: throw IOException("フレームがまだ公開されていません")
+        return FrameSeekResult(frameIndex, displayed, result.response.isApproximate, recovered = result.replacementId != null)
     }
 
     @Synchronized
@@ -81,8 +106,8 @@ internal class StudioViewportSession(
         val generation = current ?: return
         current = null
         runCatching { generation.rpc.mediaCloseViewport(generation.viewport.viewportId) }
-        generation.rpc.close()
-        generation.reader.close()
+        runCatching { generation.rpc.close() }
+        runCatching { generation.reader.close() }
     }
 
     private companion object {
