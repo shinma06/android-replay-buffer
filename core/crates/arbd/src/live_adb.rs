@@ -52,7 +52,7 @@ use arb_core::audio_policy::{
     StickyAudioLatch,
 };
 use arb_core::config::{AudioCaptureMode as AudioSource, CaptureMode};
-use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, validate_adb_serial};
+use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, selectable_online_serials};
 use arb_core::time::{
     ClockTimeline, ClockTimelineConfig, DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind,
     PcSyncProbe, StreamKind,
@@ -376,15 +376,15 @@ struct LiveCaptureConfig {
 }
 
 pub(crate) fn select_live_target(
-    adb: &AdbClient,
+    adb: &AdbClient<impl arb_adb::adb::AdbCommandRunner>,
     preferred: Option<&str>,
 ) -> Result<DeviceSelectionOutcome, DaemonError> {
-    let online = adb
-        .devices()?
-        .into_iter()
-        .filter(|d| d.state == AdbDeviceState::Device && validate_adb_serial(&d.serial).is_ok())
-        .map(|d| d.serial)
-        .collect::<Vec<_>>();
+    let devices = adb.devices()?;
+    let online = selectable_online_serials(
+        devices
+            .iter()
+            .map(|d| (d.serial.as_str(), d.state == AdbDeviceState::Device)),
+    );
     Ok(DeviceSelectionPolicy::evaluate(preferred, &online))
 }
 
@@ -2314,6 +2314,44 @@ mod tests {
 
     fn supervisor() -> SessionSupervisor {
         SessionSupervisor::new("emulator-5554", SupervisorConfig::new())
+    }
+
+    #[test]
+    fn live_target_filters_adb_output_before_applying_the_preference() {
+        use arb_adb::adb::{AdbClient, AdbCommandOutput, AdbCommandRunner};
+        use arb_core::device::DeviceSelectionOutcome;
+
+        #[derive(Debug)]
+        struct Devices;
+        impl AdbCommandRunner for Devices {
+            fn run(
+                &self,
+                _: &std::path::Path,
+                args: &[String],
+            ) -> std::io::Result<AdbCommandOutput> {
+                if args != ["devices", "-l"] {
+                    return Err(std::io::Error::other("expected adb devices -l"));
+                }
+                Ok(AdbCommandOutput {
+                    exit_code: Some(0),
+                    stdout: "bad/serial device\nphone device\nother offline\n".into(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let adb = AdbClient::with_runner("adb".into(), Devices);
+        assert_eq!(
+            crate::screenshot::resolve_screenshot_serial(&adb, None).unwrap(),
+            "phone"
+        );
+        assert!(matches!(super::select_live_target(&adb, None).unwrap(),
+            DeviceSelectionOutcome::Selected { serial } if serial == "phone"));
+        assert!(
+            matches!(super::select_live_target(&adb, Some("other")).unwrap(),
+            DeviceSelectionOutcome::WaitingForPreferredDevice { other_online_serials, .. }
+                if other_online_serials == ["phone"])
+        );
     }
 
     #[test]

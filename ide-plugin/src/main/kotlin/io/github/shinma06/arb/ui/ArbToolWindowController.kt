@@ -238,7 +238,7 @@ class ArbToolWindowController(
 
     /**
      * Device dropdown entries derived strictly from `client-core`'s [DeviceSelectionPolicy] outcome:
-     * - 0 devices -> single disabled placeholder ([NO_DEVICES_PLACEHOLDER]);
+     * - no selected target -> leading disabled reason, including [NO_DEVICES_PLACEHOLDER] for an empty list;
      * - 2+ online and nothing chosen -> leading prompt ([MULTIPLE_DEVICES_PROMPT], never auto-select);
      * - pinned device gone while others are online -> the pinned serial stays selected and is
      *   labelled `切断中（再接続待ち）` (never silently switched to another device).
@@ -262,17 +262,7 @@ class ArbToolWindowController(
 
     /** Inline prompt shown under the device row when the user must pick or reconnect a device. */
     val deviceSelectionNotice: String?
-        get() = when (val sel = captureState.deviceSelection) {
-            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
-                if (captureState.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
-            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-                if (captureState.devices.none { it.serial == sel.preferredSerial }) {
-                    "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX。別の端末へは自動で切り替えません。"
-                } else {
-                    null
-                }
-            else -> null
-        }
+        get() = captureState.selectionNotice()
 
     /** Current capture mode (`video_and_logs` / `logs_only`) — the running mode while capturing. */
     val captureMode: CaptureMode
@@ -341,14 +331,7 @@ class ArbToolWindowController(
         get() = if (isCaptureOn) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
 
     val deviceTooltip: String
-        get() = when (val info = captureState.selectedDevice) {
-            null -> NO_DEVICES_PLACEHOLDER
-            else -> when (info.state) {
-                AdbDeviceState.Unauthorized -> "端末で「USB デバッグを許可」をタップしてください (${info.serial})"
-                AdbDeviceState.Offline -> "端末がオフラインです (${info.serial})"
-                else -> "録画・スクリーンショット対象端末 (${info.serial})"
-            }
-        }
+        get() = disabledDeviceHint() ?: "録画・スクリーンショット対象端末 (${captureState.selectedSerial})"
 
     val startStopTooltip: String
         get() = when (captureToggleState) {
@@ -389,12 +372,7 @@ class ArbToolWindowController(
 
     private fun disabledDeviceHint(): String? {
         deviceSelectionNotice?.let { return it }
-        return when (captureState.selectedDevice?.state) {
-            AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
-            AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
-            null -> NO_DEVICES_PLACEHOLDER
-            else -> null
-        }
+        return captureState.deviceStateHint()
     }
 
     // ---- Commands invoked from Jewel UI & tests ----
@@ -542,7 +520,7 @@ class ArbToolWindowController(
                 val res = daemonService.withClient {
                     it.saveLogs(SaveLogsParams(windowSecs = durationSec))
                 }
-                val savedId = res.bundleId
+                val savedId = res.savedBundleId
                 if (savedId != null) {
                     ArbNotifications.notifyLogsOnlySaved(
                         project = project,
@@ -690,11 +668,7 @@ class ArbToolWindowController(
             try {
                 val res = daemonService.withClient { it.bundleForget(bundleId = bundleId) }
                 val note = formatForgetSummary(res)
-                val hasSkipped = res.skippedPresentBundleIds.isNotEmpty() ||
-                    res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
-                    res.skippedLeasedBundleIds.isNotEmpty() ||
-                    res.skippedActiveJobBundleIds.isNotEmpty()
-                if (hasSkipped) {
+                if (forgetNeedsWarning(res)) {
                     onNotifyWarning(note)
                 } else {
                     onNotifyInfo(note)
@@ -719,10 +693,7 @@ class ArbToolWindowController(
             try {
                 val res = daemonService.withClient { it.bundleForget(allMissing = true) }
                 val note = formatForgetSummary(res)
-                val hasSkipped = res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
-                    res.skippedLeasedBundleIds.isNotEmpty() ||
-                    res.skippedActiveJobBundleIds.isNotEmpty()
-                if (hasSkipped) {
+                if (forgetNeedsWarning(res)) {
                     onNotifyWarning(note)
                 } else {
                     onNotifyInfo(note)
@@ -839,7 +810,7 @@ class ArbToolWindowController(
                     it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
                 }
                 refreshAll()
-                val savedId = res.bundleId
+                val savedId = res.savedBundleId
                 if (savedId != null) {
                     if (openEditor) {
                         publishOnEdt { onOpenBundle(savedId, savedId, false) }
@@ -1134,16 +1105,23 @@ class ArbToolWindowController(
                 ?.preferredSerial
                 ?.takeIf { pinned -> devices.none { it.serial == pinned } }
             when {
+                state.selectedSerial?.let { !DeviceSelectionPolicy.isValidAdbSerial(it) } == true ->
+                    entries += DeviceDropdownEntry(INVALID_SELECTED_SERIAL_HINT, null)
                 pinnedMissing != null ->
                     entries += DeviceDropdownEntry("$pinnedMissing — $WAITING_FOR_PINNED_SUFFIX", pinnedMissing)
                 selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection && state.selectedSerial == null ->
                     entries += DeviceDropdownEntry(MULTIPLE_DEVICES_PROMPT, null)
-                devices.isEmpty() ->
-                    entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
+                state.selectedSerial == null || devices.isEmpty() ->
+                    entries += DeviceDropdownEntry(state.deviceStateHint() ?: MULTIPLE_DEVICES_PROMPT, null)
             }
-            devices.mapTo(entries) { DeviceDropdownEntry(formatDeviceLabel(it), it.serial) }
+            devices.mapIndexedTo(entries) { index, device ->
+                val serial = device.serial.takeIf(DeviceSelectionPolicy::isValidAdbSerial)
+                if (serial == null) DeviceDropdownEntry("端末 ${index + 1}（無効な serial）", null)
+                else DeviceDropdownEntry(formatDeviceLabel(device), serial)
+            }
             return entries
         }
+        internal const val INVALID_SELECTED_SERIAL_HINT = "選択した端末の serial が無効です。"
         private const val META_BUDGET_PER_POLL = 24
         const val DEFAULT_POLL_INTERVAL_MS: Long = 2_000L
 
@@ -1169,6 +1147,7 @@ class ArbToolWindowController(
                     add("保存ジョブ保護=${gc.skippedActiveJobBundleIds.size}")
                 }
                 if (gc.failed.isNotEmpty()) add("失敗=${gc.failed.size}")
+                if (gc.reapedLeaseIds.isNotEmpty()) add("期限切れLease解放=${gc.reapedLeaseIds.size}")
             }
             return if (parts.isEmpty()) {
                 "ゴミ箱に削除対象はありませんでした"
@@ -1211,10 +1190,18 @@ class ArbToolWindowController(
             return true to "$summary（${hints.joinToString(" / ")}）"
         }
 
+        /** `true` when any requested entry was kept (present, unmounted, leased or saving). */
+        fun forgetNeedsWarning(res: BundleForgetResponse): Boolean =
+            res.skippedPresentBundleIds.isNotEmpty() ||
+                res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
+                res.skippedLeasedBundleIds.isNotEmpty() ||
+                res.skippedActiveJobBundleIds.isNotEmpty()
+
         /** Formats a concise summary of a non-destructive `bundle.forget` response. */
         fun formatForgetSummary(res: BundleForgetResponse): String {
             val parts = buildList {
                 if (res.forgottenBundleIds.isNotEmpty()) add("一覧から削除=${res.forgottenBundleIds.size}")
+                if (res.reapedLeaseIds.isNotEmpty()) add("期限切れLease解放=${res.reapedLeaseIds.size}")
                 if (res.skippedPresentBundleIds.isNotEmpty()) add("実在のためスキップ=${res.skippedPresentBundleIds.size}")
                 if (res.skippedStorageUnavailableBundleIds.isNotEmpty()) {
                     add("保存先未接続のため保護=${res.skippedStorageUnavailableBundleIds.size}")
@@ -1233,21 +1220,37 @@ class ArbToolWindowController(
     }
 }
 
+private fun CaptureBarState.selectionNotice(): String? = when (val sel = deviceSelection) {
+    is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+        if (selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
+    is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+        if (!DeviceSelectionPolicy.isValidAdbSerial(sel.preferredSerial)) {
+            ArbToolWindowController.INVALID_SELECTED_SERIAL_HINT
+        } else if (devices.none { it.serial == sel.preferredSerial }) {
+            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}。別の端末へは自動で切り替えません。"
+        } else {
+            null
+        }
+    else -> null
+}
+
+private fun CaptureBarState.deviceStateHint(): String? {
+    val state = selectedDevice?.state
+    return when {
+        devices.isNotEmpty() && devices.all { !DeviceSelectionPolicy.isValidAdbSerial(it.serial) } ->
+            "有効な serial の端末がありません。ADB の端末一覧を確認してください。"
+        devices.isEmpty() -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+        state == null -> "録画に使う端末をオンラインにして選択してください。"
+        state == AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
+        state == AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+        state == AdbDeviceState.Device -> null
+        else -> "端末が録画できる状態ではありません（${state.wireName}）。"
+    }
+}
+
 internal fun CaptureBarState.toToolbarSnapshot(
     captureEnabled: Boolean = this.config.captureEnabled,
 ): ArbToolbarDaemonSnapshot {
-    val hint = when (val sel = this.deviceSelection) {
-        is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
-            if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
-        is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}"
-        else -> when (this.selectedDevice?.state) {
-            AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
-            AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
-            null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
-            else -> null
-        }
-    }
     return ArbToolbarDaemonSnapshot(
         probed = true,
         daemonConnected = this.daemonConnected,
@@ -1257,7 +1260,7 @@ internal fun CaptureBarState.toToolbarSnapshot(
         hasBufferedData = this.ringChunkCount > 0L,
         hasOnlineDevice = this.isSelectedDeviceOnline,
         selectedDeviceSerial = this.selectedDevice?.serial,
-        disabledDeviceHint = hint,
+        disabledDeviceHint = selectionNotice() ?: deviceStateHint(),
     )
 }
 

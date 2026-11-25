@@ -182,7 +182,7 @@ private fun executeConfiguredSave(project: Project?) {
                 it.saveTrigger(SaveTriggerParams(durationSec = windowSecs))
             }
             service.notifyCatalogChanged()
-            val savedId = res.bundleId
+            val savedId = res.savedBundleId
             if (savedId != null) {
                 val openInStudio = config.ideDefaultSaveAction == IdeDefaultSaveAction.SAVE_AND_OPEN &&
                     project != null && !project.isDisposed
@@ -286,7 +286,7 @@ private fun executeSaveLogsOnly(project: Project?) {
                 it.saveLogs(SaveLogsParams(windowSecs = windowSecs))
             }
             service.notifyCatalogChanged()
-            val savedId = res.bundleId
+            val savedId = res.savedBundleId
             if (savedId != null) {
                 ArbNotifications.notifyLogsOnlySaved(
                     project = project,
