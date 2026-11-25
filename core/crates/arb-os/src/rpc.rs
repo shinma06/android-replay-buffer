@@ -20,6 +20,31 @@ pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
 
 const DEFAULT_AUTO_START_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Budget for methods that synchronously write bundles, run `adb`, or re-encode media.
+const LONG_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Minimum budget for the last-chance hello after the spawned daemon lost the lock race.
+const FINAL_HELLO_MIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Methods whose daemon-side work legitimately outlasts the default budget. Timing out one of
+/// these would report a failure while the daemon still completes it, inviting a duplicate.
+fn is_long_running_method(method: &str) -> bool {
+    matches!(
+        method,
+        "save.trigger"
+            | "save.logs"
+            | "save.screenshot"
+            | "save.retry"
+            | "save.retarget"
+            | "capture.start"
+            | "capture.stop"
+            | "device.list"
+            | "bundle.gc"
+            | "export.trim"
+            | "export.png"
+            | "export.share_mp4"
+            | "media.decode_audio_pcm"
+    )
+}
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
 const LOG_TAIL_MAX_BYTES: usize = 2_048;
 
@@ -185,6 +210,7 @@ pub struct RpcClient {
     connection: Option<BufReader<DeadlineStream>>,
     next_id: u64,
     default_timeout: Duration,
+    long_timeout: Duration,
 }
 
 /// Resolves the auto-start timeout from `ARB_AUTO_START_TIMEOUT_MS` (default 5000 ms, R3 S16d).
@@ -246,13 +272,20 @@ impl RpcClient {
             connection: Some(connection),
             next_id: 1,
             default_timeout: DEFAULT_CALL_TIMEOUT,
+            long_timeout: LONG_CALL_TIMEOUT,
         })
     }
 
-    /// Sets the budget for normal RPCs on this connection. Export and audio decoding have a
-    /// separate 120-second budget; callers can override either with [`Self::call_with_timeout`].
+    /// Sets the budget for normal RPCs on this connection. Saves, capture control, device
+    /// listing, GC and export/audio decoding use a separate budget (120 seconds by default, see
+    /// [`Self::set_long_timeout`]); callers can override either with [`Self::call_with_timeout`].
     pub const fn set_default_timeout(&mut self, timeout: Duration) {
         self.default_timeout = timeout;
+    }
+
+    /// Sets the budget for long-running methods (saves, capture control, export, ...).
+    pub const fn set_long_timeout(&mut self, timeout: Duration) {
+        self.long_timeout = timeout;
     }
 
     /// Calls `system.hello` and verifies that `protocol_version` matches
@@ -284,11 +317,10 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
-        let timeout = match method {
-            "export.trim" | "export.share_mp4" | "media.decode_audio_pcm" => {
-                Duration::from_secs(120)
-            }
-            _ => self.default_timeout,
+        let timeout = if is_long_running_method(method) {
+            self.long_timeout
+        } else {
+            self.default_timeout
         };
         self.call_with_timeout(method, params, timeout)
     }
@@ -405,7 +437,11 @@ pub fn wait_for_daemon(
             // while the winner is now serving; try connecting one final time before failing.
             if let Ok(mut client) = RpcClient::connect_endpoint(endpoint)
                 && client
-                    .verify_hello_with_timeout(timeout.saturating_sub(started.elapsed()))
+                    .verify_hello_with_timeout(
+                        timeout
+                            .saturating_sub(started.elapsed())
+                            .max(FINAL_HELLO_MIN_TIMEOUT),
+                    )
                     .is_ok()
             {
                 return Ok(client);
@@ -613,6 +649,71 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(3));
         assert!(client.call("system.status", json!({})).is_err());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn slow_save_uses_the_long_budget_while_status_keeps_the_short_one() {
+        let dir = TestDir::new("long");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().expect("accept"));
+            for delay_ms in [400, 400] {
+                let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"].clone();
+                thread::sleep(Duration::from_millis(delay_ms));
+                let response = json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}});
+                // The second reply may race the client's disconnect after its timeout.
+                let _ = write_frame_line(
+                    reader.get_mut(),
+                    &response.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                );
+            }
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        client.set_default_timeout(Duration::from_millis(150));
+        client.set_long_timeout(Duration::from_secs(5));
+        assert_eq!(
+            client.call("save.trigger", json!({})).unwrap()["ok"],
+            json!(true)
+        );
+        assert!(matches!(
+            client.call("system.status", json!({})),
+            Err(RpcClientError::Timeout)
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn long_running_methods_cover_saves_capture_and_exports_only() {
+        for method in [
+            "save.trigger",
+            "save.logs",
+            "save.retry",
+            "save.retarget",
+            "capture.start",
+            "device.list",
+            "export.trim",
+            "media.decode_audio_pcm",
+        ] {
+            assert!(super::is_long_running_method(method), "{method}");
+        }
+        for method in [
+            "system.hello",
+            "system.status",
+            "save.list_jobs",
+            "bundle.list",
+        ] {
+            assert!(!super::is_long_running_method(method), "{method}");
+        }
     }
 
     #[test]

@@ -260,7 +260,6 @@ impl McpServer {
                         RpcClientError::UnexpectedEof
                             | RpcClientError::Os(_)
                             | RpcClientError::Io(_)
-                            | RpcClientError::Timeout
                     );
                     if !(retry_safe && interrupted && attempt == 0) {
                         return Err(err.to_string());
@@ -1331,6 +1330,7 @@ mod tests {
         });
         let mut client = super::RpcClient::connect_endpoint(&endpoint).unwrap();
         client.set_default_timeout(Duration::from_millis(250));
+        client.set_long_timeout(Duration::from_millis(250));
         let mut mcp = super::McpServer {
             paths,
             client: Some(client),

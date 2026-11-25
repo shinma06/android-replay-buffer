@@ -2040,6 +2040,7 @@ mod tests {
         });
         let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
         client.set_default_timeout(Duration::from_millis(250));
+        client.set_long_timeout(Duration::from_millis(250));
         let mut tray = TrayController::new(paths, AutoStartMode::Disabled, Duration::from_secs(1));
         tray.client = Some(client);
         let err = tray
