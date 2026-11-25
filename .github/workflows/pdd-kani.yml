@@ -18,6 +18,7 @@ on:
       - 'core/crates/arb-os/src/shm.rs'
       - 'core/crates/arb-media/src/mp4.rs'
       - 'core/crates/arb-media/src/mux_av.rs'
+      - 'core/crates/arb-media/src/timeline.rs'
       - 'core/crates/arb-adb/src/wire.rs'
       - 'core/crates/arbd/src/touch_calibration.rs'
       - 'core/crates/arb-core/src/**'

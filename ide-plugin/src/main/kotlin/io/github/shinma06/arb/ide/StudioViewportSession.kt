@@ -48,16 +48,20 @@ internal class StudioViewportSession(
     }
 
     @Synchronized
-    fun <T> request(call: (ArbdRpcClient, String) -> T): ReadResult<T> {
+    fun <T> request(onRecovery: () -> Unit = {}, call: (ArbdRpcClient, String) -> T): ReadResult<T> {
         check(!disposed())
         val reopened = current == null
-        if (reopened) open(checkNotNull(sourceBundleId))
+        if (reopened) {
+            onRecovery()
+            open(checkNotNull(sourceBundleId))
+        }
         val generation = checkNotNull(current)
         val result = try {
             call(generation.rpc, generation.viewport.viewportId)
         } catch (e: Exception) {
             if (e !is IOException && (e !is ArbdRpcException || e.code != VIEWPORT_NOT_FOUND)) throw e
             // Disconnecting the owning socket also reclaims a viewport whose reply was lost.
+            onRecovery()
             generation.rpc.close()
             generation.reader.close()
             current = null

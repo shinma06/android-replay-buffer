@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -87,6 +88,110 @@ class PlaybackControllerTest {
         List(count) { i -> baseNs + i * stepMs * 1_000_000L }
 
     @Test
+    fun sharedVfrQueriesAndConstantSpeedWhileHolding() {
+        val path = java.nio.file.Path.of(System.getProperty("arb.repo.root"), "core/crates/arb-media/tests/data/vfr-timeline.txt")
+        val lines = java.nio.file.Files.readAllLines(path).filterNot { it.startsWith('#') }
+        val starts = lines.first().split(" ").map(String::toLong)
+        val lastDuration = lines[1].toLong()
+        for (speed in PlaybackSpeed.entries) {
+            val clock = ManualClock()
+            val seeker = RecordingSeeker()
+            PlaybackController(starts.size.toLong(), seeker, starts, clock = clock, lastFrameDurationNs = lastDuration,
+                autoRunLoop = false, initialSpeed = speed).use { ctrl ->
+                val axis = ctrl.axis
+                assertEquals(11_000_000_000L, axis.endNs)
+                ctrl.play()
+                var previous = 0L
+                for (line in lines.drop(2)) {
+                    val (time, frame, out) = line.split(" ").map(String::toLong)
+                    val before = seeker.calls.size
+                    clock.advanceNs(speed.mediaToWallNs(time - previous))
+                    ctrl.tick()
+                    assertEquals(time, ctrl.displayPositionNs())
+                    assertEquals(time.toDouble() / 11_000_000_000.0, axis.fraction(ctrl.displayPositionNs()))
+                    assertEquals(frame, ctrl.state.currentFrameIndex)
+                    assertEquals(out, axis.outFrame(time))
+                    if (previous >= 1_000_000_000L && time < 10_000_000_000L) assertEquals(before, seeker.calls.size)
+                    previous = time
+                }
+            }
+        }
+    }
+
+    @Test
+    fun eachPresentationTickMovesTheBarWithoutDecodingDuringAHold() {
+        for (speed in PlaybackSpeed.entries) {
+            val clock = ManualClock()
+            val seeker = RecordingSeeker()
+            PlaybackController(2, seeker, listOf(0, 9_000_000_000), clock = clock,
+                initialSpeed = speed, lastFrameDurationNs = 1_000_000_000, autoRunLoop = false).use { ctrl ->
+                ctrl.play()
+                repeat(179) { i ->
+                    clock.advanceNs(speed.mediaToWallNs(50_000_000))
+                    ctrl.tick()
+                    assertEquals((i + 1) * 5f, ctrl.axis.pixel(ctrl.displayPositionNs(), 0f, 1000f))
+                    assertEquals(0L, ctrl.state.currentFrameIndex)
+                }
+                assertTrue(seeker.calls.isEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun generatedHoldClockSeekAndPauseMatchTimeOracle() {
+        val random = kotlin.random.Random(104135)
+        for (speed in PlaybackSpeed.entries) repeat(32) {
+            val starts = mutableListOf(0L)
+            repeat(random.nextInt(0, 64)) {
+                starts += starts.last() + listOf(1L, 16_666_667L, 10_000_000_000L).random(random)
+            }
+            val tail = random.nextLong(1, 20_000_000_000L)
+            val end = starts.last() + tail
+            val clock = ManualClock()
+            val seeker = RecordingSeeker()
+            PlaybackController(starts.size.toLong(), seeker, starts, clock = clock, lastFrameDurationNs = tail,
+                autoRunLoop = false, initialSpeed = speed).use { ctrl ->
+                val target = random.nextLong(end)
+                ctrl.scrubToTime(target)
+                ctrl.seekToTime(target)
+                ctrl.play()
+                val wall = random.nextLong(10_000_000_000L)
+                clock.advanceNs(wall)
+                ctrl.tick()
+                val expected = (target + (wall * speed.multiplier).toLong()).coerceAtMost(end)
+                assertEquals(expected, ctrl.displayPositionNs())
+                assertEquals(starts.indexOfLast { it <= expected }.toLong(), ctrl.state.currentFrameIndex)
+                ctrl.pause()
+                clock.advanceMs(3000)
+                assertEquals(expected, ctrl.displayPositionNs())
+                ctrl.play()
+                assertEquals(if (expected == end) 0L else expected, ctrl.displayPositionNs())
+            }
+        }
+    }
+
+    @Test
+    fun axisFallbackAndMalformedTablesKeepRepresentableBoundaries() {
+        val normalized = TimelineCoordinateAxis(4, listOf(Long.MIN_VALUE, Long.MAX_VALUE, -1, -1))
+        val starts = (0L..3L).map(normalized::start)
+        assertTrue(starts.zipWithNext().all { (a, b) -> a < b })
+        assertTrue(starts.last() < normalized.endNs)
+        val capped = TimelineCoordinateAxis(100_001, lastDurationNs = 10, reportedEndNs = 1_000_043)
+        assertEquals(1_000_043L, capped.endNs)
+        for (i in listOf(0L, 33_333L, 99_999L, 100_000L)) {
+            assertEquals(i * 1_000_033 / 100_000, capped.start(i))
+            assertEquals(i, capped.frameAt(capped.start(i)))
+            assertEquals(i, capped.outFrame(capped.outTime(i)))
+        }
+        assertEquals(0L, TimelineCoordinateAxis(0).endNs)
+        for (count in listOf(1L, 4L, 100_001L)) {
+            val axis = TimelineCoordinateAxis(count, emptyList(), 25, 9_000_000_000L)
+            assertEquals((count - 1) * 25 + 9_000_000_000, axis.endNs)
+            assertEquals(count - 1, axis.frameAt(axis.endNs))
+        }
+    }
+
+    @Test
     fun transientFrameFailureRetriesOnceWithoutStoppingAndInitialPermanentFailureRollsBack() {
         val clock = ManualClock()
         var attempts = 0
@@ -102,7 +207,7 @@ class PlaybackControllerTest {
             assertTrue(errors.isEmpty())
         }
         val broken = RecordingSeeker(onExactSeek = { throw java.io.IOException("permanent") })
-        PlaybackController(10, broken, initialFrameIndex = 9, onPlaybackError = errors::add).use {
+        PlaybackController(10, broken, initialFrameIndex = 9, initialOutFrameIndex = 8, onPlaybackError = errors::add).use {
             it.play()
             assertEquals(PlaybackMode.PAUSED, it.state.mode)
             assertEquals(2, broken.calls.size)
@@ -180,7 +285,9 @@ class PlaybackControllerTest {
     fun viewportRecoveryTimeIsExcludedFromPlaybackClock() {
         val clock = ManualClock()
         val seeker = object : FrameSeeker {
-            override fun seekExact(frameIndex: Long): FrameSeekResult {
+            override fun seekExact(frameIndex: Long) = FrameSeekResult(frameIndex, frameIndex, false)
+            override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
+                onRecovery()
                 clock.advanceMs(30_000)
                 return FrameSeekResult(frameIndex, frameIndex, false, recovered = true)
             }
@@ -197,6 +304,35 @@ class PlaybackControllerTest {
             assertEquals(40L, it.state.outFrameIndex)
             assertEquals(PlaybackMode.PLAYING, it.state.mode)
             assertEquals(PlaybackSpeed.DOUBLE, it.state.speed)
+        }
+    }
+
+    @Test
+    fun failedViewportReopenDuringPlayingSeekDoesNotLeaveTheClockFrozen() {
+        val clock = ManualClock()
+        val seeker = object : FrameSeeker {
+            var failReopen = false
+            override fun seekExact(frameIndex: Long) = FrameSeekResult(frameIndex, frameIndex, false)
+            override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
+                if (!failReopen) return seekExact(frameIndex)
+                onRecovery()
+                clock.advanceMs(5_000)
+                throw IllegalStateException("映像接続を復元できませんでした")
+            }
+            override fun scrubApprox(frameIndex: Long) = seekExact(frameIndex)
+        }
+        PlaybackController(50, seeker, uniformPtsNs(50, 100), clock = clock, autoRunLoop = false).use {
+            it.play()
+            seeker.failReopen = true
+            assertFailsWith<IllegalStateException> { it.seekToTime(1_000_000_000L) }
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            // Reopen time is excluded, and the clock runs again from the seek target.
+            assertEquals(1_000_000_000L, it.displayPositionNs())
+            clock.advanceMs(200)
+            assertEquals(1_200_000_000L, it.displayPositionNs())
+            seeker.failReopen = false
+            it.tick()
+            assertEquals(12L, it.state.currentFrameIndex)
         }
     }
 

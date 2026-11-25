@@ -1072,6 +1072,7 @@ data class MediaOpenViewportResponse(
      */
     val framePtsNs: List<Long> = emptyList(),
     val lastFrameDurationNs: Long? = null,
+    val timelineDurationNs: Long? = null,
 )
 
 data class FilmstripEntryMeta(

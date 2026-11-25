@@ -182,17 +182,18 @@ proptest! {
 
     #[test]
     fn g3_vfr_variable_gop_roundtrip(
-        gops in prop::collection::vec(1u8..5, 2..4),
-        deltas in prop::collection::vec(10u16..70, 1..5),
+        gops in prop::collection::vec(1u8..5, 1..4),
+        deltas in prop::collection::vec(prop_oneof![10u16..70, Just(17), Just(10_000)], 1..5),
         cut in any::<(u8, u8)>(),
         lead_in_ms in -40i64..40,
+        tail_ticks in prop_oneof![Just(1u32), Just(900_000), 1u32..90_000],
         flips in prop::collection::vec((any::<u16>(), any::<u8>()), 1..6),
     ) {
         let tmp = tempfile::tempdir().expect("tmp");
         let src = tmp.path().join("src.mp4");
         let packets = encode_vfr(&gops, &deltas);
         let n = packets.len() as u64;
-        mux_raw_h264_to_mp4(&src, 64, 48, 90_000, 3_000, &packets).expect("mux");
+        mux_raw_h264_to_mp4(&src, 64, 48, 90_000, tail_ticks, &packets).expect("mux");
         let track = Mp4VideoTrack::open(&src).expect("open");
         prop_assert_eq!(track.frame_count(), n);
         let idr: Vec<bool> = track.frames().iter().map(|f| f.is_keyframe).collect();
@@ -214,6 +215,18 @@ proptest! {
         prop_assert_eq!(t.frame_count(), outf - inf + 1);
         prop_assert!(t.frames()[0].is_keyframe, "trimmed output starts at an IDR");
 
+        let starts = arb_media::timeline::viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
+        let end = arb_media::timeline::end_ns(&starts, Some(i64::try_from(track.frames().last().expect("sample").duration_ns).expect("duration")), 1);
+        let left = starts[usize::try_from(inf).expect("in")];
+        let right = arb_media::timeline::out_time(&starts, end, usize::try_from(outf).expect("out"));
+        prop_assert_eq!(arb_media::timeline::frame_at_time(&starts, left), Some(usize::try_from(inf).expect("in")));
+        prop_assert_eq!(arb_media::timeline::out_frame(&starts, right), Some(usize::try_from(outf).expect("out")));
+        let trimmed_pts = arb_media::timeline::viewport_timestamps(t.frames().iter().map(|frame| frame.pts_ns));
+        for (i, pts) in trimmed_pts.iter().enumerate() {
+            prop_assert!((pts - (starts[usize::try_from(inf).expect("in") + i] - left)).abs() <= 1);
+        }
+        let trimmed_end = arb_media::timeline::end_ns(&trimmed_pts, Some(i64::try_from(t.frames().last().expect("sample").duration_ns).expect("duration")), 1);
+        prop_assert!((trimmed_end - (right - left)).abs() <= 1);
         let audio = tmp.path().join("a.m4a");
         build_audio(&audio, 40);
         let share = tmp.path().join("share.mp4");
@@ -233,5 +246,46 @@ proptest! {
         let bad = tmp.path().join("bad.mp4");
         std::fs::write(&bad, &bytes).expect("write");
         read_everything(&bad);
+    }
+}
+
+#[test]
+fn shared_studio_timeline_contract() {
+    use arb_media::timeline::{
+        end_ns, fraction_to_time, frame_at_time, out_frame, time_to_fraction, viewport_timestamps,
+    };
+    let mut lines = include_str!("data/vfr-timeline.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'));
+    let numbers = |row: &str| {
+        row.split_whitespace()
+            .map(|n| n.parse::<i64>().expect("number"))
+            .collect::<Vec<_>>()
+    };
+    let pts = viewport_timestamps(numbers(lines.next().expect("starts")).into_iter());
+    let last = lines
+        .next()
+        .expect("last duration")
+        .parse()
+        .expect("number");
+    let end = end_ns(&pts, Some(last), 1);
+    assert_eq!(end, 11_000_000_000, "full duration including last hold");
+    for line in lines {
+        let row = numbers(line);
+        assert_eq!(
+            frame_at_time(&pts, row[0]),
+            usize::try_from(row[1]).ok(),
+            "displayed frame"
+        );
+        assert_eq!(
+            out_frame(&pts, row[0]),
+            usize::try_from(row[2]).ok(),
+            "inclusive OUT"
+        );
+        assert_eq!(
+            fraction_to_time(time_to_fraction(row[0], end), end),
+            row[0],
+            "screen roundtrip"
+        );
     }
 }

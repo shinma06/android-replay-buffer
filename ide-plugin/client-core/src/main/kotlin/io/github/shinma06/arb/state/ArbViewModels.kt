@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.state
 
+import io.github.shinma06.arb.playback.TimelineCoordinateAxis
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AppLogSummary
 import io.github.shinma06.arb.model.ArbConfig
@@ -38,7 +39,6 @@ import io.github.shinma06.arb.model.TimestampSemantics
 import io.github.shinma06.arb.model.VideoStreamMeta
 import io.github.shinma06.arb.shm.ShmFrameMeta
 import kotlin.math.abs
-import kotlin.math.roundToLong
 
 const val APPROXIMATE_PREVIEW_BADGE_TEXT: String = "近似プレビュー（位置確定前）"
 const val LEGACY_READ_ONLY_BADGE_TEXT: String = "Legacy (RO)"
@@ -532,14 +532,13 @@ data class SyncedEventRow(
     val kind: SyncedEventKind,
     val seq: Long,
     val boottimeNs: Long?,
-    val relativeMs: Long?,
+    val mediaTimeNs: Long?,
     val frameIndex: Long?,
     val title: String,
     val detail: String,
     val level: String? = null,
     val tag: String? = null,
     val isInTrimRange: Boolean = true,
-    val isAtPlayhead: Boolean = false,
     val correlatedTapIndex: Int? = null,
     val sourceJumpTarget: SourceJumpTarget? = null,
 )
@@ -547,8 +546,8 @@ data class SyncedEventRow(
 /**
  * Pure computation for the right-hand Event/Log panel's video <-> timeline auto-follow sync
  * (Owner trial feedback T-6H item 4): finds the index inside [rows] of the row most relevant to
- * [playheadFrameIndex] — the latest row at or before the playhead, falling back to the nearest
- * upcoming row within [toleranceFrames] when nothing has happened yet. Returns `null` for an
+ * [playheadTimeNs] — the latest row at or before the playhead, falling back to the nearest
+ * upcoming row within [toleranceNs] when nothing has happened yet. Returns `null` for an
  * empty [rows] (nothing to highlight/scroll to) or when no row lies within tolerance.
  *
  * Independent of list order and of [SyncedEventRow.isInTrimRange]/filtering — callers pass
@@ -556,25 +555,25 @@ data class SyncedEventRow(
  */
 fun activeTimelineItemIndex(
     rows: List<SyncedEventRow>,
-    playheadFrameIndex: Long,
-    toleranceFrames: Long = 30L,
+    playheadTimeNs: Long,
+    toleranceNs: Long = 1_000_000_000L,
 ): Int? {
     if (rows.isEmpty()) return null
 
     var bestAtOrBeforeIdx: Int? = null
-    var bestAtOrBeforeFrame = Long.MIN_VALUE
+    var bestAtOrBeforeTime = Long.MIN_VALUE
     var nearestUpcomingIdx: Int? = null
     var nearestUpcomingDist = Long.MAX_VALUE
 
     for ((idx, row) in rows.withIndex()) {
-        val f = row.frameIndex ?: continue
-        if (f <= playheadFrameIndex) {
-            if (f > bestAtOrBeforeFrame) {
-                bestAtOrBeforeFrame = f
+        val time = row.mediaTimeNs ?: continue
+        if (time <= playheadTimeNs) {
+            if (time > bestAtOrBeforeTime) {
+                bestAtOrBeforeTime = time
                 bestAtOrBeforeIdx = idx
             }
         } else {
-            val dist = f - playheadFrameIndex
+            val dist = time - playheadTimeNs
             if (dist < nearestUpcomingDist) {
                 nearestUpcomingDist = dist
                 nearestUpcomingIdx = idx
@@ -583,7 +582,7 @@ fun activeTimelineItemIndex(
     }
 
     bestAtOrBeforeIdx?.let { return it }
-    return nearestUpcomingIdx?.takeIf { nearestUpcomingDist <= toleranceFrames }
+    return nearestUpcomingIdx?.takeIf { nearestUpcomingDist <= toleranceNs }
 }
 
 data class ActiveTapOverlay(
@@ -635,8 +634,7 @@ data class TimelineViewerState(
     val showTapOverlay: Boolean = true,
     val exportCompletion: ExportCompletionInfo? = null,
     val lastActionMessage: String? = null,
-    val relativeFramePtsNs: List<Long> = emptyList(),
-    val playbackDurationNs: Long? = null,
+    val axis: TimelineCoordinateAxis = estimatedAxis(summary, frameCount),
     /** Per-stream load status; a stream absent from the map has not been requested ([StreamLoadState.Pending]). */
     val auxStreams: Map<AuxStream, StreamLoadState> = emptyMap(),
     /** `true` when the MAIN log bucket hit the display limit and rows were dropped. */
@@ -704,140 +702,87 @@ data class TimelineViewerState(
             null
         }
 
-    /** First known device boottime anchor in ns, used for deterministic frame <-> timestamp mapping. */
-    val timelineStartBoottimeNs: Long
-        get() {
-            summary.epochs.firstOrNull()?.let { return it.startBoottimeNs }
-            filmstrip.firstOrNull()?.let { return it.ptsNs }
-            return 0L
-        }
+    val totalDurationMs: Long get() = axis.endNs / 1_000_000L
 
-    /** End boottime anchor in ns. */
-    val timelineEndBoottimeNs: Long
-        get() {
-            summary.epochs.lastOrNull()?.let { return it.endBoottimeNs }
-            val fallbackDurNs = (frameCount - 1L).coerceAtLeast(0L) * DEFAULT_FRAME_STEP_NS
-            return timelineStartBoottimeNs + fallbackDurNs
-        }
+    fun frameToRelativeMs(frameIndex: Long): Long = axis.start(frameIndex) / 1_000_000L
 
-    val totalDurationMs: Long
-        get() {
-            relativeFramePtsNs.lastOrNull()?.let { return it / 1_000_000L }
-            if (frameCount <= 1L) return 0L
-            if (summary.epochFrameRanges.size > 1) {
-                val sumNs = summary.epochFrameRanges.sumOf { (it.endBoottimeNs - it.startBoottimeNs).coerceAtLeast(0L) }
-                if (sumNs > 0L) return sumNs / 1_000_000L
-            }
-            if (summary.epochs.size > 1) {
-                val sumNs = summary.epochs.sumOf { (it.endBoottimeNs - it.startBoottimeNs).coerceAtLeast(0L) }
-                if (sumNs > 0L) return sumNs / 1_000_000L
-            }
-            val spanNs = timelineEndBoottimeNs - timelineStartBoottimeNs
-            return if (spanNs > 0L) spanNs / 1_000_000L else ((frameCount - 1L) * DEFAULT_FRAME_STEP_NS) / 1_000_000L
+    /** Boot time and MP4 time have different origins. Each epoch starts at its first media sample. */
+    fun eventTime(boottimeNs: Long, bootId: String? = null): Long? {
+        if (frameCount == 0L) return null
+        val ranges = summary.epochFrameRanges
+        if (ranges.isNotEmpty()) {
+            val candidates = ranges.filter { bootId == null || it.bootId == bootId }
+            val epoch = candidates.singleOrNull { boottimeNs in it.startBoottimeNs..it.endBoottimeNs }
+                ?: candidates.singleOrNull()?.takeIf { bootId != null || ranges.size == 1 }
+                ?: return null
+            val start = axis.start(epoch.startFrameIndex)
+            val upper = axis.outTime(epoch.endFrameIndex)
+            if (boottimeNs < epoch.startBoottimeNs) return null
+            val offset = elapsedSince(boottimeNs, epoch.startBoottimeNs)
+            if (upper <= start || offset > upper - start || (offset == upper - start && upper < axis.endNs)) return null
+            return start + offset
         }
-
-    val estimatedFps: Double
-        get() {
-            val durMs = totalDurationMs
-            return if (frameCount > 1L && durMs > 0L) {
-                ((frameCount - 1L).toDouble() * 1_000.0 / durMs.toDouble()).coerceIn(1.0, 120.0)
-            } else {
-                30.0
-            }
+        val epochs = summary.epochs
+        val epoch = epochs.singleOrNull { (bootId == null || it.bootId == bootId) && boottimeNs in it.startBoottimeNs..it.endBoottimeNs }
+            ?: epochs.singleOrNull { bootId != null && it.bootId == bootId }
+            ?: epochs.singleOrNull()?.takeIf { bootId == null }
+            ?: return null
+        if (boottimeNs < epoch.startBoottimeNs) return null
+        var start = 0L
+        for (prior in epochs) {
+            if (prior == epoch) break
+            start += elapsedSince(prior.endBoottimeNs, prior.startBoottimeNs).coerceAtMost(axis.endNs - start)
         }
-
-    fun frameToRelativeMs(frameIndex: Long): Long {
-        if (frameCount <= 1L) return 0L
-        val clamped = frameIndex.coerceIn(0L, frameCount - 1L)
-        if (relativeFramePtsNs.isNotEmpty()) return relativeFramePtsNs[clamped.toInt()] / 1_000_000L
-        if (summary.epochFrameRanges.size > 1) {
-            var accNs = 0L
-            for (ep in summary.epochFrameRanges) {
-                val epDurNs = (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
-                if (clamped in ep.startFrameIndex..ep.endFrameIndex) {
-                    val epFrames = ep.endFrameIndex - ep.startFrameIndex
-                    val withinNs = if (epFrames > 0L) {
-                        ((clamped - ep.startFrameIndex).toDouble() / epFrames.toDouble() * epDurNs.toDouble()).roundToLong()
-                    } else {
-                        0L
-                    }
-                    return (accNs + withinNs) / 1_000_000L
-                }
-                accNs += epDurNs
-            }
-        }
-        return ((clamped.toDouble() / (frameCount - 1L).toDouble()) * totalDurationMs.toDouble()).roundToLong()
+        val elapsed = elapsedSince(boottimeNs, epoch.startBoottimeNs)
+        if (elapsed > axis.endNs - start || (epoch != epochs.last() && boottimeNs > epoch.endBoottimeNs)) return null
+        return start + elapsed
     }
 
-    fun frameToBoottimeNs(frameIndex: Long): Long {
-        if (summary.epochFrameRanges.isNotEmpty() && frameCount > 0L) {
-            val clamped = frameIndex.coerceIn(0L, frameCount - 1L)
-            val ep = epochRangeForFrame(clamped)
-            if (ep != null) {
-                val epFrames = ep.endFrameIndex - ep.startFrameIndex
-                val epSpanNs = (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
-                if (epFrames <= 0L || epSpanNs <= 0L) return ep.startBoottimeNs
-                val ratio = ((clamped - ep.startFrameIndex).toDouble() / epFrames.toDouble()).coerceIn(0.0, 1.0)
-                return ep.startBoottimeNs + (ratio * epSpanNs.toDouble()).roundToLong()
-            }
-        }
-        return timelineStartBoottimeNs + frameToRelativeMs(frameIndex) * 1_000_000L
+    fun boottimeNsToFrameIndex(boottimeNs: Long, bootId: String? = null): Long? =
+        eventTime(boottimeNs, bootId)?.let(axis::frameAt)
+
+    fun tapTime(tap: TapRecord): Long? = alignmentBoottimeNs(tap.alignment)?.let {
+        eventTime(it, tap.bootId ?: alignmentBootId(tap.alignment))
     }
 
-    fun boottimeNsToFrameIndex(boottimeNs: Long, bootId: String? = null): Long? {
-        if (frameCount <= 0L) return null
+    fun crashTime(crash: CrashMarker): Long? {
+        val source = mainLogs.firstOrNull { it.seq == crash.sourceLogSeq }
+        val boot = source?.bootId ?: source?.let { alignmentBootId(it.alignment) }
+            ?: crash.frameIndexHint?.let { epochRangeForFrame(it)?.bootId }
+        return crash.boottimeNs?.let { eventTime(it, boot) } ?: crash.frameIndexHint?.let(axis::start)
+    }
+
+    fun screenTime(span: ScreenSpan, end: Boolean = false): Long? {
+        val hint = if (end) span.endFrameIndex else span.startFrameIndex
+        val boot = (hint ?: span.startFrameIndex)?.let { epochRangeForFrame(it)?.bootId }
+        val at = if (end) span.endNs else span.startNs
+        return eventTime(at, boot) ?: clippedSpanTime(span, at, boot) ?: hint?.let(axis::start)
+    }
+
+    /**
+     * A screen span is an interval, not a point: an endpoint outside the recording (an activity
+     * already in the foreground when capture started, or still there at the end) is clipped to the
+     * media of the single epoch the span overlaps instead of hiding the whole span.
+     */
+    private fun clippedSpanTime(span: ScreenSpan, at: Long, boot: String?): Long? {
+        if (frameCount == 0L) return null
         if (summary.epochFrameRanges.isNotEmpty()) {
-            if (bootId != null) {
-                val matched = summary.epochFrameRanges.firstOrNull { it.bootId == bootId }
-                    ?: return null // Strict per-epoch isolation: never bleed into another boot epoch
-                return interpolateFrameInEpoch(matched, boottimeNs)
-            }
-            val containingAll = summary.epochFrameRanges.filter {
-                boottimeNs in it.startBoottimeNs..it.endBoottimeNs
-            }
-            // Boottime restarts after a reboot, so ranges can overlap: without a boot id an
-            // ambiguous timestamp must not be guessed into one epoch (cross-epoch bleed).
-            if (containingAll.size > 1) return null
-            val containing = containingAll.firstOrNull()
-            if (containing != null) {
-                return interpolateFrameInEpoch(containing, boottimeNs)
-            }
-            if (summary.epochFrameRanges.size == 1) {
-                return interpolateFrameInEpoch(summary.epochFrameRanges.first(), boottimeNs)
-            }
-            val nearest = summary.epochFrameRanges.minByOrNull { ep ->
-                when {
-                    boottimeNs < ep.startBoottimeNs -> ep.startBoottimeNs - boottimeNs
-                    boottimeNs > ep.endBoottimeNs -> boottimeNs - ep.endBoottimeNs
-                    else -> 0L
-                }
-            }
-            if (nearest != null) {
-                return interpolateFrameInEpoch(nearest, boottimeNs)
-            }
+            val epoch = summary.epochFrameRanges
+                .filter { boot == null || it.bootId == boot }
+                .singleOrNull { span.startNs <= it.endBoottimeNs && span.endNs >= it.startBoottimeNs }
+                ?: return null
+            val start = axis.start(epoch.startFrameIndex)
+            val upper = axis.outTime(epoch.endFrameIndex)
+            return start + elapsedSince(at, epoch.startBoottimeNs).coerceAtMost((upper - start).coerceAtLeast(0L))
         }
-        if (frameCount == 1L) return 0L
-        // Fallback for older daemons/fixtures without epochFrameRanges: map through filmstrip PTS.
-        if (summary.epochs.size > 1 && filmstrip.size >= 2) {
-            return boottimeNsToFrameIndexViaFilmstrip(boottimeNs)
-        }
-        val start = timelineStartBoottimeNs
-        val end = timelineEndBoottimeNs
-        val span = end - start
-        if (span <= 0L) return 0L
-        val ratio = ((boottimeNs - start).toDouble() / span.toDouble()).coerceIn(0.0, 1.0)
-        return (ratio * (frameCount - 1L).toDouble()).roundToLong().coerceIn(0L, frameCount - 1L)
-    }
-
-    private fun interpolateFrameInEpoch(epoch: EpochFrameRange, boottimeNs: Long): Long {
-        val maxFrame = (frameCount - 1L).coerceAtLeast(0L)
-        val loFrame = epoch.startFrameIndex.coerceIn(0L, maxFrame)
-        val hiFrame = epoch.endFrameIndex.coerceIn(loFrame, maxFrame)
-        if (loFrame == hiFrame) return loFrame
-        val span = epoch.endBoottimeNs - epoch.startBoottimeNs
-        if (span <= 0L) return loFrame
-        val ratio = ((boottimeNs - epoch.startBoottimeNs).toDouble() / span.toDouble()).coerceIn(0.0, 1.0)
-        return (loFrame + (ratio * (hiFrame - loFrame).toDouble()).roundToLong()).coerceIn(loFrame, hiFrame)
+        // Older daemons: clip into the overlapped boot epoch, then past the media end.
+        val epoch = summary.epochs
+            .filter { boot == null || it.bootId == boot }
+            .singleOrNull { span.startNs <= it.endBoottimeNs && span.endNs >= it.startBoottimeNs }
+            ?: return null
+        val clipped = at.coerceIn(epoch.startBoottimeNs, epoch.endBoottimeNs)
+        return eventTime(clipped, epoch.bootId)
+            ?: axis.endNs.takeIf { clipped > epoch.startBoottimeNs && epoch == summary.epochs.last() }
     }
 
     private fun epochRangeForFrame(frameIndex: Long): EpochFrameRange? =
@@ -857,44 +802,8 @@ data class TimelineViewerState(
         return if (idx >= 0) idx else Int.MAX_VALUE
     }
 
-    private fun boottimeToRelativeMs(boottimeNs: Long, bootId: String?): Long {
-        if (summary.epochFrameRanges.size > 1 && bootId != null) {
-            var accNs = 0L
-            for (ep in summary.epochFrameRanges) {
-                if (ep.bootId == bootId) {
-                    return (accNs + (boottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)) / 1_000_000L
-                }
-                accNs += (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
-            }
-        }
-        return ((boottimeNs - timelineStartBoottimeNs) / 1_000_000L).coerceAtLeast(0L)
-    }
-
-    private fun boottimeNsToFrameIndexViaFilmstrip(boottimeNs: Long): Long {
-        val entries = filmstrip.sortedBy { it.frameIndex }
-        val maxFrame = frameCount - 1L
-        val upperIdx = entries.indexOfFirst { it.ptsNs >= boottimeNs }
-        val result = when {
-            upperIdx < 0 -> entries.last().frameIndex
-            upperIdx == 0 -> entries.first().frameIndex
-            else -> {
-                val lo = entries[upperIdx - 1]
-                val hi = entries[upperIdx]
-                val span = hi.ptsNs - lo.ptsNs
-                // A PTS jump across an epoch boundary must not be interpolated: snap to the nearer frame.
-                if (span <= 0L || hi.ptsNs - boottimeNs > boottimeNs - lo.ptsNs && span > 2_000_000_000L) {
-                    if (boottimeNs - lo.ptsNs <= hi.ptsNs - boottimeNs) lo.frameIndex else hi.frameIndex
-                } else {
-                    val ratio = (boottimeNs - lo.ptsNs).toDouble() / span.toDouble()
-                    lo.frameIndex + (ratio * (hi.frameIndex - lo.frameIndex).toDouble()).roundToLong()
-                }
-            }
-        }
-        return result.coerceIn(0L, maxFrame)
-    }
-
     val selectedDurationMs: Long
-        get() = (frameToRelativeMs(outFrameIndex) - frameToRelativeMs(inFrameIndex)).coerceAtLeast(0L)
+        get() = (axis.outTime(outFrameIndex) - axis.start(inFrameIndex)) / 1_000_000L
 
     val exportCtaLabel: String
         get() = ArbFormatters.formatExportCtaLabel(inFrameIndex, outFrameIndex, frameCount, selectedDurationMs)
@@ -902,7 +811,7 @@ data class TimelineViewerState(
     val selectionSummaryText: String
         get() = ArbFormatters.formatSelectionSummary(
             inMs = frameToRelativeMs(inFrameIndex),
-            outMs = frameToRelativeMs(outFrameIndex),
+            outMs = axis.outTime(outFrameIndex) / 1_000_000L,
             inFrameIndex = inFrameIndex,
             outFrameIndex = outFrameIndex,
         )
@@ -983,11 +892,10 @@ data class TimelineViewerState(
     fun activeTapsAtFrame(
         frameIndex: Long = currentFrameIndex,
         windowNs: Long = TAP_OVERLAY_WINDOW_NS,
+        timeNs: Long = axis.start(frameIndex),
     ): List<ActiveTapOverlay> {
         if (!showTapOverlay || mainTaps.isEmpty()) return emptyList()
         val frameEpochBootId = epochRangeForFrame(frameIndex)?.bootId
-        val frameBt = currentFrameMeta?.takeIf { it.frameIndex == frameIndex && it.boottimeNs > 0L }?.boottimeNs
-            ?: frameToBoottimeNs(frameIndex)
         return mainTaps.mapIndexedNotNull { idx, tap ->
             val x = tap.x ?: return@mapIndexedNotNull null
             val y = tap.y ?: return@mapIndexedNotNull null
@@ -995,16 +903,16 @@ data class TimelineViewerState(
             if (frameEpochBootId != null && tapBootId != null && tapBootId != frameEpochBootId) {
                 return@mapIndexedNotNull null
             }
-            val tapBt = alignmentBoottimeNs(tap.alignment) ?: return@mapIndexedNotNull null
+            val tapBt = tapTime(tap) ?: return@mapIndexedNotNull null
             val strokeDurationNs = if (tap.gestureKind == GestureKind.SWIPE) {
                 (tap.endTOffsetNs ?: 0L).coerceAtLeast(0L)
             } else {
                 0L
             }
-            val tapEndBt = tapBt + strokeDurationNs
+            val tapEndBt = tapBt + strokeDurationNs.coerceAtMost(axis.endNs - tapBt)
             val deltaNs = when {
-                frameBt < tapBt -> tapBt - frameBt
-                frameBt > tapEndBt -> tapEndBt - frameBt
+                timeNs < tapBt -> tapBt - timeNs
+                timeNs > tapEndBt -> tapEndBt - timeNs
                 else -> 0L
             }
             if (abs(deltaNs) <= windowNs) {
@@ -1025,21 +933,8 @@ data class TimelineViewerState(
         }
     }
 
-    /** Integer frame indices of all recorded main-bucket taps (for `PlaybackController.selectTapRange`). */
-    fun mainTapFrameIndices(): List<Long> = mainTaps.mapNotNull { tap ->
-        val bt = alignmentBoottimeNs(tap.alignment) ?: return@mapNotNull null
-        val bootId = tap.bootId ?: alignmentBootId(tap.alignment)
-        boottimeNsToFrameIndex(bt, bootId)
-    }
-
     /** Primary crash frame index (for `PlaybackController.selectAroundCrash`). */
-    fun primaryCrashFrameIndex(): Long? {
-        val crash = crashes.firstOrNull() ?: return null
-        if (crash.frameIndexHint != null) return crash.frameIndexHint
-        val bt = crash.boottimeNs ?: return null
-        val bootId = mainLogs.firstOrNull { it.seq == crash.sourceLogSeq }?.let { it.bootId ?: alignmentBootId(it.alignment) }
-        return boottimeNsToFrameIndex(bt, bootId)
-    }
+    fun primaryCrashFrameIndex(): Long? = crashes.firstOrNull()?.let(::crashTime)?.let(axis::frameAt)
 
     /**
      * Builds the unified chronological event & log stream for the right-hand `"操作＆ログ"` tab:
@@ -1071,21 +966,20 @@ data class TimelineViewerState(
         // 1. Tap rows (honest "Tap #N (x, y)" only)
         for (entry in tapEntries) {
             val bt = entry.boottimeNs
-            val frame = bt?.let { boottimeNsToFrameIndex(it, entry.bootId) }
-            val relMs = bt?.let { boottimeToRelativeMs(it, entry.bootId) }
+            val time = tapTime(entry.tap)
+            val frame = time?.let(axis::frameAt)
             allRows.add(
                 epochOrderIndex(entry.bootId, bt) to SyncedEventRow(
                     kind = SyncedEventKind.TAP,
                     seq = entry.tap.seq,
                     boottimeNs = bt,
-                    relativeMs = relMs,
+                    mediaTimeNs = time,
                     frameIndex = frame,
                     title = ArbFormatters.formatTapDisplay(entry.tapNum, entry.tap),
                     detail = "action=${entry.tap.action}",
                     level = "TAP",
                     tag = "Input",
-                    isInTrimRange = isFrameInTrimRange(frame),
-                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    isInTrimRange = isTimeInTrimRange(time),
                     correlatedTapIndex = entry.tapNum,
                 ),
             )
@@ -1096,21 +990,20 @@ data class TimelineViewerState(
             val bt = crash.boottimeNs
             val crashBootId = logBootBySeq[crash.sourceLogSeq]
                 ?: crash.frameIndexHint?.let { epochRangeForFrame(it)?.bootId }
-            val frame = crash.frameIndexHint ?: bt?.let { boottimeNsToFrameIndex(it, crashBootId) }
-            val relMs = bt?.let { boottimeToRelativeMs(it, crashBootId) }
+            val time = crashTime(crash)
+            val frame = time?.let(axis::frameAt)
             allRows.add(
                 epochOrderIndex(crashBootId, bt) to SyncedEventRow(
                     kind = SyncedEventKind.CRASH,
                     seq = crash.sourceLogSeq,
                     boottimeNs = bt,
-                    relativeMs = relMs,
+                    mediaTimeNs = time,
                     frameIndex = frame,
                     title = "${crash.exceptionClass.substringAfterLast('.')} (${crash.packageName})",
                     detail = crash.message.ifBlank { crash.processName },
                     level = "F",
                     tag = "am_crash",
-                    isInTrimRange = isFrameInTrimRange(frame),
-                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    isInTrimRange = isTimeInTrimRange(time),
                     sourceJumpTarget = SourceJumpParser.fromCrashMarker(crash),
                 ),
             )
@@ -1119,21 +1012,20 @@ data class TimelineViewerState(
         // 3. Screen transitions (from PC-derived ScreenSpan)
         for ((idx, span) in screens.withIndex()) {
             val spanBootId = span.startFrameIndex?.let { epochRangeForFrame(it)?.bootId }
-            val frame = span.startFrameIndex ?: boottimeNsToFrameIndex(span.startNs, spanBootId)
-            val relMs = boottimeToRelativeMs(span.startNs, spanBootId)
+            val time = screenTime(span)
+            val frame = time?.let(axis::frameAt)
             allRows.add(
                 epochOrderIndex(spanBootId, span.startNs) to SyncedEventRow(
                     kind = SyncedEventKind.SCREEN_TRANSITION,
                     seq = -1_000L - idx.toLong(),
                     boottimeNs = span.startNs,
-                    relativeMs = relMs,
+                    mediaTimeNs = time,
                     frameIndex = frame,
                     title = span.shortName,
                     detail = span.activityName,
                     level = "SCR",
                     tag = "Screen",
-                    isInTrimRange = isFrameInTrimRange(frame),
-                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    isInTrimRange = isTimeInTrimRange(time),
                     sourceJumpTarget = SourceJumpParser.fromScreenSpan(span),
                 ),
             )
@@ -1143,8 +1035,8 @@ data class TimelineViewerState(
         for (log in mainLogs) {
             val bt = alignmentBoottimeNs(log.alignment)
             val logBootId = log.bootId ?: alignmentBootId(log.alignment)
-            val frame = bt?.let { boottimeNsToFrameIndex(it, logBootId) }
-            val relMs = bt?.let { boottimeToRelativeMs(it, logBootId) }
+            val time = bt?.let { eventTime(it, logBootId) }
+            val frame = time?.let(axis::frameAt)
             val corrTap = if (bt != null) {
                 var bestTap: Int? = null
                 var bestDelta = Long.MAX_VALUE
@@ -1166,14 +1058,13 @@ data class TimelineViewerState(
                     kind = SyncedEventKind.LOG,
                     seq = log.seq,
                     boottimeNs = bt,
-                    relativeMs = relMs,
+                    mediaTimeNs = time,
                     frameIndex = frame,
                     title = log.tag ?: "-",
                     detail = log.message,
                     level = log.level ?: "I",
                     tag = log.tag,
-                    isInTrimRange = isFrameInTrimRange(frame),
-                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    isInTrimRange = isTimeInTrimRange(time),
                     correlatedTapIndex = corrTap,
                     sourceJumpTarget = SourceJumpParser.parseLogText(log.message),
                 ),
@@ -1208,9 +1099,9 @@ data class TimelineViewerState(
         }
     }
 
-    private fun isFrameInTrimRange(frameIndex: Long?): Boolean {
-        if (frameIndex == null || frameCount <= 0L) return true
-        return frameIndex in inFrameIndex..outFrameIndex
+    fun isTimeInTrimRange(time: Long?): Boolean {
+        if (time == null || frameCount == 0L) return true
+        return time >= axis.start(inFrameIndex) && time < axis.outTime(outFrameIndex)
     }
 
     private fun kindSortOrder(kind: SyncedEventKind): Int = when (kind) {
@@ -1221,11 +1112,23 @@ data class TimelineViewerState(
     }
 
     companion object {
-        private const val DEFAULT_FRAME_STEP_NS: Long = 33_333_333L
+        private fun elapsedSince(end: Long, start: Long): Long = when {
+            end <= start -> 0L
+            start < 0L && end > Long.MAX_VALUE + start -> Long.MAX_VALUE
+            else -> end - start
+        }
+
+        private fun estimatedAxis(summary: TimelineSummaryResponse, count: Long): TimelineCoordinateAxis {
+            val spans = summary.epochFrameRanges.map { elapsedSince(it.endBoottimeNs, it.startBoottimeNs) }
+                .ifEmpty { summary.epochs.map { elapsedSince(it.endBoottimeNs, it.startBoottimeNs) } }
+            val duration = spans.fold(0L) { sum, span -> sum + span.coerceAtMost(Long.MAX_VALUE - sum) }
+            val step = if (duration > 0 && count > 1) duration / (count - 1) else 33_333_333L
+            return TimelineCoordinateAxis(count, estimatedStepNs = step.coerceAtLeast(1))
+        }
 
         fun alignmentBoottimeNs(alignment: TimeAlignment): Long? = when (alignment) {
             is TimeAlignment.Anchored -> alignment.boottimeNs
-            is TimeAlignment.Bounded -> (alignment.minBoottimeNs + alignment.maxBoottimeNs) / 2L
+            is TimeAlignment.Bounded -> (alignment.minBoottimeNs and alignment.maxBoottimeNs) + ((alignment.minBoottimeNs xor alignment.maxBoottimeNs) shr 1)
             is TimeAlignment.Unanchored -> null
         }
 
@@ -1240,7 +1143,6 @@ data class TimelineViewerState(
 object TimelineViewerReducer {
     fun onFramePublished(state: TimelineViewerState, meta: ShmFrameMeta): TimelineViewerState =
         state.copy(
-            currentFrameIndex = meta.frameIndex.coerceIn(0L, (state.frameCount - 1L).coerceAtLeast(0L)),
             currentFrameMeta = meta,
         )
 

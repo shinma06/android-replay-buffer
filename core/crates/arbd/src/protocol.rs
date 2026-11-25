@@ -963,6 +963,9 @@ pub struct MediaOpenViewportParams {
 /// Response payload for `media.open_viewport`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaOpenViewportResponse {
+    /// Exclusive media endpoint. Available even when the sample table exceeds the wire limit.
+    #[serde(default)]
+    pub timeline_duration_ns: i64,
     /// Duration of the final MP4 sample, including its hold after the final timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_frame_duration_ns: Option<u64>,

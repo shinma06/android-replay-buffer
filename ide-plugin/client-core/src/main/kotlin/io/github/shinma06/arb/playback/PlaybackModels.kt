@@ -18,6 +18,7 @@ enum class PlaybackSpeed(
     val multiplier: Double,
     val label: String,
 ) {
+    QUARTER(0.25, "0.25x"),
     HALF(0.5, "0.5x"),
     NORMAL(1.0, "1.0x"),
     DOUBLE(2.0, "2.0x");
@@ -28,6 +29,7 @@ enum class PlaybackSpeed(
     fun wallToMediaNs(wallDeltaNs: Long): Long {
         if (wallDeltaNs <= 0L) return 0L
         return when (this) {
+            QUARTER -> wallDeltaNs / 4L
             HALF -> wallDeltaNs / 2L
             NORMAL -> wallDeltaNs
             DOUBLE -> if (wallDeltaNs > Long.MAX_VALUE / 2L) Long.MAX_VALUE else wallDeltaNs * 2L
@@ -40,9 +42,10 @@ enum class PlaybackSpeed(
     fun mediaToWallNs(mediaDeltaNs: Long): Long {
         if (mediaDeltaNs <= 0L) return 0L
         return when (this) {
+            QUARTER -> if (mediaDeltaNs > Long.MAX_VALUE / 4L) Long.MAX_VALUE else mediaDeltaNs * 4L
             HALF -> if (mediaDeltaNs > Long.MAX_VALUE / 2L) Long.MAX_VALUE else mediaDeltaNs * 2L
             NORMAL -> mediaDeltaNs
-            DOUBLE -> (mediaDeltaNs + 1L) / 2L
+            DOUBLE -> mediaDeltaNs / 2L + mediaDeltaNs % 2L
         }
     }
 }
@@ -122,6 +125,8 @@ interface FrameSeeker {
      * The resulting frame MUST have `isApproximate == false`.
      */
     fun seekExact(frameIndex: Long): FrameSeekResult
+
+    fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult = seekExact(frameIndex)
 
     /**
      * Publishes a fast scrub preview for [frameIndex] (`media.scrub`), which may display the
