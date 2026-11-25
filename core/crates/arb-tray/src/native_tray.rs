@@ -585,6 +585,11 @@ impl TrayBackend for NativeBackend {
     fn replace_menu_items(&mut self, items: &[ModelMenuItem]) -> Result<(), String> {
         while self.root.remove_at(0).is_some() {}
         let populated = self.populate_root(items);
+        if populated.is_err() {
+            // A half-built menu would show entries whose clicks are no longer routed.
+            while self.root.remove_at(0).is_some() {}
+            self.nodes.clear();
+        }
         // Publish whatever the root now holds even after a failed rebuild, so Linux does not keep
         // showing the removed items.
         self.refresh_snapshot();
@@ -933,7 +938,8 @@ impl<B: TrayBackend> TrayUi<B> {
         let result = self.render(state);
         match &result {
             Ok(()) => self.last_render_error = None,
-            Err(err) if self.last_render_error.as_deref() != Some(err.as_str()) => {
+            // The very first build failure is reported by the caller as a plain diagnostic.
+            Err(err) if self.created && self.last_render_error.as_deref() != Some(err.as_str()) => {
                 log_render_failure(err);
                 self.last_render_error = Some(err.clone());
             }
@@ -958,7 +964,10 @@ fn apply_update<B: TrayBackend>(ui: &mut TrayUi<B>, update: TrayUpdate) -> Optio
             for alert in &alerts {
                 eprintln!("[arb-tray] {}", alert.message());
             }
-            if ui.render_and_log(&state).is_err() && !ui.created {
+            if let Err(err) = ui.render_and_log(&state)
+                && !ui.created
+            {
+                eprintln!("[arb-tray] {err}");
                 return Some(1);
             }
         }

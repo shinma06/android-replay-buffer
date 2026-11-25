@@ -64,7 +64,7 @@ verifies:
 ## 5. 追補: 保存失敗契約と RPC クライアントの堅牢化（H-1）
 
 - `mcp_stdio_integration::mcp_reports_retryable_saves_with_recoverable_job_and_pins`: `arb_save` / `arb_save_logs` の `failed_retryable`（`bundle_id: null`）が `isError: true` で、`job_id`・`last_error`・`pinned_chunk_ids` を保持することと、`save.retry` 後の再保存が `isError: false` になることを確認。
-- `arb-os` `rpc` の単体試験: `id` 不一致・欠落・通知混入・`result`/`error` 両欠落または両方ありの拒否と接続破棄、`"result": null` の受理、無応答・応答の細切れ送信での期限切れ、状態変更 RPC を再送しないこと、保存系を含む quick 以外のメソッドが長い期限を使うこと、閉じた接続への呼び出しが `Closed` を返すこと。
+- `arb-os` `rpc` の単体試験: `id` 不一致・欠落・通知混入・`result`/`error` 両欠落または両方ありの拒否と接続破棄、`"result": null` の受理、無応答・応答の細切れ送信での期限切れ、状態変更 RPC を再送しないこと、保存系を含む quick 以外のメソッドが長い期限を使うこと、閉じた接続への呼び出しが `Closed` を返すこと、daemon が応答直後に接続を閉じても（macOS は閉じた相手への `SO_RCVTIMEO` 設定が `EINVAL` になる）応答を読めること、`id: null` の daemon エラーを `Rpc` として返し接続を破棄すること、サイズ超過の要求を送信前に拒否して接続を保つこと。
 - `arb-tray`: アイコンとツールチップの更新が互いを止めないこと、未知の job state を警告付きで表示し再試行・破棄を出さないこと、メニュー再構築失敗後の再同期、期限切れ後の次回更新での再接続（再送なし）。
 - `verify_release_bundle.py --self-test`: `capture_enabled` が `False` 以外（`True` / `None` / `0` / 欠落）の変異を検出する。
 - 未検証: Windows 名前付きパイプ上の期限切れ動作は CI の `os-parity (windows-latest)` で確認する。

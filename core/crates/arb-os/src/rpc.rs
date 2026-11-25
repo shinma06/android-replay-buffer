@@ -81,7 +81,10 @@ pub enum RpcClientError {
         message: String,
     },
     /// The peer did not complete the exchange within the call budget.
-    #[error("arbd IPC request timed out; connection closed")]
+    #[error(
+        "arbd IPC request timed out; connection closed. arbd may still complete the request: \
+         check save.list_jobs / bundle.list or the output location before retrying"
+    )]
     Timeout,
     /// The received message could not be matched to the outstanding request.
     #[error("invalid arbd response: {0}")]
@@ -147,20 +150,15 @@ struct IncomingError {
 fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
     let mut response: serde_json::Map<String, Value> = serde_json::from_str(raw)?;
     // `arbd` answers frames it cannot attribute to a request (oversized, unparsable) with
-    // `id: null`. Keep its message, but still treat the connection as unusable.
+    // `id: null`. Surface its error as-is; `call_with_timeout` still drops the connection.
     if response.get("id").is_some_and(Value::is_null)
-        && let Some(error) = response.get("error").and_then(Value::as_object)
+        && let Some(error) = response.remove("error")
     {
-        return Err(RpcClientError::InvalidResponse(format!(
-            "arbd rejected the request frame ({}): {}",
-            error
-                .get("code")
-                .map_or_else(|| "?".into(), Value::to_string),
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("no message")
-        )));
+        let error: IncomingError = serde_json::from_value(error)?;
+        return Err(RpcClientError::Rpc {
+            code: error.code,
+            message: error.message,
+        });
     }
     if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || response.get("id").and_then(Value::as_u64) != Some(id)
@@ -185,6 +183,13 @@ fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
     }
 }
 
+/// `true` for an error response the daemon could not attribute to a request (`id: null`); the
+/// stream framing is then suspect, so the connection must not be reused.
+fn is_unattributed_error(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .is_ok_and(|v| v.get("id").is_some_and(Value::is_null) && v.get("error").is_some())
+}
+
 // Recompute the remaining budget at each syscall so a partial NDJSON line
 // arriving one byte at a time cannot renew the deadline indefinitely.
 #[derive(Debug)]
@@ -192,6 +197,18 @@ struct DeadlineStream {
     stream: LocalIpcStream,
     started: Instant,
     timeout: Duration,
+}
+
+/// macOS rejects `SO_RCVTIMEO` / `SO_SNDTIMEO` with `EINVAL` once the peer has closed its end, even
+/// while the daemon's final reply is still buffered. The read or write that follows completes or
+/// fails immediately in that state, so the missing deadline cannot hang; do not lose the reply.
+fn tolerate_closed_peer(result: Result<(), crate::OsError>) -> io::Result<()> {
+    match result {
+        Err(crate::OsError::Ipc { source, .. }) if source.kind() == io::ErrorKind::InvalidInput => {
+            Ok(())
+        }
+        other => other.map_err(io::Error::other),
+    }
 }
 
 impl DeadlineStream {
@@ -205,18 +222,14 @@ impl DeadlineStream {
 
 impl Read for DeadlineStream {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.stream
-            .set_read_timeout(Some(self.remaining()?))
-            .map_err(io::Error::other)?;
+        tolerate_closed_peer(self.stream.set_read_timeout(Some(self.remaining()?)))?;
         self.stream.read(bytes)
     }
 }
 
 impl Write for DeadlineStream {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.stream
-            .set_write_timeout(Some(self.remaining()?))
-            .map_err(io::Error::other)?;
+        tolerate_closed_peer(self.stream.set_write_timeout(Some(self.remaining()?)))?;
         self.stream.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -368,9 +381,9 @@ impl RpcClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, RpcClientError> {
-        let mut connection = self.connection.take().ok_or(RpcClientError::Closed)?;
-        connection.get_mut().started = Instant::now();
-        connection.get_mut().timeout = timeout;
+        if self.connection.is_none() {
+            return Err(RpcClientError::Closed);
+        }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let req = OutgoingRequest {
@@ -380,10 +393,26 @@ impl RpcClient {
             params,
         };
         let line = serde_json::to_string(&req)?;
+        let Some(mut connection) = self.connection.take() else {
+            return Err(RpcClientError::Closed);
+        };
+        connection.get_mut().started = Instant::now();
+        connection.get_mut().timeout = timeout;
+        let written = write_frame_line(connection.get_mut(), &line, DEFAULT_MAX_IPC_LINE_BYTES);
+        if let Err(
+            err @ (crate::OsError::FrameTooLarge { .. } | crate::OsError::InvalidArgument { .. }),
+        ) = written
+        {
+            // Rejected locally before any byte was written: the connection is still clean.
+            self.connection = Some(connection);
+            return Err(err.into());
+        }
+        let mut unattributed = false;
         let result = (|| {
-            write_frame_line(connection.get_mut(), &line, DEFAULT_MAX_IPC_LINE_BYTES)?;
+            written?;
             let raw = read_frame_line(&mut connection, DEFAULT_MAX_IPC_LINE_BYTES)?
                 .ok_or(RpcClientError::UnexpectedEof)?;
+            unattributed = is_unattributed_error(&raw);
             parse_response(&raw, id)
         })();
         match result {
@@ -395,7 +424,7 @@ impl RpcClient {
             {
                 Err(RpcClientError::Timeout)
             }
-            Ok(_) | Err(RpcClientError::Rpc { .. }) => {
+            Ok(_) | Err(RpcClientError::Rpc { .. }) if !unattributed => {
                 self.connection = Some(connection);
                 result
             }
@@ -599,15 +628,18 @@ mod tests {
     }
 
     #[test]
-    fn null_id_daemon_error_keeps_its_message_and_closes_the_connection() {
+    fn null_id_daemon_error_keeps_its_code_and_message() {
         let raw =
             json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"frame too large"}})
                 .to_string();
-        let err = super::parse_response(&raw, 1).unwrap_err();
-        assert!(
-            matches!(&err, RpcClientError::InvalidResponse(m) if m.contains("frame too large") && m.contains("-32600")),
-            "{err}"
-        );
+        assert!(matches!(
+            super::parse_response(&raw, 1),
+            Err(RpcClientError::Rpc { code: -32600, message }) if message == "frame too large"
+        ));
+        assert!(super::is_unattributed_error(&raw));
+        assert!(!super::is_unattributed_error(
+            &json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}).to_string()
+        ));
     }
 
     #[test]
@@ -788,6 +820,117 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn oversized_request_is_rejected_locally_without_dropping_the_connection() {
+        let dir = TestDir::new("big");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().expect("accept"));
+            let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "system.status");
+            let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{"ok":true}});
+            write_frame_line(
+                reader.get_mut(),
+                &response.to_string(),
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .unwrap();
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        let huge = "x".repeat(DEFAULT_MAX_IPC_LINE_BYTES + 1);
+        assert!(matches!(
+            client.call("save.trigger", json!({ "note": huge })),
+            Err(RpcClientError::Os(crate::OsError::FrameTooLarge { .. }))
+        ));
+        assert_eq!(
+            client.call("system.status", json!({})).unwrap()["ok"],
+            json!(true)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn null_id_error_surfaces_the_daemon_error_and_closes_the_connection() {
+        let dir = TestDir::new("nullid");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().expect("accept"));
+            read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            let response =
+                json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"bad frame"}});
+            write_frame_line(
+                reader.get_mut(),
+                &response.to_string(),
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .unwrap();
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        assert!(matches!(
+            client.call("system.status", json!({})),
+            Err(RpcClientError::Rpc { code: -32600, .. })
+        ));
+        assert!(matches!(
+            client.call("system.status", json!({})),
+            Err(RpcClientError::Closed)
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reply_buffered_before_the_daemon_closed_is_still_delivered() {
+        let dir = TestDir::new("closed");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut stream = listener.accept().expect("accept");
+            write_frame_line(
+                &mut stream,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .expect("reply");
+            stream.drain().expect("drain");
+            drop(stream);
+            closed_tx.send(()).unwrap();
+        });
+        let stream = super::LocalIpcStream::connect(&endpoint).expect("connect");
+        closed_rx.recv().unwrap();
+        server.join().unwrap();
+        let mut connection = BufReader::new(super::DeadlineStream {
+            stream,
+            started: std::time::Instant::now(),
+            timeout: Duration::from_secs(5),
+        });
+        let line = read_frame_line(&mut connection, DEFAULT_MAX_IPC_LINE_BYTES)
+            .expect("buffered reply must be readable after the peer closed")
+            .expect("reply line");
+        assert!(line.contains(r#""ok":true"#), "{line}");
     }
 
     #[test]

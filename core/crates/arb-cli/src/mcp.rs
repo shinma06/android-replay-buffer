@@ -255,12 +255,16 @@ impl McpServer {
                 Ok(val) => return Ok(val),
                 Err(err) if err.is_transport() => {
                     self.client = None;
-                    let interrupted = matches!(
-                        err,
-                        RpcClientError::UnexpectedEof
-                            | RpcClientError::Os(_)
-                            | RpcClientError::Io(_)
-                    );
+                    // A request rejected locally (too large / invalid) would fail identically again.
+                    let interrupted = match &err {
+                        RpcClientError::UnexpectedEof | RpcClientError::Io(_) => true,
+                        RpcClientError::Os(os) => !matches!(
+                            os,
+                            arb_os::OsError::FrameTooLarge { .. }
+                                | arb_os::OsError::InvalidArgument { .. }
+                        ),
+                        _ => false,
+                    };
                     if !(retry_safe && interrupted && attempt == 0) {
                         return Err(err.to_string());
                     }
