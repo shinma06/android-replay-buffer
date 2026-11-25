@@ -66,65 +66,140 @@ fn k9_iter_boxes_children_stay_in_parent() {
     }
 }
 
-/// Shapes: truncated header, header only, and header + one entry (the symbolic-length
-/// variant over a 24-byte buffer did not finish within 15 minutes).
-#[cfg_attr(
-    feature = "kani-extended",
-    kani::proof,
-    kani::stub(std::fmt::format, format_stub),
-    kani::unwind(6)
-)]
+/// Holds a parser result without running its drop glue: dropping a `MediaError` reaches the
+/// boxed `dyn Error` inside `io::Error`, which CBMC resolves against every candidate drop
+/// function. Only the harness skips the drop; the parser runs unchanged.
+fn keep<T>(r: T) -> core::mem::ManuallyDrop<T> {
+    core::mem::ManuallyDrop::new(r)
+}
+
+/// Header plus room for two entries; the entry count, every sample count/delta and
+/// `max_samples` stay symbolic, so zero, one and two entries (with trailing bytes) are covered.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(4)]
 fn k9_parse_stts_bounded() {
-    let buf: [u8; 16] = kani::any();
-    let data = &buf[..[4, 8, 16][usize::from(kani::any::<u8>() % 3)]];
+    let buf: [u8; 24] = kani::any();
     let max_samples = usize::from(kani::any::<u8>() % 4);
-    if let Ok(d) = parse_stts(data, max_samples) {
+    let r = keep(parse_stts(&buf, max_samples));
+    if let Ok(d) = &*r {
         assert!(d.len() <= max_samples, "expansion capped by stsz count");
+        kani::cover!(
+            d.len() == max_samples && max_samples > 1,
+            "expansion reaches the cap"
+        );
     }
 }
 
-/// Shapes: header only, one entry, and two entries so the ordering check is reachable (a
-/// symbolic length over 32 bytes did not finish within 15 minutes; partial entries are
-/// rejected by `checked_entry_count`, proven separately).
-#[cfg_attr(
-    feature = "kani-extended",
-    kani::proof,
-    kani::stub(std::fmt::format, format_stub),
-    kani::unwind(4)
-)]
+/// A box shorter than its version/flags + entry-count header is rejected.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(3)]
+fn k9_parse_stts_rejects_truncated_header() {
+    let buf: [u8; 7] = kani::any();
+    let max_samples = usize::from(kani::any::<u8>() % 4);
+    assert!(keep(parse_stts(&buf, max_samples)).is_err());
+}
+
+/// Header plus room for two entries, so the ordering check between entries runs; the entry
+/// count and every field stay symbolic (zero, one and two entries with trailing bytes).
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(3)]
 fn k9_parse_stsc_strictly_increasing() {
     let buf: [u8; 32] = kani::any();
-    let data = &buf[..[8, 20, 32][usize::from(kani::any::<u8>() % 3)]];
-    if let Ok(e) = parse_stsc(data) {
-        assert!(!e.is_empty() && e[0].0 == 1);
+    let r = keep(parse_stsc(&buf));
+    if let Ok(e) = &*r {
+        assert!(!e.is_empty() && e[0].0 == 1 && e[0].1 > 0);
+        assert!(8 + e.len() * 12 <= buf.len(), "entries fit in box");
         let mut i = 1;
         while i < e.len() {
             assert!(e[i - 1].0 < e[i].0 && e[i].1 > 0);
             i += 1;
         }
+        kani::cover!(e.len() == 2, "two ordered entries accepted");
     }
 }
 
-/// Shapes: truncated, header only, and one or two explicit sizes (a symbolic length over
-/// 24 bytes did not finish within 15 minutes).
-#[cfg_attr(
-    feature = "kani-extended",
-    kani::proof,
-    kani::stub(std::fmt::format, format_stub),
-    kani::unwind(10)
-)]
+/// A truncated header, or a box with room for no entry, is rejected.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(3)]
+fn k9_parse_stsc_rejects_empty_or_truncated() {
+    let buf: [u8; 15] = kani::any();
+    let len = usize::from(kani::any::<u8>() % 3) * 4 + 7;
+    assert!(
+        keep(parse_stsc(&buf[..len])).is_err(),
+        "7, 11 and 15 bytes hold no entry"
+    );
+}
+
+/// Constant-size table (`default_size != 0`): the default size, the declared count and a file
+/// length of 0..=3 bytes stay symbolic, so up to three samples can be accepted. The
+/// explicit-size branch is proven by the next harness.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(5)]
 fn k9_parse_stsz_bounded_by_file() {
-    let buf: [u8; 20] = kani::any();
-    let data = &buf[..[8, 12, 16, 20][usize::from(kani::any::<u8>() % 4)]];
-    let file_len = u64::from(kani::any::<u8>() % 8);
-    if let Ok(sizes) = parse_stsz(data, file_len) {
-        let default_size = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        if default_size != 0 {
-            assert!(sizes.len() as u64 * u64::from(default_size) <= file_len);
-        } else {
-            assert!(12 + sizes.len() * 4 <= data.len());
+    let buf: [u8; 12] = kani::any();
+    let default_size = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    kani::assume(default_size != 0);
+    let file_len = u64::from(kani::any::<u8>() % 4);
+    let r = keep(parse_stsz(&buf, file_len));
+    if let Ok(sizes) = &*r {
+        let raw_count = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        assert_eq!(
+            sizes.len() as u64,
+            u64::from(raw_count),
+            "declared count kept"
+        );
+        assert!(sizes.len() as u64 * u64::from(default_size) <= file_len);
+        if let (Some(&first), Some(&last)) = (sizes.first(), sizes.last()) {
+            assert!(first == default_size && last == default_size);
         }
+        kani::cover!(sizes.len() > 1, "several constant-size samples accepted");
     }
+}
+
+/// Explicit-size table (`default_size == 0`) with room for two sizes: the count and both
+/// sizes stay symbolic, and every accepted size lies inside the box.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(3)]
+fn k9_parse_stsz_explicit_sizes_fit_box() {
+    let mut buf: [u8; 20] = kani::any();
+    buf[4..8].copy_from_slice(&[0; 4]);
+    let file_len: u64 = kani::any();
+    let r = keep(parse_stsz(&buf, file_len));
+    if let Ok(sizes) = &*r {
+        let raw_count = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        assert_eq!(
+            sizes.len() as u64,
+            u64::from(raw_count),
+            "declared count kept"
+        );
+        assert!(12 + sizes.len() * 4 <= buf.len());
+        let mut i = 0;
+        while i < sizes.len() {
+            let o = 12 + i * 4;
+            assert_eq!(
+                sizes[i],
+                u32::from_be_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+            );
+            i += 1;
+        }
+        kani::cover!(sizes.len() == 2, "two explicit sizes accepted");
+    }
+}
+
+/// A box shorter than its version/flags + default-size + count header is rejected.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(3)]
+fn k9_parse_stsz_rejects_truncated_header() {
+    let buf: [u8; 11] = kani::any();
+    let file_len: u64 = kani::any();
+    assert!(keep(parse_stsz(&buf, file_len)).is_err());
 }
 
 /// Exact saturating conversion over the full `i64`/`u64` tick domain for one timescale:
@@ -192,8 +267,11 @@ fn k9_ticks_to_ns_monotone_ts_u32_max() {
     ticks_monotone(u32::MAX);
 }
 
-/// Samples up to 10 bytes (up to five NAL units); the 16-byte variant did not finish within
-/// 15 minutes because every NAL copy has a symbolic length.
+/// Samples up to 10 bytes (up to five NAL units). Kept in `kani-extended`: CBMC exhausts
+/// memory in propositional reduction as soon as a NAL slice returned by `split_avcc_nals` is
+/// read back (`n[0]` in the SPS/PPS scan or the `extend_from_slice` copy). Even a fixed 4-byte
+/// sample with 1-byte NAL lengths and a concrete `ParamSetMode` exceeds 7 GB, while
+/// `split_avcc_nals` alone on the same input verifies in about 7 s.
 #[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(14))]
 fn k9_avcc_sample_to_annexb_bounded() {
     let buf: [u8; 10] = kani::any();
