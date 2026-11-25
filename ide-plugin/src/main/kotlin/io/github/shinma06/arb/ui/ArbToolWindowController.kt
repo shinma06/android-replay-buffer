@@ -27,12 +27,14 @@ import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartParams
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
+import io.github.shinma06.arb.model.SaveJobView
 import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
 import io.github.shinma06.arb.model.StringPatch
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.BundleCatalogItem
+import io.github.shinma06.arb.state.BundleMetaScheduler
 import io.github.shinma06.arb.state.BundleCatalogState
 import io.github.shinma06.arb.state.BundleFilter
 import io.github.shinma06.arb.state.CaptureBarReducer
@@ -43,6 +45,8 @@ import io.github.shinma06.arb.state.FailedSaveRecoveryReducer
 import io.github.shinma06.arb.state.FailedSaveRecoveryState
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -121,9 +125,21 @@ class ArbToolWindowController(
     @Volatile
     private var activeFilterBacking = BundleFilter.ALL
 
-    private data class BundleMeta(val kind: BundleKind, val durationSecs: Long?, val crashed: Boolean)
+    /** [crashed] is `null` while `timeline.crashes` has not succeeded yet (Unknown, retried). */
+    private data class BundleMeta(val kind: BundleKind, val durationSecs: Long?, val crashed: Boolean?)
 
     private val metaCache = ConcurrentHashMap<String, BundleMeta>()
+    private val metaScheduler = BundleMetaScheduler(budgetPerTick = META_BUDGET_PER_POLL)
+    private val metaTick = AtomicLong(0L)
+
+    // One in-flight guard per user action (acquired on the calling thread before anything is
+    // queued, so two clicks in the same EDT turn can never both submit).
+    private val saveInFlight = AtomicBoolean(false)
+    private val logSaveInFlight = AtomicBoolean(false)
+    private val screenshotInFlight = AtomicBoolean(false)
+    private val captureModeInFlight = AtomicBoolean(false)
+    private val restartInFlight = AtomicBoolean(false)
+    private val recoveryLock = Any()
 
     var captureState: CaptureBarState by mutableStateOf(CaptureBarState())
         private set
@@ -150,6 +166,16 @@ class ArbToolWindowController(
         private set
 
     var captureModeBusy: Boolean by mutableStateOf(false)
+        private set
+
+    /** `save.trigger` in flight; further save clicks are ignored (not queued) until it settles. */
+    var saveBusy: Boolean by mutableStateOf(false)
+        private set
+
+    var logSaveBusy: Boolean by mutableStateOf(false)
+        private set
+
+    var screenshotBusy: Boolean by mutableStateOf(false)
         private set
 
     var gcBusy: Boolean by mutableStateOf(false)
@@ -405,8 +431,7 @@ class ArbToolWindowController(
         val runningMode = snapshot.capture?.captureMode
         if (snapshot.config.captureMode == mode && (!wasActive || runningMode == mode)) return
         val serial = if (wasActive) snapshot.capture?.serial ?: selectedDeviceSerial else selectedDeviceSerial
-        publishOnEdt { captureModeBusy = true }
-        runAsync {
+        runGuarded(captureModeInFlight, { captureModeBusy = it }) {
             val label = captureModeLabel(mode)
             try {
                 val updated = daemonService.withClient {
@@ -428,8 +453,6 @@ class ArbToolWindowController(
                     project,
                     "キャプチャモードを「$label」に切り替えられませんでした: ${t.message ?: "詳細不明"}",
                 )
-            } finally {
-                publishOnEdt { captureModeBusy = false }
             }
             refreshAll()
         }
@@ -469,7 +492,7 @@ class ArbToolWindowController(
 
     fun captureScreenshot() {
         val serial = selectedDeviceSerial
-        runAsync {
+        runGuarded(screenshotInFlight, { screenshotBusy = it }) {
             try {
                 val outputDir = runCatching { screenshotDirResolver() }
                     .onFailure { logger.debug("ARB screenshot dir resolution failed", it) }
@@ -487,7 +510,7 @@ class ArbToolWindowController(
                 refreshAll()
             } catch (t: Throwable) {
                 logger.warn("ARB screenshot failed", t)
-                ArbNotifications.notifyActionFailed(project, "スクリーンショットの保存", t.message)
+                onNotifyActionFailed("スクリーンショットの保存", t.message)
                 handleDaemonFailure(t)
             }
         }
@@ -495,7 +518,7 @@ class ArbToolWindowController(
 
     fun saveLogsOnly() {
         val durationSec = captureState.saveWindowSecs.toLong()
-        runAsync {
+        runGuarded(logSaveInFlight, { logSaveBusy = it }) {
             try {
                 val res = daemonService.withClient {
                     it.saveLogs(SaveLogsParams(windowSecs = durationSec))
@@ -520,7 +543,7 @@ class ArbToolWindowController(
                 refreshAll()
             } catch (t: Throwable) {
                 logger.warn("ARB save.logs failed", t)
-                ArbNotifications.notifyActionFailed(project, "ログのみの保存", t.message)
+                onNotifyActionFailed("ログのみの保存", t.message)
                 handleDaemonFailure(t)
             }
         }
@@ -539,19 +562,14 @@ class ArbToolWindowController(
     }
 
     fun restartDaemon() {
-        publishOnEdt { daemonRestartBusy = true }
-        runAsync {
+        runGuarded(restartInFlight, { daemonRestartBusy = it }) {
             try {
                 daemonService.restartDaemon()
-                publishOnEdt {
-                    staleDaemonMessage = null
-                    daemonRestartBusy = false
-                }
+                publishOnEdt { staleDaemonMessage = null }
                 refreshAll()
             } catch (t: Throwable) {
                 logger.warn("ARB daemon restart failed", t)
                 publishOnEdt {
-                    daemonRestartBusy = false
                     staleDaemonMessage = "arbd の再起動に失敗しました: ${t.message ?: "詳細不明"}"
                 }
             }
@@ -704,17 +722,9 @@ class ArbToolWindowController(
     }
 
     fun retryFailedJob(jobId: String) {
-        runAsync {
-            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+        runRecoveryAction(jobId, "保存の再試行") {
             val res = daemonService.withClient { it.saveRetry(jobId) }
-            updateRecovery(
-                FailedSaveRecoveryReducer.applyJobUpdated(
-                    rawRecoveryState,
-                    res.job,
-                    "再試行結果: ${res.job.state.wire}",
-                ),
-            )
-            refreshAll()
+            "再試行結果: ${res.job.state.wire}" to res.job
         }
     }
 
@@ -728,37 +738,66 @@ class ArbToolWindowController(
     }
 
     fun retargetFailedJob(jobId: String, newDestDir: String) {
-        runAsync {
-            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+        runRecoveryAction(jobId, "保存先の変更") {
             val res = daemonService.withClient { it.saveRetarget(jobId, newDestDir) }
-            updateRecovery(
-                FailedSaveRecoveryReducer.applyJobUpdated(
-                    rawRecoveryState,
-                    res.job,
-                    "保存先変更後の結果: ${res.job.state.wire}",
-                ),
-            )
-            refreshAll()
+            "保存先変更後の結果: ${res.job.state.wire}" to res.job
         }
     }
 
     fun discardFailedJob(jobId: String) {
-        runAsync {
-            updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+        runRecoveryAction(jobId, "保存ジョブの破棄") {
             val job = daemonService.withClient { it.saveDiscard(jobId) }
-            updateRecovery(
-                FailedSaveRecoveryReducer.applyJobUpdated(
-                    rawRecoveryState,
-                    job,
-                    "保存ジョブを破棄し、ピン留めチャンクを解放しました。",
-                ),
-            )
-            refreshAll()
+            "保存ジョブを破棄し、ピン留めチャンクを解放しました。" to job
+        }
+    }
+
+    /**
+     * Failed-save recovery (retry / retarget / discard). The busy marker is taken atomically on the
+     * calling thread, so a second click on the same job (or any job) while one is in flight is
+     * dropped instead of re-submitting; every outcome (success, business error, transport
+     * failure) clears it and a failure is reported instead of vanishing.
+     */
+    private fun runRecoveryAction(jobId: String, operation: String, call: () -> Pair<String, SaveJobView>) {
+        val claimed = synchronized(recoveryLock) {
+            if (rawRecoveryState.busyJobId != null) {
+                false
+            } else {
+                updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
+                true
+            }
+        }
+        if (!claimed) return
+        val queued = runAsync(onDropped = { releaseRecoveryBusy(jobId, null) }) {
+            try {
+                val (message, job) = call()
+                updateRecovery(FailedSaveRecoveryReducer.applyJobUpdated(rawRecoveryState, job, message))
+                refreshAll()
+            } catch (t: Throwable) {
+                logger.warn("ARB $operation failed", t)
+                releaseRecoveryBusy(jobId, "$operation に失敗しました: ${t.message ?: "詳細不明"}")
+                onNotifyActionFailed(operation, t.message)
+                handleDaemonFailure(t)
+            }
+        }
+        if (!queued) releaseRecoveryBusy(jobId, null)
+    }
+
+    private fun releaseRecoveryBusy(jobId: String, message: String?) {
+        synchronized(recoveryLock) {
+            val cur = rawRecoveryState
+            if (cur.busyJobId == jobId) {
+                updateRecovery(cur.copy(busyJobId = null, lastMessage = message ?: cur.lastMessage))
+            }
         }
     }
 
     fun refreshNow() {
         runAsync { refreshAll() }
+    }
+
+    /** Test hook: one full poll on the calling thread (deterministic, no worker involved). */
+    internal fun pollOnceForTest() {
+        refreshAll()
     }
 
     /** Direct state injection helper for deterministic headless tests. */
@@ -785,7 +824,7 @@ class ArbToolWindowController(
     }
 
     private fun triggerSave(durationSec: Long, openEditor: Boolean) {
-        runAsync {
+        runGuarded(saveInFlight, { saveBusy = it }) {
             try {
                 val res = daemonService.withClient {
                     it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
@@ -814,17 +853,27 @@ class ArbToolWindowController(
                 }
             } catch (t: Throwable) {
                 logger.warn("ARB save.trigger failed", t)
-                ArbNotifications.notifyActionFailed(project, "直前の記録の保存", t.message)
+                onNotifyActionFailed("直前の記録の保存", t.message)
                 handleDaemonFailure(t)
             }
         }
     }
 
-    private fun runAsync(action: () -> Unit) {
-        if (disposed) return
-        try {
+    /**
+     * Queues [action] on the worker. Returns `false` when it was dropped (disposed / shut down),
+     * after running [onDropped] so callers holding a guard can release it.
+     */
+    private fun runAsync(onDropped: () -> Unit = {}, action: () -> Unit): Boolean {
+        if (disposed) {
+            onDropped()
+            return false
+        }
+        return try {
             executor.submit {
-                if (disposed) return@submit
+                if (disposed) {
+                    onDropped()
+                    return@submit
+                }
                 try {
                     action()
                 } catch (t: Throwable) {
@@ -832,8 +881,33 @@ class ArbToolWindowController(
                     handleDaemonFailure(t)
                 }
             }
+            true
         } catch (_: RejectedExecutionException) {
             // Disposed concurrently; nothing to do.
+            onDropped()
+            false
+        }
+    }
+
+    /**
+     * Single-flight user action. [inFlight] is claimed with a CAS on the calling thread (the EDT
+     * click handler) *before* anything is queued, so a double click in one EDT turn submits once.
+     * The guard and the observable busy flag are always released afterwards, whatever [action]
+     * throws, and also when the worker drops the task.
+     */
+    private fun runGuarded(inFlight: AtomicBoolean, setBusy: (Boolean) -> Unit, action: () -> Unit) {
+        if (!inFlight.compareAndSet(false, true)) return
+        publishOnEdt { setBusy(true) }
+        val release = {
+            inFlight.set(false)
+            publishOnEdt { setBusy(false) }
+        }
+        runAsync(onDropped = release) {
+            try {
+                action()
+            } finally {
+                release()
+            }
         }
     }
 
@@ -860,37 +934,37 @@ class ArbToolWindowController(
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
 
-            metaCache.keys.retainAll(bundles.mapTo(mutableSetOf()) { it.bundleId })
+            val presentIds = bundles.mapTo(mutableSetOf()) { it.bundleId }
+            metaCache.keys.retainAll(presentIds)
+            metaScheduler.retainOnly(presentIds)
 
-            var budget = META_BUDGET_PER_POLL
-            for (entry in bundles) {
-                if (entry.diskState != BundleDiskState.PRESENT) continue
-                if (metaCache.containsKey(entry.bundleId)) continue
-                if (budget-- <= 0) break
-                val summary = runCatching {
-                    daemonService.withClient { it.timelineSummary(entry.bundleId) }
-                }.getOrNull() ?: continue
-                val spanNs = summary.epochs.firstOrNull()?.let { ep ->
-                    (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
-                }
-                val secs = when {
-                    spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
-                    summary.frameCount > 0 -> (summary.frameCount / config.videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
-                    else -> null
-                }
-                val crashed = runCatching {
-                    daemonService.withClient { it.timelineCrashes(entry.bundleId).crashes }.isNotEmpty()
-                }.getOrDefault(false)
-                metaCache[entry.bundleId] = BundleMeta(summary.bundleKind, secs, crashed)
+            val tick = metaTick.incrementAndGet()
+            // Candidates still missing data: never fetched, or crash status still Unknown.
+            val pending = bundles
+                .filter { it.diskState == BundleDiskState.PRESENT }
+                .map { it.bundleId }
+                .filter { id -> metaCache[id]?.crashed == null }
+            for (id in metaScheduler.select(pending, tick)) {
+                fetchBundleMeta(id, config.videoMaxFps, tick)
             }
             val crashIds = mutableSetOf<String>()
+            val crashUnknownIds = mutableSetOf<String>()
             val durations = mutableMapOf<String, Long>()
             val kinds = mutableMapOf<String, BundleKind>()
             for (entry in bundles) {
-                val meta = metaCache[entry.bundleId] ?: continue
+                val meta = metaCache[entry.bundleId]
+                if (meta == null) {
+                    // Attempted and failing: crash status is unknown, never "no crash".
+                    if (metaScheduler.failureCount(entry.bundleId) > 0) crashUnknownIds.add(entry.bundleId)
+                    continue
+                }
                 kinds[entry.bundleId] = meta.kind
                 meta.durationSecs?.let { durations[entry.bundleId] = it }
-                if (meta.crashed) crashIds.add(entry.bundleId)
+                when (meta.crashed) {
+                    true -> crashIds.add(entry.bundleId)
+                    null -> crashUnknownIds.add(entry.bundleId)
+                    false -> Unit
+                }
             }
 
             val armed = status.captureEnabled || config.captureEnabled
@@ -910,6 +984,7 @@ class ArbToolWindowController(
                 entries = bundles,
                 activeFilter = activeFilterBacking,
                 crashBundleIds = crashIds,
+                crashUnknownBundleIds = crashUnknownIds,
                 durationsByBundleId = durations,
                 kindsByBundleId = kinds,
             )
@@ -933,12 +1008,54 @@ class ArbToolWindowController(
         }
     }
 
+    /**
+     * Fetches `timeline.summary` / `timeline.crashes` for one bundle. A failure of either query
+     * leaves the affected part Unknown and schedules a back-off retry; it is never cached as a
+     * successful "no crash" (`false`).
+     */
+    private fun fetchBundleMeta(id: String, videoMaxFps: Int, tick: Long) {
+        val cached = metaCache[id]
+        val base = cached ?: run {
+            val summary = runCatching { daemonService.withClient { it.timelineSummary(id) } }.getOrNull()
+            if (summary == null) {
+                metaScheduler.markFailure(id, tick)
+                return
+            }
+            val spanNs = summary.epochs.firstOrNull()?.let { ep ->
+                (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
+            }
+            val secs = when {
+                spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
+                summary.frameCount > 0 -> (summary.frameCount / videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                else -> null
+            }
+            BundleMeta(summary.bundleKind, secs, crashed = null)
+        }
+        val crashes = runCatching {
+            daemonService.withClient { it.timelineCrashes(id).crashes }
+        }.getOrNull()
+        metaCache[id] = base.copy(crashed = crashes?.isNotEmpty())
+        if (crashes == null) metaScheduler.markFailure(id, tick) else metaScheduler.markSuccess(id)
+    }
+
+    /**
+     * An `arbd` that answered with a JSON-RPC error is reachable: the request failed for a
+     * business reason, not because the transport is gone. Only genuine transport failures
+     * (I/O, timeouts, no daemon) may flip the UI to `disconnected`.
+     */
+    private fun isDaemonBusinessError(t: Throwable): Boolean =
+        generateSequence(t) { it.cause }.any { it is ArbdRpcException }
+
     private fun handleDaemonFailure(t: Throwable) {
         val diag = ArbSettingsConfigurable.classifyDaemonError(t)
         val stale = if (diag.kind == ArbSettingsConfigurable.DaemonDiagnosticKind.STALE_OR_MISMATCHED) {
             diag.message
         } else {
             null
+        }
+        if (stale == null && isDaemonBusinessError(t)) {
+            logger.debug("ARB daemon business error (still connected): ${t.message}")
+            return
         }
         val next = synchronized(captureStateLock) {
             CaptureBarReducer.disconnected(rawCaptureState, t.message ?: "arbd 未起動").also { rawCaptureState = it }

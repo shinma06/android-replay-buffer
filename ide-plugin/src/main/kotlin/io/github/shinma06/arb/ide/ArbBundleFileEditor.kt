@@ -33,7 +33,11 @@ import io.github.shinma06.arb.playback.SystemPlaybackClock
 import io.github.shinma06.arb.playback.WavFilePcmSource
 import io.github.shinma06.arb.shm.ShmFrameMeta
 import io.github.shinma06.arb.shm.ShmFrame
+import io.github.shinma06.arb.state.AuxStream
 import io.github.shinma06.arb.state.ExportCompletionInfo
+import io.github.shinma06.arb.state.LOG_DISPLAY_LIMIT
+import io.github.shinma06.arb.state.StreamLoadState
+import io.github.shinma06.arb.state.streamFailureReason
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
 import io.github.shinma06.arb.state.TrimCloseState
@@ -226,6 +230,8 @@ class ArbBundleFileEditor internal constructor(
             }
         },
         onAppPackageFilterChanged = { packageName -> performAppPackageFilter(packageName) },
+        onRetryAuxStream = { stream -> retryAuxStream(stream) },
+        onRetryEditSave = { flushEditSessionAsync() },
         initialBurnTapsOnExport = ArbLocalSettingsState.getInstanceOrNull()?.burnTapsOnExport ?: true,
         onBurnTapsToggled = { enabled ->
             ArbLocalSettingsState.getInstanceOrNull()?.burnTapsOnExport = enabled
@@ -500,27 +506,13 @@ class ArbBundleFileEditor internal constructor(
         submitGuarded(timelineWorker) {
             if (disposed) return@submitGuarded
 
-            if (viewportId != null) {
-                // A reconnect during startup replaces the viewport; always target the live one.
-                val liveViewportId = viewerState?.viewportId ?: viewportId
-                val filmstrip = runCatching {
-                    daemonService.withClient { it.mediaFilmstrip(liveViewportId) }.entries
-                }.getOrDefault(emptyList())
-                if (!disposed && filmstrip.isNotEmpty()) {
-                    updateViewerState { it.copy(filmstrip = filmstrip) }
-                }
-            }
+            // A failed stream is recorded as Failed (never as an empty list) so the UI can say
+            // "could not load" instead of "0 events"; the other streams and the video go on.
+            val filmstripLoad = if (viewportId != null) loadAuxStream(AuxStream.FILMSTRIP, bundleId, viewportId) else null
             if (disposed) return@submitGuarded
-
-            val discontinuities = runCatching {
-                daemonService.withClient { it.timelineDiscontinuities(bundleId).discontinuities }
-            }.getOrDefault(emptyList())
-            val crashes = runCatching {
-                daemonService.withClient { it.timelineCrashes(bundleId).crashes }
-            }.getOrDefault(emptyList())
-            val screens = runCatching {
-                daemonService.withClient { it.timelineScreens(bundleId).screens }
-            }.getOrDefault(emptyList())
+            val discontinuitiesLoad = loadAuxStream(AuxStream.DISCONTINUITIES, bundleId, viewportId)
+            val crashesLoad = loadAuxStream(AuxStream.CRASHES, bundleId, viewportId)
+            val screensLoad = loadAuxStream(AuxStream.SCREENS, bundleId, viewportId)
             fun loadTaps(bucket: QueryBucket) = runCatching {
                 daemonService.withClient { it.timelineQueryTaps(bundleId, bucket = bucket, limit = LOG_QUERY_LIMIT).taps }
             }.onFailure {
@@ -533,12 +525,12 @@ class ArbBundleFileEditor internal constructor(
 
             if (disposed) return@submitGuarded
             updateViewerState {
+                var next = it
+                for (load in listOfNotNull(filmstripLoad, discontinuitiesLoad, crashesLoad, screensLoad)) {
+                    next = load.applyTo(next)
+                }
                 TimelineViewerReducer.withBucketedRecords(
-                    state = it.copy(
-                        discontinuities = discontinuities,
-                        crashes = crashes,
-                        screens = screens,
-                    ),
+                    state = next,
                     mainLogs = it.mainLogs,
                     unanchoredLogs = it.unanchoredLogs,
                     mainTaps = mainTaps,
@@ -547,13 +539,13 @@ class ArbBundleFileEditor internal constructor(
             }
 
             try {
-                val mainLogs = queryLogsPaged(
+                val mainLogs = queryLogsPagedWithLimit(
                     bundleId = bundleId,
                     bucket = QueryBucket.MAIN,
                     maxLogs = LOG_QUERY_LIMIT,
                 )
                 if (disposed) return@submitGuarded
-                val unanchoredLogs = queryLogsPaged(
+                val unanchoredLogs = queryLogsPagedWithLimit(
                     bundleId = bundleId,
                     bucket = QueryBucket.UNANCHORED,
                     maxLogs = LOG_QUERY_LIMIT,
@@ -563,10 +555,12 @@ class ArbBundleFileEditor internal constructor(
                 updateViewerState {
                     TimelineViewerReducer.withBucketedRecords(
                         state = it,
-                        mainLogs = mainLogs,
-                        unanchoredLogs = unanchoredLogs,
+                        mainLogs = mainLogs.rows,
+                        unanchoredLogs = unanchoredLogs.rows,
                         mainTaps = it.mainTaps,
                         unanchoredTaps = it.unanchoredTaps,
+                        mainLogsLimited = mainLogs.limited,
+                        unanchoredLogsLimited = unanchoredLogs.limited,
                     )
                 }
             } catch (t: Throwable) {
@@ -581,12 +575,112 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
+    /** Outcome of one auxiliary-stream load: [apply] folds it (data or `Failed`) into the viewer state. */
+    private class AuxLoad(private val apply: (TimelineViewerState) -> TimelineViewerState) {
+        fun applyTo(state: TimelineViewerState): TimelineViewerState = apply(state)
+    }
+
+    /**
+     * Loads one auxiliary stream. A failure becomes [StreamLoadState.Failed] with its reason and
+     * leaves the stream's data untouched; success marks it [StreamLoadState.Loaded] (so an empty
+     * list now truly means "none").
+     */
+    private fun loadAuxStream(stream: AuxStream, bundleId: String, viewportId: String?): AuxLoad {
+        val data: (TimelineViewerState) -> TimelineViewerState
+        try {
+            data = fetchAuxStreamData(stream, bundleId, viewportId)
+        } catch (t: Throwable) {
+            logger.warn("ARB ${stream.name.lowercase()} load failed for $bundleId (other streams and video continue)", t)
+            val failed = StreamLoadState.Failed(streamFailureReason(t))
+            return AuxLoad { TimelineViewerReducer.withStreamState(it, stream, failed) }
+        }
+        return AuxLoad { TimelineViewerReducer.withStreamState(data(it), stream, StreamLoadState.Loaded) }
+    }
+
+    private fun stateMutation(block: (TimelineViewerState) -> TimelineViewerState) = block
+
+    private fun fetchAuxStreamData(
+        stream: AuxStream,
+        bundleId: String,
+        viewportId: String?,
+    ): (TimelineViewerState) -> TimelineViewerState = when (stream) {
+        AuxStream.FILMSTRIP -> {
+            // A reconnect during startup replaces the viewport; always target the live one.
+            val live = viewerState?.viewportId ?: viewportId
+            if (live == null) {
+                stateMutation { state -> state }
+            } else {
+                val entries = daemonService.withClient { it.mediaFilmstrip(live) }.entries
+                stateMutation { state -> state.copy(filmstrip = entries) }
+            }
+        }
+        AuxStream.DISCONTINUITIES -> {
+            val items = daemonService.withClient { it.timelineDiscontinuities(bundleId).discontinuities }
+            stateMutation { state -> state.copy(discontinuities = items) }
+        }
+        AuxStream.CRASHES -> {
+            val items = daemonService.withClient { it.timelineCrashes(bundleId).crashes }
+            stateMutation { state -> state.copy(crashes = items) }
+        }
+        AuxStream.SCREENS -> {
+            val items = daemonService.withClient { it.timelineScreens(bundleId).screens }
+            stateMutation { state -> state.copy(screens = items) }
+        }
+    }
+
+    /** Re-requests only [stream] (the inline "再読込" action); other streams and playback are untouched. */
+    internal fun retryAuxStream(stream: AuxStream) {
+        val current = viewerState ?: return
+        submitGuarded(timelineWorker) {
+            if (disposed) return@submitGuarded
+            val load = loadAuxStream(stream, current.bundleId, current.viewportId)
+            updateViewerState { load.applyTo(it) }
+        }
+    }
+
+    /** Rows of one log bucket and whether more rows exist beyond the display [LOG_QUERY_LIMIT]. */
+    internal class PagedLogs(val rows: List<LogRecord>, val limited: Boolean)
+
     /** Follows the same sequence order and limit as a single timeline.query_logs request. */
     internal fun queryLogsPaged(
         bundleId: String,
         bucket: QueryBucket,
         maxLogs: Int = LOG_QUERY_LIMIT,
         packageName: String? = null,
+    ): List<LogRecord> = queryLogsPagedWithLimit(bundleId, bucket, maxLogs, packageName).rows
+
+    /**
+     * [queryLogsPaged] plus an honest "rows were cut" flag: once [maxLogs] rows were read, one more
+     * row is probed after the last `seq`. An inconclusive probe (error, or an old daemon that
+     * ignores `after_seq`) counts as limited, because the bucket may well be longer.
+     */
+    internal fun queryLogsPagedWithLimit(
+        bundleId: String,
+        bucket: QueryBucket,
+        maxLogs: Int = LOG_QUERY_LIMIT,
+        packageName: String? = null,
+    ): PagedLogs {
+        val rows = queryLogsPagedRows(bundleId, bucket, maxLogs, packageName)
+        if (disposed || rows.size < maxLogs) return PagedLogs(rows, limited = false)
+        val lastSeq = rows.lastOrNull()?.seq ?: return PagedLogs(rows, limited = false)
+        val more = runCatching {
+            daemonService.withClient {
+                it.timelineQueryLogs(bundleId, bucket, limit = 1, packageName = packageName, afterSeq = lastSeq).logs
+            }
+        }.getOrNull()
+        val limited = when {
+            more == null -> true
+            more.isEmpty() -> false
+            else -> true
+        }
+        return PagedLogs(rows, limited)
+    }
+
+    private fun queryLogsPagedRows(
+        bundleId: String,
+        bucket: QueryBucket,
+        maxLogs: Int,
+        packageName: String?,
     ): List<LogRecord> {
         val rows = mutableListOf<LogRecord>()
         var pageSize = initialLogPageSize.coerceAtLeast(1)
@@ -696,13 +790,12 @@ class ArbBundleFileEditor internal constructor(
         val fps = current.estimatedFps
         val padBefore = (fps * 1.0).roundToLong().coerceAtLeast(1L)
         val padAfter = (fps * 2.0).roundToLong().coerceAtLeast(1L)
+        val epoch = studioController.selectionEpoch
         submitWork {
             val ctrl = currentPlaybackController()
             if (ctrl != null && ctrl.selectTapRange(tapFrames, padBefore, padAfter)) {
                 val pb = ctrl.state
-                trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
-                updateViewerState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
-                persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
+                applySelectionIfCurrent(epoch, pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex, syncPlayhead = false)
             }
         }
     }
@@ -713,33 +806,53 @@ class ArbBundleFileEditor internal constructor(
         val fps = current.estimatedFps
         val before = (fps * 5.0).roundToLong().coerceAtLeast(1L)
         val after = (fps * 2.0).roundToLong().coerceAtLeast(1L)
+        val epoch = studioController.selectionEpoch
         submitWork {
             val ctrl = currentPlaybackController()
             if (ctrl != null) {
                 ctrl.selectAroundCrash(crashFrame, before, after)
                 val pb = ctrl.state
-                trimCloseState.onRangeAdjusted(pb.inFrameIndex, pb.outFrameIndex)
-                updateViewerState {
-                    it.copy(
-                        inFrameIndex = pb.inFrameIndex,
-                        outFrameIndex = pb.outFrameIndex,
-                        currentFrameIndex = pb.currentFrameIndex,
-                    )
-                }
-                persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
+                applySelectionIfCurrent(epoch, pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex, syncPlayhead = true)
             }
         }
     }
 
     private fun applyResetFullRange() {
         val current = viewerState ?: return
+        val epoch = studioController.selectionEpoch
         submitWork {
             val ctrl = currentPlaybackController()
             ctrl?.resetFullRange()
             val maxF = (current.frameCount - 1L).coerceAtLeast(0L)
-            trimCloseState.onRangeAdjusted(0L, maxF)
-            updateViewerState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) }
-            persistEditSession(0L, maxF, ctrl?.state?.currentFrameIndex ?: current.currentFrameIndex)
+            applySelectionIfCurrent(
+                epoch,
+                0L,
+                maxF,
+                ctrl?.state?.currentFrameIndex ?: current.currentFrameIndex,
+                syncPlayhead = false,
+            )
+        }
+    }
+
+    /**
+     * Publishes a worker-computed selection (tap range / around crash / full range) to the Studio
+     * only if the user has not changed the selection since the action was requested
+     * ([ArbStudioController.selectionEpoch]). A stale result must never overwrite the user's newer
+     * IN/OUT, otherwise the UI/export range and the playback loop range would diverge; the user's
+     * own change is then the one that reaches the playback controller and the edit session.
+     */
+    private fun applySelectionIfCurrent(epoch: Int, inFrame: Long, outFrame: Long, playhead: Long, syncPlayhead: Boolean) {
+        publishEdt {
+            if (disposed || studioController.selectionEpoch != epoch) return@publishEdt
+            trimCloseState.onRangeAdjusted(inFrame, outFrame)
+            studioController.updateState {
+                if (syncPlayhead) {
+                    it.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
+                } else {
+                    it.copy(inFrameIndex = inFrame, outFrameIndex = outFrame)
+                }
+            }
+            persistEditSession(inFrame, outFrame, playhead)
         }
     }
 
@@ -764,14 +877,14 @@ class ArbBundleFileEditor internal constructor(
         submitGuarded(timelineWorker) {
             if (disposed) return@submitGuarded
             try {
-                val mainLogs = queryLogsPaged(
+                val mainLogs = queryLogsPagedWithLimit(
                     bundleId = current.bundleId,
                     bucket = QueryBucket.MAIN,
                     maxLogs = LOG_QUERY_LIMIT,
                     packageName = packageName,
                 )
                 if (disposed) return@submitGuarded
-                val unanchoredLogs = queryLogsPaged(
+                val unanchoredLogs = queryLogsPagedWithLimit(
                     bundleId = current.bundleId,
                     bucket = QueryBucket.UNANCHORED,
                     maxLogs = LOG_QUERY_LIMIT,
@@ -780,7 +893,13 @@ class ArbBundleFileEditor internal constructor(
                 if (disposed) return@submitGuarded
                 publishEdt {
                     if (!disposed) {
-                        studioController.applyAppPackageLogs(packageName, mainLogs, unanchoredLogs)
+                        studioController.applyAppPackageLogs(
+                            packageName,
+                            mainLogs.rows,
+                            unanchoredLogs.rows,
+                            mainLimited = mainLogs.limited,
+                            unanchoredLimited = unanchoredLogs.limited,
+                        )
                     }
                 }
             } catch (t: Throwable) {
@@ -915,23 +1034,63 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
+    /** The newest IN/OUT/playhead the user chose; stays set until `edit.update_session` accepted it. */
+    private class PendingEdit(val bundleId: String, val inFrame: Long, val outFrame: Long, val playhead: Long)
+
+    private val editPersistLock = Any()
+    private var pendingEdit: PendingEdit? = null
+
+    // Serialises the RPC itself (worker + the final flush on close) without ever blocking the EDT
+    // callers that only record a new [pendingEdit].
+    private val editFlushLock = Any()
+
     private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
         val current = viewerState ?: return
-        val sessionId = editSessionId ?: return
-        submitWork {
-            runCatching {
-                daemonService.withClient {
-                    it.editUpdateSession(
-                        EditUpdateSessionParams(
-                            sessionId = sessionId,
-                            bundleId = current.bundleId,
-                            inFrameIndex = inFrame,
-                            outFrameIndex = outFrame,
-                            playheadFrameIndex = playhead,
-                        ),
-                    )
-                }
+        if (editSessionId == null) return
+        synchronized(editPersistLock) {
+            pendingEdit = PendingEdit(current.bundleId, inFrame, outFrame, playhead)
+        }
+        flushEditSessionAsync()
+    }
+
+    /** Re-sends the newest unsaved range (also the target of the "再保存" action). */
+    internal fun flushEditSessionAsync() {
+        submitWork { flushEditSession(closing = false) }
+    }
+
+    /**
+     * Sends the newest pending range. Returns `true` when nothing is left unsaved. A failure keeps
+     * the range pending and surfaces the reason on the Studio (it is retried on the next range
+     * change, on "再保存" and once more when the tab closes); success clears the failure marker.
+     */
+    internal fun flushEditSession(closing: Boolean): Boolean = synchronized(editFlushLock) {
+        val edit = synchronized(editPersistLock) { pendingEdit } ?: return true
+        val sessionId = editSessionId ?: return true
+        try {
+            daemonService.withClient {
+                it.editUpdateSession(
+                    EditUpdateSessionParams(
+                        sessionId = sessionId,
+                        bundleId = edit.bundleId,
+                        inFrameIndex = edit.inFrame,
+                        outFrameIndex = edit.outFrame,
+                        playheadFrameIndex = edit.playhead,
+                    ),
+                )
             }
+            val drained = synchronized(editPersistLock) {
+                if (pendingEdit === edit) pendingEdit = null
+                pendingEdit == null
+            }
+            if (drained && !closing) publishEdt { if (!disposed) studioController.markEditSaveFailure(null) }
+            drained
+        } catch (t: Throwable) {
+            logger.warn("ARB edit.update_session failed (range stays unsaved)", t)
+            if (!closing) {
+                val reason = streamFailureReason(t)
+                publishEdt { if (!disposed) studioController.markEditSaveFailure(reason) }
+            }
+            false
         }
     }
 
@@ -976,6 +1135,15 @@ class ArbBundleFileEditor internal constructor(
 
         runOffEdt {
             runCatching { ctrl?.close() }
+            // Last chance to persist an IN/OUT that is still unsaved; the editor UI is gone, so a
+            // failure is reported with a notification instead of being dropped silently.
+            val saved = runCatching { flushEditSession(closing = true) }.getOrDefault(false)
+            if (!saved) {
+                ArbNotifications.notifyWarning(
+                    project,
+                    "「$displayTitle」の編集範囲（IN/OUT）を保存できませんでした。次回開くと以前の範囲に戻ります。",
+                )
+            }
             mediaSession.close()
             runCatching { lease?.close() }
         }
@@ -1007,7 +1175,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     internal companion object {
-        const val LOG_QUERY_LIMIT: Int = 5_000
+        const val LOG_QUERY_LIMIT: Int = LOG_DISPLAY_LIMIT
         const val INITIAL_LOG_PAGE_SIZE: Int = 500
         // Matches `arbd`'s `RPC_ERR_RESPONSE_TOO_LARGE` structured error code (-32010).
         const val RPC_ERR_RESPONSE_TOO_LARGE: Int = -32010

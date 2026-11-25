@@ -364,12 +364,25 @@ class ArbSettingsConfigurable internal constructor(
     internal fun restartDaemonAndReload() {
         val currentForm = form ?: return
         val draftPath = currentForm.currentDraft().normalizedCustomArbdPath()
+        var localBinarySavedForRestart = false
         // An emptied path is a change too: it switches back to the bundled arbd on restart.
         if (draftPath != baselineCustomBinary) {
             val usable = draftPath.isEmpty() || runCatching { Path.of(draftPath).isAbsolute }.getOrDefault(false)
             if (usable) {
-                blockingRunner.run { localBinaryWriter(draftPath) }
-                baselineCustomBinary = draftPath
+                val wrote = runCatching { blockingRunner.run { localBinaryWriter(draftPath) } }
+                if (wrote.isSuccess) {
+                    baselineCustomBinary = draftPath
+                    localBinarySavedForRestart = true
+                } else {
+                    val why = wrote.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
+                    daemonOnline = false
+                    currentForm.setDaemonStatus(
+                        online = false,
+                        detailMessage = "arbd バイナリパスを保存できませんでした（$why）。再起動は行っていません。",
+                        showRestart = true,
+                    )
+                    return
+                }
             }
         }
         val restarted = runCatching { blockingRunner.run { daemonRestarter() } }
@@ -380,7 +393,8 @@ class ArbSettingsConfigurable internal constructor(
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
             currentForm.setDaemonStatus(
                 online = false,
-                detailMessage = "arbd の再起動に失敗しました（$err）。ローカルの arbd バイナリパスを確認してください。",
+                detailMessage = "arbd の再起動に失敗しました（$err）。ローカルの arbd バイナリパスを確認してください。" +
+                    if (localBinarySavedForRestart) "（バイナリパスの変更は保存済みです）" else "",
                 showRestart = true,
             )
         }
@@ -419,6 +433,9 @@ class ArbSettingsConfigurable internal constructor(
             }
         }
 
+        val saved = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+
         if (daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)) {
             val validationError = draft.validateDaemonFields()
             if (validationError != null) {
@@ -426,25 +443,45 @@ class ArbSettingsConfigurable internal constructor(
             }
             try {
                 baselineConfig = blockingRunner.run { daemonConfigWriter(baselineConfig, draft) }
+                saved += DAEMON_SETTINGS_LABEL
             } catch (t: Throwable) {
-                throw ConfigurationException("arbd への設定保存に失敗しました: ${t.message}")
+                // The daemon is the first writer: nothing local was written yet, and the baselines
+                // are untouched, so the form keeps the unsaved values and stays "modified".
+                val diagnostic = classifyDaemonError(t)
+                if (diagnostic.kind == DaemonDiagnosticKind.OFFLINE) {
+                    daemonOnline = false
+                    currentForm.setDaemonStatus(online = false, detailMessage = diagnostic.message, showRestart = true)
+                }
+                throw ConfigurationException(
+                    "arbd への設定保存に失敗しました: ${t.message ?: "詳細不明"}。" +
+                        "今回の変更はどれも保存されていません（画面の値は未保存のままです）。",
+                )
             }
         }
 
         if (newCustomPath != baselineCustomBinary) {
-            blockingRunner.run { localBinaryWriter(newCustomPath) }
-            baselineCustomBinary = newCustomPath
+            if (applyLocal("arbd バイナリパス", saved, failed) { blockingRunner.run { localBinaryWriter(newCustomPath) } }) {
+                baselineCustomBinary = newCustomPath
+            }
         }
 
         if (inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir) {
-            localScreenshotWriter(inherit, customShot)
-            baselineScreenshotInherit = inherit
-            baselineCustomScreenshotDir = customShot
+            if (applyLocal("スクリーンショット保存先", saved, failed) { localScreenshotWriter(inherit, customShot) }) {
+                baselineScreenshotInherit = inherit
+                baselineCustomScreenshotDir = customShot
+            }
         }
 
         if (trayEnabled != baselineTrayEnabled) {
-            localTrayWriter(trayEnabled)
-            baselineTrayEnabled = trayEnabled
+            if (applyLocal("トレイアイコン", saved, failed) { localTrayWriter(trayEnabled) }) {
+                baselineTrayEnabled = trayEnabled
+            }
+        }
+
+        if (failed.isNotEmpty()) {
+            // Keep the typed values (they differ from the baselines, so the page stays modified and a
+            // second Apply retries only what failed); never show a failed value as saved.
+            throw ConfigurationException(partialApplyMessage(saved, failed))
         }
 
         currentForm.loadFromDraft(
@@ -455,6 +492,16 @@ class ArbSettingsConfigurable internal constructor(
         )
         refreshScreenshotStatus(currentForm)
     }
+
+    private fun applyLocal(label: String, saved: MutableList<String>, failed: MutableList<String>, write: () -> Unit): Boolean =
+        try {
+            write()
+            saved += label
+            true
+        } catch (t: Throwable) {
+            failed += "$label（${t.message?.takeIf { it.isNotBlank() } ?: "詳細不明"}）"
+            false
+        }
 
     override fun reset() {
         val currentForm = form ?: return
@@ -553,6 +600,15 @@ class ArbSettingsConfigurable internal constructor(
     )
 
     companion object {
+        const val DAEMON_SETTINGS_LABEL: String = "arbd 設定"
+
+        /** Wording of a partially applied Apply: what is persisted, what is not. */
+        fun partialApplyMessage(saved: List<String>, failed: List<String>): String {
+            val savedText = if (saved.isEmpty()) "なし" else saved.joinToString("、")
+            return "一部の設定を保存できませんでした。保存済み: $savedText ／ 未保存: ${failed.joinToString("、")}。" +
+                "未保存の値は画面に残していますが、まだ反映されていません。もう一度「適用」してください。"
+        }
+
         fun classifyDaemonError(error: Throwable?): DaemonDiagnostic {
             var cur: Throwable? = error
             while (cur != null) {

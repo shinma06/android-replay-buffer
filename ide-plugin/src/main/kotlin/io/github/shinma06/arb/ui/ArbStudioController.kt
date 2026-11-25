@@ -17,6 +17,8 @@ import io.github.shinma06.arb.shm.ShmFrameMeta
 import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
 import io.github.shinma06.arb.state.ActiveTapOverlay
 import io.github.shinma06.arb.state.ArbFormatters
+import io.github.shinma06.arb.state.AuxStream
+import io.github.shinma06.arb.state.AuxStreamFailure
 import io.github.shinma06.arb.state.EventStreamFilter
 import io.github.shinma06.arb.state.activeTimelineItemIndex
 import io.github.shinma06.arb.state.SourceJumpParser
@@ -101,6 +103,10 @@ class ArbStudioController(
     initialBurnTapsOnExport: Boolean = true,
     private val onBurnTapsToggled: (enabled: Boolean) -> Unit = {},
     private val onCloseTab: () -> Unit = {},
+    /** Re-requests one auxiliary stream that failed to load (the inline "再読込" action). */
+    private val onRetryAuxStream: (AuxStream) -> Unit = {},
+    /** Re-sends the IN/OUT range that `edit.update_session` could not persist ("再保存"). */
+    private val onRetryEditSave: () -> Unit = {},
     private val displayPositionNs: () -> Long? = { null },
 ) {
     var viewerState: TimelineViewerState? by mutableStateOf(null)
@@ -150,6 +156,14 @@ class ArbStudioController(
     var isExporting: Boolean by mutableStateOf(false)
         private set
 
+    /**
+     * Bumped (on the EDT) by every user action that sets the IN/OUT selection. A worker that was
+     * started by an earlier selection action publishes its result only while this is unchanged, so
+     * a stale result can never overwrite a newer user choice.
+     */
+    var selectionEpoch: Int = 0
+        private set
+
     var exportProgressLabel: String by mutableStateOf("書き出し中...")
         private set
 
@@ -162,6 +176,33 @@ class ArbStudioController(
 
     var errorMessage: String? by mutableStateOf(null)
         private set
+
+    /** Reason `edit.update_session` last failed; `null` when the IN/OUT range is persisted. */
+    var editSaveFailure: String? by mutableStateOf(null)
+        private set
+
+    fun markEditSaveFailure(reason: String?) {
+        editSaveFailure = reason
+    }
+
+    val hasUnsavedEditRange: Boolean
+        get() = editSaveFailure != null
+
+    fun retryEditSave() {
+        if (editSaveFailure != null) onRetryEditSave()
+    }
+
+    /** Streams whose load failed; shown inline with a reload action (never as "0 items"). */
+    val failedAuxStreams: List<AuxStreamFailure>
+        get() = viewerState?.failedAuxStreams.orEmpty()
+
+    fun retryAuxStream(stream: AuxStream) {
+        if (viewerState?.streamState(stream) is io.github.shinma06.arb.state.StreamLoadState.Failed) onRetryAuxStream(stream)
+    }
+
+    /** Notice that a log bucket was cut at the display limit, or `null`. */
+    val logLimitNotice: String?
+        get() = viewerState?.logLimitNotice
 
     var syncedRows: List<SyncedEventRow> by mutableStateOf(emptyList())
         private set
@@ -345,6 +386,8 @@ class ArbStudioController(
         packageName: String?,
         mainLogs: List<LogRecord>,
         unanchoredLogs: List<LogRecord>,
+        mainLimited: Boolean = false,
+        unanchoredLimited: Boolean = false,
     ) {
         if (packageName != selectedAppPackage) return
         appPackageFilterLoading = false
@@ -356,6 +399,8 @@ class ArbStudioController(
                 unanchoredLogs = unanchoredLogs,
                 mainTaps = current.mainTaps,
                 unanchoredTaps = current.unanchoredTaps,
+                mainLogsLimited = mainLimited,
+                unanchoredLogsLimited = unanchoredLimited,
             )
         }
     }
@@ -503,6 +548,7 @@ class ArbStudioController(
 
     fun applyInFrame(frameIndex: Long, settled: Boolean) {
         val s = viewerState ?: return
+        selectionEpoch++
         val next = TimelineViewerReducer.setInFrame(s, frameIndex)
         viewerState = next
         rebuildSyncedRows(next)
@@ -513,6 +559,7 @@ class ArbStudioController(
 
     fun applyOutFrame(frameIndex: Long, settled: Boolean) {
         val s = viewerState ?: return
+        selectionEpoch++
         val next = TimelineViewerReducer.setOutFrame(s, frameIndex)
         viewerState = next
         rebuildSyncedRows(next)
@@ -529,11 +576,20 @@ class ArbStudioController(
         viewerState?.let { applyOutFrame(it.currentFrameIndex, settled = true) }
     }
 
-    fun selectTapRange() = onSelectTapRange()
+    fun selectTapRange() {
+        selectionEpoch++
+        onSelectTapRange()
+    }
 
-    fun selectAroundCrash() = onSelectAroundCrash()
+    fun selectAroundCrash() {
+        selectionEpoch++
+        onSelectAroundCrash()
+    }
 
-    fun resetFullRange() = onResetFullRange()
+    fun resetFullRange() {
+        selectionEpoch++
+        onResetFullRange()
+    }
 
     fun toggleTrashOriginal(enabled: Boolean) {
         val s = viewerState ?: return

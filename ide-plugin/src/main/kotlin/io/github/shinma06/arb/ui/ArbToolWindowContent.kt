@@ -201,7 +201,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
             // Row 3: Single clean Jewel DefaultButton Primary CTA (natural Android Studio height)
             DefaultButton(
                 onClick = { controller.triggerPrimarySave() },
-                enabled = capture.daemonConnected,
+                enabled = capture.daemonConnected && !controller.saveBusy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { contentDescription = capture.primarySaveLabel },
@@ -222,7 +222,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 ArbSubtleAction(
                     label = capture.secondarySaveLabel,
                     iconKey = AllIconsKeys.Actions.Download,
-                    enabled = capture.daemonConnected,
+                    enabled = capture.daemonConnected && !controller.saveBusy,
                     tooltip = "エディタを開かず保存（または既定と逆の動作）",
                     compact = true,
                     onClick = { controller.triggerSecondarySave() },
@@ -230,7 +230,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 ArbSubtleAction(
                     label = ArbFormatters.SECONDARY_SCREENSHOT_LABEL,
                     iconKey = AllIconsKeys.Actions.Dump,
-                    enabled = controller.screenshotEnabled,
+                    enabled = controller.screenshotEnabled && !controller.screenshotBusy,
                     tooltip = controller.screenshotTooltip,
                     compact = true,
                     onClick = { controller.captureScreenshot() },
@@ -238,7 +238,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 ArbSubtleAction(
                     label = ArbFormatters.SECONDARY_LOGS_ONLY_LABEL,
                     iconKey = AllIconsKeys.FileTypes.Text,
-                    enabled = capture.daemonConnected,
+                    enabled = capture.daemonConnected && !controller.logSaveBusy,
                     tooltip = "映像キャプチャを中断せず直前のログのみ保存",
                     compact = true,
                     onClick = { controller.saveLogsOnly() },
@@ -797,6 +797,7 @@ private fun LibraryBundleRow(
                         "トリム済み" -> ArbJewelPalette.accentSoft() to ArbJewelPalette.accent()
                         BundleCatalogItem.MISSING_ON_DISK_BADGE_TEXT,
                         BundleCatalogItem.STORAGE_UNAVAILABLE_BADGE_TEXT,
+                        BundleCatalogItem.CRASH_STATUS_UNKNOWN_BADGE_TEXT,
                         LEGACY_READ_ONLY_BADGE_TEXT,
                         -> ArbJewelPalette.warningAmberSoft() to ArbJewelPalette.warningAmber()
                         else -> ArbJewelPalette.subtleTrackFill() to ArbJewelPalette.mutedText()

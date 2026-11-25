@@ -92,6 +92,7 @@ import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.DiscontinuityFormatter
 import io.github.shinma06.arb.state.EventStreamFilter
+import io.github.shinma06.arb.state.StudioLoadMessages
 import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.HonestySeverity
 import io.github.shinma06.arb.state.ProvenanceFormatter
@@ -191,6 +192,62 @@ fun ArbStudioContent(controller: ArbStudioController) {
             ) {
                 Text(
                     text = err,
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        // Inline (non-modal) notices: a failed stream is "not loaded", never "0 items"; the video
+        // and the other streams keep working while these are shown.
+        controller.failedAuxStreams.forEach { failure ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.warningAmberSoft(),
+                accent = ArbJewelPalette.warningAmber(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = StudioLoadMessages.streamFailureNotice(failure),
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+                ArbSubtleAction(
+                    label = "再読込",
+                    iconKey = AllIconsKeys.Actions.Refresh,
+                    compact = true,
+                    tooltip = "${failure.stream.label}を再取得します",
+                    onClick = { controller.retryAuxStream(failure.stream) },
+                )
+            }
+        }
+        controller.editSaveFailure?.let { reason ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.recRedSoft(),
+                accent = ArbJewelPalette.recRed(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = StudioLoadMessages.editSaveFailureNotice(reason),
+                    style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                    modifier = Modifier.weight(1f),
+                )
+                ArbSubtleAction(
+                    label = "再保存",
+                    iconKey = AllIconsKeys.Actions.Refresh,
+                    compact = true,
+                    tooltip = "IN/OUT 範囲をもう一度保存します",
+                    onClick = { controller.retryEditSave() },
+                )
+            }
+        }
+        controller.logLimitNotice?.let { notice ->
+            ArbSoftBanner(
+                background = ArbJewelPalette.warningAmberSoft(),
+                accent = ArbJewelPalette.warningAmber(),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = notice,
                     style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
                     modifier = Modifier.weight(1f),
                 )
