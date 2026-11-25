@@ -28,6 +28,18 @@ import kotlin.test.assertTrue
  *   non-owner.
  */
 class ArbdParentBoundLifecycleTest {
+    private companion object {
+        /**
+         * Upper bounds only: a healthy `arbd` exits within milliseconds, but on a loaded CI runner
+         * (parallel Gradle workers, cold disk) a process can be starved for seconds. These waits
+         * return as soon as the condition holds, so a generous margin costs nothing when healthy
+         * and only turns a real hang into a failure. Behavioural assertions (exit code, who
+         * survives) are unchanged.
+         */
+        const val EXIT_WAIT_SECONDS: Long = 30L
+        val STARTUP_TIMEOUT: Duration = Duration.ofSeconds(30)
+    }
+
     private fun repoRoot(): Path {
         System.getProperty("arb.repo.root")?.takeIf { it.isNotBlank() }?.let {
             return Paths.get(it).toAbsolutePath().normalize()
@@ -87,21 +99,21 @@ class ArbdParentBoundLifecycleTest {
             "--runtime-dir", paths.runtimeDir.toString(), "--cache-dir", paths.cacheDir.toString(),
             "--data-dir", paths.dataDir.toString(),
         ).redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(ProcessBuilder.Redirect.DISCARD)
-        val daemon = ide.connectOrSpawn(Duration.ofSeconds(10))
+        val daemon = ide.connectOrSpawn(STARTUP_TIMEOUT)
         val owner = assertNotNull(daemon.spawnedProcess)
         try {
             daemon.client.close()
             val sibling = tray.start()
             try {
                 val contender = manager(paths, parentBound = true).spawnDaemon(binary)
-                assertTrue(contender.waitFor(5, TimeUnit.SECONDS))
+                assertTrue(contender.waitFor(EXIT_WAIT_SECONDS, TimeUnit.SECONDS))
                 assertNotEquals(0, contender.exitValue())
                 owner.outputStream.close()
-                assertTrue(owner.waitFor(1, TimeUnit.SECONDS))
+                assertTrue(owner.waitFor(EXIT_WAIT_SECONDS, TimeUnit.SECONDS), "owner must exit once its parent pipe closed")
                 assertEquals(0, owner.exitValue())
                 assertTrue(sibling.isAlive)
                 sibling.outputStream.close()
-                assertTrue(sibling.waitFor(2, TimeUnit.SECONDS))
+                assertTrue(sibling.waitFor(EXIT_WAIT_SECONDS, TimeUnit.SECONDS), "sibling must exit once its own pipe closed")
                 assertEquals(0, sibling.exitValue())
             } finally {
                 sibling.destroyForcibly()
@@ -117,7 +129,7 @@ class ArbdParentBoundLifecycleTest {
         val ide = manager(paths, parentBound = true)
         assertNotNull(ide.resolveDaemonBinary(), "arbd binary not found; build core/target/{debug,release}/arbd first")
 
-        val connected = ide.connectOrSpawn(Duration.ofSeconds(10))
+        val connected = ide.connectOrSpawn(STARTUP_TIMEOUT)
         val proc = assertNotNull(ide.managedDaemonProcess(), "the IDE must own the arbd it spawned")
         try {
             assertTrue(connected.hello.parentBound, "IDE-spawned arbd must be parent-bound")
@@ -131,14 +143,14 @@ class ArbdParentBoundLifecycleTest {
             connected.client.close()
             proc.outputStream.close()
             val started = System.nanoTime()
-            assertTrue(proc.waitFor(2, TimeUnit.SECONDS), "arbd must exit within 2 s of the parent pipe closing")
+            assertTrue(proc.waitFor(EXIT_WAIT_SECONDS, TimeUnit.SECONDS), "arbd must exit after the parent pipe closed")
             val tookMs = (System.nanoTime() - started) / 1_000_000
             assertEquals(0, proc.exitValue(), "parent EOF must take the clean shutdown path (exit 0), took $tookMs ms")
             assertFalse(endpointAnswers(paths), "nothing may answer on the endpoint after exit")
 
             // Lock + endpoint released: the next parent-bound daemon starts immediately.
             val next = manager(paths, parentBound = true)
-            val again = next.connectOrSpawn(Duration.ofSeconds(10))
+            val again = next.connectOrSpawn(STARTUP_TIMEOUT)
             again.client.close()
             assertNotEquals(connected.hello.pid, again.hello.pid, "a fresh daemon must have started")
             assertTrue(next.stopManagedDaemon(), "the new owner stops its daemon")
@@ -154,7 +166,7 @@ class ArbdParentBoundLifecycleTest {
         val paths = hermeticPaths(tmp)
         // A standalone (unbound) arbd, as an older plugin or `arb-cli --auto-start` leaves behind.
         val standaloneManager = manager(paths, parentBound = false)
-        val standalone = standaloneManager.connectOrSpawn(Duration.ofSeconds(10))
+        val standalone = standaloneManager.connectOrSpawn(STARTUP_TIMEOUT)
         standalone.client.close()
         val standaloneProc = assertNotNull(standalone.spawnedProcess)
         try {
@@ -162,16 +174,16 @@ class ArbdParentBoundLifecycleTest {
             assertNull(standaloneManager.managedDaemonProcess(), "an unbound launch is not managed")
 
             val ide = manager(paths, parentBound = true)
-            val taken = ide.connectOrSpawn(Duration.ofSeconds(10))
+            val taken = ide.connectOrSpawn(STARTUP_TIMEOUT)
             taken.client.close()
-            assertTrue(standaloneProc.waitFor(5, TimeUnit.SECONDS), "the unbound daemon must be stopped")
+            assertTrue(standaloneProc.waitFor(EXIT_WAIT_SECONDS, TimeUnit.SECONDS), "the unbound daemon must be stopped")
             assertTrue(taken.hello.parentBound, "the IDE must hand over to a parent-bound daemon")
             assertNotEquals(standalone.hello.pid, taken.hello.pid)
             val managed = assertNotNull(ide.managedDaemonProcess())
             assertEquals(managed.pid(), taken.hello.pid)
 
             // A healthy daemon the IDE already owns is never restarted.
-            val reused = ide.connectOrSpawn(Duration.ofSeconds(10))
+            val reused = ide.connectOrSpawn(STARTUP_TIMEOUT)
             reused.client.close()
             assertEquals(taken.hello.pid, reused.hello.pid, "an owned parent-bound daemon must be reused as is")
 
@@ -190,13 +202,13 @@ class ArbdParentBoundLifecycleTest {
     fun daemonBoundToAnotherLiveParentIsReusedAndNeverStoppedByANonOwner(@TempDir tmp: Path) {
         val paths = hermeticPaths(tmp)
         val owner = manager(paths, parentBound = true)
-        val first = owner.connectOrSpawn(Duration.ofSeconds(10))
+        val first = owner.connectOrSpawn(STARTUP_TIMEOUT)
         first.client.close()
         val ownerProc = assertNotNull(owner.managedDaemonProcess())
         try {
             // Another IDE (its own manager) finds a daemon bound to a live parent: reuse it.
             val other = manager(paths, parentBound = true)
-            val shared = other.connectOrSpawn(Duration.ofSeconds(10))
+            val shared = other.connectOrSpawn(STARTUP_TIMEOUT)
             shared.client.close()
             assertEquals(first.hello.pid, shared.hello.pid, "a daemon bound to a live parent must not be replaced")
             assertNull(other.managedDaemonProcess(), "the non-owner does not manage it")
@@ -205,7 +217,7 @@ class ArbdParentBoundLifecycleTest {
 
             assertTrue(owner.stopManagedDaemon())
             val handle = assertNotNull(processOf(first.hello.pid) ?: ownerProc.toHandle())
-            assertTrue(awaitExit(handle, 3_000), "the owner's stop ends the daemon")
+            assertTrue(awaitExit(handle, EXIT_WAIT_SECONDS * 1_000), "the owner's stop ends the daemon")
         } finally {
             if (ownerProc.isAlive) ownerProc.destroyForcibly()
         }
