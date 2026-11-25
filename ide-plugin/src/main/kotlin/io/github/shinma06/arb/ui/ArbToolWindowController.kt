@@ -238,7 +238,7 @@ class ArbToolWindowController(
 
     /**
      * Device dropdown entries derived strictly from `client-core`'s [DeviceSelectionPolicy] outcome:
-     * - 0 devices -> single disabled placeholder ([NO_DEVICES_PLACEHOLDER]);
+     * - no selected target -> leading disabled reason, including [NO_DEVICES_PLACEHOLDER] for an empty list;
      * - 2+ online and nothing chosen -> leading prompt ([MULTIPLE_DEVICES_PROMPT], never auto-select);
      * - pinned device gone while others are online -> the pinned serial stays selected and is
      *   labelled `切断中（再接続待ち）` (never silently switched to another device).
@@ -262,17 +262,7 @@ class ArbToolWindowController(
 
     /** Inline prompt shown under the device row when the user must pick or reconnect a device. */
     val deviceSelectionNotice: String?
-        get() = when (val sel = captureState.deviceSelection) {
-            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
-                if (captureState.selectedSerial == null) MULTIPLE_DEVICES_PROMPT else null
-            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-                if (captureState.devices.none { it.serial == sel.preferredSerial }) {
-                    "${sel.preferredSerial} は$WAITING_FOR_PINNED_SUFFIX。別の端末へは自動で切り替えません。"
-                } else {
-                    null
-                }
-            else -> null
-        }
+        get() = captureState.selectionNotice()
 
     /** Current capture mode (`video_and_logs` / `logs_only`) — the running mode while capturing. */
     val captureMode: CaptureMode
@@ -1227,6 +1217,18 @@ class ArbToolWindowController(
     }
 }
 
+private fun CaptureBarState.selectionNotice(): String? = when (val sel = deviceSelection) {
+    is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+        if (selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
+    is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+        if (devices.none { it.serial == sel.preferredSerial }) {
+            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}。別の端末へは自動で切り替えません。"
+        } else {
+            null
+        }
+    else -> null
+}
+
 private fun CaptureBarState.deviceStateHint(): String? {
     val state = selectedDevice?.state
     return when {
@@ -1245,13 +1247,6 @@ private fun CaptureBarState.deviceStateHint(): String? {
 internal fun CaptureBarState.toToolbarSnapshot(
     captureEnabled: Boolean = this.config.captureEnabled,
 ): ArbToolbarDaemonSnapshot {
-    val hint = when (val sel = this.deviceSelection) {
-        is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
-            if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
-        is DeviceSelectionOutcome.WaitingForPreferredDevice ->
-            "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}"
-        else -> deviceStateHint()
-    }
     return ArbToolbarDaemonSnapshot(
         probed = true,
         daemonConnected = this.daemonConnected,
@@ -1261,7 +1256,7 @@ internal fun CaptureBarState.toToolbarSnapshot(
         hasBufferedData = this.ringChunkCount > 0L,
         hasOnlineDevice = this.isSelectedDeviceOnline,
         selectedDeviceSerial = this.selectedDevice?.serial,
-        disabledDeviceHint = hint,
+        disabledDeviceHint = selectionNotice() ?: deviceStateHint(),
     )
 }
 

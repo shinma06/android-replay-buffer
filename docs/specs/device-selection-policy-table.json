@@ -611,7 +611,8 @@
           "selected_serial": "emulator-5554",
           "selected_device_online": false,
           "toggle_state": "armed_waiting",
-          "has_online_device": true
+          "has_online_device": true,
+          "hint_contains": "未承認"
         }
       }
     },
@@ -688,6 +689,38 @@
           "toggle_state": "armed_waiting",
           "hint_contains": "オンラインにして選択",
           "has_online_device": false
+        }
+      }
+    },
+    {
+      "id": "DS-27",
+      "description": "不正な固定 serial を含む入力でも別のオンライン端末を暗黙に選ばない",
+      "preferred_serial": "bad/serial",
+      "devices": [
+        {
+          "serial": "bad/serial",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "bad/serial",
+          "other_online_serials": [
+            "192.168.1.50:5555"
+          ]
+        },
+        "ide": {
+          "selected_serial": "bad/serial",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting",
+          "has_online_device": true,
+          "hint_contains": "serial が無効"
         }
       }
     }

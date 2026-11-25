@@ -379,6 +379,13 @@ class PddUiFeedbackContractTest {
             assertEquals(ide.str("selected_serial"), bar.selectedSerial, "$id: selected serial")
             ide.str("hint_contains")?.let { token ->
                 assertTrue(token in snapshot.disabledDeviceHint.orEmpty(), "$id: hint must identify $token")
+                val h = Harness(ScriptTransport { _, method, _ -> error("unexpected $method") })
+                try {
+                    h.controller.applyStateForTest(capture = bar)
+                    assertEquals(snapshot.disabledDeviceHint, h.controller.deviceTooltip, "$id: same disabled reason")
+                } finally {
+                    h.close()
+                }
                 if (bar.selectedSerial == null) {
                     val first = ArbToolWindowController.buildDeviceDropdownEntries(bar).first()
                     assertEquals(null, first.serial, "$id: no device selected")

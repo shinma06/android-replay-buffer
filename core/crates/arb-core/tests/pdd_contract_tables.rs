@@ -57,7 +57,7 @@ fn serial_of(row: &Value) -> String {
 #[test]
 fn device_selection_rows_match_rust_policy() {
     let doc = table(DEVICE_TABLE);
-    for row in rows(&doc, "selection_rows", 26) {
+    for row in rows(&doc, "selection_rows", 27) {
         let id = row["id"].as_str().unwrap();
         let preferred = row["preferred_serial"].as_str();
         let devices: Vec<(&str, bool)> = row["devices"]
