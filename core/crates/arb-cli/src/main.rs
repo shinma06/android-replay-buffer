@@ -86,12 +86,14 @@ impl CliError {
 
     fn from_rpc(err: RpcClientError) -> Self {
         match err {
-            RpcClientError::Rpc { code, message } => Self {
-                exit_code: exit_code_for_rpc(code),
-                rpc_code: Some(code),
-                message,
-                already_emitted: false,
-            },
+            RpcClientError::Rpc { code, message } | RpcClientError::Rejected { code, message } => {
+                Self {
+                    exit_code: exit_code_for_rpc(code),
+                    rpc_code: Some(code),
+                    message,
+                    already_emitted: false,
+                }
+            }
             other => Self::general(other.to_string()),
         }
     }

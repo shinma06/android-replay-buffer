@@ -265,7 +265,9 @@ impl McpServer {
                         ),
                         _ => false,
                     };
-                    if !(retry_safe && interrupted && attempt == 0) {
+                    // `Closed` means nothing was sent, so even a mutating call may reconnect once.
+                    let nothing_sent = matches!(err, RpcClientError::Closed);
+                    if !((nothing_sent || (retry_safe && interrupted)) && attempt == 0) {
                         return Err(err.to_string());
                     }
                 }

@@ -82,10 +82,19 @@ pub enum RpcClientError {
     },
     /// The peer did not complete the exchange within the call budget.
     #[error(
-        "arbd IPC request timed out; connection closed. arbd may still complete the request: \
-         check save.list_jobs / bundle.list or the output location before retrying"
+        "arbd IPC request timed out; connection closed (a save or export may still finish: \
+         check save.list_jobs / bundle.list or the output location before retrying)"
     )]
     Timeout,
+    /// `arbd` rejected a frame it could not attribute to a request (`id: null`, e.g. oversized or
+    /// unparsable). The stream framing is suspect, so the connection is dropped.
+    #[error("arbd rejected the request frame ({code}): {message}")]
+    Rejected {
+        /// JSON-RPC error code reported by the daemon.
+        code: i32,
+        /// Human-readable daemon error message.
+        message: String,
+    },
     /// The received message could not be matched to the outstanding request.
     #[error("invalid arbd response: {0}")]
     InvalidResponse(String),
@@ -150,12 +159,12 @@ struct IncomingError {
 fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
     let mut response: serde_json::Map<String, Value> = serde_json::from_str(raw)?;
     // `arbd` answers frames it cannot attribute to a request (oversized, unparsable) with
-    // `id: null`. Surface its error as-is; `call_with_timeout` still drops the connection.
+    // `id: null`. Keep its code and message, but as a transport-level error: the connection is dropped.
     if response.get("id").is_some_and(Value::is_null)
         && let Some(error) = response.remove("error")
     {
         let error: IncomingError = serde_json::from_value(error)?;
-        return Err(RpcClientError::Rpc {
+        return Err(RpcClientError::Rejected {
             code: error.code,
             message: error.message,
         });
@@ -181,13 +190,6 @@ fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
             "expected exactly one of result or error".into(),
         )),
     }
-}
-
-/// `true` for an error response the daemon could not attribute to a request (`id: null`); the
-/// stream framing is then suspect, so the connection must not be reused.
-fn is_unattributed_error(raw: &str) -> bool {
-    serde_json::from_str::<Value>(raw)
-        .is_ok_and(|v| v.get("id").is_some_and(Value::is_null) && v.get("error").is_some())
 }
 
 // Recompute the remaining budget at each syscall so a partial NDJSON line
@@ -407,12 +409,10 @@ impl RpcClient {
             self.connection = Some(connection);
             return Err(err.into());
         }
-        let mut unattributed = false;
         let result = (|| {
             written?;
             let raw = read_frame_line(&mut connection, DEFAULT_MAX_IPC_LINE_BYTES)?
                 .ok_or(RpcClientError::UnexpectedEof)?;
-            unattributed = is_unattributed_error(&raw);
             parse_response(&raw, id)
         })();
         match result {
@@ -424,7 +424,7 @@ impl RpcClient {
             {
                 Err(RpcClientError::Timeout)
             }
-            Ok(_) | Err(RpcClientError::Rpc { .. }) if !unattributed => {
+            Ok(_) | Err(RpcClientError::Rpc { .. }) => {
                 self.connection = Some(connection);
                 result
             }
@@ -628,17 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn null_id_daemon_error_keeps_its_code_and_message() {
+    fn null_id_daemon_error_is_a_transport_level_rejection_with_its_code_and_message() {
         let raw =
             json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"frame too large"}})
                 .to_string();
         assert!(matches!(
             super::parse_response(&raw, 1),
-            Err(RpcClientError::Rpc { code: -32600, message }) if message == "frame too large"
-        ));
-        assert!(super::is_unattributed_error(&raw));
-        assert!(!super::is_unattributed_error(
-            &json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}).to_string()
+            Err(RpcClientError::Rejected { code: -32600, message }) if message == "frame too large"
         ));
     }
 
@@ -887,7 +883,7 @@ mod tests {
         let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
         assert!(matches!(
             client.call("system.status", json!({})),
-            Err(RpcClientError::Rpc { code: -32600, .. })
+            Err(RpcClientError::Rejected { code: -32600, .. })
         ));
         assert!(matches!(
             client.call("system.status", json!({})),
