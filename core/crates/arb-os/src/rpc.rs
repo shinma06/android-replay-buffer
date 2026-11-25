@@ -20,29 +20,31 @@ pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
 
 const DEFAULT_AUTO_START_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Budget for methods that synchronously write bundles, run `adb`, or re-encode media.
-const LONG_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Budget for methods that synchronously write bundles, run `adb`, decode or re-encode media.
+const DEFAULT_LONG_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Minimum budget for the last-chance hello after the spawned daemon lost the lock race.
 const FINAL_HELLO_MIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Methods whose daemon-side work legitimately outlasts the default budget. Timing out one of
-/// these would report a failure while the daemon still completes it, inviting a duplicate.
-fn is_long_running_method(method: &str) -> bool {
+/// Cheap control-plane methods that only touch in-memory state or small catalog rows. Every other
+/// method (saves, capture control, `adb`, GC, bundle opening, timeline/media decoding, export)
+/// may legitimately outlast [`DEFAULT_CALL_TIMEOUT`]; timing one out would report a failure while
+/// the daemon still completes it, inviting a duplicate.
+fn is_quick_method(method: &str) -> bool {
     matches!(
         method,
-        "save.trigger"
-            | "save.logs"
-            | "save.screenshot"
-            | "save.retry"
-            | "save.retarget"
-            | "capture.start"
-            | "capture.stop"
-            | "device.list"
-            | "bundle.gc"
-            | "export.trim"
-            | "export.png"
-            | "export.share_mp4"
-            | "media.decode_audio_pcm"
+        "system.hello"
+            | "system.status"
+            | "system.shutdown"
+            | "config.get"
+            | "config.update"
+            | "save.list_jobs"
+            | "save.discard"
+            | "bundle.list"
+            | "bundle.lease_renew"
+            | "bundle.close"
+            | "bundle.forget"
+            | "edit.get_session"
+            | "edit.update_session"
     )
 }
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
@@ -88,6 +90,9 @@ pub enum RpcClientError {
     /// Server closed the stream before returning a response.
     #[error("arbd closed IPC connection before responding")]
     UnexpectedEof,
+    /// An earlier timeout or protocol error already dropped this connection; nothing was sent.
+    #[error("arbd IPC connection was closed after an earlier failure; reconnect")]
+    Closed,
     /// `system.hello` reported a different `protocol_version` than expected (R3 S16c).
     #[error(
         "arbd protocol_version mismatch: expected {expected}, got {actual:?}; restart arbd or align arb-cli/arbd versions"
@@ -226,6 +231,18 @@ fn auto_start_timeout_from_str(raw: Option<&str>) -> Duration {
     Duration::from_millis(ms)
 }
 
+/// Resolves the budget for long-running RPCs from `ARB_RPC_LONG_TIMEOUT_MS` (default 120 s), so a
+/// very long export is not reported as failed while `arbd` still completes it.
+fn long_call_timeout() -> Duration {
+    long_call_timeout_from_str(std::env::var("ARB_RPC_LONG_TIMEOUT_MS").ok().as_deref())
+}
+
+fn long_call_timeout_from_str(raw: Option<&str>) -> Duration {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map_or(DEFAULT_LONG_CALL_TIMEOUT, Duration::from_millis)
+}
+
 impl RpcClient {
     /// Connects to `arbd` at `paths.ipc_endpoint()`, optionally auto-starting the sibling `arbd`
     /// binary when `auto_start == AutoStartMode::Enabled`, and verifies `protocol_version`.
@@ -272,7 +289,7 @@ impl RpcClient {
             connection: Some(connection),
             next_id: 1,
             default_timeout: DEFAULT_CALL_TIMEOUT,
-            long_timeout: LONG_CALL_TIMEOUT,
+            long_timeout: long_call_timeout(),
         })
     }
 
@@ -317,10 +334,10 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
-        let timeout = if is_long_running_method(method) {
-            self.long_timeout
-        } else {
+        let timeout = if is_quick_method(method) {
             self.default_timeout
+        } else {
+            self.long_timeout
         };
         self.call_with_timeout(method, params, timeout)
     }
@@ -336,10 +353,7 @@ impl RpcClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, RpcClientError> {
-        let mut connection = self
-            .connection
-            .take()
-            .ok_or(RpcClientError::UnexpectedEof)?;
+        let mut connection = self.connection.take().ok_or(RpcClientError::Closed)?;
         connection.get_mut().started = Instant::now();
         connection.get_mut().timeout = timeout;
         let id = self.next_id;
@@ -604,7 +618,10 @@ mod tests {
                 assert_eq!(res.unwrap(), serde_json::Value::Null);
             } else {
                 assert!(matches!(res, Err(RpcClientError::InvalidResponse(_))));
-                assert!(client.call("save.trigger", json!({})).is_err());
+                assert!(matches!(
+                    client.call("save.trigger", json!({})),
+                    Err(RpcClientError::Closed)
+                ));
             }
             drop(client);
             server.join().unwrap();
@@ -647,7 +664,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RpcClientError::Timeout), "{error}");
         assert!(start.elapsed() < Duration::from_secs(3));
-        assert!(client.call("system.status", json!({})).is_err());
+        assert!(matches!(
+            client.call("system.status", json!({})),
+            Err(RpcClientError::Closed)
+        ));
         server.join().unwrap();
     }
 
@@ -693,7 +713,16 @@ mod tests {
     }
 
     #[test]
-    fn long_running_methods_cover_saves_capture_and_exports_only() {
+    fn only_cheap_control_methods_use_the_short_budget() {
+        for method in [
+            "system.hello",
+            "system.status",
+            "config.get",
+            "save.list_jobs",
+            "bundle.list",
+        ] {
+            assert!(super::is_quick_method(method), "{method}");
+        }
         for method in [
             "save.trigger",
             "save.logs",
@@ -701,18 +730,35 @@ mod tests {
             "save.retarget",
             "capture.start",
             "device.list",
+            "bundle.gc",
+            "bundle.open",
+            "timeline.overview",
+            "media.inspect_frames",
+            "media.open_viewport",
             "export.trim",
             "media.decode_audio_pcm",
+            "future.method",
         ] {
-            assert!(super::is_long_running_method(method), "{method}");
+            assert!(!super::is_quick_method(method), "{method}");
         }
-        for method in [
-            "system.hello",
-            "system.status",
-            "save.list_jobs",
-            "bundle.list",
-        ] {
-            assert!(!super::is_long_running_method(method), "{method}");
+    }
+
+    #[test]
+    fn long_timeout_env_override_parses_and_defaults() {
+        assert_eq!(
+            super::long_call_timeout_from_str(None),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            super::long_call_timeout_from_str(Some(" 600000 ")),
+            Duration::from_secs(600)
+        );
+        for bad in ["0", "-1", "abc", ""] {
+            assert_eq!(
+                super::long_call_timeout_from_str(Some(bad)),
+                Duration::from_secs(120),
+                "{bad}"
+            );
         }
     }
 

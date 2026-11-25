@@ -878,24 +878,35 @@ impl<B: TrayBackend> TrayUi<B> {
                 self.shown_menu = model;
             }
         }
+        // Apply the icon and tooltip independently so one persistent native failure cannot
+        // freeze the other; report every failure together.
+        let mut failures = Vec::new();
         if self.shown_badge != Some(state.badge) {
             if tracking {
                 deferred = true;
             } else {
-                self.backend.set_icon(&render_badge_icon(state.badge))?;
-                self.shown_badge = Some(state.badge);
+                match self.backend.set_icon(&render_badge_icon(state.badge)) {
+                    Ok(()) => self.shown_badge = Some(state.badge),
+                    Err(err) => failures.push(err),
+                }
             }
         }
         if self.shown_tooltip.as_deref() != Some(tooltip.as_str()) {
             if tracking {
                 deferred = true;
             } else {
-                self.backend.set_tooltip(&tooltip)?;
-                self.shown_tooltip = Some(tooltip);
+                match self.backend.set_tooltip(&tooltip) {
+                    Ok(()) => self.shown_tooltip = Some(tooltip),
+                    Err(err) => failures.push(err),
+                }
             }
         }
         self.pending = deferred.then(|| state.clone());
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 
     /// Flushes changes deferred while the menu was open, once tracking has finished.
@@ -1448,6 +1459,7 @@ mod tests {
         in_place_calls: usize,
         menu_rebuilds: usize,
         fail_rebuild_once: bool,
+        fail_icon: bool,
         icon_sets: usize,
         tooltip_sets: usize,
         tracking: bool,
@@ -1476,6 +1488,9 @@ mod tests {
         }
         fn set_icon(&mut self, _icon: &IconImage) -> Result<(), String> {
             self.icon_sets += 1;
+            if self.fail_icon {
+                return Err("injected icon failure".into());
+            }
             Ok(())
         }
         fn set_tooltip(&mut self, _tooltip: &str) -> Result<(), String> {
@@ -1672,5 +1687,27 @@ mod tests {
         assert!(
             matches!(received.try_recv(), Ok(TrayCommand::Dispatch(TrayMenuEvent::RetryJob {job_id})) if job_id == "new-job")
         );
+    }
+
+    #[test]
+    fn icon_failure_does_not_block_the_tooltip_update() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).unwrap();
+        let tooltip_sets = ui.backend.tooltip_sets;
+        ui.backend.fail_icon = true;
+        let mut next = capturing_state(20);
+        next.badge = TrayBadge::Idle;
+        assert_ne!(next.status_line(), capturing_state(10).status_line());
+        let err = ui.render(&next).unwrap_err();
+        assert!(err.contains("injected icon failure"), "{err}");
+        assert_eq!(ui.backend.tooltip_sets, tooltip_sets + 1);
+        assert_eq!(
+            ui.shown_tooltip.as_deref(),
+            Some(next.status_line().as_str())
+        );
+        assert_ne!(ui.shown_badge, Some(next.badge));
+        ui.backend.fail_icon = false;
+        ui.render(&next).unwrap();
+        assert_eq!(ui.shown_badge, Some(next.badge));
     }
 }
