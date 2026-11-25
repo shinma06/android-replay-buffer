@@ -49,6 +49,15 @@ data class SystemHelloResponse(
     val parentBound: Boolean = false,
 )
 
+enum class AudioCaptureMode(val wire: String, val minApi: Int) {
+    PLAYBACK_DUP("playback_dup", 33),
+    OUTPUT_COMPAT("output_compat", 30);
+
+    companion object {
+        fun fromWire(value: String): AudioCaptureMode = entries.first { it.wire == value }
+    }
+}
+
 enum class CaptureMode(val wire: String) {
     VIDEO_AND_LOGS("video_and_logs"),
     LOGS_ONLY("logs_only");
@@ -113,6 +122,7 @@ data class CaptureStatusView(
     val discontinuities: Long,
     val staticHoldEvents: Long,
     val ringWriteErrors: Long = 0L,
+    val audioCaptureMode: AudioCaptureMode? = null,
     val audioState: AudioCaptureState? = null,
     /** `null` from daemons older than PDD G8 (treated as an unknown runtime failure when unavailable). */
     val audioCause: AudioCause? = null,
@@ -196,6 +206,7 @@ data class ArbConfig(
     val videoMaxSize: Int = DEFAULT_VIDEO_MAX_SIZE,
     val videoMaxFps: Int = DEFAULT_VIDEO_MAX_FPS,
     val audioEnabled: Boolean = true,
+    val audioCaptureMode: AudioCaptureMode = AudioCaptureMode.PLAYBACK_DUP,
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val deviceSerial: String? = null,
     val crashAutosaveEnabled: Boolean = true,
@@ -252,6 +263,7 @@ data class ArbConfigPatch(
     val minFreeDiskBytes: Long? = null,
     val videoMaxSize: Int? = null,
     val videoMaxFps: Int? = null,
+    val audioCaptureMode: AudioCaptureMode? = null,
     val audioEnabled: Boolean? = null,
     val captureMode: CaptureMode? = null,
     val deviceSerial: StringPatch = StringPatch.Unchanged,

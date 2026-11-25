@@ -56,10 +56,20 @@ proptest! {
         );
     }
 
+    #[test]
+    fn output_source_never_duplicates_playback(api in 30u32..=u32::MAX) {
+        let mut opts = ScrcpyLaunchOptions::fhd30("1234abcd");
+        opts.audio_capture_mode = arb_core::config::AudioCaptureMode::OutputCompat;
+        let (args, status) = opts.build_server_args(api);
+        prop_assert_eq!(status, AudioTunnelStatus::Available { codec_id: CODEC_ID_AAC });
+        prop_assert!(has(&args, "audio=true") && has(&args, "audio_source=output"));
+        prop_assert!(!args.iter().any(|arg| arg.starts_with("audio_dup=") || arg == "audio_source=playback"));
+    }
+
     /// Below the floor (and for a disabled launch at any level) no audio source is requested.
     #[test]
     fn g8_3_below_floor_or_disabled_passes_audio_false(
-        api in 0u32..MIN_AUDIO_PLAYBACK_API_LEVEL,
+        api in 1u32..MIN_AUDIO_PLAYBACK_API_LEVEL,
         any_api in any::<u32>(),
     ) {
         let (args, status) = args_for(api, AudioCaptureMode::Enabled);

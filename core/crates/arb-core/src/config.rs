@@ -55,6 +55,44 @@ pub const MIN_CRASH_AUTOSAVE_COOLDOWN_SECS: u32 = 1;
 /// Maximum allowed crash auto-save cooldown in seconds (`1 hour`).
 pub const MAX_CRASH_AUTOSAVE_COOLDOWN_SECS: u32 = 3_600;
 
+/// Device audio routing. Only explicitly selecting output capture may mute the device.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCaptureMode {
+    /// Duplicate playback while keeping the device speakers active.
+    #[default]
+    PlaybackDup,
+    /// Capture device output through `REMOTE_SUBMIX`, muting local playback.
+    OutputCompat,
+}
+
+impl AudioCaptureMode {
+    /// First Android API supporting the selected route.
+    #[must_use]
+    pub const fn min_api(self) -> u32 {
+        match self {
+            Self::PlaybackDup => 33,
+            Self::OutputCompat => 30,
+        }
+    }
+
+    /// Source flags for an audio-enabled scrcpy launch.
+    #[must_use]
+    pub const fn scrcpy_source_args(self) -> &'static [&'static str] {
+        match self {
+            Self::PlaybackDup => &["audio_source=playback", "audio_dup=true"],
+            Self::OutputCompat => &["audio_source=output"],
+        }
+    }
+
+    /// Only known API levels below the route's floor preclude an attempt.
+    #[must_use]
+    pub const fn unsupported_on(self, api: u32) -> bool {
+        api > 0 && api < self.min_api()
+    }
+}
+
 /// Continuous capture payload mode for live `arbd` sessions.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -223,6 +261,9 @@ pub struct ArbConfig {
     pub video_max_fps: u32,
     /// Whether playback audio capture is enabled by default on supported devices.
     pub audio_enabled: bool,
+    /// Selected audio route; omitted by configurations written before this option existed.
+    #[serde(default)]
+    pub audio_capture_mode: AudioCaptureMode,
     /// Whether live `am_crash` events trigger background WORM saves.
     pub crash_autosave_enabled: bool,
     /// Minimum cooldown in seconds between crash-triggered auto-saves (default `15`).
@@ -252,6 +293,7 @@ impl ArbConfig {
             video_max_size: DEFAULT_VIDEO_MAX_SIZE,
             video_max_fps: DEFAULT_VIDEO_MAX_FPS,
             audio_enabled: true,
+            audio_capture_mode: AudioCaptureMode::PlaybackDup,
             crash_autosave_enabled: true,
             crash_autosave_cooldown_secs: DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
             output_dir_override: None,
@@ -358,6 +400,9 @@ impl ArbConfig {
         }
         if let Some(v) = patch.video_max_fps {
             next.video_max_fps = v;
+        }
+        if let Some(mode) = patch.audio_capture_mode {
+            next.audio_capture_mode = mode;
         }
         if let Some(v) = patch.audio_enabled {
             next.audio_enabled = v;
@@ -526,6 +571,9 @@ pub struct ArbConfigPatch {
     /// Updated audio capture default toggle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_enabled: Option<bool>,
+    /// Changes the selected audio route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_capture_mode: Option<AudioCaptureMode>,
     /// Updated crash auto-save toggle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crash_autosave_enabled: Option<bool>,

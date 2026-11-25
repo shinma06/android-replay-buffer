@@ -757,6 +757,13 @@ fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
             "--video-max-fps" => {
                 patch.insert("video_max_fps".to_owned(), json!(parse_u32(val, flag)?));
             }
+            "--audio-capture-mode" => {
+                let mode: arb_core::config::AudioCaptureMode = serde_json::from_value(json!(val))
+                    .map_err(|_| {
+                    CliError::usage("--audio-capture-mode expects playback_dup or output_compat")
+                })?;
+                patch.insert("audio_capture_mode".to_owned(), json!(mode));
+            }
             "--audio-enabled" => {
                 patch.insert("audio_enabled".to_owned(), json!(parse_bool(val, flag)?));
             }
@@ -1749,7 +1756,7 @@ COMMANDS:\n  \
   save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   save-logs [--window-secs <N>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   screenshot [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
-  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
+  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
@@ -2234,6 +2241,8 @@ mod tests {
             "120",
             "--audio-enabled",
             "false",
+            "--audio-capture-mode",
+            "output_compat",
             "--crash-autosave-cooldown-secs",
             "20",
             "--output-dir-override",
@@ -2248,6 +2257,7 @@ mod tests {
                 patch: json!({
                     "save_window_secs": 120,
                     "audio_enabled": false,
+                    "audio_capture_mode": "output_compat",
                     "crash_autosave_cooldown_secs": 20,
                     "output_dir_override": null,
                     "ide_default_save_action": "save_only",

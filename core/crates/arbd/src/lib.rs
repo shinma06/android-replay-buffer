@@ -698,6 +698,7 @@ impl DaemonState {
         }
         {
             let mut cap = self.lock_capture()?;
+            cap.select_audio_mode(candidate.audio_capture_mode);
             cap.set_ring_policy(candidate.to_ring_budget_policy());
             if patch.capture_enabled == Some(true) {
                 cap.clear_storage_pressure_stop();
@@ -1727,6 +1728,7 @@ impl DaemonServer {
             effective_ring_policy,
             config.disk_provider,
         )?;
+        capture.select_audio_mode(user_config.audio_capture_mode);
         capture.set_fault_injection(Arc::clone(&config.faults));
 
         let media = MediaEngine::new(config.paths.cache_dir.clone(), config.paths.shm_dir());

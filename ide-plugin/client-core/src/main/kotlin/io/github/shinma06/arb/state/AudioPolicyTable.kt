@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.state
 
+import io.github.shinma06.arb.model.AudioCaptureMode
 import io.github.shinma06.arb.model.AudioCaptureState
 import io.github.shinma06.arb.model.AudioCause
 import io.github.shinma06.arb.model.CaptureStatusView
@@ -60,12 +61,21 @@ object AudioPolicyTable {
         effectiveCause(state, cause)?.let(::classOf) ?: AudioLabelClass.NONE
 
     /** Banner title for a cause that warrants one, or `null` for no banner. */
-    fun bannerTitle(cause: AudioCause, apiLevel: Long?): String? = when (cause) {
+    fun bannerTitle(
+        cause: AudioCause,
+        apiLevel: Long?,
+        mode: AudioCaptureMode = AudioCaptureMode.PLAYBACK_DUP,
+    ): String? = when (cause) {
         AudioCause.NONE -> null
         AudioCause.USER_DISABLED -> null
         AudioCause.LOGS_ONLY -> null
-        AudioCause.API_BELOW_MIN ->
-            "音声キャプチャ非対応（Android 13 / API 33 未満: API ${apiLevel?.toString() ?: "不明"}）— $CONTINUING"
+        AudioCause.API_BELOW_MIN -> {
+            val os = when (mode) {
+                AudioCaptureMode.PLAYBACK_DUP -> "Android 13"
+                AudioCaptureMode.OUTPUT_COMPAT -> "Android 11"
+            }
+            "音声キャプチャ非対応（$os / API ${mode.minApi} 未満: API ${apiLevel?.toString() ?: "不明"}）— $CONTINUING"
+        }
         AudioCause.DEVICE_CAPTURE_FAILED ->
             "端末側で再生音キャプチャを開始できませんでした（他アプリ／ミラーリング競合や端末制限の可能性）— $CONTINUING"
         AudioCause.ENCODER_FATAL ->
@@ -88,11 +98,20 @@ object AudioPolicyTable {
     fun banner(capture: CaptureStatusView): CaptureBanner? {
         if (!capture.active || !capture.connected || capture.effectiveAudioState != AudioCaptureState.UNAVAILABLE) return null
         val cause = effectiveCause(capture.effectiveAudioState, capture.audioCause) ?: return null
-        val title = bannerTitle(cause, capture.deviceApiLevel) ?: return null
+        val mode = capture.audioCaptureMode ?: AudioCaptureMode.PLAYBACK_DUP
+        val api = capture.deviceApiLevel
+        val title = bannerTitle(cause, api, mode) ?: return null
+        val detail = capture.audioReason?.takeIf { it.isNotBlank() } ?: "詳細な理由は報告されていません。"
+        val suggestCompat = mode == AudioCaptureMode.PLAYBACK_DUP && cause == AudioCause.DEVICE_CAPTURE_FAILED &&
+            (api == null || api == 0L || api >= AudioCaptureMode.OUTPUT_COMPAT.minApi)
         return CaptureBanner(
             kind = CaptureBannerKind.CONFIG_WARNING,
             title = title,
-            detail = capture.audioReason?.takeIf { it.isNotBlank() } ?: "詳細な理由は報告されていません。",
+            detail = if (suggestCompat) {
+                "$detail\n※Settings の音声方式を『出力キャプチャ互換（端末消音）』へ切り替えると取得できる場合があります"
+            } else {
+                detail
+            },
         )
     }
 
@@ -107,7 +126,11 @@ object AudioPolicyTable {
         val state = capture.effectiveAudioState
         val cause = effectiveCause(state, capture.audioCause)
         val live = when (state) {
-            AudioCaptureState.AVAILABLE -> "音声 ON"
+            AudioCaptureState.AVAILABLE -> if (capture.audioCaptureMode == AudioCaptureMode.OUTPUT_COMPAT) {
+                "音声 ON（端末消音）"
+            } else {
+                "音声 ON"
+            }
             AudioCaptureState.UNKNOWN -> if (audioEnabled) "音声 ON（確認中）" else "音声 OFF（確認中）"
             AudioCaptureState.DISABLED -> "音声 OFF"
             AudioCaptureState.UNAVAILABLE -> when {
