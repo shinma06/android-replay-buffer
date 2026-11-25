@@ -135,13 +135,9 @@ class JvmAudioSink(
 
     override fun write(pcm: ByteArray, offset: Int, length: Int): Int {
         if (length <= 0) return 0
-        val current = line ?: return 0
-        if (!current.isOpen) return 0
-        return try {
-            current.write(pcm, offset, length)
-        } catch (_: RuntimeException) {
-            0
-        }
+        val current = checkNotNull(line) { "Audio output line is unavailable" }
+        check(current.isOpen) { "Audio output line is closed" }
+        return current.write(pcm, offset, length)
     }
 
     override fun close() = synchronized(lock) {

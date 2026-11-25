@@ -133,8 +133,7 @@ class ArbToolWindowController(
     // queued, so two clicks in the same EDT turn can never both submit).
     private val saveInFlight = AtomicBoolean(false)
     private val logSaveInFlight = AtomicBoolean(false)
-    private val deviceChangeInFlight = AtomicBoolean(false)
-    private var deviceChangeBusy by mutableStateOf(false)
+    private val deviceChangeBusy: Boolean get() = daemonService.deviceChangeBusy
     private val screenshotInFlight = AtomicBoolean(false)
     private val captureModeInFlight = AtomicBoolean(false)
     private val restartInFlight = AtomicBoolean(false)
@@ -190,7 +189,16 @@ class ArbToolWindowController(
         override fun onConfigUpdated(config: ArbConfig) {
             val next = synchronized(captureStateLock) {
                 rawCaptureEnabled = config.captureEnabled
-                CaptureBarReducer.withConfig(rawCaptureState, config).also { rawCaptureState = it }
+                val previous = rawCaptureState
+                val configured = CaptureBarReducer.withConfig(previous, config)
+                val next = if (config.deviceSerial != previous.config.deviceSerial) {
+                    configured.copy(
+                        selectedSerial = config.deviceSerial,
+                        autoSelectedSerial = null,
+                        deviceSelection = DeviceSelectionPolicy.evaluate(config.deviceSerial, configured.devices),
+                    )
+                } else configured
+                next.also { rawCaptureState = it }
             }
             publishOnEdt {
                 captureState = next
@@ -402,22 +410,29 @@ class ArbToolWindowController(
         // in a second device still prompts instead of silently keeping a pin nobody asked for.
         val current = captureState
         if (serial == current.selectedSerial && serial == current.autoSelectedSerial) return
-        runGuarded(deviceChangeInFlight, { deviceChangeBusy = it }, operation = "録画対象端末の変更") {
-            val config = if (rawCaptureState.config.deviceSerial == serial) rawCaptureState.config else {
-                daemonService.withClient {
-                    it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+        if (!daemonService.beginDeviceChange()) return
+        val release = { SwingUtilities.invokeLater { daemonService.finishDeviceChange() } }
+        runAsync(operation = "録画対象端末の変更", onDropped = release) {
+            try {
+                val config = if (rawCaptureState.config.deviceSerial == serial) rawCaptureState.config else {
+                    daemonService.withClient {
+                        it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+                    }
                 }
+                val next = synchronized(captureStateLock) {
+                    rawCaptureState.copy(
+                        selectedSerial = serial,
+                        autoSelectedSerial = null,
+                        deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
+                        config = config,
+                    ).also { rawCaptureState = it }
+                }
+                publishOnEdt { captureState = next }
+                daemonService.updateCachedToolbarSnapshot(next.toToolbarSnapshot(captureEnabled = rawCaptureEnabled))
+                daemonService.notifyConfigUpdated(config)
+            } finally {
+                release()
             }
-            val next = synchronized(captureStateLock) {
-                rawCaptureState.copy(
-                    selectedSerial = serial,
-                    autoSelectedSerial = null,
-                    deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
-                    config = config,
-                ).also { rawCaptureState = it }
-            }
-            publishOnEdt { captureState = next }
-            daemonService.notifyConfigUpdated(config)
         }
     }
 
@@ -427,7 +442,7 @@ class ArbToolWindowController(
      * mode only takes effect when a capture starts.
      */
     fun setCaptureMode(mode: CaptureMode) {
-        if (deviceChangeInFlight.get()) return
+        if (deviceChangeBusy) return
         val snapshot = captureState
         val wasActive = snapshot.capture?.active == true
         val runningMode = snapshot.capture?.captureMode
@@ -477,7 +492,7 @@ class ArbToolWindowController(
     }
 
     fun toggleCapture() {
-        if (deviceChangeInFlight.get()) return
+        if (deviceChangeBusy) return
         val currentlyOn = isCaptureOn
         val currentlyActive = isCaptureActive
         val canStartNow = canUseSelectedDevice
@@ -494,7 +509,7 @@ class ArbToolWindowController(
     }
 
     fun captureScreenshot() {
-        if (deviceChangeInFlight.get()) return
+        if (deviceChangeBusy) return
         val serial = selectedDeviceSerial
         runGuarded(screenshotInFlight, { screenshotBusy = it }) {
             try {
@@ -782,6 +797,10 @@ class ArbToolWindowController(
         }
     }
 
+    internal fun awaitWorkerForTest() {
+        executor.submit {}.get(10, TimeUnit.SECONDS)
+    }
+
     fun refreshNow() {
         runAsync { refreshAll() }
     }
@@ -886,7 +905,7 @@ class ArbToolWindowController(
      * The guard and the observable busy flag are always released afterwards, whatever [action]
      * throws, and also when the worker drops the task.
      */
-    private fun runGuarded(inFlight: AtomicBoolean, setBusy: (Boolean) -> Unit, operation: String? = null, action: () -> Unit) {
+    private fun runGuarded(inFlight: AtomicBoolean, setBusy: (Boolean) -> Unit, action: () -> Unit) {
         if (!inFlight.compareAndSet(false, true)) return
         publishOnEdt { setBusy(true) }
         val release = {
@@ -895,7 +914,7 @@ class ArbToolWindowController(
                 inFlight.set(false)
             }
         }
-        runAsync(operation = operation, onDropped = release) {
+        runAsync(onDropped = release) {
             try {
                 action()
             } finally {

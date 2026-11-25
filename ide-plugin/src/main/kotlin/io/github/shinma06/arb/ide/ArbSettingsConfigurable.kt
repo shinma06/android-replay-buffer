@@ -58,7 +58,6 @@ import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Path
-import java.util.Locale
 import javax.swing.JComponent
 
 /**
@@ -228,7 +227,7 @@ class ArbSettingsFormModel(
         const val CLI_PATH_UNAVAILABLE_TEXT: String = "arb-cli が見つかりません（プラグイン再インストールまたはビルドが必要）"
 
         private fun formatDecimal(value: Double): String =
-            if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.0f", value) else String.format(Locale.ROOT, "%.1f", value)
+            java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
     }
 }
 

@@ -673,7 +673,7 @@ class PlaybackController(
             var nextCur = currentState.currentFrameIndex
             val target = playhead?.coerceIn(newIn, newOut) ?:
                 if (currentState.mode == PlaybackMode.PLAYING && nextCur !in range) newIn else nextCur
-            seekTarget = if (nextCur != target) {
+            seekTarget = if (nextCur != target || (playhead != null && currentState.displayedFrameIndex != target)) {
                 nextCur = target
                 val pts = frameRelativePtsNs(nextCur)
                 anchorWallNs = clock.nowNs()

@@ -217,7 +217,7 @@ class ArbStudioSilentFailureTest {
 
     @Test
     fun logBucketCutAtTheDisplayLimitShowsTheNoticeAndExactlyFullDoesNot(@TempDir tmp: Path) {
-        val expected = "ログは表示上限（5,000 行）に達したため一部省略しています。検索対象は各区分の先頭から表示上限までです。"
+        val expected = "ログは表示上限（5,000 行）に達したため一部省略しています。上限は区分ごとに適用され、キーワード検索は「操作＆ログ」の取得済み行が対象です。"
         // 5,003 rows exist: 5,000 are shown, three are cut -> notice.
         val cut = Daemon(java.nio.file.Files.createDirectory(tmp.resolve("cut")), mainLogCount = 5_003)
         val cutEditor = openStudioEditor(cut)

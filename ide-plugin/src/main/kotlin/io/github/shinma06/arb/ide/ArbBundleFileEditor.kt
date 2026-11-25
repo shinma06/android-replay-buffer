@@ -1149,7 +1149,7 @@ class ArbBundleFileEditor internal constructor(
             if (!saved) {
                 ArbNotifications.notifyWarning(
                     project,
-                    "「$displayTitle」の編集範囲（IN/OUT）を保存できませんでした。次回開くと以前の範囲に戻ります。",
+                    "「$displayTitle」の編集範囲（IN/OUT）の保存結果を確認できません。次回開くと以前の範囲に戻る場合があります。",
                 )
             }
             mediaSession.close()

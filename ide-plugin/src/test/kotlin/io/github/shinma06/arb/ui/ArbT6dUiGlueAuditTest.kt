@@ -300,16 +300,20 @@ class ArbT6dUiGlueAuditTest {
             controller.selectDeviceByIndex(0) // the prompt row is not selectable
             assertTrue(transport.calls.isEmpty())
 
-            javax.swing.SwingUtilities.invokeAndWait {
-                controller.selectDeviceByIndex(2)
+            controller.selectDeviceByIndex(1)
+            awaitTrue { controller.selectedDeviceSerial == "emulator-5554" && controller.screenshotEnabled }
+            SwingUtilities.invokeAndWait {
+                controller.selectDeviceByIndex(controller.deviceDropdownEntries.indexOfFirst { it.serial == "R3CN1234567" })
                 assertFalse(controller.screenshotEnabled)
+                assertFalse(io.github.shinma06.arb.ide.ArbToolbarPresentationState.screenshot(service.toolbarSnapshot()).enabled)
                 controller.captureScreenshot()
             }
             awaitTrue { controller.selectedDeviceSerial == "R3CN1234567" }
             assertEquals("R3CN1234567", controller.selectedDeviceSerial)
             assertNull(controller.captureState.autoSelectedSerial, "explicit choice must not be treated as auto-selected")
+            controller.awaitWorkerForTest()
             assertFalse("save.screenshot" in transport.methods())
-            val update = transport.calls.first { it.method == "config.update" }
+            val update = transport.calls.last { it.method == "config.update" }
             assertEquals("R3CN1234567", update.params.get("device_serial").asString)
 
         } finally {

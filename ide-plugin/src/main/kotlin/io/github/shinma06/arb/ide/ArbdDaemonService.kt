@@ -42,6 +42,7 @@ data class ArbToolbarDaemonSnapshot(
     val selectedDeviceSerial: String? = null,
     val disabledDeviceHint: String? = null,
     val captureConnected: Boolean = true,
+    val deviceChangeBusy: Boolean = false,
 ) {
     /** OFF / ON・待機中 / ON・REC, by the same rule as the Tool Window ([CaptureToggleState.of]). */
     val captureToggleState: CaptureToggleState
@@ -141,6 +142,23 @@ open class ArbdDaemonService internal constructor(
     var cachedToolbarSnapshot: ArbToolbarDaemonSnapshot = ArbToolbarDaemonSnapshot()
         private set
     private val toolbarSnapshotLock = Any()
+    private val deviceChanging = androidx.compose.runtime.mutableStateOf(false)
+    internal val deviceChangeBusy: Boolean get() = deviceChanging.value
+
+    @Synchronized
+    internal fun beginDeviceChange(): Boolean {
+        if (deviceChangeBusy) return false
+        deviceChanging.value = true
+        bumpActionToolbarRefresh()
+        return true
+    }
+
+    @Synchronized
+    internal fun finishDeviceChange() {
+        deviceChanging.value = false
+        bumpActionToolbarRefresh()
+    }
+
 
     val cachedCaptureActive: Boolean
         get() = cachedToolbarSnapshot.captureActive
@@ -172,7 +190,7 @@ open class ArbdDaemonService internal constructor(
                 }
             }
         }
-        return cachedToolbarSnapshot
+        return cachedToolbarSnapshot.copy(deviceChangeBusy = deviceChangeBusy)
     }
 
     internal fun refreshToolbarSnapshot() {

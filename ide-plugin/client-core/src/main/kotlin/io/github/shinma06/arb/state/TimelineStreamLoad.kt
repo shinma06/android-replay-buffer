@@ -36,13 +36,13 @@ data class AuxStreamFailure(val stream: AuxStream, val reason: String)
 object StudioLoadMessages {
     /** Shown when a log bucket hit the per-bucket display limit and rows were dropped. */
     fun logLimitNotice(limit: Int): String =
-        "ログは表示上限（${formatLimit(limit)} 行）に達したため一部省略しています。検索対象は各区分の先頭から表示上限までです。"
+        "ログは表示上限（${formatLimit(limit)} 行）に達したため一部省略しています。上限は区分ごとに適用され、キーワード検索は「操作＆ログ」の取得済み行が対象です。"
 
     fun streamFailureNotice(failure: AuxStreamFailure): String =
         "${failure.stream.label}を取得できませんでした（${failure.reason}）。0 件ではなく未取得です。"
 
     fun editSaveFailureNotice(reason: String): String =
-        "編集範囲（IN/OUT）を保存できていません（$reason）。再保存するまで、再度開くと以前の範囲に戻ります。"
+        "編集範囲（IN/OUT）の保存結果を確認できません（$reason）。再度開くと以前の範囲に戻る場合があります。"
 
     private fun formatLimit(limit: Int): String = String.format(java.util.Locale.ROOT, "%,d", limit)
 }
