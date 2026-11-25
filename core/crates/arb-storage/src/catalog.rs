@@ -1055,6 +1055,9 @@ impl Catalog {
                 .map_err(|source| StorageError::sqlite("commit_gc_forget_missing", source))?;
             return Ok(PurgeGate::ForgottenMissing);
         }
+        // Refuse before the one-way `Trashed -> Purging` transition: a bundle that fails the
+        // identity check stays `Trashed`, so it can still be restored or forgotten.
+        verify_purge_identity(&current, &current.path)?;
         let purging = current.state.begin_purge(active_leases, active_jobs)?;
         tx.execute(
             "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
@@ -1864,9 +1867,13 @@ fn verify_purge_identity(bundle: &BundleEntry, path: &Path) -> Result<(), Storag
         Provenance::Original => None,
         _ => return Err(mismatch("unknown provenance")),
     };
+    // Rows registered by `bundle.open` before parents were recorded hold `None`, which means
+    // "unknown" and is not a mismatch; a recorded parent must still agree with the manifest.
+    let parent_agrees =
+        bundle.parent_bundle_id.is_none() || parent == bundle.parent_bundle_id.as_ref();
     if manifest.bundle_id != bundle.bundle_id
         || manifest.created_at_utc != bundle.created_at_utc
-        || parent != bundle.parent_bundle_id.as_ref()
+        || !parent_agrees
     {
         return Err(mismatch("catalog and manifest ownership differ"));
     }

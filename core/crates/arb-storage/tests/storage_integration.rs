@@ -1940,18 +1940,18 @@ fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
             .expect("query")
             .expect("row kept")
             .state,
-        BundleLifecycleState::Purging,
-        "failed bundle stays Purging for retry"
+        BundleLifecycleState::Trashed,
+        "a bundle that fails the identity check never enters Purging and is retried by GC"
     );
 
-    // The obstruction disappears: the next GC retries the Purging row.
+    // The obstruction disappears: the next GC retries the row.
     fs::remove_file(&failing_path).expect("unblock");
     let retry = catalog
         .gc_with_grace("2026-11-22T12:00:01Z", 0)
         .expect("second gc");
     assert!(
         retry.purged_bundle_ids.contains(&"b-fail".to_owned()),
-        "Purging rows are retried by GC"
+        "failed rows are retried by GC"
     );
     assert!(
         retry.purged_bundle_ids.contains(&"b-grace".to_owned()),
@@ -2526,6 +2526,23 @@ fn partially_deleted_claim_is_finished_not_restored_or_stuck() {
     assert!(!claim.exists());
     assert!(!source.exists());
     assert!(reopened.bundle("original").unwrap().is_none());
+}
+
+#[test]
+fn identity_mismatch_keeps_bundle_trashed_and_restorable() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+    let path = root.join("owner");
+    register_v2_bundle(&catalog, "owner", &path, "owner", b"private");
+    catalog.trash_bundle("owner", now).unwrap();
+    fs::write(path.join("manifest.json"), b"{").unwrap();
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.failed.len(), 1);
+    let row = catalog.bundle("owner").unwrap().unwrap();
+    assert_eq!(row.state, arb_core::state::BundleLifecycleState::Trashed);
+    catalog.restore_bundle("owner").unwrap();
 }
 
 #[test]
