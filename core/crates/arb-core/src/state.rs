@@ -453,14 +453,15 @@ impl RingEvictionPlanner {
         incoming_bytes: u64,
         host_free_bytes: u64,
     ) -> RingWriteDecision {
-        let mut order = vec![0; chunks.len()];
-        match self.plan_indices(chunks, incoming_bytes, host_free_bytes, &mut order) {
-            RingPlan::Allow { evict_count } => RingWriteDecision::Allow {
-                evict_chunk_ids: order[..evict_count]
-                    .iter()
-                    .map(|&i| chunks[i].chunk_id.clone())
-                    .collect(),
-            },
+        let mut order: Vec<&RingChunkMeta> = chunks.iter().collect();
+        match self.plan_refs(&mut order, incoming_bytes, host_free_bytes) {
+            RingPlan::Allow { evict_count } => {
+                let mut evict_chunk_ids = Vec::new();
+                for candidate in &order[..evict_count] {
+                    evict_chunk_ids.push(candidate.chunk_id.clone());
+                }
+                RingWriteDecision::Allow { evict_chunk_ids }
+            }
             RingPlan::StopStoragePressure { pinned_bytes } => {
                 RingWriteDecision::StopStoragePressure {
                     host_free_bytes,
@@ -481,16 +482,14 @@ impl RingEvictionPlanner {
         }
     }
 
-    /// Index-level core of [`Self::plan`]. Writes the indices of the evictable chunks into
-    /// `order` (length at least `chunks.len()`) sorted oldest first by
-    /// `(created_cont_ns, chunk_id)`; on [`RingPlan::Allow`] the evicted chunks are
-    /// `order[..evict_count]`, in eviction order.
-    pub(crate) fn plan_indices(
+    /// Allocation-free core of [`Self::plan`]. `chunks` holds every chunk on entry; on
+    /// [`RingPlan::Allow`] its first `evict_count` entries are the evicted chunks, oldest first
+    /// by `(created_cont_ns, chunk_id)`.
+    pub(crate) fn plan_refs(
         &self,
-        chunks: &[RingChunkMeta],
+        chunks: &mut [&RingChunkMeta],
         incoming_bytes: u64,
         host_free_bytes: u64,
-        order: &mut [usize],
     ) -> RingPlan {
         let pinned_bytes: u64 = chunks
             .iter()
@@ -510,22 +509,21 @@ impl RingEvictionPlanner {
         }
 
         let mut evictable_count = 0;
-        for (i, c) in chunks.iter().enumerate() {
-            if c.is_evictable() {
-                order[evictable_count] = i;
+        for i in 0..chunks.len() {
+            if chunks[i].is_evictable() {
+                chunks[evictable_count] = chunks[i];
                 evictable_count += 1;
             }
         }
-        let evictable = &mut order[..evictable_count];
-        evictable.sort_by(|&a, &b| {
-            chunks[a]
-                .created_cont_ns
-                .cmp(&chunks[b].created_cont_ns)
-                .then_with(|| chunks[a].chunk_id.cmp(&chunks[b].chunk_id))
+        let evictable = &mut chunks[..evictable_count];
+        evictable.sort_by(|a, b| {
+            a.created_cont_ns
+                .cmp(&b.created_cont_ns)
+                .then_with(|| a.chunk_id.cmp(&b.chunk_id))
         });
 
         let mut evict_count = 0;
-        for &candidate in &*evictable {
+        for candidate in &*evictable {
             let over_bytes =
                 total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes);
             let over_duration = total_duration_ns > u128::from(self.policy.max_ring_duration_ns);
@@ -533,8 +531,8 @@ impl RingEvictionPlanner {
                 break;
             }
             evict_count += 1;
-            total_bytes -= u128::from(chunks[candidate].bytes);
-            total_duration_ns -= u128::from(chunks[candidate].duration_ns);
+            total_bytes -= u128::from(candidate.bytes);
+            total_duration_ns -= u128::from(candidate.duration_ns);
         }
 
         if total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes) {
@@ -548,7 +546,7 @@ impl RingEvictionPlanner {
     }
 }
 
-/// Scalar outcome of [`RingEvictionPlanner::plan_indices`]; [`RingEvictionPlanner::plan`]
+/// Scalar outcome of [`RingEvictionPlanner::plan_refs`]; [`RingEvictionPlanner::plan`]
 /// maps it to a [`RingWriteDecision`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RingPlan {

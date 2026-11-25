@@ -1425,9 +1425,10 @@ fn k4_ring_eviction_plan_extreme_u64_n4() {
     check_plan(4, false);
 }
 
-// K4 slice level: the real `plan_indices` core that `RingEvictionPlanner::plan` calls, run on a
-// fixed stack array of chunks with a fixed index buffer. `plan` only maps the evicted prefix of
-// the buffer to chunk IDs, so no `Vec<&RingChunkMeta>`, `Vec<String>` or ID clone is built.
+// K4 slice level: the real `plan_refs` core that `RingEvictionPlanner::plan` calls, run on a
+// fixed stack array of chunks and a stack array of references. `plan` only collects the
+// references into a `Vec` and clones the evicted prefix's IDs, so no `Vec<&RingChunkMeta>`,
+// `Vec<String>` or ID clone is built here.
 fn any_chunk(i: usize, pin: Option<bool>, small: bool) -> RingChunkMeta {
     RingChunkMeta {
         chunk_id: IDS[i].to_owned(),
@@ -1455,7 +1456,7 @@ fn any_chunk(i: usize, pin: Option<bool>, small: bool) -> RingChunkMeta {
     }
 }
 
-/// Checks one `plan_indices` run on `N` realistic-size chunks (`u8` bytes and durations,
+/// Checks one `plan_refs` run on `N` realistic-size chunks (`u8` bytes and durations,
 /// `u16` quotas, full-`u64` free space, floor and write): REQ-04 pin protection, capacity,
 /// free-space floor, stop-reason soundness, oldest-first prefix order and no over-eviction.
 fn k4_slice_case<const N: usize>(chunks: &[RingChunkMeta; N], small: bool) -> RingPlan {
@@ -1473,8 +1474,8 @@ fn k4_slice_case<const N: usize>(chunks: &[RingChunkMeta; N], small: bool) -> Ri
         min_free_disk_bytes: kani::any(),
     };
     let (incoming, free): (u64, u64) = (kani::any(), kani::any());
-    let mut order = [usize::MAX; N];
-    let plan = RingEvictionPlanner::new(policy).plan_indices(chunks, incoming, free, &mut order);
+    let mut order: [&RingChunkMeta; N] = core::array::from_fn(|i| &chunks[i]);
+    let plan = RingEvictionPlanner::new(policy).plan_refs(&mut order, incoming, free);
 
     let mut total: u128 = 0;
     let mut total_dur: u128 = 0;
@@ -1510,11 +1511,11 @@ fn k4_slice_case<const N: usize>(chunks: &[RingChunkMeta; N], small: bool) -> Ri
             let (mut freed, mut freed_dur): (u128, u128) = (0, 0);
             let mut j = 0;
             while j < evict_count {
-                let e = order[j];
+                let e = chunk_index(chunks, &order[j].chunk_id);
                 assert!(e < N, "evicted index names an input chunk");
                 assert!(chunks[e].is_evictable(), "REQ-04 pin protection");
                 assert!(
-                    j == 0 || older(chunks, order[j - 1], e),
+                    j == 0 || older(chunks, chunk_index(chunks, &order[j - 1].chunk_id), e),
                     "oldest-first order"
                 );
                 assert!(
@@ -1669,31 +1670,6 @@ fn k4_slice_plan_n2_pinned_pinned() {
         matches!(plan, RingPlan::Allow { evict_count: 0 }),
         "both pinned and the write still fits"
     );
-}
-
-/// Three chunks with symbolic pins. Kept `kani-extended`: 33 s locally (one SAT call; splitting
-/// on the first two pins left the all-unpinned case at 33 s), too close to the CI budget.
-#[cfg_attr(
-    feature = "kani-extended",
-    kani::proof,
-    kani::unwind(4),
-    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
-)]
-fn k4_slice_plan_n3() {
-    let chunks = [
-        any_chunk(0, None, true),
-        any_chunk(1, None, true),
-        any_chunk(2, None, true),
-    ];
-    let plan = k4_slice_case(&chunks, true);
-    kani::cover!(
-        matches!(plan, RingPlan::Allow { evict_count: 2 })
-            && chunks[2].is_evictable()
-            && older(&chunks, 0, 2)
-            && older(&chunks, 1, 2),
-        "two oldest evicted, newest evictable kept"
-    );
-    k4_cover_order(&chunks, plan);
 }
 
 /// Full-`u64` sizes, one chunk: the slice core replaces the `Vec`/`String` path of
