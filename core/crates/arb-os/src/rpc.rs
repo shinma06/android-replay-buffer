@@ -556,7 +556,6 @@ mod tests {
                     DEFAULT_MAX_IPC_LINE_BYTES,
                 )
                 .expect("reply");
-                reader.get_mut().drain().expect("drain");
                 assert!(
                     read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
                         .expect("eof")
