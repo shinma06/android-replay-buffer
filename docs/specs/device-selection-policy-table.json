@@ -1,0 +1,908 @@
+{
+  "$comment": "PDD SSOT: Rust (core/crates/arb-core/tests/pdd_contract_tables.rs) と Kotlin (client-core PddContractTablesTest / ide-plugin PddUiFeedbackContractTest) が全行を検証する。行を変えたら両方の実装を合わせること。",
+  "schema_version": 1,
+  "semantics": {
+    "selection": "online（adb state = device）かつ有効な serial の端末だけを対象に DeviceSelectionPolicy を評価した結果。Rust は arb_core::device::{selectable_online_serials, DeviceSelectionPolicy::evaluate}、Kotlin は DeviceSelectionPolicy.evaluate。auto_selected は Kotlin だけが持つ（明示 serial が空のとき true）。",
+    "daemon_attaches": "arbd の auto_attach / capture.start が capture を開始するか: capture_enabled かつ selection が selected。",
+    "ide": "CaptureBarReducer.fromStatus（初回 poll, 非録画）の selectedSerial / isSelectedDeviceOnline と、ツールバー共通の CaptureToggleState。capture_enabled は選択結果に関係なく維持される。"
+  },
+  "selection_rows": [
+    {
+      "id": "DS-01",
+      "description": "端末0台・自動・OFF",
+      "preferred_serial": null,
+      "devices": [],
+      "capture_enabled": false,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "off"
+        }
+      }
+    },
+    {
+      "id": "DS-02",
+      "description": "端末0台・自動・ON（待機を維持）",
+      "preferred_serial": null,
+      "devices": [],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-03",
+      "description": "端末0台・明示serial・ON（固定serialの再接続待ち）",
+      "preferred_serial": "emulator-5554",
+      "devices": [],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "emulator-5554",
+          "other_online_serials": []
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-04",
+      "description": "1台online・自動・ON → 自動選択して接続",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": true
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-05",
+      "description": "1台online・自動・OFF → 選択のみ（接続しない）",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": false,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": true
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "off"
+        }
+      }
+    },
+    {
+      "id": "DS-06",
+      "description": "1台online・明示serial一致 → その端末",
+      "preferred_serial": "emulator-5554",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": false
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-07",
+      "description": "1台online・明示serial不一致 → 待機（絶対に自動切替しない）",
+      "preferred_serial": "R3CN1234567",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "R3CN1234567",
+          "other_online_serials": [
+            "emulator-5554"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-08",
+      "description": "1台offline・自動・ON → 待機・ONを維持",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "offline"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-09",
+      "description": "1台unauthorized・自動・ON → 待機・ONを維持",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "unauthorized"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-10",
+      "description": "明示serialがoffline・ON → 固定serialの再接続待ち",
+      "preferred_serial": "R3CN1234567",
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "offline"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "R3CN1234567",
+          "other_online_serials": []
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-11",
+      "description": "2台online・自動 → 選択要求（自動切替しない）",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "multiple_devices_need_selection",
+          "online_serials": [
+            "emulator-5554",
+            "192.168.1.50:5555"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-12",
+      "description": "2台online＋1台offline・自動 → online 2台で選択要求",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        },
+        {
+          "serial": "R3CN1234567",
+          "state": "offline"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "multiple_devices_need_selection",
+          "online_serials": [
+            "emulator-5554",
+            "192.168.1.50:5555"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-13",
+      "description": "2台online・明示serialが一方に一致 → そのserialだけ",
+      "preferred_serial": "192.168.1.50:5555",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "192.168.1.50:5555",
+          "auto_selected": false
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "192.168.1.50:5555",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-14",
+      "description": "明示serialがoffline・他がonline → 他端末へ切り替えない",
+      "preferred_serial": "192.168.1.50:5555",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "offline"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "192.168.1.50:5555",
+          "other_online_serials": [
+            "emulator-5554"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "192.168.1.50:5555",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-15",
+      "description": "明示serial(IPv6 zone)が切断・他がonline → 切り替えない",
+      "preferred_serial": "[fe80::1%wlan0]:5555",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "[fe80::1%wlan0]:5555",
+          "other_online_serials": [
+            "emulator-5554"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "[fe80::1%wlan0]:5555",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-16",
+      "description": "明示serial(mDNS TLS)一致・他もonline → そのserialだけ",
+      "preferred_serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+      "devices": [
+        {
+          "serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+          "state": "device"
+        },
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+          "auto_selected": false
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-17",
+      "description": "明示serialの前後空白は除去して一致",
+      "preferred_serial": "  emulator-5554  ",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": false
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-18",
+      "description": "空白のみの明示serialは未設定扱い → 1台を自動選択",
+      "preferred_serial": "   ",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": true
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-19",
+      "description": "空文字の明示serialは未設定扱い → 2台で選択要求",
+      "preferred_serial": "",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "multiple_devices_need_selection",
+          "online_serials": [
+            "emulator-5554",
+            "192.168.1.50:5555"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-20",
+      "description": "不正serialのonline端末は選択対象外（arbdと同じ）",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "device"
+        },
+        {
+          "serial": "bad serial",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "emulator-5554",
+          "auto_selected": true
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-21",
+      "description": "不正serialのonline端末のみ → 端末なし扱い",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "dev;rm -rf /",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": null,
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-22",
+      "description": "offline＋online各1台・自動 → online側を自動選択",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "offline"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "selected",
+          "serial": "192.168.1.50:5555",
+          "auto_selected": true
+        },
+        "daemon_attaches": true,
+        "ide": {
+          "selected_serial": "192.168.1.50:5555",
+          "selected_device_online": true,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-23",
+      "description": "明示serialがunauthorized・他がonline → 切り替えない",
+      "preferred_serial": "emulator-5554",
+      "devices": [
+        {
+          "serial": "emulator-5554",
+          "state": "unauthorized"
+        },
+        {
+          "serial": "192.168.1.50:5555",
+          "state": "device"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "waiting_for_preferred_device",
+          "preferred_serial": "emulator-5554",
+          "other_online_serials": [
+            "192.168.1.50:5555"
+          ]
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "emulator-5554",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting"
+        }
+      }
+    },
+    {
+      "id": "DS-24",
+      "description": "recovery状態の1台 → online扱いしない",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "recovery"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting",
+          "hint_contains": "recovery"
+        }
+      }
+    },
+    {
+      "id": "DS-25",
+      "description": "bootloader状態の1台 → online扱いしない",
+      "preferred_serial": null,
+      "devices": [
+        {
+          "serial": "R3CN1234567",
+          "state": "bootloader"
+        }
+      ],
+      "capture_enabled": true,
+      "expected": {
+        "selection": {
+          "status": "no_online_devices"
+        },
+        "daemon_attaches": false,
+        "ide": {
+          "selected_serial": "R3CN1234567",
+          "selected_device_online": false,
+          "toggle_state": "armed_waiting",
+          "hint_contains": "bootloader"
+        }
+      }
+    }
+  ],
+  "serial_validation_rows": [
+    {
+      "serial": "emulator-5554",
+      "valid": true,
+      "why": "emulator"
+    },
+    {
+      "serial": "R3CN1234567",
+      "valid": true,
+      "why": "USB"
+    },
+    {
+      "serial": "192.168.1.50:5555",
+      "valid": true,
+      "why": "Wi-Fi IPv4"
+    },
+    {
+      "serial": "[fe80::1]:5555",
+      "valid": true,
+      "why": "Wi-Fi IPv6"
+    },
+    {
+      "serial": "[2001:db8::42]:37891",
+      "valid": true,
+      "why": "IPv6 global"
+    },
+    {
+      "serial": "[fe80::1]",
+      "valid": true,
+      "why": "IPv6 without port"
+    },
+    {
+      "serial": "[fe80::1%wlan0]:5555",
+      "valid": true,
+      "why": "IPv6 zone id"
+    },
+    {
+      "serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+      "valid": true,
+      "why": "mDNS TLS"
+    },
+    {
+      "serial": "adb-2A121FDH200ABC-xYz123._adb-tls-connect._tcp.",
+      "valid": true,
+      "why": "mDNS trailing dot"
+    },
+    {
+      "serial_repeat": {
+        "unit": "a",
+        "count": 255
+      },
+      "valid": true,
+      "why": "255 bytes is the maximum"
+    },
+    {
+      "serial_repeat": {
+        "unit": "a",
+        "count": 256
+      },
+      "valid": false,
+      "why": "256 bytes exceeds the maximum"
+    },
+    {
+      "serial_repeat": {
+        "unit": "é",
+        "count": 128
+      },
+      "valid": false,
+      "why": "non-ASCII (256 bytes)"
+    },
+    {
+      "serial": "",
+      "valid": false,
+      "why": "empty"
+    },
+    {
+      "serial": " ",
+      "valid": false,
+      "why": "whitespace only"
+    },
+    {
+      "serial": " emulator-5554",
+      "valid": false,
+      "why": "leading space"
+    },
+    {
+      "serial": "emulator-5554 ",
+      "valid": false,
+      "why": "trailing space"
+    },
+    {
+      "serial": "a b",
+      "valid": false,
+      "why": "inner space"
+    },
+    {
+      "serial": "dev\ttab",
+      "valid": false,
+      "why": "tab"
+    },
+    {
+      "serial": "dev\nline2",
+      "valid": false,
+      "why": "newline"
+    },
+    {
+      "serial": "dev\u0000null",
+      "valid": false,
+      "why": "NUL"
+    },
+    {
+      "serial": "emulator-5554;rm -rf /",
+      "valid": false,
+      "why": "shell ;"
+    },
+    {
+      "serial": "192.168.1.50:5555 && id",
+      "valid": false,
+      "why": "shell &&"
+    },
+    {
+      "serial": "dev|cat",
+      "valid": false,
+      "why": "pipe"
+    },
+    {
+      "serial": "dev$(whoami)",
+      "valid": false,
+      "why": "command substitution"
+    },
+    {
+      "serial": "dev`id`",
+      "valid": false,
+      "why": "backtick"
+    },
+    {
+      "serial": "../escape",
+      "valid": false,
+      "why": "traversal"
+    },
+    {
+      "serial": "foo..bar",
+      "valid": false,
+      "why": ".."
+    },
+    {
+      "serial": "-flag-injection",
+      "valid": false,
+      "why": "leading -"
+    },
+    {
+      "serial": "--help",
+      "valid": false,
+      "why": "option injection"
+    },
+    {
+      "serial": "foo/bar",
+      "valid": false,
+      "why": "slash"
+    },
+    {
+      "serial": "foo\\bar",
+      "valid": false,
+      "why": "backslash"
+    },
+    {
+      "serial": "émulator-5554",
+      "valid": false,
+      "why": "non-ASCII"
+    },
+    {
+      "serial": "ｅmulator",
+      "valid": false,
+      "why": "full-width"
+    },
+    {
+      "serial": "[fe80::1",
+      "valid": false,
+      "why": "unclosed bracket"
+    },
+    {
+      "serial": "fe80::1]:5555",
+      "valid": false,
+      "why": "unopened bracket"
+    },
+    {
+      "serial": "[]:5555",
+      "valid": false,
+      "why": "empty IPv6 host"
+    },
+    {
+      "serial": "[fe80::1]:abc",
+      "valid": false,
+      "why": "non-numeric port"
+    },
+    {
+      "serial": "[fe80::1]:",
+      "valid": false,
+      "why": "empty port"
+    },
+    {
+      "serial": "[fe80::1]x",
+      "valid": false,
+      "why": "junk after bracket"
+    },
+    {
+      "serial": "x[fe80::1]",
+      "valid": false,
+      "why": "bracket not leading"
+    },
+    {
+      "serial": "[[a]]",
+      "valid": false,
+      "why": "nested brackets"
+    },
+    {
+      "serial": "dev%41",
+      "valid": false,
+      "why": "% outside brackets"
+    },
+    {
+      "serial": "[%eth0]:5555",
+      "valid": false,
+      "why": "empty host before zone"
+    },
+    {
+      "serial": "[fe80::1%]:5555",
+      "valid": false,
+      "why": "empty zone"
+    },
+    {
+      "serial": "[fe80::1%a%b]:5555",
+      "valid": false,
+      "why": "two zones"
+    },
+    {
+      "serial": "[fe80::1]%eth0",
+      "valid": false,
+      "why": "zone after bracket"
+    }
+  ]
+}

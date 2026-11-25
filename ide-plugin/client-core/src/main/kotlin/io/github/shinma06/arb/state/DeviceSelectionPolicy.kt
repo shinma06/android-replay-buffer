@@ -41,17 +41,18 @@ object DeviceSelectionPolicy {
 
     /**
      * Evaluates the target device given an optional [preferredSerial] and the currently visible
-     * [devices] from `adb devices`.
+     * [devices] from `adb devices`. Only online devices with a valid serial take part, exactly
+     * like `arbd`'s live target selection (Rust `arb_core::device::selectable_online_serials`).
      */
     fun evaluate(
         preferredSerial: String?,
         devices: List<AdbDeviceInfo>,
-    ): DeviceSelectionOutcome {
-        val onlineSerials = devices
-            .filter { it.state == AdbDeviceState.Device }
-            .map { it.serial }
-        return evaluateOnlineSerials(preferredSerial, onlineSerials)
-    }
+    ): DeviceSelectionOutcome = evaluateOnlineSerials(preferredSerial, selectableOnlineSerials(devices))
+
+    /** Mirrors Rust `arb_core::device::selectable_online_serials`. */
+    fun selectableOnlineSerials(devices: List<AdbDeviceInfo>): List<String> = devices
+        .filter { it.state == AdbDeviceState.Device && isValidAdbSerial(it.serial) }
+        .map { it.serial }
 
     /** Evaluates the policy directly against a list of online (`device` state) ADB serials. */
     fun evaluateOnlineSerials(

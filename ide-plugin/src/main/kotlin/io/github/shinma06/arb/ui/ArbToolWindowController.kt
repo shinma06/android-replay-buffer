@@ -542,7 +542,7 @@ class ArbToolWindowController(
                 val res = daemonService.withClient {
                     it.saveLogs(SaveLogsParams(windowSecs = durationSec))
                 }
-                val savedId = res.bundleId
+                val savedId = res.savedBundleId
                 if (savedId != null) {
                     ArbNotifications.notifyLogsOnlySaved(
                         project = project,
@@ -690,11 +690,7 @@ class ArbToolWindowController(
             try {
                 val res = daemonService.withClient { it.bundleForget(bundleId = bundleId) }
                 val note = formatForgetSummary(res)
-                val hasSkipped = res.skippedPresentBundleIds.isNotEmpty() ||
-                    res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
-                    res.skippedLeasedBundleIds.isNotEmpty() ||
-                    res.skippedActiveJobBundleIds.isNotEmpty()
-                if (hasSkipped) {
+                if (forgetNeedsWarning(res)) {
                     onNotifyWarning(note)
                 } else {
                     onNotifyInfo(note)
@@ -719,10 +715,7 @@ class ArbToolWindowController(
             try {
                 val res = daemonService.withClient { it.bundleForget(allMissing = true) }
                 val note = formatForgetSummary(res)
-                val hasSkipped = res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
-                    res.skippedLeasedBundleIds.isNotEmpty() ||
-                    res.skippedActiveJobBundleIds.isNotEmpty()
-                if (hasSkipped) {
+                if (forgetNeedsWarning(res)) {
                     onNotifyWarning(note)
                 } else {
                     onNotifyInfo(note)
@@ -839,7 +832,7 @@ class ArbToolWindowController(
                     it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
                 }
                 refreshAll()
-                val savedId = res.bundleId
+                val savedId = res.savedBundleId
                 if (savedId != null) {
                     if (openEditor) {
                         publishOnEdt { onOpenBundle(savedId, savedId, false) }
@@ -1169,6 +1162,7 @@ class ArbToolWindowController(
                     add("保存ジョブ保護=${gc.skippedActiveJobBundleIds.size}")
                 }
                 if (gc.failed.isNotEmpty()) add("失敗=${gc.failed.size}")
+                if (gc.reapedLeaseIds.isNotEmpty()) add("期限切れLease解放=${gc.reapedLeaseIds.size}")
             }
             return if (parts.isEmpty()) {
                 "ゴミ箱に削除対象はありませんでした"
@@ -1211,10 +1205,18 @@ class ArbToolWindowController(
             return true to "$summary（${hints.joinToString(" / ")}）"
         }
 
+        /** `true` when any requested entry was kept (present, unmounted, leased or saving). */
+        fun forgetNeedsWarning(res: BundleForgetResponse): Boolean =
+            res.skippedPresentBundleIds.isNotEmpty() ||
+                res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
+                res.skippedLeasedBundleIds.isNotEmpty() ||
+                res.skippedActiveJobBundleIds.isNotEmpty()
+
         /** Formats a concise summary of a non-destructive `bundle.forget` response. */
         fun formatForgetSummary(res: BundleForgetResponse): String {
             val parts = buildList {
                 if (res.forgottenBundleIds.isNotEmpty()) add("一覧から削除=${res.forgottenBundleIds.size}")
+                if (res.reapedLeaseIds.isNotEmpty()) add("期限切れLease解放=${res.reapedLeaseIds.size}")
                 if (res.skippedPresentBundleIds.isNotEmpty()) add("実在のためスキップ=${res.skippedPresentBundleIds.size}")
                 if (res.skippedStorageUnavailableBundleIds.isNotEmpty()) {
                     add("保存先未接続のため保護=${res.skippedStorageUnavailableBundleIds.size}")
@@ -1245,7 +1247,8 @@ internal fun CaptureBarState.toToolbarSnapshot(
             AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
             AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
             null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
-            else -> null
+            AdbDeviceState.Device -> null
+            else -> "端末が録画できる状態ではありません（${this.selectedDevice?.state?.wireName}）。"
         }
     }
     return ArbToolbarDaemonSnapshot(
