@@ -107,12 +107,6 @@ class PddContractTablesTest {
 
             val outcome = DeviceSelectionPolicy.evaluate(preferred, devices)
             assertEquals(expected["selection"], outcome.toWire(), "$id: selection")
-            assertEquals(
-                expected["daemon_attaches"].asBoolean,
-                armed && outcome is DeviceSelectionOutcome.Selected,
-                "$id: arbd attaches only when armed and a device is selected",
-            )
-
             val bar = CaptureBarReducer.fromStatus(
                 previous = CaptureBarState(),
                 status = idleStatus(),
@@ -120,6 +114,7 @@ class PddContractTablesTest {
                 config = ArbConfig(deviceSerial = preferred, captureEnabled = armed),
             )
             val ide = expected.getAsJsonObject("ide")
+            assertEquals(ide["has_online_device"].asBoolean, bar.hasOnlineDevice, "$id: valid online device")
             assertEquals(ide.str("selected_serial"), bar.selectedSerial, "$id: selectedSerial")
             assertEquals(ide["selected_device_online"].asBoolean, bar.isSelectedDeviceOnline, "$id: selected device online")
             assertEquals(outcome, bar.deviceSelection, "$id: reducer uses the shared policy")

@@ -2,8 +2,7 @@
   "$comment": "PDD SSOT: Rust (core/crates/arb-core/tests/pdd_contract_tables.rs) と Kotlin (client-core PddContractTablesTest / ide-plugin PddUiFeedbackContractTest) が全行を検証する。行を変えたら両方の実装を合わせること。",
   "schema_version": 1,
   "semantics": {
-    "selection": "online（adb state = device）かつ有効な serial の端末だけを対象に DeviceSelectionPolicy を評価した結果。Rust は arb_core::device::{selectable_online_serials, DeviceSelectionPolicy::evaluate}、Kotlin は DeviceSelectionPolicy.evaluate。auto_selected は Kotlin だけが持つ（明示 serial が空のとき true）。",
-    "daemon_attaches": "arbd の auto_attach / capture.start が capture を開始するか: capture_enabled かつ selection が selected。",
+    "selection": "online（adb state = device）かつ有効な serial の端末だけを対象に DeviceSelectionPolicy を評価した結果。Rust は arb_core::device::{selectable_online_serials, DeviceSelectionPolicy::evaluate}、Kotlin は DeviceSelectionPolicy.evaluate。auto_selected は Kotlin だけが持つ（明示 serial が空のとき true）。 録画開始にはこの選択に加えて arbd のアーム・容量・セッション状態が関与する。CLI/MCP の device.list は recovery / bootloader も元の状態で返し、IDE はその状態をヒントに表示する。",
     "ide": "CaptureBarReducer.fromStatus（初回 poll, 非録画）の selectedSerial / isSelectedDeviceOnline と、ツールバー共通の CaptureToggleState。capture_enabled は選択結果に関係なく維持される。"
   },
   "selection_rows": [
@@ -17,11 +16,11 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "off"
+          "toggle_state": "off",
+          "has_online_device": false
         }
       }
     },
@@ -35,11 +34,11 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false
         }
       }
     },
@@ -55,11 +54,11 @@
           "preferred_serial": "emulator-5554",
           "other_online_serials": []
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false
         }
       }
     },
@@ -80,11 +79,11 @@
           "serial": "emulator-5554",
           "auto_selected": true
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -105,11 +104,11 @@
           "serial": "emulator-5554",
           "auto_selected": true
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "off"
+          "toggle_state": "off",
+          "has_online_device": true
         }
       }
     },
@@ -130,11 +129,11 @@
           "serial": "emulator-5554",
           "auto_selected": false
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -157,11 +156,11 @@
             "emulator-5554"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -180,11 +179,11 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false
         }
       }
     },
@@ -203,11 +202,11 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false
         }
       }
     },
@@ -228,11 +227,11 @@
           "preferred_serial": "R3CN1234567",
           "other_online_serials": []
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false
         }
       }
     },
@@ -259,11 +258,11 @@
             "192.168.1.50:5555"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -294,11 +293,11 @@
             "192.168.1.50:5555"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -323,11 +322,11 @@
           "serial": "192.168.1.50:5555",
           "auto_selected": false
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "192.168.1.50:5555",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -354,11 +353,11 @@
             "emulator-5554"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "192.168.1.50:5555",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -381,11 +380,11 @@
             "emulator-5554"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "[fe80::1%wlan0]:5555",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -410,11 +409,11 @@
           "serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
           "auto_selected": false
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -439,11 +438,11 @@
           "serial": "emulator-5554",
           "auto_selected": false
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -464,11 +463,11 @@
           "serial": "emulator-5554",
           "auto_selected": true
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -495,11 +494,11 @@
             "192.168.1.50:5555"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -524,11 +523,11 @@
           "serial": "emulator-5554",
           "auto_selected": true
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -547,11 +546,12 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": null,
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": false,
+          "hint_contains": "有効な serial"
         }
       }
     },
@@ -576,11 +576,11 @@
           "serial": "192.168.1.50:5555",
           "auto_selected": true
         },
-        "daemon_attaches": true,
         "ide": {
           "selected_serial": "192.168.1.50:5555",
           "selected_device_online": true,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -607,11 +607,11 @@
             "192.168.1.50:5555"
           ]
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "emulator-5554",
           "selected_device_online": false,
-          "toggle_state": "armed_waiting"
+          "toggle_state": "armed_waiting",
+          "has_online_device": true
         }
       }
     },
@@ -630,12 +630,12 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
           "toggle_state": "armed_waiting",
-          "hint_contains": "recovery"
+          "hint_contains": "recovery",
+          "has_online_device": false
         }
       }
     },
@@ -654,12 +654,12 @@
         "selection": {
           "status": "no_online_devices"
         },
-        "daemon_attaches": false,
         "ide": {
           "selected_serial": "R3CN1234567",
           "selected_device_online": false,
           "toggle_state": "armed_waiting",
-          "hint_contains": "bootloader"
+          "hint_contains": "bootloader",
+          "has_online_device": false
         }
       }
     }

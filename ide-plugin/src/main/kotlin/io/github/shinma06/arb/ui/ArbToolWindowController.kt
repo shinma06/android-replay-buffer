@@ -389,12 +389,7 @@ class ArbToolWindowController(
 
     private fun disabledDeviceHint(): String? {
         deviceSelectionNotice?.let { return it }
-        return when (captureState.selectedDevice?.state) {
-            AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
-            AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
-            null -> NO_DEVICES_PLACEHOLDER
-            else -> null
-        }
+        return captureState.deviceStateHint()
     }
 
     // ---- Commands invoked from Jewel UI & tests ----
@@ -1134,7 +1129,11 @@ class ArbToolWindowController(
                 devices.isEmpty() ->
                     entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
             }
-            devices.mapTo(entries) { DeviceDropdownEntry(formatDeviceLabel(it), it.serial) }
+            devices.mapTo(entries) { device ->
+                val serial = device.serial.takeIf(DeviceSelectionPolicy::isValidAdbSerial)
+                if (serial == null) DeviceDropdownEntry("無効な端末 serial", null)
+                else DeviceDropdownEntry(formatDeviceLabel(device), serial)
+            }
             return entries
         }
         private const val META_BUDGET_PER_POLL = 24
@@ -1235,6 +1234,19 @@ class ArbToolWindowController(
     }
 }
 
+private fun CaptureBarState.deviceStateHint(): String? {
+    val state = selectedDevice?.state
+    return when {
+        devices.isNotEmpty() && devices.all { !DeviceSelectionPolicy.isValidAdbSerial(it.serial) } ->
+            "有効な serial の端末がありません。ADB の端末一覧を確認してください。"
+        state == null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
+        state == AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
+        state == AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+        state == AdbDeviceState.Device -> null
+        else -> "端末が録画できる状態ではありません（${state.wireName}）。"
+    }
+}
+
 internal fun CaptureBarState.toToolbarSnapshot(
     captureEnabled: Boolean = this.config.captureEnabled,
 ): ArbToolbarDaemonSnapshot {
@@ -1243,13 +1255,7 @@ internal fun CaptureBarState.toToolbarSnapshot(
             if (this.selectedSerial == null) ArbToolWindowController.MULTIPLE_DEVICES_PROMPT else null
         is DeviceSelectionOutcome.WaitingForPreferredDevice ->
             "${sel.preferredSerial} は${ArbToolWindowController.WAITING_FOR_PINNED_SUFFIX}"
-        else -> when (this.selectedDevice?.state) {
-            AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
-            AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
-            null -> ArbToolWindowController.NO_DEVICES_PLACEHOLDER
-            AdbDeviceState.Device -> null
-            else -> "端末が録画できる状態ではありません（${this.selectedDevice?.state?.wireName}）。"
-        }
+        else -> deviceStateHint()
     }
     return ArbToolbarDaemonSnapshot(
         probed = true,

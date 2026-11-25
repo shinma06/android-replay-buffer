@@ -92,11 +92,10 @@ fn device_selection_rows_match_rust_policy() {
                 "{id}: auto_selected only on `selected`"
             );
         }
-        let armed = row["capture_enabled"].as_bool().unwrap();
         assert_eq!(
-            expected["daemon_attaches"],
-            json!(armed && is_selected),
-            "{id}: arbd attaches only when armed and a device is selected"
+            expected["ide"]["has_online_device"],
+            json!(!online.is_empty()),
+            "{id}: valid online device"
         );
     }
 }

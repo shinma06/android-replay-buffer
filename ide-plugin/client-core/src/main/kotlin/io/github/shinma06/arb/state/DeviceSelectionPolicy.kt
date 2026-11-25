@@ -51,8 +51,11 @@ object DeviceSelectionPolicy {
 
     /** Mirrors Rust `arb_core::device::selectable_online_serials`. */
     fun selectableOnlineSerials(devices: List<AdbDeviceInfo>): List<String> = devices
-        .filter { it.state == AdbDeviceState.Device && isValidAdbSerial(it.serial) }
+        .filter(::isSelectableOnline)
         .map { it.serial }
+
+    fun isSelectableOnline(device: AdbDeviceInfo): Boolean =
+        device.state == AdbDeviceState.Device && isValidAdbSerial(device.serial)
 
     /** Evaluates the policy directly against a list of online (`device` state) ADB serials. */
     fun evaluateOnlineSerials(

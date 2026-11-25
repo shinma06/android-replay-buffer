@@ -2341,6 +2341,10 @@ mod tests {
         }
 
         let adb = AdbClient::with_runner("adb".into(), Devices);
+        assert_eq!(
+            crate::screenshot::resolve_screenshot_serial(&adb, None).unwrap(),
+            "phone"
+        );
         assert!(matches!(super::select_live_target(&adb, None).unwrap(),
             DeviceSelectionOutcome::Selected { serial } if serial == "phone"));
         assert!(
