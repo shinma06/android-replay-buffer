@@ -445,6 +445,61 @@ fn crafted_huge_sample_table_counts_return_err_without_allocating() {
     }
 }
 
+#[test]
+fn full_hd_forward_playback_starts_one_decoder_per_gop_within_128_mib() {
+    let tmp = TempDir::new().expect("tmp");
+    let path = tmp.path().join("fhd.mp4");
+    let frames: Vec<_> = (0..30)
+        .map(|i| DecodedFrame {
+            frame_index: i,
+            width: 1920,
+            height: 1080,
+            format: PixelFormat::Yuv420p,
+            data: vec![100 + u8::try_from(i).unwrap(); 1920 * 1080 * 3 / 2],
+        })
+        .collect();
+    let packets = OpenH264Backend::new()
+        .encode_yuv420p_sequence(&frames, 30, FRAME_NS, EncodeParams::default())
+        .unwrap();
+    drop(frames);
+    mux_raw_h264_to_mp4(&path, 1920, 1080, TIMESCALE, DUR_TICKS, &packets).unwrap();
+    let track = Mp4VideoTrack::open(path).unwrap();
+    let backend = default_codec_backend();
+    let budget = 128 * 1024 * 1024;
+    let mut cache = GopLruCache::new(4, budget);
+    for i in 0..30 {
+        let (frame, _) = cache
+            .fetch_frame(&track, i, PixelFormat::Rgba8, backend.as_ref())
+            .unwrap();
+        assert_eq!(frame.frame_index, i);
+        assert_eq!(frame.byte_len(), 1920 * 1080 * 4);
+        assert!(cache.stats().cached_bytes <= budget);
+    }
+    assert_eq!(
+        cache.bypassed_decodes(),
+        1,
+        "one IDR start for 30 FHD frames"
+    );
+    assert_eq!(
+        cache
+            .fetch_frame(&track, 29, PixelFormat::Rgba8, backend.as_ref())
+            .unwrap()
+            .1,
+        crate::playback::CacheLookup::Hit
+    );
+    let (rewound, _) = cache
+        .fetch_frame(&track, 0, PixelFormat::Rgba8, backend.as_ref())
+        .unwrap();
+    assert_eq!(
+        rewound.data,
+        backend
+            .decode_frame(&track, 0, PixelFormat::Rgba8)
+            .unwrap()
+            .data
+    );
+    assert_eq!(cache.bypassed_decodes(), 2);
+}
+
 // ---------------- S10: GOP cache memory bound before decoding ----------------
 
 #[test]
@@ -466,8 +521,39 @@ fn gop_cache_never_decodes_a_gop_larger_than_max_bytes_into_memory() {
     assert_eq!(got.data, expected.data, "bypass returns the exact frame");
     let stats = cache.stats();
     assert_eq!(stats.cached_gops, 0, "oversized GOP must not be cached");
-    assert_eq!(stats.cached_bytes, 0, "no decoded bytes retained");
+    assert_eq!(
+        stats.cached_bytes,
+        frame_bytes * 4,
+        "bounded sliding window"
+    );
+    for index in 18..30 {
+        let (frame, _) = cache
+            .fetch_frame(&track, index, PixelFormat::Rgb24, &backend)
+            .unwrap();
+        assert_eq!(
+            frame.data,
+            backend
+                .decode_frame(&track, index, PixelFormat::Rgb24)
+                .unwrap()
+                .data
+        );
+        assert!(cache.stats().cached_bytes <= frame_bytes * 4);
+    }
+    for index in [29, 28, 29] {
+        assert_eq!(
+            cache
+                .fetch_frame(&track, index, PixelFormat::Rgb24, &backend)
+                .unwrap()
+                .1,
+            crate::playback::CacheLookup::Hit
+        );
+    }
     assert_eq!(cache.bypassed_decodes(), 1, "one bypassed decode");
+
+    cache
+        .fetch_frame(&track, 2, PixelFormat::Rgb24, &backend)
+        .unwrap();
+    assert_eq!(cache.bypassed_decodes(), 2);
 
     // A GOP that fits is still cached normally.
     let small = fixture(tmp.path(), "dense.mp4", 30, 3);
