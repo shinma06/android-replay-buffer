@@ -584,9 +584,11 @@ impl TrayBackend for NativeBackend {
 
     fn replace_menu_items(&mut self, items: &[ModelMenuItem]) -> Result<(), String> {
         while self.root.remove_at(0).is_some() {}
-        self.populate_root(items)?;
+        let populated = self.populate_root(items);
+        // Publish whatever the root now holds even after a failed rebuild, so Linux does not keep
+        // showing the removed items.
         self.refresh_snapshot();
-        Ok(())
+        populated
     }
 
     fn set_icon(&mut self, icon: &IconImage) -> Result<(), String> {

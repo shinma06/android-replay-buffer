@@ -36,7 +36,6 @@ fn is_quick_method(method: &str) -> bool {
             | "system.status"
             | "system.shutdown"
             | "config.get"
-            | "config.update"
             | "save.list_jobs"
             | "save.discard"
             | "bundle.list"
@@ -757,6 +756,7 @@ mod tests {
             "save.retry",
             "save.retarget",
             "capture.start",
+            "config.update",
             "device.list",
             "bundle.gc",
             "bundle.open",
