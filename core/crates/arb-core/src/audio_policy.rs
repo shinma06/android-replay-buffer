@@ -15,14 +15,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::CaptureMode;
+use crate::config::{AudioCaptureMode, CaptureMode};
 
 /// Minimum Android API level for non-muting `audio_source=playback audio_dup=true`
 /// (Android 13 / API 33).
 ///
 /// `scrcpy-server` itself can capture audio from API 30, but below API 33 only by muting the
-/// device's own playback, so ARB never captures audio below this level.
-pub const MIN_AUDIO_PLAYBACK_API_LEVEL: u32 = 33;
+/// device's own playback, so the default route never captures audio below this level.
+pub const MIN_AUDIO_PLAYBACK_API_LEVEL: u32 = AudioCaptureMode::PlaybackDup.min_api();
 
 /// Maximum number of bytes of `scrcpy-server` stderr kept in an `audio_reason`.
 pub const MAX_STDERR_TAIL_BYTES: usize = 600;
@@ -259,6 +259,34 @@ impl AudioLaunchPolicy {
     }
 }
 
+/// Identifies the current selection even if a user toggles twice between reconnects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct AudioModeSelection {
+    mode: AudioCaptureMode,
+    revision: u64,
+}
+
+impl AudioModeSelection {
+    /// Current device audio route.
+    #[must_use]
+    pub const fn mode(self) -> AudioCaptureMode {
+        self.mode
+    }
+
+    /// Invalidate previous fatal outcomes only when the route changes.
+    pub fn select(&mut self, mode: AudioCaptureMode) {
+        if self.mode != mode {
+            self.revision = self.revision.wrapping_add(1);
+            self.mode = mode;
+        }
+    }
+
+    /// Scope an existing device/boot identity to this selection.
+    pub fn latch_key<K>(self, device: K) -> (K, u64) {
+        (device, self.revision)
+    }
+}
+
 /// Inputs of one audio policy decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AudioPolicyInput {
@@ -266,6 +294,8 @@ pub struct AudioPolicyInput {
     pub api: Option<u32>,
     /// Live capture mode.
     pub mode: CaptureMode,
+    /// Explicitly selected device audio route.
+    pub audio_capture_mode: AudioCaptureMode,
     /// Whether the user asked for audio (`audio_enabled`).
     pub requested: bool,
     /// Whether a fatal audio failure already happened on this device boot.
@@ -293,7 +323,7 @@ pub struct AudioVerdict {
 #[must_use]
 pub const fn api_is_below_audio_floor(api: Option<u32>) -> bool {
     match api {
-        Some(level) => level > 0 && level < MIN_AUDIO_PLAYBACK_API_LEVEL,
+        Some(level) => AudioCaptureMode::PlaybackDup.unsupported_on(level),
         None => false,
     }
 }
@@ -319,7 +349,7 @@ pub const fn plan_launch(input: AudioPolicyInput) -> AudioLaunchPolicy {
         return AudioLaunchPolicy::Disabled;
     }
     if let Some(level) = input.api
-        && api_is_below_audio_floor(input.api)
+        && input.audio_capture_mode.unsupported_on(level)
     {
         return AudioLaunchPolicy::ProactiveOff { api: level };
     }
@@ -339,6 +369,7 @@ pub const fn plan_requested_launch(
     plan_launch(AudioPolicyInput {
         api,
         mode: CaptureMode::VideoAndLogs,
+        audio_capture_mode: AudioCaptureMode::PlaybackDup,
         requested: true,
         runtime_disabled: matches!(latch, RuntimeAudioLatch::StickyOff),
         outcome: ScrcpyAudioOutcome::NotAttempted,
@@ -488,9 +519,19 @@ impl<K: PartialEq> StickyAudioLatch<K> {
 /// (`0`) or at least [`MIN_AUDIO_PLAYBACK_API_LEVEL`].
 #[must_use]
 pub fn api_below_min_reason(api: u32) -> Option<String> {
-    api_is_below_audio_floor(Some(api)).then(|| {
+    below_min_reason(AudioCaptureMode::PlaybackDup, api)
+}
+
+/// Diagnostic for the selected route's minimum Android version.
+#[must_use]
+pub fn below_min_reason(mode: AudioCaptureMode, api: u32) -> Option<String> {
+    mode.unsupported_on(api).then(|| {
+        let requirement = match mode {
+            AudioCaptureMode::PlaybackDup => "Android 13+ (API 33+, non-muting playback capture)",
+            AudioCaptureMode::OutputCompat => "Android 11+ (API 30+, output capture)",
+        };
         format!(
-            "Audio capture requires Android 13+ (API 33+, non-muting playback capture); detected API {api}. Continuing with video + logs + taps."
+            "Audio capture requires {requirement}; detected API {api}. Continuing with video + logs + taps."
         )
     })
 }
@@ -527,12 +568,26 @@ pub fn runtime_failure_reason(
     detail: Option<&str>,
     stderr: Option<&str>,
 ) -> String {
+    failure_reason_for_mode(AudioCaptureMode::PlaybackDup, cause, detail, stderr)
+}
+
+/// Runtime diagnostic for the explicitly selected source.
+#[must_use]
+pub fn failure_reason_for_mode(
+    mode: AudioCaptureMode,
+    cause: AudioCause,
+    detail: Option<&str>,
+    stderr: Option<&str>,
+) -> String {
     let detail = detail.map(str::trim).filter(|d| !d.is_empty());
     let with_detail = |text: &str| match detail {
         Some(d) => format!("{text} ({d})"),
         None => text.to_owned(),
     };
     let mut reason = match cause {
+        AudioCause::DeviceCaptureFailed if mode == AudioCaptureMode::OutputCompat => {
+            with_detail("Device could not start output audio capture (REMOTE_SUBMIX, codec_id = 0)")
+        }
         AudioCause::DeviceCaptureFailed => with_detail(
             "Device could not start playback audio capture (scrcpy AudioPlaybackCapture failed, codec_id = 0); another capture or mirroring session, or an OEM AudioPolicy restriction, may be holding it",
         ),

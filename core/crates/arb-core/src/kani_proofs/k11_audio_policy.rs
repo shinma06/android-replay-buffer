@@ -5,11 +5,20 @@
 //! outcome. Expected values come from independent oracles written here, not from the
 //! production helpers (`is_fatal`, `label_class`), so a one-line production mutation fails.
 
+use crate::audio_policy::AudioModeSelection;
 use crate::audio_policy::{
     AudioCaptureState, AudioCause, AudioLabelClass, AudioLaunchPolicy, AudioPolicyInput,
     ScrcpyAudioOutcome, StickyAudioLatch, evaluate, plan_requested_launch,
 };
-use crate::config::CaptureMode;
+use crate::config::{AudioCaptureMode, CaptureMode};
+
+fn any_source() -> AudioCaptureMode {
+    if kani::any() {
+        AudioCaptureMode::PlaybackDup
+    } else {
+        AudioCaptureMode::OutputCompat
+    }
+}
 
 fn any_mode() -> CaptureMode {
     if kani::any() {
@@ -44,6 +53,7 @@ fn oracle_is_fatal(outcome: ScrcpyAudioOutcome) -> bool {
 
 fn any_input(api: Option<u32>) -> AudioPolicyInput {
     AudioPolicyInput {
+        audio_capture_mode: any_source(),
         api,
         mode: any_mode(),
         requested: kani::any(),
@@ -98,6 +108,7 @@ fn k11_g8_4_api_28_to_32_degrades_to_video_and_logs() {
     let api: u32 = kani::any();
     kani::assume((28..=32).contains(&api));
     let verdict = evaluate(AudioPolicyInput {
+        audio_capture_mode: AudioCaptureMode::PlaybackDup,
         api: Some(api),
         mode: CaptureMode::VideoAndLogs,
         requested: true,
@@ -166,10 +177,12 @@ fn k11_g8_6_fatal_audio_failure_is_sticky_until_restart() {
     // Oracle state: boot that saw a fatal outcome since the last explicit restart.
     let mut fatal_boot: Option<u8> = None;
     let mut boot: u8 = 0;
-    for _ in 0..K {
+    let mut launches = 0;
+    while launches < K {
+        launches += 1;
         if kani::any() {
             // The device rebooted: a new boot id (boots never come back).
-            boot += 1;
+            boot = boot.wrapping_add(1);
         }
         let restart: bool = kani::any();
         if restart {
@@ -190,6 +203,7 @@ fn k11_g8_6_fatal_audio_failure_is_sticky_until_restart() {
             ScrcpyAudioOutcome::NotAttempted
         };
         let verdict = evaluate(AudioPolicyInput {
+            audio_capture_mode: AudioCaptureMode::PlaybackDup,
             api: Some(api),
             mode: CaptureMode::VideoAndLogs,
             requested: true,
@@ -215,4 +229,41 @@ fn k11_g8_6_fatal_audio_failure_is_sticky_until_restart() {
         }
         latch.record(boot, outcome);
     }
+}
+
+/// Exhaustive Android API boundaries for explicitly selected output audio.
+#[kani::proof]
+fn k11_output_compat_api_floor() {
+    let api: u32 = kani::any();
+    let input = AudioPolicyInput {
+        api: Some(api),
+        audio_capture_mode: AudioCaptureMode::OutputCompat,
+        mode: CaptureMode::VideoAndLogs,
+        requested: true,
+        runtime_disabled: false,
+        outcome: any_outcome(),
+    };
+    let verdict = evaluate(input);
+    if (1..30).contains(&api) {
+        assert!(verdict.cause == AudioCause::ApiBelowMin);
+        assert!(!verdict.policy.launches_audio());
+    } else {
+        assert!(verdict.cause != AudioCause::ApiBelowMin);
+        assert!(verdict.policy.launches_audio());
+    }
+}
+
+/// Changing routes (also switching back) releases a fatal latch; reapplying a route retains it.
+#[kani::proof]
+fn k11_explicit_source_change_retries_audio() {
+    let mut selection = AudioModeSelection::default();
+    let mut latch = StickyAudioLatch::new();
+    let boot: u8 = kani::any();
+    latch.record(selection.latch_key(boot), ScrcpyAudioOutcome::Code1);
+    selection.select(AudioCaptureMode::PlaybackDup);
+    assert!(latch.is_disabled_for(&selection.latch_key(boot)));
+    selection.select(AudioCaptureMode::OutputCompat);
+    assert!(!latch.is_disabled_for(&selection.latch_key(boot)));
+    selection.select(AudioCaptureMode::PlaybackDup);
+    assert!(!latch.is_disabled_for(&selection.latch_key(boot)));
 }

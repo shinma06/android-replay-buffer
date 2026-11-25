@@ -11,7 +11,7 @@ use super::{
     StickyAudioLatch, api_below_min_reason, evaluate, plan_requested_launch,
     runtime_failure_reason, stderr_tail,
 };
-use crate::config::CaptureMode;
+use crate::config::{AudioCaptureMode, CaptureMode};
 
 /// The shared golden table, read verbatim by the IDE `client-core` tests too.
 const GOLDEN_TABLE: &str = include_str!("../../../../../docs/specs/audio-policy-table.json");
@@ -91,7 +91,7 @@ fn g8_8_golden_table_cause_list_matches_rust_enum_and_label_classes() {
 fn g8_8_golden_table_rows_match_evaluate() {
     let table = table();
     let rows = table["rows"].as_array().expect("rows array");
-    assert!(rows.len() >= 43, "golden table keeps its coverage");
+    assert!(rows.len() >= 86, "golden table keeps its coverage");
     let mut ids = BTreeSet::new();
     let mut covered_outcomes = BTreeSet::new();
     let mut covered_causes = BTreeSet::new();
@@ -102,6 +102,8 @@ fn g8_8_golden_table_rows_match_evaluate() {
             .as_u64()
             .map(|v| u32::try_from(v).expect("api fits u32"));
         let input = AudioPolicyInput {
+            audio_capture_mode: serde_json::from_value(row["audio_capture_mode"].clone())
+                .expect("audio_capture_mode"),
             api,
             mode: mode_from_wire(row["mode"].as_str().expect("mode")),
             requested: row["requested"].as_bool().expect("requested"),
@@ -305,7 +307,7 @@ proptest! {
         runtime_disabled in any::<bool>(),
         outcome in any_outcome(),
     ) {
-        let v = evaluate(AudioPolicyInput { api: Some(api), mode, requested, runtime_disabled, outcome });
+        let v = evaluate(AudioPolicyInput { audio_capture_mode: AudioCaptureMode::PlaybackDup, api: Some(api), mode, requested, runtime_disabled, outcome });
         prop_assert_ne!(v.cause, AudioCause::ApiBelowMin);
         prop_assert_ne!(v.cause.label_class(), AudioLabelClass::UnsupportedApi);
     }
@@ -317,7 +319,7 @@ proptest! {
         runtime_disabled in any::<bool>(),
         outcome in any_outcome(),
     ) {
-        let v = evaluate(AudioPolicyInput {
+        let v = evaluate(AudioPolicyInput { audio_capture_mode: AudioCaptureMode::PlaybackDup,
             api: Some(api), mode: CaptureMode::VideoAndLogs, requested: true, runtime_disabled, outcome,
         });
         prop_assert_eq!(v.policy, AudioLaunchPolicy::ProactiveOff { api });
@@ -336,7 +338,7 @@ proptest! {
         b in failure_outcome(),
         stderr in "[ -~]{1,80}(\n[ -~]{0,80}){0,3}",
     ) {
-        let eval = |outcome| evaluate(AudioPolicyInput {
+        let eval = |outcome| evaluate(AudioPolicyInput { audio_capture_mode: AudioCaptureMode::PlaybackDup,
             api, mode: CaptureMode::VideoAndLogs, requested: true, runtime_disabled: false, outcome,
         });
         let (va, vb) = (eval(a), eval(b));
@@ -360,7 +362,7 @@ proptest! {
     ) {
         let mode = if logs_only { CaptureMode::LogsOnly } else { CaptureMode::VideoAndLogs };
         let requested = logs_only && runtime_disabled;
-        let v = evaluate(AudioPolicyInput { api, mode, requested, runtime_disabled, outcome });
+        let v = evaluate(AudioPolicyInput { audio_capture_mode: AudioCaptureMode::PlaybackDup, api, mode, requested, runtime_disabled, outcome });
         prop_assert_eq!(v.state, AudioCaptureState::Disabled);
         prop_assert_eq!(v.cause.label_class(), AudioLabelClass::Disabled);
     }
@@ -381,6 +383,7 @@ fn every_mode_and_outcome_keeps_video_unless_logs_only_or_both_failed() {
         for outcome in ScrcpyAudioOutcome::ALL {
             for api in [None, Some(0), Some(28), Some(33)] {
                 let v = evaluate(AudioPolicyInput {
+                    audio_capture_mode: AudioCaptureMode::PlaybackDup,
                     api,
                     mode,
                     requested: true,

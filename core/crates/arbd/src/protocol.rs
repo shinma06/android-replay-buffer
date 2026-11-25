@@ -179,6 +179,9 @@ pub struct CaptureStatusView {
     /// Honest live audio capture availability state (`unknown`, `available`, `disabled`, `unavailable`).
     #[serde(default)]
     pub audio_state: AudioCaptureState,
+    /// Audio source selected for this capture attempt.
+    #[serde(default)]
+    pub audio_capture_mode: arb_core::config::AudioCaptureMode,
     /// Machine-readable cause behind `audio_state` (`api_below_min`, `device_capture_failed`,
     /// `encoder_fatal`, ...). Clients pick their wording from this, never from `audio_reason`;
     /// only `api_below_min` means the device OS is unsupported. Absent from older daemons.
@@ -324,7 +327,7 @@ pub struct CaptureStartParams {
     pub max_fps: Option<u32>,
     /// Target H.264 bitrate in bits per second (default `4_000_000`).
     pub video_bit_rate: Option<u32>,
-    /// Enable playback audio capture on API >= 33 (default `true`).
+    /// Enable audio capture with the configured source (defaults to the saved toggle).
     pub audio_enabled: Option<bool>,
     /// Enable companion logcat stream (default `true`).
     pub logcat_enabled: Option<bool>,

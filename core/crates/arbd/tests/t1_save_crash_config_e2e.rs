@@ -404,6 +404,9 @@ fn t1_config_get_update_persistence_and_validation() {
     let mut client = RpcClient::connect(server.endpoint());
 
     let initial = client.call("config.get", &json!({}));
+    assert_eq!(initial["config"]["audio_capture_mode"], "playback_dup");
+    let (code, _) = client.call_err("config.update", &json!({"audio_capture_mode": "invalid"}));
+    assert_eq!(code, -32_602);
     assert_eq!(initial["config"]["config_version"], 1, "config_version = 1");
     assert_eq!(initial["config"]["save_window_secs"], 300, "default 300s");
     assert_eq!(
@@ -433,11 +436,13 @@ fn t1_config_get_update_persistence_and_validation() {
             "video_max_size": 1280,
             "video_max_fps": 60,
             "audio_enabled": false,
+            "audio_capture_mode": "output_compat",
             "crash_autosave_cooldown_secs": 25,
             "output_dir_override": override_dir,
             "ide_default_save_action": "save_only",
         }),
     );
+    assert_eq!(updated["config"]["audio_capture_mode"], "output_compat");
     assert_eq!(updated["config"]["save_window_secs"], 90, "updated window");
     assert_eq!(
         updated["config"]["ide_default_save_action"], "save_only",
