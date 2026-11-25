@@ -129,11 +129,11 @@ class AudioSyncPlayerBarrierTest {
         player.play()
         val pump = Thread { player.pumpNextSlice() }.apply { isDaemon = true; start() }
         assertTrue(sink.barrier.entered.await(5, TimeUnit.SECONDS))
-        val flushesBeforeSeek = flushes.get()
         player.seek(500_000_000L) // user seeks while the old slice is still in the device
+        val flushesAfterSeek = flushes.get()
         sink.barrier.gate.countDown()
         pump.join(5_000)
-        assertTrue(flushes.get() > flushesBeforeSeek, "the stale slice written after the seek must be flushed")
+        assertTrue(flushes.get() > flushesAfterSeek, "the stale slice written after the seek must be flushed")
         assertEquals(500_000_000L, player.audioPositionNs, "the stale write must not advance the new position")
         player.close()
     }
@@ -215,11 +215,11 @@ class AudioSyncPlayerBarrierTest {
     fun audioPumpFailureMidPlaybackIsReportedUnavailableWhileVideoContinues() {
         val clock = VirtualClock()
         val inner = source()
-        val failing = AtomicBoolean(false)
+        val failRead = CountDownLatch(1)
         val flaky = object : PcmAudioSource by inner {
             override fun readPcmSlice(startNs: Long, endNs: Long): ByteArray {
-                if (failing.get()) throw java.io.IOException("decoder died")
-                return inner.readPcmSlice(startNs, endNs)
+                check(failRead.await(10, TimeUnit.SECONDS))
+                throw java.io.IOException("decoder died")
             }
         }
         val sink = BarrierSink(blockWrites = 0)
@@ -228,7 +228,7 @@ class AudioSyncPlayerBarrierTest {
         val controller = PlaybackController(20, NoopSeeker(), framePtsNs = pts, clock = clock, autoRunLoop = false)
         controller.attachAudioPlayer(player)
         controller.play()
-        failing.set(true)
+        failRead.countDown()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (player.audioState != AudioState.UNAVAILABLE && System.nanoTime() < deadline) Thread.sleep(5)
         assertEquals(AudioState.UNAVAILABLE, player.audioState, "the failure is surfaced, not silent")

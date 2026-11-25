@@ -301,7 +301,7 @@ class ArbT6dUiGlueAuditTest {
             assertTrue(transport.calls.isEmpty())
 
             controller.selectDeviceByIndex(2)
-            awaitTrue { transport.methods().contains("config.update") }
+            awaitTrue { controller.selectedDeviceSerial == "R3CN1234567" }
             assertEquals("R3CN1234567", controller.selectedDeviceSerial)
             assertNull(controller.captureState.autoSelectedSerial, "explicit choice must not be treated as auto-selected")
             val update = transport.calls.first { it.method == "config.update" }

@@ -75,7 +75,7 @@ fun awaitTrue(msg: () -> String = { "condition timed out" }, timeoutMs: Long = 1
 }
 
 /** A valid triple-buffered ARB SHM file with a 2x2 RGBA8 frame already published in slot 0. */
-fun writeValidShmFile(path: Path, frameIndex: Long = 0L): Path {
+fun writeValidShmFile(path: Path, frameIndex: Long = 0L, generation: Long = 1L): Path {
     val slotCapacity = 64
     val alignedStride = ShmFrameRingReader.alignUp(slotCapacity, ShmFrameRingReader.CACHE_LINE_BYTES)
     val totalSize = ShmFrameRingReader.HEADER_REGION_BYTES + alignedStride * ShmFrameRingReader.SHM_SLOT_COUNT
@@ -86,10 +86,10 @@ fun writeValidShmFile(path: Path, frameIndex: Long = 0L): Path {
     buf.putInt(12, ShmFrameRingReader.SHM_SLOT_COUNT)
     buf.putLong(16, slotCapacity.toLong())
     buf.putInt(24, 0)
-    buf.putLong(32, 1L)
+    buf.putLong(32, generation)
     val slotBase = ShmFrameRingReader.RING_HEADER_BYTES
     buf.putLong(slotBase + 0, 2L)
-    buf.putLong(slotBase + 8, 1L)
+    buf.putLong(slotBase + 8, generation)
     buf.putLong(slotBase + 16, frameIndex)
     buf.putLong(slotBase + 24, 10_000_000_000L)
     buf.putInt(slotBase + 32, 2)
@@ -100,7 +100,7 @@ fun writeValidShmFile(path: Path, frameIndex: Long = 0L): Path {
     buf.putInt(slotBase + 52, 0)
     val payloadOffset = ShmFrameRingReader.HEADER_REGION_BYTES
     for (i in 0 until 16) buf.put(payloadOffset + i, 0x7F.toByte())
-    Files.write(path, buf.array())
+    Files.write(path, buf.array(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)
     return path
 }
 

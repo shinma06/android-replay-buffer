@@ -18,6 +18,7 @@ import io.github.shinma06.arb.state.APPROXIMATE_PREVIEW_BADGE_TEXT
 import io.github.shinma06.arb.state.ActiveTapOverlay
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.AuxStream
+import io.github.shinma06.arb.state.StreamLoadState
 import io.github.shinma06.arb.state.AuxStreamFailure
 import io.github.shinma06.arb.state.EventStreamFilter
 import io.github.shinma06.arb.state.activeTimelineItemIndex
@@ -156,14 +157,6 @@ class ArbStudioController(
     var isExporting: Boolean by mutableStateOf(false)
         private set
 
-    /**
-     * Bumped (on the EDT) by every user action that sets the IN/OUT selection. A worker that was
-     * started by an earlier selection action publishes its result only while this is unchanged, so
-     * a stale result can never overwrite a newer user choice.
-     */
-    var selectionEpoch: Int = 0
-        private set
-
     var exportProgressLabel: String by mutableStateOf("書き出し中...")
         private set
 
@@ -181,6 +174,13 @@ class ArbStudioController(
     var editSaveFailure: String? by mutableStateOf(null)
         private set
 
+    var editRetryBusy: Boolean by mutableStateOf(false)
+        private set
+
+    fun finishEditRetry() {
+        editRetryBusy = false
+    }
+
     fun markEditSaveFailure(reason: String?) {
         editSaveFailure = reason
     }
@@ -189,7 +189,9 @@ class ArbStudioController(
         get() = editSaveFailure != null
 
     fun retryEditSave() {
-        if (editSaveFailure != null) onRetryEditSave()
+        if (editSaveFailure == null || editRetryBusy) return
+        editRetryBusy = true
+        onRetryEditSave()
     }
 
     /** Streams whose load failed; shown inline with a reload action (never as "0 items"). */
@@ -197,7 +199,9 @@ class ArbStudioController(
         get() = viewerState?.failedAuxStreams.orEmpty()
 
     fun retryAuxStream(stream: AuxStream) {
-        if (viewerState?.streamState(stream) is io.github.shinma06.arb.state.StreamLoadState.Failed) onRetryAuxStream(stream)
+        if (viewerState?.streamState(stream) !is StreamLoadState.Failed) return
+        updateState { TimelineViewerReducer.withStreamState(it, stream, StreamLoadState.Pending) }
+        onRetryAuxStream(stream)
     }
 
     /** Notice that a log bucket was cut at the display limit, or `null`. */
@@ -388,6 +392,7 @@ class ArbStudioController(
         unanchoredLogs: List<LogRecord>,
         mainLimited: Boolean = false,
         unanchoredLimited: Boolean = false,
+        limitUnknown: Boolean = false,
     ) {
         if (packageName != selectedAppPackage) return
         appPackageFilterLoading = false
@@ -401,6 +406,7 @@ class ArbStudioController(
                 unanchoredTaps = current.unanchoredTaps,
                 mainLogsLimited = mainLimited,
                 unanchoredLogsLimited = unanchoredLimited,
+                logLimitUnknown = limitUnknown,
             )
         }
     }
@@ -548,7 +554,6 @@ class ArbStudioController(
 
     fun applyInFrame(frameIndex: Long, settled: Boolean) {
         val s = viewerState ?: return
-        selectionEpoch++
         val next = TimelineViewerReducer.setInFrame(s, frameIndex)
         viewerState = next
         rebuildSyncedRows(next)
@@ -559,7 +564,6 @@ class ArbStudioController(
 
     fun applyOutFrame(frameIndex: Long, settled: Boolean) {
         val s = viewerState ?: return
-        selectionEpoch++
         val next = TimelineViewerReducer.setOutFrame(s, frameIndex)
         viewerState = next
         rebuildSyncedRows(next)
@@ -577,17 +581,14 @@ class ArbStudioController(
     }
 
     fun selectTapRange() {
-        selectionEpoch++
         onSelectTapRange()
     }
 
     fun selectAroundCrash() {
-        selectionEpoch++
         onSelectAroundCrash()
     }
 
     fun resetFullRange() {
-        selectionEpoch++
         onResetFullRange()
     }
 

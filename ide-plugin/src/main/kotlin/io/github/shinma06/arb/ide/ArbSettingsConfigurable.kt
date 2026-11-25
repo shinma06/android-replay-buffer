@@ -126,7 +126,7 @@ class ArbSettingsFormModel(
     var showRestartAction by mutableStateOf(false)
 
     val isBannerVisible: Boolean
-        get() = !daemonOnline && daemonBannerMessage.isNotBlank()
+        get() = daemonBannerMessage.isNotBlank()
 
     val isDaemonControlsEnabled: Boolean
         get() = daemonOnline
@@ -140,7 +140,7 @@ class ArbSettingsFormModel(
         showRestart: Boolean = !online,
     ) {
         daemonOnline = online
-        if (!online) {
+        if (!online || detailMessage != null) {
             daemonBannerMessage = detailMessage
                 ?: "arbd デーモンに接続できません（オフライン）。ローカルの arbd バイナリパス設定を変更するか、arbd を再起動してください。"
             showRestartAction = showRestart
@@ -282,7 +282,7 @@ class ArbSettingsConfigurable internal constructor(
             ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath.orEmpty()
         },
         localBinaryWriter = { newPath ->
-            ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath = newPath
+            checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }.customArbdBinaryPath = newPath
             runCatching { ArbdDaemonService.getInstance().notifyBinaryPathChanged() }
         },
         localScreenshotReader = {
@@ -290,16 +290,15 @@ class ArbSettingsConfigurable internal constructor(
             (st?.screenshotInheritLogcat ?: true) to st?.customScreenshotDir.orEmpty()
         },
         localScreenshotWriter = { inherit, customDir ->
-            ArbLocalSettingsState.getInstanceOrNull()?.let { st ->
-                st.screenshotInheritLogcat = inherit
-                st.customScreenshotDir = customDir
-            }
+            val st = checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }
+            st.screenshotInheritLogcat = inherit
+            st.customScreenshotDir = customDir
         },
         localTrayReader = {
             ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled ?: false
         },
         localTrayWriter = { enabled ->
-            ArbLocalSettingsState.getInstanceOrNull()?.trayEnabled = enabled
+            checkNotNull(ArbLocalSettingsState.getInstanceOrNull()) { "IDE 設定を取得できません" }.trayEnabled = enabled
             runCatching { ArbdDaemonService.getInstance().syncTrayStateAsync(enabled) }
         },
         daemonRestarter = {
@@ -376,7 +375,7 @@ class ArbSettingsConfigurable internal constructor(
                 } else {
                     val why = wrote.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
                     currentForm.setDaemonStatus(
-                        online = false,
+                        online = currentForm.daemonOnline,
                         detailMessage = "arbd バイナリパスを保存できませんでした（$why）。再起動は行っていません。",
                         showRestart = true,
                     )
@@ -386,7 +385,26 @@ class ArbSettingsConfigurable internal constructor(
         }
         val restarted = runCatching { blockingRunner.run { daemonRestarter() } }
         if (restarted.isSuccess) {
-            reset()
+            // Keep the baseline that the user edited: Apply sends only its differences.
+            // Replacing it with the restarted daemon's config would drop the pending draft.
+            if (hasDaemonBaseline && currentForm.currentDraft().isDaemonModifiedAgainst(baselineConfig)) {
+                currentForm.setDaemonStatus(online = true)
+            } else {
+                val screenshot = currentForm.currentLocalScreenshotSettings()
+                val tray = currentForm.trayEnabled
+                val screenshotChanged = screenshot != (baselineScreenshotInherit to baselineCustomScreenshotDir)
+                val trayChanged = tray != baselineTrayEnabled
+                reset()
+                if (screenshotChanged || trayChanged) {
+                    currentForm.loadFromDraft(
+                        currentForm.currentDraft(),
+                        if (screenshotChanged) screenshot.first else baselineScreenshotInherit,
+                        if (screenshotChanged) screenshot.second else baselineCustomScreenshotDir,
+                        if (trayChanged) tray else baselineTrayEnabled,
+                    )
+                    refreshScreenshotStatus(currentForm)
+                }
+            }
         } else {
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
             currentForm.setDaemonStatus(
@@ -454,7 +472,7 @@ class ArbSettingsConfigurable internal constructor(
                 }
                 throw ConfigurationException(
                     "arbd への設定保存に失敗しました: ${t.message ?: "詳細不明"}。" +
-                        "今回の変更はどれも保存されていません（画面の値は未保存のままです）。",
+                        "arbd への保存を確認できません。ローカル設定は未保存です。再適用できます。",
                 )
             }
         }

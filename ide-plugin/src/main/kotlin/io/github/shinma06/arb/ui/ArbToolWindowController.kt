@@ -400,20 +400,22 @@ class ArbToolWindowController(
         // in a second device still prompts instead of silently keeping a pin nobody asked for.
         val current = captureState
         if (serial == current.selectedSerial && serial == current.autoSelectedSerial) return
-        val next = synchronized(captureStateLock) {
-            rawCaptureState.copy(
-                selectedSerial = serial,
-                autoSelectedSerial = null,
-                deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
-            ).also { rawCaptureState = it }
-        }
-        publishOnEdt { captureState = next }
-        if (next.config.deviceSerial == serial) return
-        runAsync {
-            val updated = daemonService.withClient {
-                it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+        runAsync(operation = "録画対象端末の変更") {
+            val config = if (rawCaptureState.config.deviceSerial == serial) rawCaptureState.config else {
+                daemonService.withClient {
+                    it.configUpdate(ArbConfigPatch(deviceSerial = StringPatch.Set(serial))).config
+                }
             }
-            daemonService.notifyConfigUpdated(updated)
+            val next = synchronized(captureStateLock) {
+                rawCaptureState.copy(
+                    selectedSerial = serial,
+                    autoSelectedSerial = null,
+                    deviceSelection = DeviceSelectionPolicy.evaluate(serial, rawCaptureState.devices),
+                    config = config,
+                ).also { rawCaptureState = it }
+            }
+            publishOnEdt { captureState = next }
+            daemonService.notifyConfigUpdated(config)
         }
     }
 
@@ -606,14 +608,14 @@ class ArbToolWindowController(
     }
 
     fun trashBundle(bundleId: String) {
-        runAsync {
+        runAsync(operation = "ゴミ箱へ移動") {
             daemonService.withClient { it.bundleTrash(bundleId) }
             refreshAll(note = "ゴミ箱へ移動しました（ゴミ箱タブから復元可）")
         }
     }
 
     fun restoreBundle(bundleId: String) {
-        runAsync {
+        runAsync(operation = "バンドルの復元") {
             daemonService.withClient { it.bundleRestore(bundleId) }
             refreshAll(note = "バンドルを復元しました")
         }
@@ -761,7 +763,7 @@ class ArbToolWindowController(
             try {
                 val (message, job) = call()
                 publishOnEdt {
-                    recoveryState = FailedSaveRecoveryReducer.applyJobUpdated(recoveryState, job, message)
+                    recoveryState = FailedSaveRecoveryReducer.applyJobUpdated(recoveryState, job, message).copy(busyJobId = jobId)
                 }
                 refreshAll()
             } catch (t: Throwable) {
@@ -846,7 +848,7 @@ class ArbToolWindowController(
      * Queues [action] on the worker. Returns `false` when it was dropped (disposed / shut down),
      * after running [onDropped] so callers holding a guard can release it.
      */
-    private fun runAsync(onDropped: () -> Unit = {}, action: () -> Unit): Boolean {
+    private fun runAsync(operation: String? = null, onDropped: () -> Unit = {}, action: () -> Unit): Boolean {
         if (disposed) {
             onDropped()
             return false
@@ -861,6 +863,7 @@ class ArbToolWindowController(
                     action()
                 } catch (t: Throwable) {
                     logger.warn("ARB toolwindow action failed", t)
+                    operation?.let { onNotifyActionFailed(it, t.message) }
                     handleDaemonFailure(t)
                 }
             }

@@ -33,7 +33,9 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
 
     /** When set, `export.trim` parks on this latch (after counting) before answering. */
     @Volatile var exportGate: CountDownLatch? = null
-    private val shm = writeValidShmFile(tmp.resolve("vp.shm")).toString().replace("\\", "\\\\")
+    val generation = AtomicLong(1L)
+    private val shmPath = writeValidShmFile(tmp.resolve("vp.shm"))
+    private val shm = shmPath.toString().replace("\\", "\\\\")
     val transport: ScriptedTransport = ScriptedTransport { method, params -> handle(method, params) }
 
     private fun handle(method: String, params: JsonObject): String {
@@ -62,11 +64,15 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
                 """{"viewport_id":"vp","bundle_id":"bundle","shm_path":"$shm","width":2,"height":2,"stride":8,"pixel_format":"rgba8","slot_capacity":64,"frame_count":$frameCount,"keyframe_count":2}"""
             "media.seek_frame" -> {
                 val idx = params.get("frame_index").asLong
-                """{"generation":1,"frame_index":$idx,"is_approximate":false,"width":2,"height":2,"cache_hits":1,"cache_misses":0,"elapsed_ms":1}"""
+                val gen = generation.incrementAndGet()
+                writeValidShmFile(shmPath, idx, gen)
+                """{"generation":$gen,"frame_index":$idx,"is_approximate":false,"width":2,"height":2,"cache_hits":1,"cache_misses":0,"elapsed_ms":1}"""
             }
             "media.scrub" -> {
                 val idx = params.get("frame_index").asLong
-                """{"generation":1,"requested_frame_index":$idx,"displayed_frame_index":$idx,"is_approximate":false,"width":2,"height":2,"cache_hits":1,"cache_misses":0,"elapsed_ms":1}"""
+                val gen = generation.incrementAndGet()
+                writeValidShmFile(shmPath, idx, gen)
+                """{"generation":$gen,"requested_frame_index":$idx,"displayed_frame_index":$idx,"is_approximate":false,"width":2,"height":2,"cache_hits":1,"cache_misses":0,"elapsed_ms":1}"""
             }
             "media.filmstrip" -> """{"origin":"cache","cache_path":"/tmp/f","count":0,"elapsed_ms":1,"entries":[]}"""
             "timeline.discontinuities" -> """{"discontinuities":[]}"""

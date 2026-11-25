@@ -90,7 +90,7 @@ class ArbSettingsPartialApplyTest {
 
         world.daemonUp = false // the daemon disappears while Apply runs
         val error = assertFailsWith<ConfigurationException> { configurable.apply() }
-        assertContains(error.message.orEmpty(), "今回の変更はどれも保存されていません")
+        assertContains(error.message.orEmpty(), "arbd への保存を確認できません")
         assertEquals(0, world.daemonWrites.get())
         assertEquals(0, world.trayWrites.get(), "local writers must not run after the daemon writer failed")
         assertEquals(0, world.binaryWrites.get())
@@ -184,7 +184,8 @@ class ArbSettingsPartialApplyTest {
         val form = configurable.createFormModel()
         form.customArbdPathText.setTextAndPlaceCursorAtEnd(tmp.resolve("arbd").toAbsolutePath().toString())
         configurable.restartDaemonAndReload()
-        assertFalse(form.daemonOnline)
+        assertTrue(form.daemonOnline)
+        assertTrue(form.isBannerVisible)
         assertContains(form.daemonBannerMessage, "保存できませんでした")
         assertContains(form.daemonBannerMessage, "settings store locked")
         assertEquals(0, world.restarts.get(), "no restart onto a path that could not be saved")

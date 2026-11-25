@@ -176,6 +176,29 @@ class ArbStudioSilentFailureTest {
     }
 
     @Test
+    fun closingOlderTabCannotOverwriteTheNewerTabsSavedRange(@TempDir tmp: Path) {
+        val daemon = Daemon(tmp)
+        val older = openStudioEditor(daemon)
+        val newer = openStudioEditor(daemon)
+        try {
+            older.awaitReady()
+            newer.awaitReady()
+            daemon.faults["edit.update_session"] = Fault.BUSINESS_ERROR
+            older.studioController.applyInFrame(1, settled = true)
+            older.awaitQueuedWorkForTest()
+            assertNotNull(older.studioController.editSaveFailure)
+            daemon.faults.remove("edit.update_session")
+            newer.studioController.applyInFrame(4, settled = true)
+            newer.awaitQueuedWorkForTest()
+            assertTrue(older.flushBeforeClose())
+            assertEquals(listOf(4L), daemon.storedRanges.map { it.first })
+        } finally {
+            older.dispose()
+            newer.dispose()
+        }
+    }
+
+    @Test
     fun closeWithoutAnyUnsavedRangeSendsNoUpdate(@TempDir tmp: Path) {
         val daemon = Daemon(tmp)
         val editor = openStudioEditor(daemon)

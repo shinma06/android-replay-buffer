@@ -636,6 +636,7 @@ data class TimelineViewerState(
     val mainLogsLimited: Boolean = false,
     /** `true` when the UNANCHORED log bucket hit the display limit and rows were dropped. */
     val unanchoredLogsLimited: Boolean = false,
+    val logLimitUnknown: Boolean = false,
 ) {
     fun streamState(stream: AuxStream): StreamLoadState = auxStreams[stream] ?: StreamLoadState.Pending
 
@@ -649,6 +650,8 @@ data class TimelineViewerState(
     val logLimitNotice: String?
         get() = if (mainLogsLimited || unanchoredLogsLimited) {
             StudioLoadMessages.logLimitNotice(LOG_DISPLAY_LIMIT)
+        } else if (logLimitUnknown) {
+            "ログは表示上限の 5,000 行です。続きの有無を確認できませんでした。"
         } else {
             null
         }
@@ -1272,9 +1275,11 @@ object TimelineViewerReducer {
         unanchoredTaps: List<TapRecord>,
         mainLogsLimited: Boolean = state.mainLogsLimited,
         unanchoredLogsLimited: Boolean = state.unanchoredLogsLimited,
+        logLimitUnknown: Boolean = state.logLimitUnknown,
     ): TimelineViewerState = state.copy(
         mainLogsLimited = mainLogsLimited,
         unanchoredLogsLimited = unanchoredLogsLimited,
+        logLimitUnknown = logLimitUnknown,
         // Enforce strict separation: never mix unanchored records into main!
         mainLogs = mainLogs.filter { it.bucket == RecordBucket.MAIN },
         unanchoredLogs = unanchoredLogs.filter { it.bucket == RecordBucket.UNANCHORED },

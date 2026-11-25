@@ -73,7 +73,7 @@ class ArbStudioControllerOrderingTest {
             assertFalse(ctrl.isExportButtonEnabled)
             awaitTrue({ "export never reached the daemon" }) { daemon.transport.count("export.trim") >= 1 }
             gate.countDown()
-            awaitTrue({ "export never finished" }) { edt.drain(); !ctrl.isExporting }
+            awaitTrue({ "export never finished" }) { edt.drain(); !ctrl.isExporting && ctrl.viewerState?.exportCompletion != null }
             assertEquals(1, daemon.transport.count("export.trim"), "exactly one export")
             assertNotNull(ctrl.viewerState?.exportCompletion)
 
@@ -111,7 +111,7 @@ class ArbStudioControllerOrderingTest {
     @Test
     fun framesPublishedOutOfStepAreCoalescedToTheNewestAndNeverReapplied(@TempDir tmp: Path) {
         val edt = ManualEdt()
-        val (editor, _) = readyEditor(Files.createDirectory(tmp.resolve("a")), edt)
+        val (editor, daemon) = readyEditor(Files.createDirectory(tmp.resolve("a")), edt)
         try {
             val playback = assertNotNull(editor.playbackControllerForTest())
             val ctrl = editor.studioController
@@ -122,6 +122,8 @@ class ArbStudioControllerOrderingTest {
             edt.drain()
             assertEquals(6L, ctrl.viewerState!!.currentFrameIndex, "the older frame must not be applied after the newer one")
             // Nothing stale is left to flush later.
+            assertEquals(6L, ctrl.viewerState!!.currentFrameMeta?.frameIndex)
+            assertEquals(daemon.generation.get(), ctrl.viewerState!!.currentFrameMeta?.generation)
             assertEquals(0, edt.pending)
             val bitmapAfter = ctrl.frameBitmap
             edt.drain()
@@ -165,6 +167,26 @@ class ArbStudioControllerOrderingTest {
         }
     }
 
+    @Test
+    fun closingBeforeCrashPresetReachesEdtPersistsTheChosenRange(@TempDir tmp: Path) {
+        val daemon = StudioDaemon(tmp, frameCount = 400)
+        daemon.crashes.set(crashesJson(3))
+        val edt = ManualEdt()
+        val (editor, _) = readyEditor(tmp, edt, daemon)
+        try {
+            editor.studioController.selectAroundCrash()
+            val range = editor.currentTrimRange()
+            assertTrue(range.second < 399)
+            assertTrue(editor.flushBeforeClose())
+            val (start, end, playhead) = daemon.storedRanges.last()
+            assertEquals(range.first, start)
+            assertEquals(range.second, end)
+            assertEquals(10L, playhead)
+        } finally {
+            editor.dispose()
+        }
+    }
+
     // ---------------- tab move / dispose ----------------
 
     @Test
@@ -193,7 +215,7 @@ class ArbStudioControllerOrderingTest {
             assertFalse(b.studioController.isExporting)
             assertEquals(0, daemonB.transport.count("export.trim"))
             b.studioController.triggerExport()
-            awaitTrue({ "B export not completed" }) { edtB.drain(); daemonB.transport.count("export.trim") == 1 && !b.studioController.isExporting }
+            awaitTrue({ "B export not completed" }) { edtB.drain(); daemonB.transport.count("export.trim") == 1 && !b.studioController.isExporting && b.studioController.viewerState?.exportCompletion != null }
             assertNotNull(b.studioController.viewerState?.exportCompletion)
             assertEquals(1, daemonA.transport.count("bundle.close"), "the lease of the closed tab is released exactly once")
         } finally {

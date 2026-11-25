@@ -280,7 +280,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
             for (job in recovery.retryableJobs) {
                 FailedSaveJobBanner(
                     job = job,
-                    busy = recovery.busyJobId == job.jobId,
+                    busy = recovery.busyJobId != null,
                     onRetry = { controller.retryFailedJob(job.jobId) },
                     onRetarget = { controller.retargetFailedJobInteractive(job.jobId) },
                     onDiscard = { controller.discardFailedJob(job.jobId) },

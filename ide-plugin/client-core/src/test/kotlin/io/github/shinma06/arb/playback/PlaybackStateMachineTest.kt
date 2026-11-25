@@ -198,6 +198,22 @@ class PlaybackStateMachineTest {
     }
 
     @Test
+    fun oneFrameLoopReturnsToTheSelectionFromEitherSide() {
+        PlaybackController(
+            totalFrames = 20L, frameSeeker = ScriptedSeeker(), clock = ManualClock(), autoRunLoop = false,
+            initialInFrameIndex = 8L, initialOutFrameIndex = 8L, initialLoopInSelection = true,
+        ).use { ctrl ->
+            ctrl.play()
+            for (outside in listOf(2L, 15L)) {
+                ctrl.seekToFrame(outside)
+                ctrl.tick()
+                assertEquals(8L, ctrl.state.currentFrameIndex)
+                assertEquals(8L, ctrl.state.displayedFrameIndex)
+            }
+        }
+    }
+
+    @Test
     fun randomOperationStreamsKeepTimeMonotonicAndStopsExplainable() {
         for (seed in 1L..150L) runStream(seed, steps = 80, withFaults = false)
     }

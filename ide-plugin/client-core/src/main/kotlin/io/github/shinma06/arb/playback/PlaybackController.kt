@@ -644,11 +644,9 @@ class PlaybackController(
         require(padAfterFrames >= 0L) { "padAfterFrames must be non-negative: $padAfterFrames" }
         if (tapFrameIndices.isEmpty() || totalFrames <= 0L) return false
 
-        val minTap = tapFrameIndices.min()
-        val maxTap = tapFrameIndices.max()
-        val maxFrame = totalFrames - 1L
-        val newIn = saturatingSub(minTap, padBeforeFrames).coerceIn(0L, maxFrame)
-        val newOut = saturatingAdd(maxTap, padAfterFrames).coerceIn(newIn, maxFrame)
+        val range = paddedRange(tapFrameIndices.min(), tapFrameIndices.max(), padBeforeFrames, padAfterFrames, totalFrames)
+        val newIn = range.first
+        val newOut = range.last
 
         val seekTarget: Pair<Long, Long>?
         val snapshot: PlaybackState?
@@ -700,8 +698,9 @@ class PlaybackController(
 
         val maxFrame = totalFrames - 1L
         val crash = crashFrameIndex.coerceIn(0L, maxFrame)
-        val newIn = saturatingSub(crash, beforeFrames).coerceIn(0L, maxFrame)
-        val newOut = saturatingAdd(crash, afterFrames).coerceIn(newIn, maxFrame)
+        val range = paddedRange(crash, crash, beforeFrames, afterFrames, totalFrames)
+        val newIn = range.first
+        val newOut = range.last
 
         val gen: Long
         val snapshot: PlaybackState?
@@ -783,7 +782,9 @@ class PlaybackController(
             val outFrameDurNs = frameDurationNs(cur.outFrameIndex)
             val selectionEndPtsNs = saturatingAdd(outPtsNs, outFrameDurNs)
 
-            if (targetMediaPtsNs >= selectionEndPtsNs) {
+            if (targetMediaPtsNs >= selectionEndPtsNs ||
+                (cur.loopInSelection && cur.currentFrameIndex < cur.inFrameIndex)
+            ) {
                 if (cur.loopInSelection) {
                     val inPtsNs = frameRelativePtsNs(cur.inFrameIndex)
                     anchorWallNs = nowNs
@@ -1070,6 +1071,12 @@ class PlaybackController(
     }
 
     companion object {
+        fun paddedRange(first: Long, last: Long, before: Long, after: Long, frameCount: Long): LongRange {
+            val maxFrame = (frameCount - 1L).coerceAtLeast(0L)
+            val start = saturatingSub(first, before).coerceIn(0L, maxFrame)
+            return start..saturatingAdd(last, after).coerceIn(start, maxFrame)
+        }
+
         private const val IO_RETRY_DELAY_NS = 25_000_000L
         const val DEFAULT_FALLBACK_FPS: Double = 30.0
         private const val MIN_FRAME_DELTA_NS: Long = 1_000_000L // 1 ms floor for degenerate duplicate PTS
