@@ -4,12 +4,16 @@
 //! - `timeline.overview`: one-shot structured AI triage bundle summary
 //! - `media.inspect_frames`: contact sheet / single frame / tap-crop PNG renderer
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
+use arb_core::analytics::{
+    LogPackageResolver, SYSTEM_UID, parse_am_crash_text_for_event_tag, parse_screen_transition_line,
+};
 use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket, StreamStatus, TapRecord};
 use arb_core::time::TimeAlignment;
 use arb_media::MediaError;
@@ -577,60 +581,460 @@ pub fn inspect_frames(
 /// Resolves optional `start_frame` / `end_frame` bounds on [`TimelineQueryParams`] into a
 /// [`TimeRange`] and filters `logs` by optional `package`, `tag`, `level`, and `keyword` criteria.
 ///
-/// # Errors
+/// Maximum number of bundle-scoped PID-to-package resolvers retained in memory.
+const MAX_LOG_RESOLVER_CACHE_ENTRIES: usize = 32;
+
+/// Minimum and maximum batch sizes for cursor-chunked filtered log scans.
+const MIN_FILTERED_LOG_BATCH_ROWS: usize = 1_024;
+const MAX_FILTERED_LOG_BATCH_ROWS: usize = 16_384;
+
+/// Structured page result from [`query_logs_filtered_page`], exposing pagination truncation
+/// metadata (`has_more`, `next_after_seq`) and scan/cache instrumentation.
 ///
-/// Returns [`DaemonError::InvalidParams`] if `start_frame > end_frame` or a requested frame
-/// index exceeds the bundle's frame count.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential frame-range, package, level, tag, and keyword log filter pipeline"
-)]
-pub fn query_logs_filtered(
+/// Wave 2 (H-4) can wire `has_more` and `next_after_seq` into `protocol::TimelineLogsResponse`
+/// alongside IDE UI pagination while keeping the current `protocol.rs` wire schema untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilteredLogPage {
+    /// Filtered log rows for the requested page (at most `limit`).
+    pub logs: Vec<LogRecord>,
+    /// `true` when at least one additional matching row exists after this page.
+    pub has_more: bool,
+    /// Exclusive sequence cursor (`last.seq`) to pass as `after_seq` for the next page.
+    pub next_after_seq: Option<u64>,
+    /// Number of candidate rows read from `reader` while scanning for this page.
+    pub candidate_rows_scanned: usize,
+    /// `true` when a `package` filter was satisfied from the bundle-scoped PID resolver cache
+    /// without re-scanning all bundle logs.
+    pub resolver_cache_hit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    path: PathBuf,
+    size: u64,
+    mtime: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundleLogCacheKey {
+    bundle_id: String,
+    format_tag: u8,
+    created_at_utc: Option<String>,
+    manifest_fingerprint: String,
+    file_stamps: Vec<FileStamp>,
+}
+
+type PidTimelineMap = BTreeMap<(Option<String>, i32), Vec<(u64, String)>>;
+
+#[derive(Debug)]
+struct CachedPackageResolver {
+    base: LogPackageResolver,
+    /// Chronological `(seq, package_name)` transitions per `(boot_id, pid)` to handle
+    /// same-boot PID reuse accurately without misattributing earlier process logs.
+    pid_timelines: PidTimelineMap,
+}
+
+impl CachedPackageResolver {
+    fn from_logs(all_logs: &[LogRecord]) -> Self {
+        let empty = BTreeSet::new();
+        let base = LogPackageResolver::from_logs(all_logs, &empty);
+        let mut pid_timelines: PidTimelineMap = BTreeMap::new();
+
+        for log in all_logs {
+            let boot = log_boot_id(log).map(str::to_owned);
+            if let (Some(pid), Some(pkg)) = (log.pid, log.package_name.as_deref()) {
+                let trimmed = pkg.trim();
+                if !trimmed.is_empty() && !matches!(trimmed, "android" | "system_server") {
+                    record_pid_epoch(&mut pid_timelines, boot.clone(), pid, log.seq, trimmed);
+                }
+            }
+            if is_system_uid(log.uid)
+                && matches!(
+                    log.tag.as_deref().map(str::trim),
+                    Some("ActivityManager" | "ActivityTaskManager")
+                )
+                && let Some((pid, pkg)) = parse_start_proc_line_local(&log.message)
+            {
+                record_pid_epoch(&mut pid_timelines, boot.clone(), pid, log.seq, &pkg);
+            }
+            if is_system_uid(log.uid)
+                && let Some(crash) =
+                    parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+                && !crash.package_name.is_empty()
+            {
+                record_pid_epoch(
+                    &mut pid_timelines,
+                    boot,
+                    crash.pid,
+                    log.seq,
+                    &crash.package_name,
+                );
+            }
+        }
+
+        Self {
+            base,
+            pid_timelines,
+        }
+    }
+
+    fn matches_package(&self, log: &LogRecord, target_package: &str) -> bool {
+        let target = target_package.trim();
+        if target.is_empty() {
+            return false;
+        }
+        if let Some(explicit) = log.package_name.as_deref() {
+            if explicit == target {
+                return true;
+            }
+            if !matches!(explicit, "android" | "system_server") {
+                return false;
+            }
+        }
+        if let Some(pid) = log.pid {
+            let boot_key = log_boot_id(log).map(str::to_owned);
+            if let Some(epochs) = self.pid_timelines.get(&(boot_key, pid))
+                && epochs.len() > 1
+            {
+                let idx = epochs.partition_point(|(s, _)| *s <= log.seq);
+                let active_pkg = &epochs[idx.saturating_sub(1)].1;
+                if package_matches_or_subpackage(active_pkg, target) {
+                    return true;
+                }
+                // PID was reused in this boot and belonged to a different app at `log.seq`:
+                // do not fall back to `base`, which only retains the final owner of the PID.
+                return matches_non_pid_package_signals(log, target);
+            }
+            if let Some(resolved) = self.base.package_for_pid(log_boot_id(log), pid)
+                && package_matches_or_subpackage(resolved, target)
+            {
+                return true;
+            }
+        }
+        matches_non_pid_package_signals(log, target)
+    }
+}
+
+fn record_pid_epoch(
+    timelines: &mut PidTimelineMap,
+    boot_id: Option<String>,
+    pid: i32,
+    seq: u64,
+    pkg: &str,
+) {
+    let trimmed = pkg.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let entry = timelines.entry((boot_id, pid)).or_default();
+    if entry.last().is_some_and(|(_, prev)| prev == trimmed) {
+        return;
+    }
+    entry.push((seq, trimmed.to_owned()));
+}
+
+fn package_matches_or_subpackage(candidate: &str, target: &str) -> bool {
+    candidate == target
+        || candidate
+            .strip_prefix(target)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
+fn is_system_uid(uid: Option<u32>) -> bool {
+    uid.is_none_or(|u| u == SYSTEM_UID)
+}
+
+fn parse_start_proc_line_local(message: &str) -> Option<(i32, String)> {
+    let rest = message.trim().strip_prefix("Start proc ")?;
+    let token = rest.split_whitespace().next()?;
+    let (pid_str, proc_and_uid) = token.split_once(':')?;
+    let pid = pid_str.parse::<i32>().ok()?;
+    let process_name = proc_and_uid.split('/').next()?;
+    let pkg = process_name
+        .split(':')
+        .next()
+        .unwrap_or(process_name)
+        .trim();
+    (!pkg.is_empty()).then(|| (pid, pkg.to_owned()))
+}
+
+fn is_authentic_screen_record(log: &LogRecord) -> bool {
+    let Some(tag) = log.tag.as_deref().map(str::trim) else {
+        return false;
+    };
+    if tag.eq_ignore_ascii_case("wm_on_resume_called")
+        || tag.eq_ignore_ascii_case("am_on_resume_called")
+    {
+        return true;
+    }
+    is_system_uid(log.uid)
+        && (tag.eq_ignore_ascii_case("am_resume_activity")
+            || tag.eq_ignore_ascii_case("wm_resumed_activity"))
+}
+
+fn matches_non_pid_package_signals(log: &LogRecord, target: &str) -> bool {
+    if is_system_uid(log.uid)
+        && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+        && crash.package_name == target
+    {
+        return true;
+    }
+    if is_authentic_screen_record(log)
+        && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+        && (comp.package_name == target
+            || package_matches_or_subpackage(&comp.activity_name, target))
+    {
+        return true;
+    }
+    if let Some(tag) = log.tag.as_deref().map(str::trim)
+        && package_matches_or_subpackage(tag, target)
+    {
+        return true;
+    }
+    false
+}
+
+#[derive(Default)]
+struct PidResolverLruCache {
+    entries: VecDeque<(BundleLogCacheKey, Arc<CachedPackageResolver>)>,
+}
+
+impl PidResolverLruCache {
+    fn get(&mut self, key: &BundleLogCacheKey) -> Option<Arc<CachedPackageResolver>> {
+        let pos = self.entries.iter().position(|(k, _)| k == key)?;
+        let item = self.entries.remove(pos)?;
+        let value = Arc::clone(&item.1);
+        self.entries.push_back(item);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: BundleLogCacheKey, value: Arc<CachedPackageResolver>) {
+        if let Some(pos) = self.entries.iter().position(|(k, _)| k == &key) {
+            let _ = self.entries.remove(pos);
+        }
+        while self.entries.len() >= MAX_LOG_RESOLVER_CACHE_ENTRIES {
+            let _ = self.entries.pop_front();
+        }
+        self.entries.push_back((key, value));
+    }
+}
+
+fn pid_resolver_cache() -> &'static Mutex<PidResolverLruCache> {
+    static CACHE: OnceLock<Mutex<PidResolverLruCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(PidResolverLruCache::default()))
+}
+
+fn collect_bundle_file_stamps(
     reader: &dyn BundleReader,
-    bucket: Option<RecordBucket>,
+    bundle_id_or_path: &str,
+) -> Vec<FileStamp> {
+    let candidate_dir = {
+        let raw = Path::new(bundle_id_or_path);
+        if raw.is_dir() {
+            Some(raw.to_path_buf())
+        } else {
+            reader
+                .video_path()
+                .or_else(|| reader.audio_path())
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        }
+    };
+    let Some(dir) = candidate_dir else {
+        return Vec::new();
+    };
+    let canonical = fs::canonicalize(&dir).unwrap_or(dir);
+    let probe_files = [
+        "timeline.sqlite",
+        "logs.jsonl",
+        "logcat-device.jsonl",
+        "logcat-app.jsonl",
+        "manifest.json",
+        "replay.json",
+        "session.json",
+    ];
+    let mut stamps = Vec::new();
+    for rel in probe_files {
+        let path = canonical.join(rel);
+        if let Ok(meta) = fs::metadata(&path) {
+            stamps.push(FileStamp {
+                path,
+                size: meta.len(),
+                mtime: meta.modified().ok(),
+            });
+        }
+    }
+    stamps
+}
+
+fn build_bundle_cache_key(
+    reader: &dyn BundleReader,
+    bundle_id_or_path: &str,
+) -> Option<BundleLogCacheKey> {
+    let summary = reader.manifest_summary();
+    let file_stamps = collect_bundle_file_stamps(reader, bundle_id_or_path);
+    let mut fp_parts = Vec::new();
+    if let Some(m) = &summary.manifest_v2 {
+        for f in &m.files {
+            fp_parts.push(format!("{}:{}:{}", f.path, f.bytes, f.sha256));
+        }
+    }
+    if let Some(leg) = &summary.legacy_metadata {
+        fp_parts.push(format!("legacy:{}:{:?}", leg.save_id, leg.counts));
+        for (k, v) in &leg.files_sha256 {
+            fp_parts.push(format!("{k}:{v}"));
+        }
+    }
+    if fp_parts.is_empty() && file_stamps.is_empty() {
+        // Synthetic in-memory reader with neither manifest digests nor on-disk files:
+        // skip cross-call caching so distinct test fixtures sharing an ID cannot collide.
+        return None;
+    }
+    fp_parts.push(format!(
+        "unanch:{}:{}",
+        summary.unanchored_summary.included_count, summary.unanchored_summary.truncated_count
+    ));
+    let format_tag = match summary.format {
+        arb_storage::bundle_io::BundleFormat::V2 => 2,
+        arb_storage::bundle_io::BundleFormat::LegacySchema4 => 4,
+        arb_storage::bundle_io::BundleFormat::LegacySchema3 => 3,
+        _ => 0,
+    };
+    Some(BundleLogCacheKey {
+        bundle_id: summary.bundle_id.clone(),
+        format_tag,
+        created_at_utc: summary.created_at_utc.clone(),
+        manifest_fingerprint: sha256_hex(fp_parts.join("|").as_bytes()),
+        file_stamps,
+    })
+}
+
+fn load_or_build_package_resolver(
+    reader: &dyn BundleReader,
+    bundle_id_or_path: &str,
+) -> Result<(Arc<CachedPackageResolver>, bool), DaemonError> {
+    let cache_key = build_bundle_cache_key(reader, bundle_id_or_path);
+    if let Some(ref key) = cache_key
+        && let Ok(mut guard) = pid_resolver_cache().lock()
+        && let Some(hit) = guard.get(key)
+    {
+        return Ok((hit, true));
+    }
+    let all_logs = reader.query_logs(None, TimeRange::all(), None)?;
+    let resolver = Arc::new(CachedPackageResolver::from_logs(&all_logs));
+    if let Some(key) = cache_key
+        && let Ok(mut guard) = pid_resolver_cache().lock()
+    {
+        guard.insert(key, Arc::clone(&resolver));
+    }
+    Ok((resolver, false))
+}
+
+struct CompiledLogFilter<'a> {
+    package: Option<(&'a str, Arc<CachedPackageResolver>)>,
+    level: Option<String>,
+    tag_lower: Option<String>,
+    keyword_lower: Option<String>,
+}
+
+impl CompiledLogFilter<'_> {
+    fn matches(&self, log: &LogRecord) -> bool {
+        if let Some((target_pkg, ref resolver)) = self.package
+            && !resolver.matches_package(log, target_pkg)
+        {
+            return false;
+        }
+        if let Some(ref want_level) = self.level {
+            let actual = log.level.as_deref().map_or("", normalize_log_level);
+            if actual != want_level {
+                return false;
+            }
+        }
+        if let Some(ref want_tag) = self.tag_lower {
+            let matched = log
+                .tag
+                .as_deref()
+                .is_some_and(|t| t.to_ascii_lowercase().contains(want_tag));
+            if !matched {
+                return false;
+            }
+        }
+        if let Some(ref want_kw) = self.keyword_lower {
+            let in_msg = log.message.to_ascii_lowercase().contains(want_kw);
+            let in_tag = log
+                .tag
+                .as_deref()
+                .is_some_and(|t| t.to_ascii_lowercase().contains(want_kw));
+            if !in_msg && !in_tag {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn resolve_log_query_time_range(
+    reader: &dyn BundleReader,
     params: &TimelineQueryParams,
-    limit: usize,
-) -> Result<Vec<LogRecord>, DaemonError> {
+) -> Result<TimeRange, DaemonError> {
     let mut range = TimeRange {
         start_ns: params.start_ns,
         end_ns: params.end_ns,
     };
-
-    if params.start_frame.is_some() || params.end_frame.is_some() {
-        let frames = reader.frames()?;
-        if frames.is_empty() {
-            return Err(DaemonError::InvalidParams(
-                "cannot filter by start_frame/end_frame on a bundle with 0 video frames".to_owned(),
-            ));
-        }
-        let max_frame = u64::try_from(frames.len().saturating_sub(1)).unwrap_or(0);
-        let sf = params.start_frame.unwrap_or(0);
-        let ef = params.end_frame.unwrap_or(max_frame);
-        if sf > ef || ef > max_frame {
-            return Err(DaemonError::InvalidParams(format!(
-                "invalid frame filter [{sf}..={ef}] for bundle with {} frames",
-                frames.len()
-            )));
-        }
-        let start_bt = frames
-            .iter()
-            .find(|f| f.frame_index == sf)
-            .and_then(frame_boottime_ns);
-        let end_bt = frames
-            .iter()
-            .find(|f| f.frame_index == ef)
-            .and_then(frame_boottime_ns);
-        if params.start_frame.is_some()
-            && let Some(s) = start_bt
-        {
-            range.start_ns = Some(range.start_ns.map_or(s, |prev| prev.max(s)));
-        }
-        if params.end_frame.is_some()
-            && let Some(e) = end_bt
-        {
-            range.end_ns = Some(range.end_ns.map_or(e, |prev| prev.min(e)));
-        }
+    if params.start_frame.is_none() && params.end_frame.is_none() {
+        return Ok(range);
     }
+    let frames = reader.frames()?;
+    if frames.is_empty() {
+        return Err(DaemonError::InvalidParams(
+            "cannot filter by start_frame/end_frame on a bundle with 0 video frames".to_owned(),
+        ));
+    }
+    let max_frame = u64::try_from(frames.len().saturating_sub(1)).unwrap_or(0);
+    let sf = params.start_frame.unwrap_or(0);
+    let ef = params.end_frame.unwrap_or(max_frame);
+    if sf > ef || ef > max_frame {
+        return Err(DaemonError::InvalidParams(format!(
+            "invalid frame filter [{sf}..={ef}] for bundle with {} frames",
+            frames.len()
+        )));
+    }
+    let start_bt = frames
+        .iter()
+        .find(|f| f.frame_index == sf)
+        .and_then(frame_boottime_ns);
+    let end_bt = frames
+        .iter()
+        .find(|f| f.frame_index == ef)
+        .and_then(frame_boottime_ns);
+    if params.start_frame.is_some()
+        && let Some(s) = start_bt
+    {
+        range.start_ns = Some(range.start_ns.map_or(s, |prev| prev.max(s)));
+    }
+    if params.end_frame.is_some()
+        && let Some(e) = end_bt
+    {
+        range.end_ns = Some(range.end_ns.map_or(e, |prev| prev.min(e)));
+    }
+    Ok(range)
+}
+
+/// Resolves optional `start_frame` / `end_frame` bounds on [`TimelineQueryParams`] into a
+/// [`TimeRange`], filters `logs` by optional `package`, `tag`, `level`, and `keyword` criteria
+/// using a bundle-scoped cached PID resolver and cursor-chunked reads, and returns a
+/// [`FilteredLogPage`] with truncation metadata (`has_more`, `next_after_seq`).
+///
+/// # Errors
+///
+/// Returns [`DaemonError::InvalidParams`] if `start_frame > end_frame`, a requested frame
+/// index exceeds the bundle's frame count, or `level` is unrecognized.
+pub fn query_logs_filtered_page(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    params: &TimelineQueryParams,
+    limit: usize,
+) -> Result<FilteredLogPage, DaemonError> {
+    let range = resolve_log_query_time_range(reader, params)?;
 
     let package_filter = params
         .package
@@ -641,69 +1045,105 @@ pub fn query_logs_filtered(
         || params.level.is_some()
         || params.keyword.is_some()
         || package_filter.is_some();
-    let fetch_limit = if has_text_filter { None } else { Some(limit) };
-    let mut logs = reader.query_logs_after(bucket, range, params.after_seq, fetch_limit)?;
 
-    if let Some(target_pkg) = package_filter {
-        // Build the PID/package resolver across all bundle logs so PID attributions learned
-        // outside the requested frame/time slice still attribute logs inside the slice accurately.
-        let all_logs =
-            if range == TimeRange::all() && bucket.is_none() && params.after_seq.is_none() {
-                logs.clone()
-            } else {
-                reader.query_logs(None, TimeRange::all(), None)?
-            };
-        logs = arb_core::analytics::filter_logs_by_package(&all_logs, &logs, target_pkg);
-    }
-
-    if has_text_filter {
-        let tag_needle = params.tag.as_deref().map(str::to_ascii_lowercase);
-        let level_needle = match params.level.as_deref() {
-            Some(raw) => {
-                let norm = normalize_log_level(raw);
-                if norm.is_empty() {
-                    return Err(DaemonError::InvalidParams(format!(
-                        "unknown log level `{raw}`; expected one of V, D, I, W, E, F"
-                    )));
-                }
-                Some(norm.to_owned())
-            }
-            None => None,
-        };
-        let kw_needle = params.keyword.as_deref().map(str::to_ascii_lowercase);
-
-        logs.retain(|log| {
-            if let Some(ref want_level) = level_needle {
-                let actual = log.level.as_deref().map_or("", normalize_log_level);
-                if actual != want_level {
-                    return false;
-                }
-            }
-            if let Some(ref want_tag) = tag_needle {
-                let matched = log
-                    .tag
-                    .as_deref()
-                    .is_some_and(|t| t.to_ascii_lowercase().contains(want_tag));
-                if !matched {
-                    return false;
-                }
-            }
-            if let Some(ref want_kw) = kw_needle {
-                let in_msg = log.message.to_ascii_lowercase().contains(want_kw);
-                let in_tag = log
-                    .tag
-                    .as_deref()
-                    .is_some_and(|t| t.to_ascii_lowercase().contains(want_kw));
-                if !in_msg && !in_tag {
-                    return false;
-                }
-            }
-            true
-        });
+    if !has_text_filter {
+        let fetch = limit.saturating_add(1);
+        let mut logs = reader.query_logs_after(bucket, range, params.after_seq, Some(fetch))?;
+        let candidate_rows_scanned = logs.len();
+        let has_more = logs.len() > limit;
         logs.truncate(limit);
+        let next_after_seq = logs.last().map(|r| r.seq);
+        return Ok(FilteredLogPage {
+            logs,
+            has_more,
+            next_after_seq,
+            candidate_rows_scanned,
+            resolver_cache_hit: false,
+        });
     }
 
-    Ok(logs)
+    let level = match params.level.as_deref() {
+        Some(raw) => {
+            let norm = normalize_log_level(raw);
+            if norm.is_empty() {
+                return Err(DaemonError::InvalidParams(format!(
+                    "unknown log level `{raw}`; expected one of V, D, I, W, E, F"
+                )));
+            }
+            Some(norm.to_owned())
+        }
+        None => None,
+    };
+
+    let (package, resolver_cache_hit) = if let Some(target_pkg) = package_filter {
+        let (resolver, hit) = load_or_build_package_resolver(reader, &params.bundle_id_or_path)?;
+        (Some((target_pkg, resolver)), hit)
+    } else {
+        (None, false)
+    };
+
+    let filter = CompiledLogFilter {
+        package,
+        level,
+        tag_lower: params.tag.as_deref().map(str::to_ascii_lowercase),
+        keyword_lower: params.keyword.as_deref().map(str::to_ascii_lowercase),
+    };
+
+    let batch_size = limit
+        .saturating_mul(4)
+        .clamp(MIN_FILTERED_LOG_BATCH_ROWS, MAX_FILTERED_LOG_BATCH_ROWS);
+    let mut cursor_seq = params.after_seq;
+    let mut matched = Vec::with_capacity(limit.min(MAX_FILTERED_LOG_BATCH_ROWS));
+    let mut has_more = false;
+    let mut candidate_rows_scanned = 0_usize;
+
+    loop {
+        let batch = reader.query_logs_after(bucket, range, cursor_seq, Some(batch_size))?;
+        let batch_len = batch.len();
+        candidate_rows_scanned = candidate_rows_scanned.saturating_add(batch_len);
+        if batch.is_empty() {
+            break;
+        }
+        for log in batch {
+            cursor_seq = Some(log.seq);
+            if filter.matches(&log) {
+                if matched.len() < limit {
+                    matched.push(log);
+                } else {
+                    has_more = true;
+                    break;
+                }
+            }
+        }
+        if has_more || batch_len < batch_size {
+            break;
+        }
+    }
+
+    let next_after_seq = matched.last().map(|r| r.seq);
+    Ok(FilteredLogPage {
+        logs: matched,
+        has_more,
+        next_after_seq,
+        candidate_rows_scanned,
+        resolver_cache_hit,
+    })
+}
+
+/// Resolves optional `start_frame` / `end_frame` bounds on [`TimelineQueryParams`] into a
+/// [`TimeRange`] and filters `logs` by optional `package`, `tag`, `level`, and `keyword` criteria.
+///
+/// # Errors
+///
+/// Returns [`DaemonError::InvalidParams`] if `start_frame > end_frame` or a requested frame
+/// index exceeds the bundle's frame count.
+pub fn query_logs_filtered(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    params: &TimelineQueryParams,
+    limit: usize,
+) -> Result<Vec<LogRecord>, DaemonError> {
+    query_logs_filtered_page(reader, bucket, params, limit).map(|page| page.logs)
 }
 
 // ---------------- Helpers ----------------
