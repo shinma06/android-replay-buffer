@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Layer-4 PDD (KON-1..KON-5): architecture rules over the plugin and `client-core` sources.
+ * Layer-4 PDD (KON-1..KON-6): architecture rules over the plugin and `client-core` sources.
  * Each rule reports the offending files so a regression names its own fix site.
  */
 class ArchitectureKonsistTest {
@@ -112,5 +112,38 @@ class ArchitectureKonsistTest {
             .map { it.name }
             .toSet()
         assertEquals(setOf("LegacyV1SettingsMigrator", "ArbStartupActivity", "LegacyV1SettingsMigratorTest"), legacyUsers)
+    }
+
+    /**
+     * KON-6: structured `bundle.gc` / `bundle.forget` / save outcomes always reach user feedback
+     * (`docs/specs/ui-feedback-contract-table.json`): GC / forget go through the shared
+     * formatters, save success uses `SaveOutcomeResponse.savedBundleId` (the CLI/MCP rule, never a
+     * raw `bundleId`), and feedback paths neither open modal dialogs nor swallow those calls in
+     * `runCatching`.
+     */
+    @Test
+    fun kon6StructuredOutcomesAreAlwaysProjected() {
+        val plugin = main().filterNot { it.rel().startsWith("client-core/") }
+        for ((call, formatter) in listOf("bundleGc(" to "formatGcNotification(", "bundleForget(" to "formatForgetSummary(")) {
+            val users = plugin.filter { "it.$call" in it.code() }
+            assertTrue(users.isNotEmpty(), "KON-6: no `$call` call site found")
+            assertNone("KON-6 ($call projection)", users.filter { formatter !in it.code() }.map { it.rel() })
+        }
+
+        val saveBinding = Regex("""val\s+(\w+)\s*=\s*\w+\.withClient\s*\{\s*it\.save(Trigger|Logs|Retry|Retarget)\(""")
+        val bindings = plugin.flatMap { f -> saveBinding.findAll(f.code()).map { f to it.groupValues[1] }.toList() }
+        assertTrue(bindings.size >= 6, "expected the save call sites to be discovered, found ${bindings.size}")
+        assertNone(
+            "KON-6 (save outcome must use savedBundleId)",
+            bindings.filter { (f, name) -> Regex("""\b$name\.bundleId\b""").containsMatchIn(f.code()) }
+                .map { (f, name) -> "${f.rel()}::$name.bundleId" }
+                .distinct(),
+        )
+
+        val feedback = plugin.filter { "/arb/ui/" in it.path.replace('\\', '/') || it.name in setOf("ArbActions", "ArbNotifications") }
+        val modal = Regex("""\bMessages\.show\w*\(|\bDialogWrapper\b""")
+        assertNone("KON-6 (modal feedback)", feedback.filter { modal.containsMatchIn(it.code()) }.map { it.rel() })
+        val swallowed = Regex("""runCatching\s*\{[^}]*\b(bundleGc|bundleForget|saveTrigger|saveLogs|saveRetry|saveRetarget|bundleTrash|bundleRestore)\(""")
+        assertNone("KON-6 (swallowed outcome)", main().filter { swallowed.containsMatchIn(it.code()) }.map { it.rel() })
     }
 }

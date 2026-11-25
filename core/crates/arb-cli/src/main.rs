@@ -8,6 +8,8 @@
 //! Scriptable CLI client (`arb-cli`) communicating with `arbd` strictly over local IPC + SHM.
 
 mod mcp;
+#[cfg(test)]
+mod pdd_contract_tables;
 use arb_os::rpc;
 mod upgrade;
 

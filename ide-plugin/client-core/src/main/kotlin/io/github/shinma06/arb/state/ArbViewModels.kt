@@ -282,7 +282,8 @@ object CaptureBarReducer {
                 null to null
             DeviceSelectionOutcome.NoOnlineDevices -> when {
                 boundSerial != null -> boundSerial to null
-                devices.size == 1 -> devices.first().serial to devices.first().serial
+                devices.size == 1 && DeviceSelectionPolicy.isValidAdbSerial(devices.first().serial) ->
+                    devices.first().serial to devices.first().serial
                 else -> null to null
             }
         }

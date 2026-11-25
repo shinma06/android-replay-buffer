@@ -411,7 +411,14 @@ data class SaveOutcomeResponse(
     val tailMayBeIncomplete: Boolean,
     val unanchoredSummary: UnanchoredSummary? = null,
     val warning: String? = null,
-)
+) {
+    /**
+     * The saved bundle, or `null` when the save did not complete. Same rule as `arb-cli`
+     * `save_outcome_failed` (CLI exit 3 / MCP `isError`): no `bundle_id` or `failed_retryable`.
+     */
+    val savedBundleId: String?
+        get() = bundleId?.takeIf { job.state != SaveJobState.FAILED_RETRYABLE }
+}
 
 data class SaveListJobsResponse(
     val jobs: List<SaveJobView>,
