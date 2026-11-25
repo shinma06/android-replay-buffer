@@ -581,7 +581,7 @@ class ArbToolWindowController(
                 publishOnEdt { catalogNote = msg }
                 onNotifyWarning(msg)
             }
-            else -> onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly)
+            item.canOpen -> onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly)
         }
     }
 
