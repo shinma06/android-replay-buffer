@@ -526,22 +526,97 @@ pub fn classify_record<T: AlignedRecord>(record: &T, window: &WindowSpec) -> Mem
     classify_alignment(record.time_alignment(), window)
 }
 
+/// Destination lane of a record admitted by [`partition_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    /// Confirmed inside the window.
+    Main,
+    /// Quarantined uncertain record kept within the caps.
+    Unanchored,
+}
+
+/// Counters produced by [`partition_with`] alongside the emitted records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PartitionTally {
+    /// Records emitted to [`Lane::Unanchored`].
+    pub(crate) unanchored_records: usize,
+    /// Total `estimated_bytes` of the records emitted to [`Lane::Unanchored`].
+    pub(crate) unanchored_bytes: usize,
+    /// Prior truncated count plus records dropped by the quarantine caps.
+    pub(crate) unanchored_truncated_count: usize,
+    /// Records excluded as out of range or outside ingest proximity.
+    pub(crate) excluded_count: usize,
+}
+
 fn try_quarantine<T: AlignedRecord>(
     record: T,
-    unanchored: &mut Vec<T>,
-    unanchored_bytes: &mut usize,
-    unanchored_truncated_count: &mut usize,
+    tally: &mut PartitionTally,
     policy: &SelectionPolicy,
+    emit: &mut impl FnMut(Lane, T),
 ) {
     let rec_bytes = record.estimated_bytes();
-    let next_bytes = unanchored_bytes.saturating_add(rec_bytes);
-    if unanchored.len() < policy.max_unanchored_records && next_bytes <= policy.max_unanchored_bytes
+    let next_bytes = tally.unanchored_bytes.saturating_add(rec_bytes);
+    if tally.unanchored_records < policy.max_unanchored_records
+        && next_bytes <= policy.max_unanchored_bytes
     {
-        *unanchored_bytes = next_bytes;
-        unanchored.push(record);
+        tally.unanchored_bytes = next_bytes;
+        tally.unanchored_records += 1;
+        emit(Lane::Unanchored, record);
     } else {
-        *unanchored_truncated_count = unanchored_truncated_count.saturating_add(1);
+        tally.unanchored_truncated_count = tally.unanchored_truncated_count.saturating_add(1);
     }
+}
+
+/// Partition core of [`select_for_trim_with_truncated`]: routes every record to `emit`
+/// (in input order, `source_unanchored` first) or counts it, with `classify` deciding
+/// membership and `ingest_window_ns` the window's `(ingest_start, ingest_end)`.
+pub(crate) fn partition_with<T: AlignedRecord>(
+    source_main: impl IntoIterator<Item = T>,
+    source_unanchored: impl IntoIterator<Item = T>,
+    source_unanchored_truncated_count: usize,
+    ingest_window_ns: (i64, i64),
+    policy: &SelectionPolicy,
+    mut classify: impl FnMut(&T) -> Membership,
+    mut emit: impl FnMut(Lane, T),
+) -> PartitionTally {
+    let ingest_min = i128::from(ingest_window_ns.0).min(i128::from(ingest_window_ns.1));
+    let ingest_max = i128::from(ingest_window_ns.0).max(i128::from(ingest_window_ns.1));
+    let margin = i128::from(policy.unanchored_ingest_margin_ns);
+    let prox_lo = ingest_min - margin;
+    let prox_hi = ingest_max + margin;
+
+    let mut tally = PartitionTally {
+        unanchored_records: 0,
+        unanchored_bytes: 0,
+        unanchored_truncated_count: source_unanchored_truncated_count,
+        excluded_count: 0,
+    };
+
+    // 1. Carry forward existing source unanchored sidecar records FIRST so
+    //    newly-uncertain records cannot evict them under quarantine caps.
+    for record in source_unanchored {
+        try_quarantine(record, &mut tally, policy, &mut emit);
+    }
+
+    // 2. Partition `source_main` using the exact same classifier as save.
+    for record in source_main {
+        match classify(&record) {
+            Membership::InRange => emit(Lane::Main, record),
+            Membership::OutOfRange => {
+                tally.excluded_count = tally.excluded_count.saturating_add(1);
+            }
+            Membership::UncertainTime(_) => {
+                let ingest = i128::from(record.pc_ingest_cont_ns());
+                if ingest >= prox_lo && ingest <= prox_hi {
+                    try_quarantine(record, &mut tally, policy, &mut emit);
+                } else {
+                    tally.excluded_count = tally.excluded_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    tally
 }
 
 /// Partitions a stream of records into `main`, `unanchored`, and exclusion/truncation counts.
@@ -580,61 +655,29 @@ pub fn select_for_trim_with_truncated<T: AlignedRecord>(
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
 ) -> SelectedPartition<T> {
-    let ingest_min = i128::from(frame_window.ingest_start_cont_ns())
-        .min(i128::from(frame_window.ingest_end_cont_ns()));
-    let ingest_max = i128::from(frame_window.ingest_start_cont_ns())
-        .max(i128::from(frame_window.ingest_end_cont_ns()));
-    let margin = i128::from(policy.unanchored_ingest_margin_ns);
-    let prox_lo = ingest_min - margin;
-    let prox_hi = ingest_max + margin;
-
     let mut main = Vec::new();
     let mut unanchored = Vec::new();
-    let mut unanchored_bytes: usize = 0;
-    let mut unanchored_truncated_count: usize = source_unanchored_truncated_count;
-    let mut excluded_count: usize = 0;
-
-    // 1. Carry forward existing source unanchored sidecar records FIRST so
-    //    newly-uncertain records cannot evict them under quarantine caps.
-    for record in source_unanchored {
-        try_quarantine(
-            record,
-            &mut unanchored,
-            &mut unanchored_bytes,
-            &mut unanchored_truncated_count,
-            policy,
-        );
-    }
-
-    // 2. Partition `source_main` using the exact same classifier as save.
-    for record in source_main {
-        match classify_record(&record, frame_window) {
-            Membership::InRange => main.push(record),
-            Membership::OutOfRange => {
-                excluded_count = excluded_count.saturating_add(1);
-            }
-            Membership::UncertainTime(_) => {
-                let ingest = i128::from(record.pc_ingest_cont_ns());
-                if ingest >= prox_lo && ingest <= prox_hi {
-                    try_quarantine(
-                        record,
-                        &mut unanchored,
-                        &mut unanchored_bytes,
-                        &mut unanchored_truncated_count,
-                        policy,
-                    );
-                } else {
-                    excluded_count = excluded_count.saturating_add(1);
-                }
-            }
-        }
-    }
+    let tally = partition_with(
+        source_main,
+        source_unanchored,
+        source_unanchored_truncated_count,
+        (
+            frame_window.ingest_start_cont_ns(),
+            frame_window.ingest_end_cont_ns(),
+        ),
+        policy,
+        |record| classify_record(record, frame_window),
+        |lane, record| match lane {
+            Lane::Main => main.push(record),
+            Lane::Unanchored => unanchored.push(record),
+        },
+    );
 
     SelectedPartition {
         main,
         unanchored,
-        unanchored_truncated_count,
-        excluded_count,
+        unanchored_truncated_count: tally.unanchored_truncated_count,
+        excluded_count: tally.excluded_count,
     }
 }
 
