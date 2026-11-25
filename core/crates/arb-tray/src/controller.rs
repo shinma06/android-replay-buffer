@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use arb_core::config::{CaptureMode, DEFAULT_SAVE_WINDOW_SECS, DEFAULT_VIDEO_MAX_FPS};
-use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy};
+use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, selectable_online_serials};
 use arb_core::state::{BundleLifecycleState, SaveJobState};
 use arb_os::paths::ArbPaths;
 use serde::{Deserialize, Serialize};
@@ -863,11 +863,13 @@ fn online_device_serials(devices_response: &Value) -> Vec<String> {
         .get("devices")
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |arr| {
-            arr.iter()
-                .filter(|d| d.get("state").and_then(Value::as_str) == Some("device"))
-                .filter_map(|d| d.get("serial").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect()
+            selectable_online_serials(arr.iter().filter_map(|d| {
+                let serial = d.get("serial").and_then(Value::as_str)?;
+                Some((
+                    serial,
+                    d.get("state").and_then(Value::as_str) == Some("device"),
+                ))
+            }))
         })
 }
 

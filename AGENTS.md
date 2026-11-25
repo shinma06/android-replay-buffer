@@ -35,6 +35,13 @@ Entire Trails drive the change; GitHub runs CI and publishes releases. Always pa
 - Support floor: Android 9 (API 28)+ core guaranteed (API 28–32 degrade audio cleanly to `audio=false` / `Unavailable`), Android 13 (API 33)+ recommended for audio capture/playback (non-muting `audio_source=playback audio_dup=true`, SPEC-03), API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
+## PDD-first quality assurance
+
+- Build assurance around five layers: Kani symbolic proofs, Stateright interleaving exploration, shared Rust/Kotlin JSON contract tables, Proptest/Miri, and Konsist/dependency graph checks. Focus conventional tests on smoke coverage, OS/IPC/FS fault injection, bug reproduction, and device acceptance.
+- For states, reasons, and selection rules interpreted by both languages, update the relevant rows in `docs/specs/*-table.json` first. Run Rust `pdd_contract_tables` and Kotlin `PddContractTablesTest` / `PddUiFeedbackContractTest`.
+- Project structured GC, forget, save, and disk-state responses through the shared policies and formatters. Display every nonempty result bucket with its count and use `savedBundleId` for save success, including `failed_retryable` responses (KON-7).
+- Surface JSON-RPC business errors as operation failures while connected. Mark the daemon disconnected on transport failures and on MethodNotFound (-32601), which signals an outdated daemon.
+
 ## Rules
 
 - Zero GPL/AGPL dependencies (`core/scripts/check-licenses.py`). Third-party code must be permissively licensed and recorded in the relevant `NOTICE`.

@@ -213,7 +213,7 @@ class ArbdRpcClientTest {
 
             val logs = client.saveLogs(SaveLogsParams(windowSecs = 300L))
             assertEquals(SaveJobState.COMPLETED, logs.job.state)
-            assertEquals("logs-bundle-1", logs.bundleId)
+            assertEquals("logs-bundle-1", logs.savedBundleId)
 
             val crashes = client.timelineCrashes("b-1").crashes
             assertEquals(1, crashes.size)

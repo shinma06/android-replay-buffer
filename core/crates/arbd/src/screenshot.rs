@@ -9,9 +9,9 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arb_adb::adb::{AdbClient, AdbDeviceState};
+use arb_adb::adb::AdbClient;
 use arb_core::analytics::validate_png_bytes;
-use arb_core::device::{DeviceSelectionOutcome, DeviceSelectionPolicy, validate_adb_serial};
+use arb_core::device::{DeviceSelectionOutcome, validate_adb_serial};
 use arb_os::fs::{fsync_dir, fsync_file};
 
 use crate::error::DaemonError;
@@ -80,21 +80,15 @@ impl ScreenshotProvider for AdbScreenshotProvider {
     }
 }
 
-fn resolve_screenshot_serial(
-    adb: &AdbClient,
+pub(crate) fn resolve_screenshot_serial(
+    adb: &AdbClient<impl arb_adb::adb::AdbCommandRunner>,
     requested: Option<&str>,
 ) -> Result<String, DaemonError> {
     let preferred = requested.map(str::trim).filter(|s| !s.is_empty());
     if let Some(serial) = preferred {
         validate_adb_serial(serial).map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
     }
-    let online: Vec<String> = adb
-        .devices()?
-        .into_iter()
-        .filter(|d| d.state == AdbDeviceState::Device)
-        .map(|d| d.serial)
-        .collect();
-    match DeviceSelectionPolicy::evaluate(preferred, &online) {
+    match crate::live_adb::select_live_target(adb, preferred)? {
         DeviceSelectionOutcome::Selected { serial } => Ok(serial),
         DeviceSelectionOutcome::WaitingForPreferredDevice {
             preferred_serial,

@@ -144,6 +144,22 @@ pub fn is_valid_adb_serial(serial: &str) -> bool {
     validate_adb_serial(serial).is_ok()
 }
 
+/// Returns the serials that may take part in device selection: devices reported online
+/// (`adb` state `device`) whose serial passes [`validate_adb_serial`], in input order.
+///
+/// Kept 1:1 with the Kotlin `DeviceSelectionPolicy.evaluate` device filter in `ide-plugin/client-core`.
+#[must_use]
+pub fn selectable_online_serials<'a, I>(devices: I) -> Vec<String>
+where
+    I: IntoIterator<Item = (&'a str, bool)>,
+{
+    devices
+        .into_iter()
+        .filter(|&(serial, online)| online && is_valid_adb_serial(serial))
+        .map(|(serial, _)| serial.to_owned())
+        .collect()
+}
+
 /// Result of evaluating the strict multi-device target selection policy.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

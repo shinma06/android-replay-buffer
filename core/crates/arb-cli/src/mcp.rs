@@ -723,7 +723,7 @@ fn rpc_error(id: &Value, code: i32, message: impl Into<String>) -> Value {
     })
 }
 
-fn save_content(response: &Value) -> Result<Vec<Value>, String> {
+pub(super) fn save_content(response: &Value) -> Result<Vec<Value>, String> {
     if super::save_outcome_failed(response) {
         // MCP error content uses the same JSON body, including the job ID and durable pins.
         return Err(response.to_string());
