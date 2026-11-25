@@ -8,6 +8,7 @@ import com.google.gson.JsonParser
 import io.github.shinma06.arb.model.ArbConfigPatch
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.BundleEntryView
+import io.github.shinma06.arb.model.BundleForgetResponse
 import io.github.shinma06.arb.model.BundleGcResponse
 import io.github.shinma06.arb.model.BundleLifecycleState
 import io.github.shinma06.arb.model.BundleListResponse
@@ -206,12 +207,26 @@ class ArbdRpcClient(
     fun bundleRestore(bundleId: String): BundleEntryView =
         call("bundle.restore", jsonObj("bundle_id" to bundleId), BundleEntryView::class.java)
 
-    fun bundleGc(nowUtc: String? = null): BundleGcResponse {
+    fun bundleGc(nowUtc: String? = null, ignoreGrace: Boolean = false): BundleGcResponse {
         val params = JsonObject()
         if (nowUtc != null) {
             params.addProperty("now_utc", nowUtc)
         }
+        if (ignoreGrace) {
+            params.addProperty("ignore_grace", true)
+        }
         return call("bundle.gc", params, BundleGcResponse::class.java)
+    }
+
+    fun bundleForget(bundleId: String? = null, allMissing: Boolean = false): BundleForgetResponse {
+        val params = JsonObject()
+        if (bundleId != null) {
+            params.addProperty("bundle_id", bundleId)
+        }
+        if (allMissing) {
+            params.addProperty("all_missing", true)
+        }
+        return call("bundle.forget", params, BundleForgetResponse::class.java)
     }
 
     // ---------------- Timeline ----------------
@@ -464,6 +479,18 @@ class ArbdRpcClient(
     }
 
     companion object {
+        @Throws(IOException::class)
+        fun connectVerified(endpoint: String): ArbdRpcClient {
+            val client = connect(endpoint)
+            try {
+                client.systemHello()
+                return client
+            } catch (e: Exception) {
+                client.close()
+                throw e
+            }
+        }
+
         @Throws(IOException::class)
         fun connect(endpoint: String, os: HostOs = HostOs.detect()): ArbdRpcClient =
             ArbdRpcClient(LocalIpcTransport.connect(endpoint, os))

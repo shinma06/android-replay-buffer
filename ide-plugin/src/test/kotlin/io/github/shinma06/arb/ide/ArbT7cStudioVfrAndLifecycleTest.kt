@@ -183,10 +183,11 @@ class ArbT7cStudioVfrAndLifecycleTest {
 
     private class StubTransport(
         private val maxResponseBytes: Int = Int.MAX_VALUE,
+        val methodsCalled: CopyOnWriteArrayList<String> = CopyOnWriteArrayList(),
         private val handler: (method: String, params: JsonObject) -> String,
     ) : LocalIpcTransport {
+        fun newConnection() = ArbdRpcClient(StubTransport(maxResponseBytes, methodsCalled, handler))
         override val endpoint: String = "mock://t7c"
-        val methodsCalled = CopyOnWriteArrayList<String>()
         val closed = AtomicBoolean(false)
         private val responses = LinkedBlockingQueue<String>()
 
@@ -218,6 +219,118 @@ class ArbT7cStudioVfrAndLifecycleTest {
         override fun close() {
             closed.set(true)
         }
+    }
+
+    @Test
+    fun viewportRecoveryReplacesSocketAndMappingOnceAndIsIsolatedPerTab(@TempDir tmp: Path) {
+        val sockets = mutableListOf<StubTransport>()
+        var daemonPid = 100
+        fun connect(): ArbdRpcClient {
+            val generation = sockets.size + 1
+            val path = writeValidShmFile(tmp.resolve("vp-$generation.shm"), generation.toLong())
+            val descriptor = JsonObject().apply {
+                addProperty("viewport_id", "$daemonPid-$generation")
+                addProperty("bundle_id", "bundle")
+                addProperty("shm_path", path.toString())
+                addProperty("width", 2)
+                addProperty("height", 2)
+                addProperty("stride", 8)
+                addProperty("pixel_format", "rgba8")
+                addProperty("slot_capacity", 64)
+                addProperty("frame_count", 100)
+                addProperty("keyframe_count", 1)
+            }
+            val transport = StubTransport { method, _ ->
+                when (method) {
+                    "media.open_viewport" -> descriptor.toString()
+                    "media.close_viewport" -> """{"closed":true}"""
+                    else -> error(method)
+                }
+            }
+            sockets += transport
+            return ArbdRpcClient(transport)
+        }
+        StudioViewportSession(::connect) { false }.use { first ->
+            StudioViewportSession(::connect) { false }.use { second ->
+                val original = first.open("bundle")
+                val unaffected = second.open("bundle")
+                val (reopened, mapped) = first.request { _, id ->
+                    if (id == original.viewportId) throw io.github.shinma06.arb.model.ArbdRpcException(-32001, "expired")
+                    id
+                }
+                assertEquals("100-3", reopened)
+                assertEquals(3L, mapped?.meta?.frameIndex)
+                assertTrue(sockets[0].closed.get())
+                assertEquals(unaffected.viewportId, second.request { _, id -> id }.response)
+                daemonPid++
+                val (afterRestart, newFrame) = first.request { _, id ->
+                    if (id == reopened) throw java.io.IOException("connection closed")
+                    id
+                }
+                assertEquals("101-4", afterRestart)
+                assertEquals(4L, newFrame?.meta?.frameIndex)
+                val attempts = AtomicInteger()
+                assertFailsWith<IllegalStateException> {
+                    first.request { _, _ ->
+                        attempts.incrementAndGet()
+                        throw java.io.IOException("still offline")
+                    }
+                }
+                assertEquals(2, attempts.get())
+            }
+        }
+        assertTrue(sockets.all { it.closed.get() })
+    }
+
+    @Test
+    fun disposeWhileReplacementViewportOpensClosesBothGenerations(@TempDir tmp: Path) {
+        val shm = writeValidShmFile(tmp.resolve("reopened.shm"))
+        val disposed = AtomicBoolean()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val sockets = CopyOnWriteArrayList<StubTransport>()
+        val explicitCloses = AtomicInteger()
+        val session = StudioViewportSession({
+            val index = sockets.size
+            val socket = StubTransport { method, _ ->
+                when (method) {
+                    "media.open_viewport" -> {
+                        if (index == 1) {
+                            entered.countDown()
+                            check(release.await(5, TimeUnit.SECONDS))
+                        }
+                        val escaped = com.google.gson.Gson().toJson(shm.toString())
+                        """{"viewport_id":"vp-$index","bundle_id":"bundle","shm_path":$escaped,"width":2,"height":2,"stride":8,"pixel_format":"rgba8","slot_capacity":64,"frame_count":2,"keyframe_count":1}"""
+                    }
+                    "media.close_viewport" -> {
+                        explicitCloses.incrementAndGet()
+                        """{"closed":true}"""
+                    }
+                    else -> error(method)
+                }
+            }
+            sockets += socket
+            ArbdRpcClient(socket)
+        }, disposed::get)
+        session.use {
+            session.open("bundle")
+            val recovery = java.util.concurrent.FutureTask {
+                assertFailsWith<IllegalStateException> {
+                    session.request { _, _ -> throw java.io.IOException("socket closed") }
+                }
+            }
+            Thread(recovery).start()
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                disposed.set(true)
+            } finally {
+                release.countDown()
+            }
+            recovery.get(5, TimeUnit.SECONDS)
+        }
+        assertEquals(2, sockets.size)
+        assertTrue(sockets.all { it.closed.get() })
+        assertEquals(1, explicitCloses.get())
     }
 
     private fun bundleOpenResultJson(
@@ -328,6 +441,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         }
         val rpc = ArbdRpcClient(transport)
         val daemonService = object : ArbdDaemonService() {
+            override fun openMediaClient() = transport.newConnection()
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
         }
         val clock = VirtualClock()
@@ -459,6 +573,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         }
         val rpc = ArbdRpcClient(transport)
         val daemonService = object : ArbdDaemonService() {
+            override fun openMediaClient() = transport.newConnection()
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
         }
 
@@ -582,6 +697,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         }
         val rpc = ArbdRpcClient(transport)
         val daemonService = object : ArbdDaemonService() {
+            override fun openMediaClient() = transport.newConnection()
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
         }
 
@@ -689,6 +805,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         }
         val rpc = ArbdRpcClient(transport)
         val daemonService = object : ArbdDaemonService() {
+            override fun openMediaClient() = transport.newConnection()
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
         }
         val editor = ArbBundleFileEditor(
@@ -767,6 +884,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
         }
         val rpc = ArbdRpcClient(transport)
         val daemonService = object : ArbdDaemonService() {
+            override fun openMediaClient() = transport.newConnection()
             override fun <T> withClient(block: (ArbdRpcClient) -> T): T {
                 return block(rpc)
             }

@@ -59,7 +59,7 @@ fn viewport_timestamps(mut pts: impl ExactSizeIterator<Item = i64>) -> Vec<i64> 
 struct OpenViewport {
     bundle_id: String,
     shm_path: PathBuf,
-    track: Mp4VideoTrack,
+    track: Arc<Mp4VideoTrack>,
     frame_boottimes: Vec<i64>,
     scrub: ScrubController,
     shm_writer: ShmFrameRingWriter,
@@ -173,6 +173,7 @@ impl MediaEngine {
         let shm_path = self.shm_dir.join(format!("{viewport_id}.shm"));
         let shm_writer = ShmFrameRingWriter::create(&shm_path, slot_capacity)?;
 
+        let last_frame_duration_ns = track.frames().last().map(|frame| frame.duration_ns);
         let frame_count = track.frame_count();
         let keyframe_count = track.keyframes().len();
         let frame_pts_ns = viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
@@ -184,7 +185,7 @@ impl MediaEngine {
         let viewport = Arc::new(Mutex::new(OpenViewport {
             bundle_id: bundle_id.clone(),
             shm_path: shm_path.clone(),
-            track,
+            track: Arc::new(track),
             frame_boottimes,
             scrub,
             shm_writer,
@@ -201,6 +202,7 @@ impl MediaEngine {
         registry.insert(viewport_id.clone(), viewport);
 
         Ok(MediaOpenViewportResponse {
+            last_frame_duration_ns,
             frame_pts_ns,
             viewport_id,
             bundle_id,
@@ -225,14 +227,8 @@ impl MediaEngine {
         &self,
         params: &MediaFilmstripParams,
     ) -> Result<MediaFilmstripResponse, DaemonError> {
-        self.filmstrip_with(params, |vp, cfg| {
-            FilmstripCache::load_or_generate(
-                &self.cache_dir,
-                &vp.bundle_id,
-                &vp.track,
-                cfg,
-                self.backend.as_ref(),
-            )
+        self.filmstrip_with(params, |id, track, cfg| {
+            FilmstripCache::load_or_generate(&self.cache_dir, id, track, cfg, self.backend.as_ref())
         })
     }
 
@@ -240,16 +236,19 @@ impl MediaEngine {
         &self,
         params: &MediaFilmstripParams,
         load: impl FnOnce(
-            &OpenViewport,
+            &str,
+            &Mp4VideoTrack,
             FilmstripConfig,
         ) -> Result<arb_media::playback::FilmstripLoadResult, MediaError>,
     ) -> Result<MediaFilmstripResponse, DaemonError> {
         let start = Instant::now();
         let viewport = self.viewport(&params.viewport_id)?;
-        let mut viewport_guard = viewport
-            .lock()
-            .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
-        let vp = &mut *viewport_guard;
+        let (id, track) = {
+            let vp = viewport
+                .lock()
+                .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+            (vp.bundle_id.clone(), Arc::clone(&vp.track))
+        };
 
         let mut cfg = FilmstripConfig::default();
         if let Some(mw) = params.max_width {
@@ -259,7 +258,7 @@ impl MediaEngine {
             cfg.max_height = mh;
         }
 
-        let loaded = load(vp, cfg)?;
+        let loaded = load(&id, &track, cfg)?;
 
         let entries: Vec<FilmstripEntryMeta> = loaded
             .cache
@@ -279,7 +278,11 @@ impl MediaEngine {
         }
         .to_owned();
 
-        vp.scrub.set_filmstrip(loaded.cache);
+        viewport
+            .lock()
+            .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?
+            .scrub
+            .set_filmstrip(loaded.cache);
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         Ok(MediaFilmstripResponse {
@@ -310,17 +313,30 @@ impl MediaEngine {
 
         let mut preview = vp.scrub.preview_scrub(&vp.track, params.frame_index)?;
         if preview.is_none() {
-            // Auto-load/generate filmstrip if caller scrubbed before invoking `media.filmstrip`.
+            let requested_generation = vp.scrub.latest_generation();
+            let track = Arc::clone(&vp.track);
+            let id = vp.bundle_id.clone();
+            drop(viewport_guard);
             let loaded = FilmstripCache::load_or_generate(
                 &self.cache_dir,
-                &vp.bundle_id,
-                &vp.track,
+                &id,
+                &track,
                 FilmstripConfig::default(),
                 self.backend.as_ref(),
             )?;
+            viewport_guard = viewport
+                .lock()
+                .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+            let vp = &mut *viewport_guard;
             vp.scrub.set_filmstrip(loaded.cache);
+            if vp.scrub.latest_generation() != requested_generation {
+                return Err(DaemonError::Conflict(
+                    "scrub superseded during filmstrip generation".into(),
+                ));
+            }
             preview = vp.scrub.preview_scrub(&vp.track, params.frame_index)?;
         }
+        let vp = &mut *viewport_guard;
 
         let frame = preview.ok_or_else(|| {
             DaemonError::Media(arb_media::MediaError::Codec(
@@ -1640,7 +1656,7 @@ mod concurrent_viewport_tests {
     use std::time::Duration;
 
     #[test]
-    fn stalled_thumbnail_decode_allows_status_and_another_viewport_seek() {
+    fn stalled_thumbnail_decode_allows_status_and_same_viewport_seek() {
         let tmp = tempfile::tempdir().unwrap();
         let server = crate::DaemonServer::start(crate::DaemonConfig::new(ArbPaths {
             data_dir: tmp.path().join("d"),
@@ -1653,7 +1669,7 @@ mod concurrent_viewport_tests {
             .join("../../../fixtures/legacy-schema4/replay-trim-parity")
             .join("replay-20240101-000000-manual-feedface");
         let first = state.media.open_viewport(&fixture, None).unwrap();
-        let second = state.media.open_viewport(&fixture, None).unwrap();
+        let seek_id = first.viewport_id.clone();
         let (ready, entered) = mpsc::channel();
         let (release, wait) = mpsc::channel();
         let (done, result) = mpsc::channel();
@@ -1665,7 +1681,7 @@ mod concurrent_viewport_tests {
                         max_width: None,
                         max_height: None,
                     },
-                    |_, _| {
+                    |_, _, _| {
                         ready.send(()).unwrap();
                         wait.recv_timeout(Duration::from_secs(10)).unwrap();
                         Err(MediaError::Codec("delayed test codec".into()))
@@ -1677,12 +1693,19 @@ mod concurrent_viewport_tests {
             scope.spawn(move || {
                 assert_eq!(
                     state.dispatch("system.status", json!({})).unwrap()["active_viewports"],
-                    2
+                    1
                 );
+                // Exercise the implicit cold filmstrip path before the explicit loader completes.
+                state
+                    .dispatch(
+                        "media.scrub",
+                        json!({"viewport_id":seek_id,"frame_index":0}),
+                    )
+                    .unwrap();
                 let frame = state
                     .dispatch(
                         "media.seek_frame",
-                        json!({"viewport_id":second.viewport_id,"frame_index":0}),
+                        json!({"viewport_id":seek_id,"frame_index":0}),
                     )
                     .unwrap();
                 done.send(frame["frame_index"].clone()).unwrap();

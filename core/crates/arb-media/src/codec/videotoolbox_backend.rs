@@ -1301,7 +1301,57 @@ impl VideoToolboxBackend {
     }
 }
 
+struct VtGopDecoder {
+    decoder: VtDecoder,
+    sample: Vec<u8>,
+}
+
+// SAFETY: The CF/VT objects are owned by the cursor and have no thread affinity.
+// Synchronous decode (flags 0) completes its callback before returning. Moving the
+// exclusively owned cursor between calls cannot overlap access to the callback state.
+unsafe impl Send for VtGopDecoder {}
+
+impl super::SequentialDecoder for VtGopDecoder {
+    fn next(
+        &mut self,
+        track: &Mp4VideoTrack,
+        index: u64,
+        format: PixelFormat,
+    ) -> Result<DecodedFrame, MediaError> {
+        track.read_sample_into(index, &mut self.sample)?;
+        let info = track.frame(index)?;
+        self.decoder
+            .decode_avcc_sample_sync(
+                &self.sample,
+                info.pts_ticks,
+                track.timescale(),
+                info.duration_ticks,
+            )?
+            .to_decoded_frame(index, format)
+    }
+}
+
 impl VideoCodecBackend for VideoToolboxBackend {
+    fn sequential_decoder(
+        &self,
+        track: &Mp4VideoTrack,
+        _: u64,
+        _: u64,
+    ) -> Result<Box<dyn super::SequentialDecoder>, MediaError> {
+        let avcc = track.avcc();
+        let decoder = VtDecoder::new(
+            &avcc.sps,
+            &avcc.pps,
+            avcc.nal_length_size,
+            track.width(),
+            track.height(),
+        )?;
+        Ok(Box::new(VtGopDecoder {
+            decoder,
+            sample: Vec::new(),
+        }))
+    }
+
     fn name(&self) -> &'static str {
         "videotoolbox"
     }

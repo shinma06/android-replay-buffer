@@ -40,6 +40,8 @@ const _: () = {
     assert_send_sync::<bundle_io::V2BundleReader>();
     assert_send_sync::<bundle_io::LegacyBundleReader>();
     assert_send_sync::<catalog::Catalog>();
+    assert_send_sync::<catalog::BundleDiskState>();
+    assert_send_sync::<catalog::ForgetReport>();
     assert_send_sync::<config::ConfigStore>();
 };
 

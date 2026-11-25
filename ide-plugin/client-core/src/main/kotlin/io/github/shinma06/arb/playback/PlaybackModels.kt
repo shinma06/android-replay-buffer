@@ -109,6 +109,7 @@ data class FrameSeekResult(
     val requestedFrameIndex: Long,
     val displayedFrameIndex: Long,
     val isApproximate: Boolean,
+    val recovered: Boolean = false,
 )
 
 /**
