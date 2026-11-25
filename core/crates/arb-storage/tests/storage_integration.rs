@@ -2372,3 +2372,176 @@ fn gc_keeps_catalog_rows_when_managed_parent_is_unavailable() {
         );
     }
 }
+
+fn tree_hashes(root: &Path) -> BTreeMap<PathBuf, [u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut result = BTreeMap::new();
+    let mut dirs = vec![root.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).expect("list replacement") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                result.insert(
+                    path.strip_prefix(root)
+                        .expect("fixture under root")
+                        .to_owned(),
+                    Sha256::digest(fs::read(path).expect("read replacement file")).into(),
+                );
+            }
+        }
+    }
+    result
+}
+
+#[test]
+fn gc_and_recovery_preserve_replacement_trees() {
+    let now = "2026-11-22T12:00:00Z";
+    for restart in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("catalog.sqlite");
+        let root = tmp.path().join("bundles");
+        let catalog = Catalog::open(&db, &root).unwrap();
+        for id in ["other", "personal", "valid"] {
+            register_v2_bundle(&catalog, id, &root.join(id), id, b"original");
+            catalog.trash_bundle(id, now).unwrap();
+        }
+        fs::rename(root.join("other"), tmp.path().join("moved-other")).unwrap();
+        V2BundleWriter::write(
+            root.join("other"),
+            "different-job",
+            &build_draft("different", vec![42]),
+        )
+        .unwrap();
+        fs::rename(root.join("personal"), tmp.path().join("moved-personal")).unwrap();
+        fs::create_dir_all(root.join("personal/nested")).unwrap();
+        fs::write(root.join("personal/nested/document"), b"keep").unwrap();
+        let before = [
+            tree_hashes(&root.join("other")),
+            tree_hashes(&root.join("personal")),
+        ];
+        if restart {
+            drop(catalog);
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .execute("UPDATE bundles SET state = 'purging'", [])
+                .unwrap();
+            let reopened = Catalog::open(&db, &root).unwrap();
+            let recovery = reopened.recover_on_startup(now).unwrap();
+            assert_eq!(recovery.completed_purging_bundle_ids, ["valid"]);
+            assert_eq!(recovery.failed.len(), 2);
+            assert!(
+                recovery
+                    .failed
+                    .iter()
+                    .all(|f| f.error.contains("identity mismatch"))
+            );
+        }
+        let catalog = Catalog::open(&db, &root).unwrap();
+        let report = catalog.gc_with_grace(now, 0).unwrap();
+        if !restart {
+            assert_eq!(report.purged_bundle_ids, ["valid"]);
+        }
+        assert!(!root.join("valid").exists());
+        assert_eq!(report.failed.len(), 2);
+        for (id, hashes) in ["other", "personal"].into_iter().zip(before) {
+            assert!(
+                report
+                    .failed
+                    .iter()
+                    .any(|f| f.bundle_id == id && f.error.contains("identity mismatch"))
+            );
+            assert!(catalog.bundle(id).unwrap().is_some());
+            assert_eq!(tree_hashes(&root.join(id)), hashes);
+        }
+    }
+}
+
+#[test]
+fn interrupted_claim_is_recovered_even_if_public_path_is_reused() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("original");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "original", &source, "job", b"payload");
+    catalog.trash_bundle("original", now).unwrap();
+    drop(catalog);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let token = "a".repeat(32);
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('original', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    let claim = root.join(format!(".purging-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    let reopened = Catalog::open(&db, &root).unwrap();
+    assert_eq!(
+        reopened
+            .prune_missing_bundles(now)
+            .unwrap()
+            .skipped_storage_unavailable_bundle_ids,
+        ["original"]
+    );
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("keep"), b"replacement").unwrap();
+    let before = tree_hashes(&source);
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["original"]);
+    assert!(!claim.exists());
+    assert_eq!(tree_hashes(&source), before);
+}
+
+#[test]
+fn gc_rejects_corrupt_or_wrong_owner_manifest_and_links() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+    for id in ["corrupt", "schema", "owner", "link"] {
+        let path = root.join(id);
+        register_v2_bundle(&catalog, id, &path, id, b"private");
+        catalog.trash_bundle(id, now).unwrap();
+        let manifest = path.join("manifest.json");
+        match id {
+            "corrupt" => fs::write(manifest, b"{").unwrap(),
+            "link" => {
+                let moved = tmp.path().join("target");
+                fs::rename(&path, &moved).unwrap();
+                symlink_dir(&moved, &path).unwrap();
+            }
+            _ => {
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+                if id == "schema" {
+                    value["schema_version"] = serde_json::json!(4);
+                } else {
+                    value["created_at_utc"] = serde_json::json!("2020-01-01T00:00:00Z");
+                }
+                fs::write(manifest, value.to_string()).unwrap();
+            }
+        }
+    }
+    let before = tree_hashes(&root);
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.failed.len(), 4);
+    assert!(
+        report
+            .failed
+            .iter()
+            .all(|f| f.error.contains("identity mismatch"))
+    );
+    assert_eq!(tree_hashes(&root), before);
+    assert!(
+        fs::symlink_metadata(root.join("link"))
+            .unwrap()
+            .is_symlink()
+    );
+}

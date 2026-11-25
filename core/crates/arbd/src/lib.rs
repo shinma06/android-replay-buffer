@@ -1167,7 +1167,12 @@ impl DaemonState {
                 bundle_id: reg_id.clone(),
                 path: path.clone(),
                 format_version,
-                parent_bundle_id: None,
+                parent_bundle_id: match &summary.provenance {
+                    arb_core::bundle::Provenance::Trimmed {
+                        parent_bundle_id, ..
+                    } => Some(parent_bundle_id.clone()),
+                    _ => None,
+                },
                 created_at_utc: summary
                     .created_at_utc
                     .clone()

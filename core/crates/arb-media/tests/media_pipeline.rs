@@ -150,9 +150,15 @@ fn read_barcode_from_frame(frame: &DecodedFrame) -> Option<u64> {
 
 /// Builds a synthetic 90-frame (3 GOPs of 30 frames) barcode-stamped H.264 MP4 using `OpenH264`.
 fn build_synthetic_fixture_mp4(path: &Path) {
+    build_offset_fixture_mp4(path, 0);
+}
+
+fn build_offset_fixture_mp4(path: &Path, offset: u64) {
     let backend = OpenH264Backend::new();
     let frames: Vec<DecodedFrame> = (0..FRAME_COUNT)
-        .map(|i| synthesize_barcode_yuv420p_frame(u64::try_from(i).expect("index fits u64")))
+        .map(|i| {
+            synthesize_barcode_yuv420p_frame(offset + u64::try_from(i).expect("index fits u64"))
+        })
         .collect();
     let packets = backend
         .encode_yuv420p_sequence(
@@ -1239,6 +1245,7 @@ fn single_gop_mid_gop_trim_and_bounds_validation() {
 
 #[test]
 fn corrupt_filmstrip_cache_is_safely_regenerated() {
+    use sha2::Digest as _;
     let tmp = TempDir::new().expect("tempdir creation must succeed");
     let bundle_dir = tmp.path().join("bundle");
     std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
@@ -1269,8 +1276,12 @@ fn corrupt_filmstrip_cache_is_safely_regenerated() {
     bytes[mid] ^= 0xFF;
     std::fs::write(&first.cache_path, &bytes).expect("corrupting filmstrip.bin must succeed");
 
-    let direct_err =
-        FilmstripCache::load_from_file(&first.cache_path, track.file_len(), track.frame_count());
+    let direct_err = FilmstripCache::load_from_file(
+        &first.cache_path,
+        track.file_len(),
+        track.frame_count(),
+        &sha2::Sha256::digest(std::fs::read(track.path()).expect("source bytes")).into(),
+    );
     assert!(
         matches!(direct_err, Err(MediaError::CacheCorrupt(_))),
         "corrupted filmstrip.bin must fail checksum with CacheCorrupt"
@@ -1288,4 +1299,55 @@ fn corrupt_filmstrip_cache_is_safely_regenerated() {
         recovered.cache, first.cache,
         "regenerated filmstrip must match original"
     );
+}
+
+#[test]
+fn equal_length_replacement_invalidates_filmstrip_pixels() {
+    let tmp = TempDir::new().unwrap();
+    let bundle = tmp.path().join("bundle");
+    std::fs::create_dir(&bundle).unwrap();
+    let path = bundle.join("video.mp4");
+    let replacement = tmp.path().join("replacement.mp4");
+    build_offset_fixture_mp4(&path, 0);
+    build_offset_fixture_mp4(&replacement, 128);
+    let mut movies = [&path, &replacement].map(|p| std::fs::read(p).unwrap());
+    let size = movies.iter().map(Vec::len).max().unwrap() + 8;
+    for movie in &mut movies {
+        let padding = u32::try_from(size - movie.len()).unwrap();
+        movie.extend(padding.to_be_bytes());
+        movie.extend(b"free");
+        movie.resize(size, 0);
+    }
+    let codec = OpenH264Backend::new();
+    for (movie, offset) in movies.iter().zip([0, 128]) {
+        std::fs::write(&path, movie).unwrap();
+        let track = Mp4VideoTrack::open(&path).unwrap();
+        let result = FilmstripCache::load_or_generate(
+            tmp.path().join("cache"),
+            "same",
+            &track,
+            FilmstripConfig {
+                max_width: WIDTH,
+                max_height: HEIGHT,
+                max_threads: 1,
+            },
+            &codec,
+        )
+        .unwrap();
+        assert_eq!(result.origin, FilmstripOrigin::Generated);
+        assert_eq!(result.cache.len(), 3);
+        for thumb in result.cache.entries() {
+            assert_eq!(
+                read_barcode_from_rgb24(
+                    &thumb.image.data,
+                    usize::try_from(thumb.image.width).unwrap()
+                ),
+                Some(offset + thumb.frame_index)
+            );
+        }
+        let exact = codec
+            .decode_frame(&track, 17, PixelFormat::Yuv420p)
+            .unwrap();
+        assert_eq!(read_barcode_from_frame(&exact), Some(offset + 17));
+    }
 }

@@ -18,7 +18,7 @@ use crate::output::{Publish, write_atomically};
 
 /// File magic header for external `filmstrip.bin` caches.
 const MAX_CACHE_ENTRIES: usize = 1_000_000;
-const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS001";
+const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS002";
 
 /// FNV-1a 64-bit offset basis for integrity verification of `filmstrip.bin`.
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -90,6 +90,7 @@ pub struct FilmstripLoadResult {
 /// (`<cache_dir>/<bundle_id>/filmstrip.bin`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilmstripCache {
+    source_digest: [u8; 32],
     source_file_len: u64,
     source_frame_count: u64,
     entries: Vec<FilmstripEntry>,
@@ -160,8 +161,10 @@ impl FilmstripCache {
             };
             Self::ensure_cache_outside_bundle(cache_dir.as_ref(), bundle_dir)?;
         }
+        let source_digest = track.content_digest()?;
         if path.exists()
-            && let Ok(cached) = Self::load_from_file(&path, track.file_len(), track.frame_count())
+            && let Ok(cached) =
+                Self::load_from_file(&path, track.file_len(), track.frame_count(), &source_digest)
         {
             return Ok(FilmstripLoadResult {
                 cache: cached,
@@ -187,6 +190,7 @@ impl FilmstripCache {
         }
 
         let cache = Self {
+            source_digest,
             source_file_len: track.file_len(),
             source_frame_count: track.frame_count(),
             entries,
@@ -210,9 +214,10 @@ impl FilmstripCache {
         path: impl AsRef<Path>,
         expected_source_file_len: u64,
         expected_frame_count: u64,
+        expected_source_digest: &[u8; 32],
     ) -> Result<Self, MediaError> {
         let bytes = fs::read(path)?;
-        if bytes.len() < 8 + 8 + 8 + 4 + 8 {
+        if bytes.len() < 8 + 8 + 8 + 32 + 4 + 8 {
             return Err(MediaError::CacheCorrupt(
                 "filmstrip cache file is truncated".to_owned(),
             ));
@@ -233,15 +238,19 @@ impl FilmstripCache {
         }
         let source_file_len = read_u64_le(&bytes, 8)?;
         let source_frame_count = read_u64_le(&bytes, 16)?;
-        if source_file_len != expected_source_file_len || source_frame_count != expected_frame_count
+        let mut source_digest = [0; 32];
+        source_digest.copy_from_slice(&bytes[24..56]);
+        if source_file_len != expected_source_file_len
+            || source_frame_count != expected_frame_count
+            || &source_digest != expected_source_digest
         {
             return Err(MediaError::CacheCorrupt(
                 "filmstrip cache fingerprint does not match source track".to_owned(),
             ));
         }
-        let entry_count = usize::try_from(read_u32_le(&bytes, 24)?)
+        let entry_count = usize::try_from(read_u32_le(&bytes, 56)?)
             .map_err(|_| MediaError::CacheCorrupt("entry count overflow".to_owned()))?;
-        let mut pos = 28usize;
+        let mut pos = 60usize;
         if entry_count > MAX_CACHE_ENTRIES
             || entry_count > (body_len - pos) / 28
             || u64::try_from(entry_count).is_ok_and(|n| n > source_frame_count)
@@ -296,6 +305,7 @@ impl FilmstripCache {
         }
 
         Ok(Self {
+            source_digest,
             source_file_len,
             source_frame_count,
             entries,
@@ -310,6 +320,7 @@ impl FilmstripCache {
         buf.extend_from_slice(FILMSTRIP_MAGIC);
         buf.extend_from_slice(&self.source_file_len.to_le_bytes());
         buf.extend_from_slice(&self.source_frame_count.to_le_bytes());
+        buf.extend_from_slice(&self.source_digest);
         let entry_count_u32 = u32::try_from(self.entries.len())
             .map_err(|_| MediaError::CacheCorrupt("too many filmstrip entries".to_owned()))?;
         buf.extend_from_slice(&entry_count_u32.to_le_bytes());

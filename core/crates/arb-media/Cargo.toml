@@ -12,6 +12,7 @@ openh264 = "0.9"
 png = "0.17"
 rusty_aac = { version = "2", default-features = false }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 thiserror = "2"
 
 [dev-dependencies]

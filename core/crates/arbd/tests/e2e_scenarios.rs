@@ -1213,7 +1213,9 @@ fn scenario_07_device_reboot_boot_id_hard_boundary() {
 #[test]
 fn scenario_08_save_failure_unwritable_dest_pin_preserved_retarget_succeeds() {
     let tmp = TempDir::new().expect("tempdir");
-    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+    let paths = isolated_paths(&tmp);
+    let mux_work = paths.data_dir.join("tmp");
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("start arbd");
 
     let mut source = build_barcode_mock_source("boot-s08", 30, WallClockMode::Steady);
     server.ingest_device_source(&mut source).expect("ingest");
@@ -1242,6 +1244,40 @@ fn scenario_08_save_failure_unwritable_dest_pin_preserved_retarget_succeeds() {
 
     // Retarget to a valid destination directory -> must succeed from preserved pins!
     let good_dest = tmp.path().join("recovered-bundles");
+    // Obstruct the actual MP4 writer after phase 1 using the pinned job's stable name.
+    let blocked_mux = mux_work.join(format!("mux-{job_id}.mp4"));
+    fs::create_dir_all(&blocked_mux).expect("obstruct mux publication");
+    let interrupted = client.call(
+        "save.retarget",
+        &json!({"job_id": job_id, "dest_dir": good_dest}),
+    );
+    assert_eq!(interrupted["job"]["state"], "failed_retryable");
+    assert_eq!(
+        interrupted["job"]["pinned_chunk_ids"],
+        failed["job"]["pinned_chunk_ids"]
+    );
+    assert!(
+        !Path::new(
+            interrupted["job"]["destination_path"]
+                .as_str()
+                .expect("destination")
+        )
+        .exists()
+    );
+    let journal = arb_storage::ring::PinJournal::open(mux_work.parent().expect("data dir"))
+        .expect("pin journal");
+    assert_eq!(
+        journal
+            .list_all()
+            .expect("read pins")
+            .iter()
+            .find(|record| record.job_id == job_id)
+            .expect("durable job pins")
+            .pinned_chunk_ids,
+        serde_json::from_value::<Vec<String>>(failed["job"]["pinned_chunk_ids"].clone())
+            .expect("chunk IDs")
+    );
+    fs::remove_dir(&blocked_mux).expect("unblock MP4 writer");
     let recovered = client.call(
         "save.retarget",
         &json!({ "job_id": job_id, "dest_dir": good_dest }),
@@ -2576,74 +2612,20 @@ fn r4_m4_audio_lead_in_offset_saved_and_trim_aligned() {
     server.shutdown();
 }
 
-#[test]
-fn empty_trash_ignore_grace_and_protections_e2e() {
-    let tmp = TempDir::new().expect("tempdir");
-    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
-    let mut source = build_barcode_mock_source("boot-empty-trash", 30, WallClockMode::Steady);
-    server
-        .ingest_device_source(&mut source)
-        .expect("ingest source");
-    let mut client = TestIpcClient::connect(server.endpoint());
-
-    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
-    let managed_id = saved["bundle_id"].as_str().expect("managed id").to_owned();
-    let managed_path = PathBuf::from(saved["bundle_path"].as_str().expect("managed path"));
-    let _ = client.call("bundle.trash", &json!({ "bundle_id": managed_id }));
-
-    // Default `bundle.gc` preserves the 24h grace period.
-    let gc_default = client.call("bundle.gc", &json!({}));
-    assert_eq!(gc_default["purged_bundle_ids"], json!([]));
-    assert!(
-        gc_default["skipped_in_grace_bundle_ids"]
-            .as_array()
-            .expect("skipped_in_grace")
-            .iter()
-            .any(|v| v == &managed_id)
-    );
-    assert!(managed_path.is_dir());
-
-    // `ignore_grace: true` still honors active Viewer Lease, then purges once closed.
-    let opened = client.call(
-        "bundle.open",
-        &json!({
-            "bundle_id_or_path": managed_id,
-            "holder_kind": "ide_viewer",
-            "holder_pid": std::process::id(),
-        }),
-    );
-    let lease_id = opened["lease_id"].as_str().expect("lease_id").to_owned();
-    let gc_leased = client.call("bundle.gc", &json!({ "ignore_grace": true }));
-    assert!(
-        gc_leased["skipped_leased_bundle_ids"]
-            .as_array()
-            .expect("skipped_leased")
-            .iter()
-            .any(|v| v == &managed_id)
-    );
-    let _ = client.call("bundle.close", &json!({ "lease_id": lease_id }));
-    let gc_immediate = client.call("bundle.gc", &json!({ "ignore_grace": true }));
-    assert!(
-        gc_immediate["purged_bundle_ids"]
-            .as_array()
-            .expect("purged")
-            .iter()
-            .any(|v| v == &managed_id)
-    );
-    assert!(!managed_path.exists());
-
+fn trash_external_and_legacy(
+    client: &mut TestIpcClient,
+    root: &Path,
+) -> ((String, PathBuf), (String, PathBuf)) {
     // Present external and LegacyRo bundles stay protected even with `ignore_grace: true`.
-    let ext_root = tmp.path().join("external-output");
+    let ext_root = root.join("external-output");
     fs::create_dir_all(&ext_root).expect("create external root");
-    let ext_saved = client.call(
-        "save.trigger",
-        &json!({ "duration_sec": 30, "dest_dir": ext_root }),
-    );
+    client.call("config.update", &json!({"output_dir_override": ext_root}));
+    let ext_saved = client.call("save.trigger", &json!({}));
     let ext_id = ext_saved["bundle_id"].as_str().expect("ext id").to_owned();
     let ext_path = PathBuf::from(ext_saved["bundle_path"].as_str().expect("ext path"));
     let _ = client.call("bundle.trash", &json!({ "bundle_id": ext_id }));
 
-    let legacy_copy = tmp.path().join("legacy-copy");
+    let legacy_copy = root.join("legacy-copy");
     let legacy_fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .join("fixtures/legacy-schema4/replay-trim-parity/replay-20240101-000000-manual-feedface");
@@ -2660,12 +2642,105 @@ fn empty_trash_ignore_grace_and_protections_e2e() {
     let _ = client.call("bundle.close", &json!({ "lease_id": leg_open["lease_id"] }));
     let _ = client.call("bundle.trash", &json!({ "bundle_id": leg_id }));
 
+    ((ext_id, ext_path), (leg_id, legacy_copy))
+}
+
+#[test]
+fn empty_trash_ignore_grace_and_protections_e2e() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let faults = Arc::new(FaultInjection::default());
+    let server =
+        DaemonServer::start(DaemonConfig::new(paths).with_fault_injection(Arc::clone(&faults)))
+            .expect("start arbd");
+    let mut source = build_barcode_mock_source("boot-empty-trash", 30, WallClockMode::Steady);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest source");
+    let mut client = TestIpcClient::connect(server.endpoint());
+
+    assert_default_gc_config(&mut client);
+    let saved = client.call("save.trigger", &json!({}));
+    let managed_id = saved["bundle_id"].as_str().expect("managed id").to_owned();
+    let managed_path = PathBuf::from(saved["bundle_path"].as_str().expect("managed path"));
+    let _ = client.call("bundle.trash", &json!({ "bundle_id": managed_id }));
+
+    // Default `bundle.gc` preserves the 24h grace period.
+    let before = snapshot_directory(&managed_path);
+    let gc_default = client.call("bundle.gc", &json!({}));
+    assert_eq!(gc_default["purged_bundle_ids"], json!([]));
+    assert!(
+        gc_default["skipped_in_grace_bundle_ids"]
+            .as_array()
+            .expect("skipped_in_grace")
+            .iter()
+            .any(|v| v == &managed_id)
+    );
+    assert_eq!(snapshot_directory(&managed_path), before);
+
+    // `ignore_grace: true` still honors active Viewer Lease, then purges once closed.
+    let lease_id = open_gc_viewer(&mut client, &managed_id);
+    let removable = client.call("save.trigger", &json!({}));
+    let replaced = client.call("save.trigger", &json!({}));
+    for candidate in [&removable, &replaced] {
+        client.call(
+            "bundle.trash",
+            &json!({"bundle_id": candidate["bundle_id"]}),
+        );
+    }
+    let replaced_path = PathBuf::from(replaced["bundle_path"].as_str().expect("source"));
+    fs::rename(&replaced_path, tmp.path().join("moved")).expect("move original");
+    fs::create_dir(&replaced_path).expect("replacement");
+    fs::write(replaced_path.join("note"), b"private").expect("note");
+
+    // A post-register failure leaves real pins and a registered bundle at the active job target.
+    faults.fail_complete_job_once.store(true, Ordering::Release);
+    let failed = client.call("save.trigger", &json!({}));
+    assert_eq!(failed["job"]["state"], "failed_retryable");
+    let job_path = PathBuf::from(
+        failed["job"]["destination_path"]
+            .as_str()
+            .expect("job destination"),
+    );
+    let job_id = job_path.file_name().unwrap().to_str().unwrap();
+    client.call("bundle.trash", &json!({"bundle_id": job_id}));
+
+    let ((ext_id, ext_path), (leg_id, legacy_copy)) =
+        trash_external_and_legacy(&mut client, tmp.path());
     let gc_protected = client.call("bundle.gc", &json!({ "ignore_grace": true }));
     let skipped = gc_protected["skipped_unmanaged_or_legacy_bundle_ids"]
         .as_array()
         .expect("skipped unmanaged");
     assert!(skipped.iter().any(|v| v == &ext_id) && skipped.iter().any(|v| v == &leg_id));
     assert!(ext_path.is_dir() && legacy_copy.is_dir());
+
+    assert_eq!(
+        gc_protected["purged_bundle_ids"],
+        json!([removable["bundle_id"]])
+    );
+    assert!(!Path::new(removable["bundle_path"].as_str().unwrap()).exists());
+    assert_eq!(
+        gc_protected["skipped_leased_bundle_ids"],
+        json!([managed_id])
+    );
+    assert_eq!(
+        gc_protected["skipped_active_job_bundle_ids"],
+        json!([job_id])
+    );
+    assert!(job_path.is_dir());
+    assert_eq!(snapshot_directory(&managed_path), before);
+    assert_eq!(
+        gc_protected["failed"][0]["bundle_id"],
+        replaced["bundle_id"]
+    );
+    assert!(
+        gc_protected["failed"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("identity mismatch")
+    );
+    assert_eq!(fs::read(replaced_path.join("note")).unwrap(), b"private");
+    client.call("bundle.close", &json!({"lease_id": lease_id}));
 
     // Manually deleting trashed external bundle lets GC clean its dead row without disk ops.
     fs::remove_dir_all(&ext_path).expect("manual delete trashed external bundle");
@@ -2755,4 +2830,37 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
             fs::copy(entry.path(), target).expect("copy file");
         }
     }
+}
+
+fn assert_default_gc_config(client: &mut TestIpcClient) {
+    let config = client.call("config.get", &json!({}));
+    assert_eq!(
+        config["config"]["gc_grace_secs"], 86_400,
+        "default trash retention"
+    );
+    assert_eq!(
+        config["config"]["capture_enabled"], false,
+        "default capture opt-in"
+    );
+    assert_eq!(
+        config["config"]["save_window_secs"], 300,
+        "default save window"
+    );
+    assert_eq!(
+        arb_core::selection::SelectionPolicy::default().drain_timeout_ms,
+        500,
+        "default heartbeat wait"
+    );
+}
+
+fn open_gc_viewer(client: &mut TestIpcClient, managed_id: &str) -> String {
+    let opened = client.call(
+        "bundle.open",
+        &json!({
+            "bundle_id_or_path": managed_id,
+            "holder_kind": "ide_viewer",
+            "holder_pid": std::process::id(),
+        }),
+    );
+    opened["lease_id"].as_str().expect("lease_id").to_owned()
 }
