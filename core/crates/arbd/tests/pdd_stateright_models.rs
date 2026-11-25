@@ -1773,6 +1773,9 @@ struct PurgeState {
     marked: bool,
     grace_elapsed: bool,
     checked: bool,
+    /// The claimed entity passed the identity check and was renamed to its delete-only name
+    /// (`.purged-<token>`), which survives a crash.
+    verified: bool,
     crashed: bool,
     done: bool,
     foreign_deleted: bool,
@@ -1785,6 +1788,7 @@ enum PurgeAction {
     EmptyTrash,
     Check,
     Claim,
+    Verify,
     Delete,
     Crash,
     Restart,
@@ -1801,6 +1805,7 @@ impl Model for PurgeModel {
             marked: false,
             grace_elapsed: false,
             checked: false,
+            verified: false,
             crashed: false,
             done: false,
             foreign_deleted: false,
@@ -1809,7 +1814,7 @@ impl Model for PurgeModel {
     fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
         use PurgeAction::*;
         out.extend([
-            Replace, Elapse, Mark, EmptyTrash, Check, Claim, Delete, Crash, Restart,
+            Replace, Elapse, Mark, EmptyTrash, Check, Claim, Verify, Delete, Crash, Restart,
         ]);
     }
     fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
@@ -1830,9 +1835,22 @@ impl Model for PurgeModel {
                 n.claim = s.public;
                 n.public = Entity::Missing;
             }
-            Delete if s.marked && s.claim == Entity::Original => {
+            // Second identity check on the claimed entity. A foreign entity is handed back
+            // only while the public name is free; otherwise it stays in the claim, undeleted.
+            Verify if s.marked && !s.verified && s.claim != Entity::Missing => match s.claim {
+                Entity::Original => n.verified = true,
+                _ if s.public == Entity::Missing => {
+                    n.public = s.claim;
+                    n.claim = Entity::Missing;
+                }
+                _ => return None,
+            },
+            // The recursive delete takes whatever sits at the verified private name, so the
+            // property below only holds because `Verify` is its sole way in.
+            Delete if s.marked && s.verified => {
                 n.foreign_deleted |= s.claim == Entity::Foreign;
                 n.claim = Entity::Missing;
+                n.verified = false;
                 n.done = true;
                 n.marked = false;
             }
@@ -2082,8 +2100,17 @@ fn s4_viewport_export_handover_model() {
     run("S4", ViewModel);
 }
 
-// Protocol model: a boot-qualified crash identity is reserved durably with its pins.
-// Detection and queue delivery are volatile; on restart durable pending work is replayed.
+// Protocol model of the intended crash-watcher design: a boot-qualified crash identity is
+// reserved durably together with its pins. Detection and queue delivery are volatile; on
+// restart durable pending work is replayed.
+//
+// This is a design premise, not a refinement of `arbd`. Today the pins and the save job are
+// durable (`save_jobs/<job>.json`, catalog row, `interrupted_crash_autosave_is_requeued_once_on_startup`),
+// but no crash identity (boot id + boottime + process + exception) is stored with them. Repeat
+// suppression is the in-memory `CrashAutoSaveGate` cooldown, which restarts empty with the
+// daemon. So `Pin`'s `saved` check and "at most once per boot" describe what a persisted
+// identity would give; if the device re-delivers an `am_crash` record after a daemon restart,
+// production can still save it twice. Listed as TCB-16 in docs/proofs/tcb-axioms.md.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct WatchState {
     boot: u8,

@@ -138,7 +138,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-15）
+## 4. TCB 公理（TCB-01〜TCB-16）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -159,6 +159,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | TCB-13 | `alloc::slice::stable_sort`（`<[T]>::sort_by` の本体）は正しい安定ソートである。K4 ではこれを挿入ソートのスタブに置き換える | K4 | `core/crates/arb-core/src/state.rs::tests::ring_planner_evicts_oldest_unpinned_closed_and_stops_on_storage_pressure`、`core/crates/arb-storage/tests/pdd_g2_ring_crash_props.rs`（G2） | 必須集合の K4 は 1 チャンクなのでスタブは長さ 1 以下のスライスにしか呼ばれず、std と同じく何もしない。std のソートと挿入スタブの同値性は機械検証していない（2 チャンク以上の拡張集合でのみ意味を持つ） |
 | TCB-14 | 解析結果（`Vec<u32>` / `MediaError` 内の `io::Error`）の drop は安全に終わる。K9 の表パーサ系ハーネスは戻り値を `ManuallyDrop` で保持し、drop glue を実行しない | K9（mp4） | `cargo test -p arb-media`、Miri M2（`arb-media mp4::`） | 解放処理は std の実装を信頼する。パーサ本体と `Ok`/`Err` の判定は本番コードのまま検証している |
 | TCB-15 | `ClockTimeline::map_device_monotonic` / `map_logcat_wall` は `epochs.get(boot_id)` で選んだ boot epoch の `triples` / `wall_jump_indices` をそのまま抽出関数に渡し、その epoch では `ingest_device_triple` が `monotonic_ns`・`boottime_ns` の非減少と `idx + 1 < len` の飛び添字を保つ | K3（スライス層） | `core/crates/arb-core/src/time.rs` の `time` 単体テスト | `BTreeMap` の参照と ingest 側の不変条件は機械検証していない（`ClockTimeline` 全体を通すハーネスは CBMC のメモリ不足で拡張集合） |
+| TCB-16 | クラッシュ自動保存の重複排除は「boot 修飾付きクラッシュ ID が pin と一緒に永続化される」という前提に立つ。現在の `arbd` は pin と保存ジョブ（`save_jobs/<job>.json`・カタログ行）を永続化して再起動時に 1 回だけ再キューするが、クラッシュ ID は保存せず、繰り返し抑止はメモリ上の `CrashAutoSaveGate` のクールダウンだけである（再起動で空に戻る） | S5（`pdd_stateright_models.rs::s5_crash_watcher_model`） | `core/crates/arbd/src/capture.rs::tests::interrupted_crash_autosave_is_requeued_once_on_startup` | S5 は設計上の前提を検査するモデルで、`arbd` の実装を精緻化したものではない。デーモン再起動後に端末が同じ `am_crash` を再配信した場合の二重保存は未対策。永続クラッシュ ID の実装まで未解決 |
 
 ## 5. Sara 互換性
 

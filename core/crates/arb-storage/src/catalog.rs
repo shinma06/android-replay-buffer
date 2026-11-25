@@ -1108,8 +1108,7 @@ impl Catalog {
                 reason: "invalid purge claim".into(),
             });
         }
-        let claim = current.path.with_file_name(format!(".purging-{token}"));
-        purge_claimed_directory(&current, &claim)?;
+        purge_claimed_directory(&current, &token)?;
         delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
         tx.commit()
             .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))?;
@@ -1800,25 +1799,44 @@ enum ForgetGate {
 
 /// Validate before moving anything, then validate the claimed entity again. A replacement
 /// installed at the public bundle path after the rename is never the recursive delete target.
-fn purge_claimed_directory(bundle: &BundleEntry, claim: &Path) -> Result<(), StorageError> {
-    match fs::symlink_metadata(claim) {
+///
+/// The private name has two stages. `.purging-<token>` is claimed but not yet proven to be the
+/// catalog's bundle. Once the claimed entity passes the identity check it is renamed to
+/// `.purged-<token>`, which only this function creates from a verified entity. A retry after a
+/// crash or a locked file halfway through the recursive delete therefore finishes the delete
+/// even though the manifest may already be gone, instead of treating the remains as foreign.
+fn purge_claimed_directory(bundle: &BundleEntry, token: &str) -> Result<(), StorageError> {
+    let claim = bundle.path.with_file_name(format!(".purging-{token}"));
+    let verified = bundle.path.with_file_name(format!(".purged-{token}"));
+    match fs::symlink_metadata(&verified) {
+        Ok(_) => return remove_verified_claim(&verified),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(StorageError::io("probe_purge_claim", &verified, e)),
+    }
+    match fs::symlink_metadata(&claim) {
         Ok(_) => {} // resume an interrupted rename
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if probe_bundle_disk_state(&bundle.path) == BundleDiskState::Missing {
                 return Ok(());
             }
             verify_purge_identity(bundle, &bundle.path)?;
-            arb_os::fs::rename_no_replace(&bundle.path, claim)
+            arb_os::fs::rename_no_replace(&bundle.path, &claim)
                 .map_err(|e| StorageError::io("claim_managed_dir", &bundle.path, e))?;
         }
-        Err(e) => return Err(StorageError::io("probe_purge_claim", claim, e)),
+        Err(e) => return Err(StorageError::io("probe_purge_claim", &claim, e)),
     }
-    if let Err(e) = verify_purge_identity(bundle, claim) {
+    if let Err(e) = verify_purge_identity(bundle, &claim) {
         // If a replacement raced the first check, give it back without overwriting a new entry.
-        let _ = arb_os::fs::rename_no_replace(claim, &bundle.path);
+        let _ = arb_os::fs::rename_no_replace(&claim, &bundle.path);
         return Err(e);
     }
-    fs::remove_dir_all(claim).map_err(|e| StorageError::io("remove_managed_dir", claim, e))
+    arb_os::fs::rename_no_replace(&claim, &verified)
+        .map_err(|e| StorageError::io("mark_purge_verified", &claim, e))?;
+    remove_verified_claim(&verified)
+}
+
+fn remove_verified_claim(verified: &Path) -> Result<(), StorageError> {
+    fs::remove_dir_all(verified).map_err(|e| StorageError::io("remove_managed_dir", verified, e))
 }
 
 fn verify_purge_identity(bundle: &BundleEntry, path: &Path) -> Result<(), StorageError> {

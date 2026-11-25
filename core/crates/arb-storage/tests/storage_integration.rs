@@ -2496,6 +2496,39 @@ fn interrupted_claim_is_recovered_even_if_public_path_is_reused() {
 }
 
 #[test]
+fn partially_deleted_claim_is_finished_not_restored_or_stuck() {
+    // A crash or a locked file during `remove_dir_all` can leave the verified private claim
+    // without its manifest. GC must finish it instead of handing a half-deleted bundle back to
+    // the public path and failing forever.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("original");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "original", &source, "job", b"payload");
+    catalog.trash_bundle("original", now).unwrap();
+    drop(catalog);
+    let token = "b".repeat(32);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('original', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    let claim = root.join(format!(".purged-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    fs::remove_file(claim.join("manifest.json")).unwrap();
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["original"]);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(!claim.exists());
+    assert!(!source.exists());
+    assert!(reopened.bundle("original").unwrap().is_none());
+}
+
+#[test]
 fn gc_rejects_corrupt_or_wrong_owner_manifest_and_links() {
     #[cfg(unix)]
     use std::os::unix::fs::symlink as symlink_dir;
