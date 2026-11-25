@@ -43,7 +43,8 @@ satisfies:
 
 - **Zone 1（Live Ring Store）**: 追記専用チャンク（デフォルト上限 `1.5 GiB` / 目安 `10 min`）。ホスト空き容量が `3 GiB` を下回ったら `StoragePressureStop` を記録して新規取得のみ停止し、Pin 済みチャンク・確定バンドルは一切削除しない。保存要求時は即座に対象チャンクを `save_jobs/<job-id>.json` に Phase-1 Pin する。
 - **Zone 2（WORM Bundle v2）**: 同一ファイルシステム上の `.staging-<job-id>/` に全ファイル書き出し・`fsync` → `manifest.json`（`schema_version: 2`, `files` SHA-256, `epochs`, `streams`, `unanchored_summary`）書込 → 原子リネーム（Windows では一時ロックへの指数バックオフリトライ＋コミットマーカー検査）で確定。確定後は完全不変（`manifest.json`, `video.mp4`, 任意の `audio.m4a`, 読取専用 `timeline.sqlite`）。
-- **Zone 3（Catalog / Lease / GC）**: `catalog.sqlite`（WAL）で `bundles` / `leases` / `save_jobs` / `edit_sessions` を管理。削除は論理退避（`trashed`）のみ行い、管理対象の現行形式は最終退避から `gc_grace_secs`（既定 86,400 秒）が経過し、リース・保存ジョブともに 0 件の場合に物理削除する。同じトランザクションで退避時刻と状態を再確認する。リースは所有プロセスの終了または最終更新から 10 分で失効する。
+- **Zone 3（Catalog / Lease / GC）**: `catalog.sqlite`（WAL）で `bundles` / `leases` / `save_jobs` / `edit_sessions` を管理。削除は論理退避（`trashed`）のみ行い、通常の GC では管理対象の現行形式（`v2` かつ `managed_bundles_root` 配下）について最終退避から `gc_grace_secs`（既定 86,400 秒）が経過し、リース・保存ジョブともに 0 件の場合に物理削除する。ユーザーが明示的に「ゴミ箱を空にする」（`ignore_grace = true`）を実行した場合に限り猶予期間を省略して即時物理削除するが、リース保護・保存ジョブ保護・管理域外および旧形式（`legacy_ro`）の物理非削除不変条件は常に維持する。同じトランザクションで退避時刻と状態を再確認する。リースは所有プロセスの終了または最終更新から 10 分で失効する。
+- **手動削除バンドルの整合性と非破壊登録解除**: カタログ各行の実ディスク状態は `symlink_metadata` により OS 非依存の 3 値（`present` / `missing`［親ディレクトリ存在かつ対象 `NotFound`］/ `storage_unavailable`［親不在・未接続・権限不足・通常ファイルへの置換・リンク先の確認不能］）で判定する。`storage_unavailable` は外付け媒体の一時切断等とみなし自動削除・解除対象にしない。`bundle.forget` はディスクを一切変更せず、`disk_state == missing` かつリース 0・保存ジョブ 0 のカタログ行（管理域外・旧形式を含む）のみ `edit_sessions` と `bundles` から削除する。またゴミ箱内（`trashed`）で既に `disk_state == missing` の行は、管理域外・旧形式であってもリース 0・保存ジョブ 0 であれば通常の猶予判定を経て GC 時にディスク無接触でカタログ行を掃除する。
 
 保存開始時に保存窓・トリガー・デコーダー設定を pin とともに永続化する。ホストの起動時刻と端末が一致するチャンクを復元し、保存時に各 SHA-256 を検証する。欠損区間は `StreamGap` に記録する。起動時には管理域とジョブの外部出力先でジョブ ID が一致する所有マーカーを確認し、未確定の作業ディレクトリだけを削除する。
 

@@ -312,6 +312,43 @@ impl McpServer {
                     self.call_daemon("bundle.restore", &json!({ "bundle_id": bundle_id }))?;
                 Ok(vec![text_block(&resp)])
             }
+            "arb_gc_bundles" => {
+                let params = match args.get("ignore_grace") {
+                    None | Some(Value::Bool(false)) => json!({}),
+                    Some(Value::Bool(true)) => json!({ "ignore_grace": true }),
+                    _ => return Err("ignore_grace must be a boolean".to_owned()),
+                };
+                let resp = self.call_daemon("bundle.gc", &params)?;
+                Ok(vec![text_block(&resp)])
+            }
+            "arb_forget_bundle" => {
+                let all_missing = args
+                    .get("all_missing")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let bundle_id = args
+                    .get("bundle_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if all_missing && args.get("bundle_id").is_some() {
+                    return Err(
+                        "arb_forget_bundle: specify either `bundle_id` or `all_missing: true`, not both"
+                            .to_owned(),
+                    );
+                }
+                let params = if all_missing {
+                    json!({ "all_missing": true })
+                } else if let Some(id) = bundle_id {
+                    json!({ "bundle_id": id })
+                } else {
+                    return Err(
+                        "arb_forget_bundle requires `bundle_id` or `all_missing: true`".to_owned(),
+                    );
+                };
+                let resp = self.call_daemon("bundle.forget", &params)?;
+                Ok(vec![text_block(&resp)])
+            }
             "arb_timeline_overview" => self.tool_timeline_overview(args),
             "arb_query_logs" => self.tool_query_logs(args),
             "arb_inspect_frames" => self.tool_inspect_frames(args),
@@ -763,6 +800,8 @@ const KNOWN_TOOLS: &[&str] = &[
     "arb_list_bundles",
     "arb_trash_bundle",
     "arb_restore_bundle",
+    "arb_gc_bundles",
+    "arb_forget_bundle",
     "arb_timeline_overview",
     "arb_query_logs",
     "arb_inspect_frames",
@@ -784,7 +823,7 @@ fn tool_def(name: &str, description: &str, input_schema: &Value) -> Value {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "single declarative JSON Schema registry for all 17 MCP tools"
+    reason = "single declarative JSON Schema registry for all 19 MCP tools"
 )]
 fn tool_definitions() -> Vec<Value> {
     vec![
@@ -942,6 +981,27 @@ fn tool_definitions() -> Vec<Value> {
                     "bundle_id": { "type": "string", "description": "Catalog bundle_id to restore from Trash." }
                 },
                 "required": ["bundle_id"],
+                "additionalProperties": false
+            }),
+        ),
+        tool_def(
+            "arb_gc_bundles",
+            "Purge eligible trashed bundles. Set ignore_grace only for an explicit immediate purge.",
+            &json!({
+                "type": "object",
+                "properties": { "ignore_grace": { "type": "boolean", "default": false } },
+                "additionalProperties": false
+            }),
+        ),
+        tool_def(
+            "arb_forget_bundle",
+            "Non-destructively remove catalog rows whose bundle directory is missing on disk (`disk_state == missing`, parent exists). Never touches files on disk; skips present, storage_unavailable, leased, and active-job entries.",
+            &json!({
+                "type": "object",
+                "properties": {
+                    "bundle_id": { "type": "string", "description": "Specific missing catalog bundle_id to forget." },
+                    "all_missing": { "type": "boolean", "description": "When true, forget every catalog entry currently missing on disk." }
+                },
                 "additionalProperties": false
             }),
         ),
