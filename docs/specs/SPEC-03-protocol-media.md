@@ -30,7 +30,7 @@ satisfies:
 
 - **制御プレーン**: バージョン付き JSON-RPC 2.0 / NDJSON（Linux: `$XDG_RUNTIME_DIR/arb/arbd.sock`、macOS: `~/Library/Caches/arb/arbd.sock`、Windows: `\\.\pipe\arb-daemon-<sid>`）。`system.*`, `device.*`, `capture.*`, `save.*`, `bundle.*`, `timeline.*`, `edit.*`, `export.*`, `media.*` を提供する。
 - `system.hello` は `parent_bound`（真偽値）を返す。`--exit-on-stdin-eof` で起動され、親の終了とともに終了する `arbd` だけが `true`。古い `arbd` は返さず、クライアントは `false` とみなす。
-- `system.shutdown_for_handover` は非 system RPC・クラッシュ自動保存と排他的に引き継ぐ。親付き daemon は、起動した IDE が子の環境変数 `ARB_HANDOVER_OWNER` に設定したランダム値と RPC 引数 `owner` の一致も要求する。処理中または所有確認に失敗した場合は `{"ok":false}`。受理時は次の保存の受付を閉じて通常終了し、`{"ok":true}` を返す。旧版の method not found では、所有者が停止するまで更新を延期する。
+- `system.shutdown_for_handover` は非 system RPC・クラッシュ自動保存と排他的に引き継ぐ。親付き daemon は、起動した IDE が子の環境変数 `ARB_HANDOVER_OWNER` に設定したランダム値と RPC 引数 `owner` の一致も要求する。処理中、開いている映像 viewport（Studio のタブ）がある場合、または所有確認に失敗した場合は `{"ok":false}`（タブを閉じると受理される）。受理時は次の保存の受付を閉じて通常終了し、`{"ok":true}` を返す。旧版の method not found では、所有者が停止するまで更新を延期する。
 - `timeline.query_logs` と MCP の `arb_query_logs` は省略可能な `after_seq` を受け付ける。指定時は同じ条件のうち、指定した番号より後の行を `seq` 順に返す。これにより同一時刻のログも分割して取得できる。
 - **高帯域データプレーン**: ビューポート単位のトリプルバッファ共有メモリ（mmap）フレームリングで 1080p30 RGBA/BGRA を配信する。スロットヘッダには `generation`, `frame_index`, `is_approximate`, `width`, `height`, `stride`, `pixel_format`, `boottime_ns` を持ち、`is_approximate == true` の間は UI に近似プレビューバッジを必ず表示する。
 

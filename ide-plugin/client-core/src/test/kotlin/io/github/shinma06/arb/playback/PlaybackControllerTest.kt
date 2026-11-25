@@ -128,6 +128,26 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun errorInPlaybackLoopPausesReportsAndKeepsLoopThreadUsable() {
+        val calls = AtomicLong()
+        val reported = CountDownLatch(1)
+        val advanced = CountDownLatch(1)
+        val seeker = RecordingSeeker(onExactSeek = {
+            if (calls.incrementAndGet() == 1L) throw OutOfMemoryError("frame buffer")
+            if (it >= 3L) advanced.countDown()
+        })
+        PlaybackController(500, seeker, onPlaybackError = { reported.countDown() }).use { ctrl ->
+            ctrl.play()
+            assertTrue(reported.await(3, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (ctrl.state.mode != PlaybackMode.PAUSED && System.nanoTime() < deadline) Thread.sleep(5)
+            assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
+            ctrl.play()
+            assertTrue(advanced.await(3, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun staleFailedSeekCannotPauseNewPlaybackOrReportAfterClose() {
         for (close in listOf(false, true)) {
             val clock = ManualClock()

@@ -488,8 +488,10 @@ class ArbBundleFileEditor internal constructor(
             if (disposed) return@submitGuarded
 
             if (viewportId != null) {
+                // A reconnect during startup replaces the viewport; always target the live one.
+                val liveViewportId = viewerState?.viewportId ?: viewportId
                 val filmstrip = runCatching {
-                    daemonService.withClient { it.mediaFilmstrip(viewportId) }.entries
+                    daemonService.withClient { it.mediaFilmstrip(liveViewportId) }.entries
                 }.getOrDefault(emptyList())
                 if (!disposed && filmstrip.isNotEmpty()) {
                     updateViewerState { it.copy(filmstrip = filmstrip) }

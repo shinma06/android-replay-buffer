@@ -704,7 +704,7 @@ private fun TransportBar(controller: ArbStudioController) {
 
 @Composable
 private fun PlaybackTimecode(controller: ArbStudioController) {
-    var playingTime by remember(controller) { mutableStateOf(controller.timecodeText) }
+    var playingTime by remember(controller, controller.isPlaying) { mutableStateOf(controller.timecodeText) }
     LaunchedEffect(controller, controller.isPlaying) {
         while (controller.isPlaying) {
             playingTime = controller.timecodeText

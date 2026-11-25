@@ -933,7 +933,23 @@ class PlaybackController(
     private fun runPlaybackLoop() {
         while (true) {
             val version = stateLock.withLock { wakeVersion }
-            val deadline = tick()
+            val deadline = try {
+                tick()
+            } catch (_: InterruptedException) {
+                if (isClosed) return
+                continue
+            } catch (t: Throwable) {
+                // Keep the loop thread alive: settle in PAUSED and report instead of freezing in PLAYING.
+                val errSnapshot = stateLock.withLock {
+                    if (closed) return
+                    runCatching { audioPlayer?.pause() }
+                    seekGeneration.incrementAndGet()
+                    publishStateLocked(currentState.copy(mode = PlaybackMode.PAUSED, audioState = currentAudioState()))
+                }
+                if (errSnapshot != null) runCatching { notifyListeners(errSnapshot) }
+                runCatching { onPlaybackError(t) }
+                null
+            }
             stateLock.withLock {
                 if (closed) return
                 try {
@@ -984,7 +1000,7 @@ class PlaybackController(
                 }
                 snapshot?.let(::notifyListeners)
                 val reason = error.message ?: error.javaClass.simpleName
-                onPlaybackError(IllegalStateException("フレーム #$frame の再生に失敗しました（$reason）", error))
+                runCatching { onPlaybackError(IllegalStateException("フレーム #$frame の再生に失敗しました（$reason）", error)) }
                 return
             }
         }
