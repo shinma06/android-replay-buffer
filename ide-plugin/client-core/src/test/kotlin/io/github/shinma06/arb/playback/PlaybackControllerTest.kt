@@ -308,7 +308,7 @@ class PlaybackControllerTest {
     }
 
     @Test
-    fun failedViewportReopenDuringPlayingSeekDoesNotLeaveTheClockFrozen() {
+    fun failedViewportReopenDuringPlayingSeekPausesAtTheRequestedTime() {
         val clock = ManualClock()
         val seeker = object : FrameSeeker {
             var failReopen = false
@@ -325,12 +325,14 @@ class PlaybackControllerTest {
             it.play()
             seeker.failReopen = true
             assertFailsWith<IllegalStateException> { it.seekToTime(1_000_000_000L) }
-            assertEquals(PlaybackMode.PLAYING, it.state.mode)
-            // Reopen time is excluded, and the clock runs again from the seek target.
+            assertEquals(PlaybackMode.PAUSED, it.state.mode)
+            // Reopen time is excluded. Explicit replay resumes at the seek target.
             assertEquals(1_000_000_000L, it.displayPositionNs())
             clock.advanceMs(200)
-            assertEquals(1_200_000_000L, it.displayPositionNs())
+            assertEquals(1_000_000_000L, it.displayPositionNs())
             seeker.failReopen = false
+            it.play()
+            clock.advanceMs(200)
             it.tick()
             assertEquals(12L, it.state.currentFrameIndex)
         }

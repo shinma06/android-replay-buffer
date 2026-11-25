@@ -404,10 +404,10 @@ class ArbBundleFileEditor internal constructor(
                         override fun seekExact(frameIndex: Long): FrameSeekResult = seekExact(frameIndex) {}
 
                         override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
-                            val (resp, frame, replacementId) = mediaSession.request(onRecovery) { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
-                            if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
-                            readShmAndRender(frame)
-                            return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate, recovered = replacementId != null)
+                            return mediaSession.seekFrame(frameIndex, onRecovery) { (_, frame, replacementId) ->
+                                if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
+                                readShmAndRender(frame)
+                            }
                         }
 
                         override fun scrubApprox(frameIndex: Long): FrameSeekResult {
@@ -781,10 +781,7 @@ class ArbBundleFileEditor internal constructor(
                 runCatching { ctrl.scrubToTime(timeNs) }.onFailure { logger.debug("ARB scrub failed", it) }
                 return@submitWork
             }
-            runCatching { ctrl.seekToTime(timeNs) }.onFailure { error ->
-                logger.warn("ARB seek_frame failed", error)
-                publishEdt { if (!disposed) studioController.showPlaybackError(error.message ?: "シークに失敗しました") }
-            }
+            runCatching { ctrl.seekToTime(timeNs) }.onFailure { logger.debug("ARB seek_frame failed", it) }
         }
     }
 

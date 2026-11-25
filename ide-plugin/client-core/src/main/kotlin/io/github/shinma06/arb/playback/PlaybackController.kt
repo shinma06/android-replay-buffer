@@ -176,7 +176,7 @@ class PlaybackController(
         }
 
         if (needInitialSeek != null) {
-            seekDuringPlayback(needInitialSeek, gen)
+            seekWithRetry(needInitialSeek, gen)
             // Re-anchor after initial seek completes so startup decode time doesn't drop frame 1.
             stateLock.withLock {
                 if (initialSeekGeneration == gen) initialSeekGeneration = null
@@ -254,7 +254,7 @@ class PlaybackController(
         if (pausedSnapshot != null) {
             notifyListeners(pausedSnapshot)
         }
-        performExactSeek(targetFrame, gen)
+        seekWithRetry(targetFrame, gen, propagateFailure = true)
     }
 
     /**
@@ -294,7 +294,7 @@ class PlaybackController(
         if (interimSnapshot != null) {
             notifyListeners(interimSnapshot)
         }
-        performExactSeek(targetFrame, gen)
+        seekWithRetry(targetFrame, gen, propagateFailure = true)
     }
 
     /**
@@ -887,7 +887,7 @@ class PlaybackController(
         }
         val target = frameToSeek
         if (target != null) {
-            seekDuringPlayback(target, genForSeek)
+            seekWithRetry(target, genForSeek)
         }
         return nextWakeupNs
     }
@@ -897,6 +897,7 @@ class PlaybackController(
         val closedSnapshot: PlaybackState?
         stateLock.withLock {
             if (closed) return
+            anchorMediaPtsNs = displayPositionNs()
             closed = true
             audioSubscription?.close()
             audioSubscription = null
@@ -1016,7 +1017,7 @@ class PlaybackController(
         loopWakeup.signalAll()
     }
 
-    private fun seekDuringPlayback(frame: Long, generation: Long) {
+    private fun seekWithRetry(frame: Long, generation: Long, propagateFailure: Boolean = false) {
         for (attempt in 0..1) {
             try {
                 if (seekGeneration.get() != generation) return
@@ -1046,6 +1047,7 @@ class PlaybackController(
                 snapshot?.let(::notifyListeners)
                 val reason = error.message ?: error.javaClass.simpleName
                 runCatching { onPlaybackError(IllegalStateException("フレーム #$frame の再生に失敗しました（$reason）", error)) }
+                if (propagateFailure) throw error
                 return
             }
         }
@@ -1061,6 +1063,7 @@ class PlaybackController(
     private fun thawAfterFailedRecovery(generation: Long) = stateLock.withLock {
         if (recoveringGeneration == generation) {
             recoveringGeneration = null
+            if (seekGeneration.get() != generation) return@withLock
             // The frozen anchor already holds the media time; restart the wall clock from now.
             anchorWallNs = clock.nowNs()
             signalLoopLocked()

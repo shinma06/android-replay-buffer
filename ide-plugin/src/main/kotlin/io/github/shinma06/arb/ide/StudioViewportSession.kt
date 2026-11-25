@@ -3,6 +3,8 @@ package io.github.shinma06.arb.ide
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.MediaOpenViewportResponse
+import io.github.shinma06.arb.model.MediaSeekFrameResponse
+import io.github.shinma06.arb.playback.FrameSeekResult
 import io.github.shinma06.arb.shm.ShmFrame
 import io.github.shinma06.arb.shm.ShmFrameRingReader
 import java.io.Closeable
@@ -74,6 +76,17 @@ internal class StudioViewportSession(
             }
         }
         return ReadResult(result, generation.reader.readLatest(), generation.viewport.viewportId.takeIf { reopened })
+    }
+
+    fun seekFrame(
+        frameIndex: Long,
+        onRecovery: () -> Unit,
+        onRead: (ReadResult<MediaSeekFrameResponse>) -> Unit,
+    ): FrameSeekResult {
+        val result = request(onRecovery) { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
+        onRead(result)
+        val displayed = result.frame?.meta?.frameIndex ?: throw IOException("フレームがまだ公開されていません")
+        return FrameSeekResult(frameIndex, displayed, result.response.isApproximate, recovered = result.replacementId != null)
     }
 
     @Synchronized
