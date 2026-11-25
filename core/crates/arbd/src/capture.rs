@@ -29,20 +29,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
-use arb_adb::scrcpy::{
-    AudioTunnelStatus, VideoPacketKind, audio_unavailable_reason_for_api,
-    unsupported_android_api_warning,
-};
+use arb_adb::scrcpy::{AudioTunnelStatus, VideoPacketKind, unsupported_android_api_warning};
 use arb_adb::wire::{
     LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload, UNKNOWN_U32,
 };
 use arb_core::analytics::{ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary};
+use arb_core::audio_policy::AudioModeSelection;
 use arb_core::bundle::{
     AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
     InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
-use arb_core::config::CaptureMode;
+use arb_core::config::{AudioCaptureMode, CaptureMode};
 use arb_core::gesture::{GestureKind, TouchPoint, classify_stroke, touch_slop};
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
 use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
@@ -562,6 +560,8 @@ pub struct CapturePipeline {
     capture_mode: CaptureMode,
     last_video_error: Option<String>,
     audio_state: AudioCaptureState,
+    requested_audio: AudioModeSelection,
+    active_audio_mode: AudioCaptureMode,
     audio_cause: Option<AudioCause>,
     audio_reason: Option<String>,
     device_api_warning: Option<String>,
@@ -639,6 +639,8 @@ impl CapturePipeline {
             capture_mode: CaptureMode::VideoAndLogs,
             last_video_error: None,
             audio_state: AudioCaptureState::Unknown,
+            requested_audio: AudioModeSelection::default(),
+            active_audio_mode: AudioCaptureMode::default(),
             audio_cause: None,
             audio_reason: None,
             device_api_warning: None,
@@ -829,6 +831,26 @@ impl CapturePipeline {
         self.capture_mode
     }
 
+    pub(crate) fn select_audio_mode(&mut self, mode: AudioCaptureMode) {
+        self.requested_audio.select(mode);
+    }
+
+    pub(crate) const fn requested_audio(&self) -> AudioModeSelection {
+        self.requested_audio
+    }
+
+    pub(crate) fn begin_audio_attempt(&mut self) -> AudioModeSelection {
+        if self.active_audio_mode != self.requested_audio.mode() {
+            self.active_audio_mode = self.requested_audio.mode();
+            if self.capture_mode == CaptureMode::VideoAndLogs {
+                self.audio_state = AudioCaptureState::Unknown;
+                self.audio_reason = None;
+                self.audio_cause = None;
+            }
+        }
+        self.requested_audio
+    }
+
     /// Records the physical device display resolution (e.g., from `adb shell wm size`) for the
     /// current capture session so downstream viewers and contact sheets can map touch coordinates.
     pub const fn set_display_size(&mut self, width: u32, height: u32) {
@@ -921,6 +943,7 @@ impl CapturePipeline {
         self.connected = false;
         self.storage_pressure_stopped = false;
         self.capture_mode = capture_mode;
+        self.active_audio_mode = self.requested_audio.mode();
         self.last_video_error = None;
         (self.audio_state, self.audio_cause) = if capture_mode == CaptureMode::LogsOnly {
             (AudioCaptureState::Disabled, Some(AudioCause::LogsOnly))
@@ -1007,6 +1030,7 @@ impl CapturePipeline {
             capture_mode: self.capture_mode,
             last_video_error: self.last_video_error.clone(),
             audio_state: self.audio_state,
+            audio_capture_mode: self.active_audio_mode,
             audio_cause: self.audio_cause,
             audio_reason: self.audio_reason.clone(),
             device_api_level: (self.device.api_level > 0).then_some(self.device.api_level),
@@ -1224,10 +1248,16 @@ impl CapturePipeline {
             CaptureEvent::AudioUnavailable { status, .. } => {
                 self.audio_state = AudioCaptureState::Unavailable;
                 if matches!(self.audio_cause, None | Some(AudioCause::None)) {
-                    self.audio_cause = Some(default_audio_unavailable_cause(*status));
+                    self.audio_cause = Some(default_audio_unavailable_cause(
+                        *status,
+                        self.active_audio_mode,
+                    ));
                 }
                 if self.audio_reason.is_none() {
-                    self.audio_reason = Some(default_audio_unavailable_reason(*status));
+                    self.audio_reason = Some(default_audio_unavailable_reason(
+                        *status,
+                        self.active_audio_mode,
+                    ));
                 }
             }
             CaptureEvent::LogRecord { .. } => {
@@ -3485,11 +3515,14 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
 }
 
 /// Cause for an `AudioUnavailable` event whose sender did not already record one.
-fn default_audio_unavailable_cause(status: AudioTunnelStatus) -> AudioCause {
+fn default_audio_unavailable_cause(
+    status: AudioTunnelStatus,
+    mode: AudioCaptureMode,
+) -> AudioCause {
     match status {
         // Only a known level below the floor is an OS limitation (PDD G8-1 / G8-2).
         AudioTunnelStatus::UnavailableApiLevel { api_level, .. }
-            if arb_core::audio_policy::api_is_below_audio_floor(Some(api_level)) =>
+            if mode.unsupported_on(api_level) =>
         {
             AudioCause::ApiBelowMin
         }
@@ -3498,10 +3531,10 @@ fn default_audio_unavailable_cause(status: AudioTunnelStatus) -> AudioCause {
     }
 }
 
-fn default_audio_unavailable_reason(status: AudioTunnelStatus) -> String {
+fn default_audio_unavailable_reason(status: AudioTunnelStatus, mode: AudioCaptureMode) -> String {
     match status {
         AudioTunnelStatus::UnavailableApiLevel { api_level, .. } => {
-            audio_unavailable_reason_for_api(api_level).unwrap_or_else(|| {
+            arb_core::audio_policy::below_min_reason(mode, api_level).unwrap_or_else(|| {
                 format!(
                     "Audio capture unavailable on Android API {api_level}. Continuing with video + logs + taps."
                 )

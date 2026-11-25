@@ -38,6 +38,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.AudioCaptureMode
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.state.ArbSettingsDraft
@@ -92,6 +93,7 @@ class ArbSettingsFormModel(
         private set
     var videoMaxFps by mutableStateOf(ArbConfig.DEFAULT_VIDEO_MAX_FPS)
 
+    var audioCaptureMode by mutableStateOf(AudioCaptureMode.PLAYBACK_DUP)
     var audioEnabled by mutableStateOf(true)
     var captureMode by mutableStateOf(CaptureMode.VIDEO_AND_LOGS)
     var crashAutosaveEnabled by mutableStateOf(true)
@@ -176,6 +178,7 @@ class ArbSettingsFormModel(
         videoMaxFpsOptions = (DEFAULT_VIDEO_MAX_FPS + draft.videoMaxFps).distinct().sorted()
         videoMaxFps = draft.videoMaxFps
 
+        audioCaptureMode = draft.audioCaptureMode
         audioEnabled = draft.audioEnabled
         captureMode = draft.captureMode
         passthroughDeviceSerial = draft.deviceSerial
@@ -206,6 +209,7 @@ class ArbSettingsFormModel(
             minFreeDiskBytes = if (diskAmount > 0.0) StorageSizeValue(diskAmount, minFreeDiskUnit).toBytes() else -1L,
             videoMaxSize = videoMaxSize,
             videoMaxFps = videoMaxFps,
+            audioCaptureMode = audioCaptureMode,
             audioEnabled = audioEnabled,
             crashAutosaveEnabled = crashAutosaveEnabled,
             crashAutosaveCooldownSecs = cooldownSecs,
@@ -274,6 +278,9 @@ class ArbSettingsConfigurable internal constructor(
         daemonConfigWriter = { baseline, draft ->
             val service = ArbdDaemonService.getInstance()
             val updated = service.withClient { it.configUpdate(draft.toConfigPatch(baseline)).config }
+            if (draft.audioCaptureMode != baseline.audioCaptureMode && updated.audioCaptureMode != draft.audioCaptureMode) {
+                throw ConfigurationException("接続中の arbd はこの音声キャプチャ方式を適用できません。arbd を更新してください。")
+            }
             service.notifyConfigUpdated(updated)
             updated
         },
@@ -821,8 +828,29 @@ internal fun ArbSettingsContent(
                     )
                 }
             }
+            SettingsFormRow("音声キャプチャ方式:") {
+                val modes = AudioCaptureMode.entries
+                key(form.audioCaptureMode) {
+                    ListComboBox(
+                        items = modes.map {
+                            when (it) {
+                                AudioCaptureMode.PLAYBACK_DUP -> "再生音複製（既定・端末スピーカー維持・Android 13+）"
+                                AudioCaptureMode.OUTPUT_COMPAT -> "出力キャプチャ互換（録音中は端末スピーカー消音・Android 11+）"
+                            }
+                        },
+                        selectedIndex = modes.indexOf(form.audioCaptureMode),
+                        onSelectedItemChange = { form.audioCaptureMode = modes[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.semantics { contentDescription = "音声キャプチャ方式" },
+                    )
+                }
+            }
+            Text(
+                "※互換モードでは録音中、端末本体から音が出なくなります（一部 Android 13 端末の registerAudioPolicy 失敗時や Android 11/12 向け）",
+                style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.mutedText()),
+            )
             ArbLabeledCheckbox(
-                text = "端末の再生音を録音する (API 33+)",
+                text = "端末の再生音を録音する",
                 checked = form.audioEnabled,
                 onCheckedChange = { form.audioEnabled = it },
                 enabled = daemonEnabled,

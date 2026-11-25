@@ -9,7 +9,7 @@
 //!      followed by `length` raw H.264 Annex-B bytes (`bit 62 = config`, `bit 61 = keyframe`,
 //!      low 61 bits = `CLOCK_MONOTONIC` PTS in microseconds).
 //!
-//! Audio tunnel framing (second socket when `audio=true`, Android API >= 33):
+//! Audio tunnel framing (second socket when `audio=true`, when supported by the selected source):
 //! 1. 4-byte codec ID (`0x00616163` = AAC, `0` = disabled/refused, `1` = error).
 //! 2. Repeating Big-Endian records: `flags: u64 BE`, `length: i32 BE` (`1..=64 KiB`),
 //!    followed by `length` AAC-LC payload bytes (`bit 62 = config`, low 61 bits = PTS µs).
@@ -44,14 +44,15 @@ pub const AUDIO_CODEC_ERROR: u32 = 1;
 pub const MIN_SUPPORTED_ANDROID_API_LEVEL: u32 = 28;
 
 /// First API supported by upstream scrcpy audio capture (including muting sources).
-pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 = 30;
+pub const MIN_AUDIO_SCRCPY_API_LEVEL: u32 =
+    arb_core::config::AudioCaptureMode::OutputCompat.min_api();
 
 /// Minimum Android API level required for non-muting `audio_source=playback audio_dup=true`
 /// (Android 13 / API 33).
 ///
 /// Re-exported from [`arb_core::audio_policy`], the single audio decision source (PDD G8).
 /// Upstream `scrcpy-server` can capture audio from API 30, but only by muting the device's own
-/// playback below API 33, so ARB never asks for audio below this level.
+/// playback below API 33. That route is available only by selecting output compatibility mode.
 pub use arb_core::audio_policy::MIN_AUDIO_PLAYBACK_API_LEVEL;
 
 /// Maximum permitted H.264 video packet byte length (`16 MiB`).
@@ -153,11 +154,11 @@ pub enum AudioTunnelStatus {
     DisabledByDevice,
     /// Device audio capture encountered an error (`codec_id == 1`).
     DeviceError,
-    /// Device Android API level is `< 33`; video/logcat/input proceed unaffected.
+    /// Device API level is below the floor for the selected source; video/logcat/input continue.
     UnavailableApiLevel {
         /// Observed Android API level.
         api_level: u32,
-        /// Minimum API level required (`33`).
+        /// Minimum API level required by the selected source.
         min_required: u32,
     },
 }
@@ -194,8 +195,7 @@ pub fn unsupported_android_api_warning(api_level: u32) -> Option<String> {
 #[must_use]
 pub fn audio_unavailable_reason_for_api(api_level: u32) -> Option<String> {
     // `scrcpy-server` can capture audio from API 30, but only `audio_source=playback
-    // audio_dup=true` (API 33+) keeps the device's own audio playing, so ARB never captures
-    // audio below API 33 and the reason must not suggest Android 11/12 would.
+    // audio_dup=true` (API 33+) keeps the device's own audio playing in the default mode.
     arb_core::audio_policy::api_below_min_reason(api_level)
 }
 
@@ -522,7 +522,7 @@ impl<R: Read> AudioTunnelReader<R> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioCaptureMode {
-    /// Request `audio=true audio_source=playback audio_dup=true` on API >= 33.
+    /// Request the explicitly selected audio source on a supported or unknown API level.
     Enabled,
     /// Disable audio (`audio=false`) regardless of API level.
     Disabled,
@@ -543,6 +543,9 @@ pub struct ScrcpyLaunchOptions {
     pub audio_bit_rate: u32,
     /// Requested audio capture mode.
     pub audio_mode: AudioCaptureMode,
+    /// Selected source when audio is enabled.
+    #[serde(default)]
+    pub audio_capture_mode: arb_core::config::AudioCaptureMode,
 }
 
 impl ScrcpyLaunchOptions {
@@ -555,32 +558,31 @@ impl ScrcpyLaunchOptions {
             video_bit_rate: 8_000_000,
             audio_bit_rate: 128_000,
             audio_mode: AudioCaptureMode::Enabled,
+            audio_capture_mode: arb_core::config::AudioCaptureMode::PlaybackDup,
         }
     }
 
     /// Builds `com.genymobile.scrcpy.Server 5.0.1` arguments for a device at `api_level`.
     ///
-    /// When `audio_mode` is [`AudioCaptureMode::Enabled`] on API < 33, audio is
+    /// When the selected audio source is unsupported on a known API level, audio is
     /// downgraded cleanly to `audio=false` and [`AudioTunnelStatus::UnavailableApiLevel`]
     /// is returned so video, logcat, and input capture proceed uninterrupted.
     pub fn build_server_args(&self, api_level: u32) -> (Vec<String>, AudioTunnelStatus) {
         let (enable_audio, audio_status) = match self.audio_mode {
             AudioCaptureMode::Disabled => (false, AudioTunnelStatus::DisabledByDevice),
-            AudioCaptureMode::Enabled => match check_audio_availability(api_level) {
-                Ok(()) => (
-                    true,
-                    AudioTunnelStatus::Available {
-                        codec_id: CODEC_ID_AAC,
-                    },
-                ),
-                Err(_) => (
-                    false,
-                    AudioTunnelStatus::UnavailableApiLevel {
-                        api_level,
-                        min_required: MIN_AUDIO_PLAYBACK_API_LEVEL,
-                    },
-                ),
-            },
+            AudioCaptureMode::Enabled if self.audio_capture_mode.unsupported_on(api_level) => (
+                false,
+                AudioTunnelStatus::UnavailableApiLevel {
+                    api_level,
+                    min_required: self.audio_capture_mode.min_api(),
+                },
+            ),
+            AudioCaptureMode::Enabled => (
+                true,
+                AudioTunnelStatus::Available {
+                    codec_id: CODEC_ID_AAC,
+                },
+            ),
         };
 
         let mut args = vec![
@@ -601,8 +603,12 @@ impl ScrcpyLaunchOptions {
 
         if enable_audio {
             args.push("audio=true".to_owned());
-            args.push("audio_source=playback".to_owned());
-            args.push("audio_dup=true".to_owned());
+            args.extend(
+                self.audio_capture_mode
+                    .scrcpy_source_args()
+                    .iter()
+                    .map(|&arg| arg.to_owned()),
+            );
             args.push("audio_codec=aac".to_owned());
             args.push(format!("audio_bit_rate={}", self.audio_bit_rate));
         } else {

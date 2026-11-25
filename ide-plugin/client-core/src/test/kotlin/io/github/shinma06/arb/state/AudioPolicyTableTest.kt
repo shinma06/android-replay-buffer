@@ -2,6 +2,7 @@ package io.github.shinma06.arb.state
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.github.shinma06.arb.model.AudioCaptureMode
 import io.github.shinma06.arb.model.AudioCaptureState
 import io.github.shinma06.arb.model.AudioCause
 import io.github.shinma06.arb.model.CaptureStatusView
@@ -67,7 +68,7 @@ class AudioPolicyTableTest {
                         val expectBanner = AudioPolicyTable.classOf(cause) in
                             setOf(AudioLabelClass.UNSUPPORTED_API, AudioLabelClass.RUNTIME_FAILURE)
                         assertEquals(expectBanner, banner != null, "banner presence for $cause")
-                        banner?.let { assertEquals("reason from arbd", it.detail, "detail keeps audio_reason") }
+                        banner?.let { assertTrue(it.detail.orEmpty().startsWith("reason from arbd"), "detail keeps audio_reason") }
                     }
                     if (state != AudioCaptureState.UNAVAILABLE) {
                         assertNull(banner, "no audio banner unless unavailable ($cause/$state)")
@@ -109,6 +110,8 @@ class AudioPolicyTableTest {
     @Test
     fun g8_7ToolWindowLabelShowsLiveStateNextToTheSetting() {
         assertEquals("音声 ON（設定 OFF）", AudioPolicyTable.statusLabel(false, false, capture(AudioCaptureState.AVAILABLE, AudioCause.NONE)))
+        val output = capture(AudioCaptureState.AVAILABLE, AudioCause.NONE).copy(audioCaptureMode = AudioCaptureMode.OUTPUT_COMPAT)
+        assertEquals("音声 ON（端末消音）", AudioPolicyTable.statusLabel(true, false, output))
         val disconnected = capture(AudioCaptureState.UNAVAILABLE, AudioCause.ENCODER_FATAL).copy(connected = false)
         assertNull(AudioPolicyTable.banner(disconnected))
         assertEquals("音声: 接続待ち", AudioPolicyTable.statusLabel(true, false, disconnected))
@@ -161,7 +164,7 @@ class AudioPolicyTableTest {
     @Test
     fun g8_8GoldenTableRowsMatchKotlinPresentation() {
         val rows = goldenTable().getAsJsonArray("rows").map { it.asJsonObject }
-        assertTrue(rows.size >= 43, "golden table keeps its coverage")
+        assertTrue(rows.size >= 86, "golden table keeps its coverage")
         for (row in rows) {
             val id = row.get("id").asString
             val state = AudioCaptureState.fromWire(row.get("state").asString)
@@ -169,7 +172,15 @@ class AudioPolicyTableTest {
             assertEquals(row.get("cause").asString, cause.wire, "$id: cause is known to the client")
             assertEquals(row.get("label_class").asString, AudioPolicyTable.labelClass(state, cause).wire, "$id: label class")
             val api = row.get("api").takeUnless { it.isJsonNull }?.asLong
-            val banner = AudioPolicyTable.banner(capture(state, cause, api))
+            val mode = AudioCaptureMode.fromWire(row.get("audio_capture_mode").asString)
+            val banner = AudioPolicyTable.banner(capture(state, cause, api).copy(audioCaptureMode = mode))
+            val hint = mode == AudioCaptureMode.PLAYBACK_DUP && cause == AudioCause.DEVICE_CAPTURE_FAILED &&
+                (api == null || api == 0L || api >= 30)
+            assertEquals(hint, banner?.detail?.contains("端末消音") == true, id)
+            if (cause == AudioCause.API_BELOW_MIN) {
+                val floor = if (mode == AudioCaptureMode.PLAYBACK_DUP) "Android 13 / API 33" else "Android 11 / API 30"
+                assertTrue(banner?.title?.contains(floor) == true, id)
+            }
             val cls = AudioPolicyTable.classOf(cause)
             assertEquals(
                 state == AudioCaptureState.UNAVAILABLE &&
@@ -179,6 +190,17 @@ class AudioPolicyTableTest {
             )
             assertEquals(cls == AudioLabelClass.UNSUPPORTED_API, banner?.title?.contains(unsupportedWord) == true, "$id: wording")
         }
+    }
+
+    @Test
+    fun missingAudioModeUsesPlaybackAndOnlyExplicitChangesSendTheField() {
+        val gson = ProtocolJson.gson
+        val config = gson.fromJson("""{"audio_enabled":true}""", io.github.shinma06.arb.model.ArbConfig::class.java)
+        assertEquals(AudioCaptureMode.PLAYBACK_DUP, config.audioCaptureMode)
+        val draft = ArbSettingsDraft.fromConfig(config)
+        assertTrue(!gson.toJsonTree(draft.toConfigPatch(config)).asJsonObject.has("audio_capture_mode"))
+        val patch = draft.copy(audioCaptureMode = AudioCaptureMode.OUTPUT_COMPAT).toConfigPatch(config)
+        assertEquals("output_compat", gson.toJsonTree(patch).asJsonObject.get("audio_capture_mode").asString)
     }
 
     @Test
