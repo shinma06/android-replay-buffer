@@ -253,13 +253,16 @@ impl McpServer {
             };
             match client.call(method, params.clone()) {
                 Ok(val) => return Ok(val),
-                Err(
-                    err @ (RpcClientError::UnexpectedEof
-                    | RpcClientError::Os(_)
-                    | RpcClientError::Io(_)),
-                ) => {
+                Err(err) if err.is_transport() => {
                     self.client = None;
-                    if !(retry_safe && attempt == 0) {
+                    let interrupted = matches!(
+                        err,
+                        RpcClientError::UnexpectedEof
+                            | RpcClientError::Os(_)
+                            | RpcClientError::Io(_)
+                            | RpcClientError::Timeout
+                    );
+                    if !(retry_safe && interrupted && attempt == 0) {
                         return Err(err.to_string());
                     }
                 }
@@ -366,7 +369,7 @@ impl McpServer {
         {
             obj.insert("note".to_owned(), Value::String(note.to_owned()));
         }
-        Ok(vec![text_block(&resp)])
+        save_content(&resp)
     }
 
     fn tool_screenshot(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -411,7 +414,7 @@ impl McpServer {
             params.insert("drain_timeout_ms".to_owned(), drain.clone());
         }
         let resp = self.call_daemon("save.logs", &Value::Object(params))?;
-        Ok(vec![text_block(&resp)])
+        save_content(&resp)
     }
 
     fn tool_timeline_overview(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -676,6 +679,14 @@ fn rpc_error(id: &Value, code: i32, message: impl Into<String>) -> Value {
             "message": message.into(),
         }
     })
+}
+
+fn save_content(response: &Value) -> Result<Vec<Value>, String> {
+    if super::save_outcome_failed(response) || response["job"]["state"] == "failed_retryable" {
+        // MCP error content uses the same JSON body, including the job ID and durable pins.
+        return Err(response.to_string());
+    }
+    Ok(vec![text_block(response)])
 }
 
 fn text_block(value: &Value) -> Value {
@@ -1225,5 +1236,64 @@ mod tests {
         assert_eq!(arr[1]["id"], 2);
         let empty = srv.handle_line("[]").expect("empty batch error");
         assert_eq!(empty["error"]["code"], -32600);
+    }
+    #[test]
+    fn mutation_timeout_is_reported_without_connecting_again() {
+        use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line};
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let req = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&req).unwrap()["method"],
+                "save.trigger"
+            );
+            // Keep the listener alive while withholding the response.
+            assert!(
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let mut client = super::RpcClient::connect_endpoint(&endpoint).unwrap();
+        client.set_default_timeout(Duration::from_millis(250));
+        let mut mcp = super::McpServer {
+            paths,
+            client: Some(client),
+        };
+        let result = mcp
+            .call_daemon("save.trigger", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(result.contains("timed out"), "{result}");
+        assert!(mcp.client.is_none());
+        server.join().unwrap();
+    }
+    #[test]
+    fn save_content_only_accepts_a_recovered_job_with_a_bundle() {
+        let mut body = serde_json::json!({"job":{"job_id":"same-job","state":"failed_retryable","pinned_chunk_ids":["c1"]}, "bundle_id":"b1"});
+        assert!(super::save_content(&body).is_err());
+        body["job"]["state"] = serde_json::json!("completed");
+        let content = super::save_content(&body).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(content[0]["text"].as_str().unwrap())
+                .unwrap(),
+            body
+        );
+        body["bundle_id"] = serde_json::Value::Null;
+        assert!(super::save_content(&body).is_err());
     }
 }

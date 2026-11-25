@@ -1,7 +1,7 @@
 //! Local IPC JSON-RPC 2.0 client and optional `arbd` auto-spawner for `arb-cli`.
 
 use std::fs::{self, OpenOptions};
-use std::io::BufReader;
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -19,6 +19,7 @@ use crate::process_os::configure_detached_daemon;
 pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
 
 const DEFAULT_AUTO_START_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
 const LOG_TAIL_MAX_BYTES: usize = 2_048;
 
@@ -53,6 +54,12 @@ pub enum RpcClientError {
         /// Human-readable server error message.
         message: String,
     },
+    /// The peer did not complete the exchange within the call budget.
+    #[error("arbd IPC request timed out; connection closed")]
+    Timeout,
+    /// The received message could not be matched to the outstanding request.
+    #[error("invalid arbd response: {0}")]
+    InvalidResponse(String),
     /// Server closed the stream before returning a response.
     #[error("arbd closed IPC connection before responding")]
     UnexpectedEof,
@@ -108,18 +115,76 @@ struct IncomingError {
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct IncomingResponse {
-    result: Option<Value>,
-    error: Option<IncomingError>,
+fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
+    let mut response: serde_json::Map<String, Value> = serde_json::from_str(raw)?;
+    if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || response.get("id").and_then(Value::as_u64) != Some(id)
+        || response.contains_key("method")
+    {
+        return Err(RpcClientError::InvalidResponse(format!(
+            "expected JSON-RPC 2.0 response to request {id}"
+        )));
+    }
+    match (response.remove("result"), response.remove("error")) {
+        (Some(result), None) => Ok(result),
+        (None, Some(error)) => {
+            let error: IncomingError = serde_json::from_value(error)?;
+            Err(RpcClientError::Rpc {
+                code: error.code,
+                message: error.message,
+            })
+        }
+        _ => Err(RpcClientError::InvalidResponse(
+            "expected exactly one of result or error".into(),
+        )),
+    }
+}
+
+// Recompute the remaining budget at each syscall so a partial NDJSON line
+// arriving one byte at a time cannot renew the deadline indefinitely.
+#[derive(Debug)]
+struct DeadlineStream {
+    stream: LocalIpcStream,
+    started: Instant,
+    timeout: Duration,
+}
+
+impl DeadlineStream {
+    fn remaining(&self) -> io::Result<Duration> {
+        self.timeout
+            .checked_sub(self.started.elapsed())
+            .filter(|t| !t.is_zero())
+            .ok_or_else(|| io::ErrorKind::TimedOut.into())
+    }
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.stream
+            .set_read_timeout(Some(self.remaining()?))
+            .map_err(io::Error::other)?;
+        self.stream.read(bytes)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream
+            .set_write_timeout(Some(self.remaining()?))
+            .map_err(io::Error::other)?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 /// Persistent bidirectional JSON-RPC 2.0 client connected to `arbd` over local IPC.
 #[derive(Debug)]
 pub struct RpcClient {
-    reader: BufReader<LocalIpcStream>,
-    writer: LocalIpcStream,
+    connection: Option<BufReader<DeadlineStream>>,
     next_id: u64,
+    default_timeout: Duration,
 }
 
 /// Resolves the auto-start timeout from `ARB_AUTO_START_TIMEOUT_MS` (default 5000 ms, R3 S16d).
@@ -172,13 +237,22 @@ impl RpcClient {
     /// Returns [`RpcClientError::Os`] if the endpoint cannot be connected.
     pub fn connect_endpoint(endpoint: &Path) -> Result<Self, RpcClientError> {
         let stream = LocalIpcStream::connect(endpoint)?;
-        let writer = stream.try_clone()?;
-        let reader = BufReader::new(stream);
+        let connection = BufReader::new(DeadlineStream {
+            stream,
+            started: Instant::now(),
+            timeout: Duration::ZERO,
+        });
         Ok(Self {
-            reader,
-            writer,
+            connection: Some(connection),
             next_id: 1,
+            default_timeout: DEFAULT_CALL_TIMEOUT,
         })
+    }
+
+    /// Sets the budget for normal RPCs on this connection. Export and audio decoding have a
+    /// separate 120-second budget; callers can override either with [`Self::call_with_timeout`].
+    pub const fn set_default_timeout(&mut self, timeout: Duration) {
+        self.default_timeout = timeout;
     }
 
     /// Calls `system.hello` and verifies that `protocol_version` matches
@@ -189,7 +263,11 @@ impl RpcClient {
     /// Returns [`RpcClientError::ProtocolVersionMismatch`] if the daemon reports an
     /// incompatible protocol version, or transport/RPC errors.
     pub fn verify_hello(&mut self) -> Result<Value, RpcClientError> {
-        let hello = self.call("system.hello", json!({}))?;
+        self.verify_hello_with_timeout(self.default_timeout)
+    }
+
+    fn verify_hello_with_timeout(&mut self, timeout: Duration) -> Result<Value, RpcClientError> {
+        let hello = self.call_with_timeout("system.hello", json!({}), timeout)?;
         let actual = hello.get("protocol_version").and_then(Value::as_u64);
         if actual != Some(u64::from(EXPECTED_IPC_PROTOCOL_VERSION)) {
             return Err(RpcClientError::ProtocolVersionMismatch {
@@ -206,9 +284,34 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+        let timeout = match method {
+            "export.trim" | "export.share_mp4" | "media.decode_audio_pcm" => {
+                Duration::from_secs(120)
+            }
+            _ => self.default_timeout,
+        };
+        self.call_with_timeout(method, params, timeout)
+    }
+
+    /// Executes one request within a total read/write budget. A transport or protocol failure
+    /// drops the connection. Callers must reconnect explicitly before issuing another request.
+    ///
+    /// # Errors
+    /// Returns a timeout, transport, protocol, or daemon-reported application error.
+    pub fn call_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, RpcClientError> {
+        let mut connection = self
+            .connection
+            .take()
+            .ok_or(RpcClientError::UnexpectedEof)?;
+        connection.get_mut().started = Instant::now();
+        connection.get_mut().timeout = timeout;
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-
         let req = OutgoingRequest {
             jsonrpc: "2.0",
             id,
@@ -216,19 +319,27 @@ impl RpcClient {
             params,
         };
         let line = serde_json::to_string(&req)?;
-        write_frame_line(&mut self.writer, &line, DEFAULT_MAX_IPC_LINE_BYTES)?;
-        self.writer.drain()?;
-
-        let raw = read_frame_line(&mut self.reader, DEFAULT_MAX_IPC_LINE_BYTES)?
-            .ok_or(RpcClientError::UnexpectedEof)?;
-        let resp: IncomingResponse = serde_json::from_str(&raw)?;
-        if let Some(err) = resp.error {
-            return Err(RpcClientError::Rpc {
-                code: err.code,
-                message: err.message,
-            });
+        let result = (|| {
+            write_frame_line(connection.get_mut(), &line, DEFAULT_MAX_IPC_LINE_BYTES)?;
+            let raw = read_frame_line(&mut connection, DEFAULT_MAX_IPC_LINE_BYTES)?
+                .ok_or(RpcClientError::UnexpectedEof)?;
+            parse_response(&raw, id)
+        })();
+        match result {
+            Err(RpcClientError::Os(crate::OsError::Io { source, .. }))
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Err(RpcClientError::Timeout)
+            }
+            Ok(_) | Err(RpcClientError::Rpc { .. }) => {
+                self.connection = Some(connection);
+                result
+            }
+            _ => result,
         }
-        Ok(resp.result.unwrap_or(Value::Null))
     }
 }
 
@@ -278,10 +389,10 @@ pub fn wait_for_daemon(
     mut child: Option<&mut Child>,
     log_path: Option<&Path>,
 ) -> Result<RpcClient, RpcClientError> {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
     loop {
         if let Ok(mut client) = RpcClient::connect_endpoint(endpoint) {
-            match client.verify_hello() {
+            match client.verify_hello_with_timeout(timeout.saturating_sub(started.elapsed())) {
                 Ok(_) => return Ok(client),
                 Err(err @ RpcClientError::ProtocolVersionMismatch { .. }) => return Err(err),
                 Err(_) => {}
@@ -293,7 +404,9 @@ pub fn wait_for_daemon(
             // A concurrent CLI auto-start race can cause our child to lose the lock and exit
             // while the winner is now serving; try connecting one final time before failing.
             if let Ok(mut client) = RpcClient::connect_endpoint(endpoint)
-                && client.verify_hello().is_ok()
+                && client
+                    .verify_hello_with_timeout(timeout.saturating_sub(started.elapsed()))
+                    .is_ok()
             {
                 return Ok(client);
             }
@@ -305,12 +418,12 @@ pub fn wait_for_daemon(
                 log_tail,
             });
         }
-        if Instant::now() >= deadline {
+        if started.elapsed() >= timeout {
             return Err(RpcClientError::AutoStartTimeout {
                 endpoint: endpoint.to_path_buf(),
             });
         }
-        thread::sleep(AUTO_START_POLL);
+        thread::sleep(AUTO_START_POLL.min(timeout.saturating_sub(started.elapsed())));
     }
 }
 
@@ -390,6 +503,147 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn response_cases() -> Vec<(serde_json::Value, bool)> {
+        vec![
+            (json!({"jsonrpc":"2.0","id":2,"result":null}), false),
+            (json!({"jsonrpc":"2.0","result":null}), false),
+            (
+                json!({"jsonrpc":"2.0","method":"notice","params":{}}),
+                false,
+            ),
+            (json!({"jsonrpc":"2.0","id":1}), false),
+            (json!({"jsonrpc":"2.0","id":1,"result":null}), true),
+            (
+                json!({"jsonrpc":"2.0","id":1,"result":null,"error":null}),
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn validates_response_identity_and_result_presence() {
+        for (response, valid) in response_cases() {
+            assert_eq!(
+                super::parse_response(&response.to_string(), 1).is_ok(),
+                valid,
+                "{response}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_ipc_responses_close_connection_but_explicit_null_succeeds() {
+        for (response, valid) in response_cases() {
+            let dir = TestDir::new("id");
+            let endpoint = ArbPaths {
+                data_dir: dir.0.clone(),
+                cache_dir: dir.0.clone(),
+                runtime_dir: dir.0.clone(),
+            }
+            .ipc_endpoint();
+            let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+            let server = thread::spawn(move || {
+                let stream = listener.accept().expect("accept");
+                let mut reader = BufReader::new(stream);
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .expect("request")
+                    .unwrap();
+                write_frame_line(
+                    reader.get_mut(),
+                    &response.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                )
+                .expect("reply");
+                reader.get_mut().drain().expect("drain");
+                assert!(
+                    read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                        .expect("eof")
+                        .is_none()
+                );
+            });
+            let mut client = RpcClient::connect_endpoint(&endpoint).expect("connect");
+            let res = client.call("save.trigger", json!({}));
+            if valid {
+                assert_eq!(res.unwrap(), serde_json::Value::Null);
+            } else {
+                assert!(matches!(res, Err(RpcClientError::InvalidResponse(_))));
+                assert!(client.call("save.trigger", json!({})).is_err());
+            }
+            drop(client);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn silent_peer_times_out_and_mutation_is_not_replayed() {
+        let dir = TestDir::new("slow");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let stream = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let req = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&req).unwrap()["method"],
+                "save.trigger"
+            );
+            assert!(
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        let start = std::time::Instant::now();
+        let error = client
+            .call_with_timeout("save.trigger", json!({}), Duration::from_millis(250))
+            .unwrap_err();
+        assert!(matches!(error, RpcClientError::Timeout), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(client.call("system.status", json!({})).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn partial_response_does_not_extend_call_budget() {
+        use std::io::Write;
+        let dir = TestDir::new("part");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = thread::spawn(move || {
+            let mut stream = BufReader::new(listener.accept().unwrap());
+            read_frame_line(&mut stream, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            for _ in 0..50 {
+                if stream.get_mut().write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        let result =
+            client.call_with_timeout("system.status", json!({}), Duration::from_millis(250));
+        assert!(matches!(result, Err(RpcClientError::Timeout)), "{result:?}");
+        server.join().unwrap();
     }
 
     #[test]

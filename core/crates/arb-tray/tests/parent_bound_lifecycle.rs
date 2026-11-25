@@ -153,3 +153,39 @@ fn without_the_flag_stdin_eof_does_not_quit_a_standalone_tray() {
         "standalone arb-tray (no --exit-on-stdin-eof) must ignore stdin EOF"
     );
 }
+
+#[test]
+fn concurrent_parent_bound_trays_have_one_owner_and_can_reacquire_after_owner_death() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = hermetic_paths(&tmp);
+    let (mut first, _first_parent) = spawn_tray(&paths, Lifecycle::ParentBound);
+    let (mut second, _second_parent) = spawn_tray(&paths, Lifecycle::ParentBound);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let owner = loop {
+        if let Some(status) = first.child.try_wait().unwrap() {
+            assert!(status.success());
+            break &mut second;
+        }
+        if let Some(status) = second.child.try_wait().unwrap() {
+            assert!(status.success());
+            break &mut first;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "second tray did not yield the lock"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    await_lock_held(&paths, owner);
+    owner.child.kill().unwrap();
+    owner.child.wait().unwrap();
+    let (mut replacement, parent) = spawn_tray(&paths, Lifecycle::ParentBound);
+    await_lock_held(&paths, &mut replacement);
+    drop(parent);
+    assert!(
+        wait_exit(&mut replacement, PARENT_GONE_EXIT_BUDGET)
+            .unwrap()
+            .0
+            .success()
+    );
+}
