@@ -17,6 +17,26 @@ pub const COMMIT_MARKER_FILE: &str = ".committed";
 /// errors on Windows (e.g., Defender or Explorer briefly opening staging files).
 const RENAME_RETRY_DELAYS_MS: [u64; 5] = [10, 20, 40, 80, 160];
 
+/// Metadata used to identify replacements and edits between reads of a durable file.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    volume: u64,
+    index: u64,
+    len: u64,
+    modified: std::time::SystemTime,
+}
+
+impl FileStamp {
+    /// Reads the file identity, length, and last modification time.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error when the file or its metadata cannot be read.
+    pub fn read(path: &Path) -> io::Result<Self> {
+        imp::file_stamp(path)
+    }
+}
+
 /// Available and total byte capacity of the filesystem containing a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DiskSpaceInfo {
@@ -463,6 +483,17 @@ mod imp {
     use crate::error::OsError;
     use crate::fs::DiskSpaceInfo;
 
+    pub(super) fn file_stamp(path: &Path) -> io::Result<super::FileStamp> {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = fs::metadata(path)?;
+        Ok(super::FileStamp {
+            volume: meta.dev(),
+            index: meta.ino(),
+            len: meta.len(),
+            modified: meta.modified()?,
+        })
+    }
+
     fn path_to_cstring(path: &Path) -> Result<CString, OsError> {
         CString::new(path.as_os_str().as_bytes()).map_err(|_| OsError::InvalidArgument {
             name: "path",
@@ -693,6 +724,29 @@ mod imp {
 
     use crate::error::OsError;
     use crate::fs::DiskSpaceInfo;
+
+    pub(super) fn file_stamp(path: &Path) -> io::Result<super::FileStamp> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let file = File::open(path)?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // SAFETY: file owns a live handle and info has space for the complete result.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the successful call initialized the result.
+        let info = unsafe { info.assume_init() };
+        let meta = file.metadata()?;
+        Ok(super::FileStamp {
+            volume: u64::from(info.dwVolumeSerialNumber),
+            index: u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow),
+            len: meta.len(),
+            modified: meta.modified()?,
+        })
+    }
 
     fn encode_wide(value: &OsStr) -> Vec<u16> {
         value.encode_wide().chain(std::iter::once(0)).collect()

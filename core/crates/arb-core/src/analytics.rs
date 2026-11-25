@@ -1214,25 +1214,167 @@ impl LogPackageResolver {
         {
             return true;
         }
-        if is_system_server_uid(log.uid)
-            && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
-            && crash.package_name == target
+        matches_non_pid_package_signals(log, target)
+    }
+}
+
+fn matches_non_pid_package_signals(log: &LogRecord, target: &str) -> bool {
+    if is_system_server_uid(log.uid)
+        && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+        && crash.package_name == target
+    {
+        return true;
+    }
+    if is_authentic_screen_transition_record(log)
+        && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+        && (comp.package_name == target || comp.activity_name.starts_with(&format!("{target}.")))
+    {
+        return true;
+    }
+    if let Some(tag) = log.tag.as_deref().map(str::trim)
+        && (tag == target || tag.starts_with(&format!("{target}.")))
+    {
+        return true;
+    }
+    false
+}
+
+#[derive(Clone, Copy)]
+enum OwnerEvidence {
+    ActivityClass,
+    ProcessIdentity,
+    ProcessStart,
+}
+
+#[derive(Debug, Default)]
+struct PidOwners {
+    inferred: Option<String>,
+    confirmed: Vec<(u64, String)>,
+}
+
+impl PidOwners {
+    fn observe(&mut self, seq: u64, pkg: &str, evidence: OwnerEvidence) {
+        let pkg = pkg.trim();
+        if pkg.is_empty() {
+            return;
+        }
+        if matches!(evidence, OwnerEvidence::ActivityClass) {
+            if self.confirmed.is_empty() && self.inferred.is_none() {
+                self.inferred = Some(pkg.to_owned());
+            }
+            return;
+        }
+        if self
+            .confirmed
+            .last()
+            .is_none_or(|(_, previous)| previous != pkg)
+        {
+            // The first positive identification (e.g. a crash) also identifies preceding
+            // rows. A recorded process start gives a precise lower bound instead.
+            let start = if self.confirmed.is_empty()
+                && matches!(evidence, OwnerEvidence::ProcessIdentity)
+            {
+                0
+            } else {
+                seq
+            };
+            self.confirmed.push((start, pkg.to_owned()));
+        }
+    }
+
+    fn at(&self, seq: u64) -> Option<&str> {
+        let end = self.confirmed.partition_point(|(start, _)| *start <= seq);
+        self.confirmed[..end]
+            .last()
+            .map(|(_, pkg)| pkg.as_str())
+            .or(self.inferred.as_deref())
+    }
+}
+
+/// Sequence-ordered package observations used by paginated log queries.
+#[derive(Debug, Default)]
+pub struct LogPackageTimeline {
+    epochs: BTreeMap<Option<String>, BTreeMap<i32, PidOwners>>,
+}
+
+impl LogPackageTimeline {
+    /// Builds ownership transitions for each PID independently in each boot.
+    #[must_use]
+    pub fn from_logs(logs: &[LogRecord]) -> Self {
+        let mut timeline = Self::default();
+        for (idx, log) in logs.iter().enumerate() {
+            let mut observe = |pid, pkg: &str, evidence| {
+                timeline
+                    .epochs
+                    .entry(log_boot_id_hint(log).map(str::to_owned))
+                    .or_default()
+                    .entry(pid)
+                    .or_default()
+                    .observe(log.seq, pkg, evidence);
+            };
+            if let (Some(pid), Some(pkg)) = (log.pid, log.package_name.as_deref()) {
+                observe(pid, pkg, OwnerEvidence::ProcessIdentity);
+            } else if is_app_resume_event_tag(log.tag.as_deref())
+                && let Some(pid) = log.pid
+                && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+            {
+                observe(pid, &comp.package_name, OwnerEvidence::ActivityClass);
+            }
+            if is_system_server_uid(log.uid) {
+                if let Some(crash) =
+                    parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+                {
+                    observe(
+                        crash.pid,
+                        &crash.package_name,
+                        OwnerEvidence::ProcessIdentity,
+                    );
+                }
+                if matches!(
+                    log.tag.as_deref().map(str::trim),
+                    Some("ActivityManager" | "ActivityTaskManager")
+                ) && let Some((pid, pkg)) = parse_start_proc_line(&log.message)
+                {
+                    observe(pid, &pkg, OwnerEvidence::ProcessStart);
+                }
+            }
+            if log.tag.as_deref().map(str::trim) == Some("AndroidRuntime")
+                && let Some(crash) = parse_fatal_exception_at(logs, idx)
+                && let Some(pid) = crash.pid.or(log.pid)
+                && crash.package_name != "unknown"
+            {
+                observe(pid, &crash.package_name, OwnerEvidence::ProcessIdentity);
+            }
+        }
+        timeline
+    }
+
+    /// Applies the PID owner at the row's sequence and the usual non-PID signals.
+    #[must_use]
+    pub fn matches_package(&self, log: &LogRecord, target: &str) -> bool {
+        if let Some(pkg) = log.package_name.as_deref() {
+            if pkg == target {
+                return true;
+            }
+            if !matches!(pkg, "android" | "system_server") {
+                return false;
+            }
+        }
+        if let Some(pid) = log.pid
+            && let Some(epochs) = self
+                .epochs
+                .get(&log_boot_id_hint(log).map(str::to_owned))
+                .and_then(|pids| pids.get(&pid))
+            && epochs.at(log.seq).is_some_and(|pkg| {
+                pkg == target
+                    || pkg
+                        .strip_prefix(target)
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
         {
             return true;
         }
-        if is_authentic_screen_transition_record(log)
-            && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
-            && (comp.package_name == target
-                || comp.activity_name.starts_with(&format!("{target}.")))
-        {
-            return true;
-        }
-        if let Some(tag) = log.tag.as_deref().map(str::trim)
-            && (tag == target || tag.starts_with(&format!("{target}.")))
-        {
-            return true;
-        }
-        false
+        matches_non_pid_package_signals(log, target)
     }
 }
 
