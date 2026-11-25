@@ -1017,6 +1017,7 @@ data class MediaOpenViewportResponse(
      * callers then fall back to an average-FPS timeline.
      */
     val framePtsNs: List<Long> = emptyList(),
+    val lastFrameDurationNs: Long? = null,
 )
 
 data class FilmstripEntryMeta(

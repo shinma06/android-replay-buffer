@@ -1964,6 +1964,10 @@ fn r3_m7_client_disconnect_closes_viewports_cap_and_startup_shm_sweep() {
             1,
             "active_viewports must be 1"
         );
+        assert_eq!(
+            admin.call("system.shutdown_for_handover", &json!({}))["ok"],
+            false
+        );
         shm_path
     };
 

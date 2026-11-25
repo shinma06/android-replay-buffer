@@ -263,6 +263,7 @@ object ProtocolJson {
                 slotCapacity = obj.requireLong("slot_capacity").toInt(),
                 frameCount = obj.requireLong("frame_count"),
                 keyframeCount = obj.requireLong("keyframe_count").toInt(),
+                lastFrameDurationNs = obj.get("last_frame_duration_ns")?.takeUnless { it.isJsonNull }?.asLong,
                 framePtsNs = pts?.map { element ->
                     if (!element.isJsonPrimitive || !element.asJsonPrimitive.isNumber) {
                         throw JsonParseException("frame_pts_ns entries must be integers, got: $element")

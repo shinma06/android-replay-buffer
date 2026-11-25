@@ -87,6 +87,159 @@ class PlaybackControllerTest {
         List(count) { i -> baseNs + i * stepMs * 1_000_000L }
 
     @Test
+    fun transientFrameFailureRetriesOnceWithoutStoppingAndInitialPermanentFailureRollsBack() {
+        val clock = ManualClock()
+        var attempts = 0
+        val errors = mutableListOf<Throwable>()
+        val seeker = RecordingSeeker(onExactSeek = { if (++attempts == 1) throw java.io.IOException("temporary") })
+        PlaybackController(10, seeker, clock = clock, autoRunLoop = false, onPlaybackError = errors::add).use {
+            it.play()
+            clock.advanceMs(40)
+            it.tick()
+            assertEquals(2, attempts)
+            assertEquals(1, it.state.displayedFrameIndex)
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            assertTrue(errors.isEmpty())
+        }
+        val broken = RecordingSeeker(onExactSeek = { throw java.io.IOException("permanent") })
+        PlaybackController(10, broken, initialFrameIndex = 9, onPlaybackError = errors::add).use {
+            it.play()
+            assertEquals(PlaybackMode.PAUSED, it.state.mode)
+            assertEquals(2, broken.calls.size)
+            assertTrue(errors.single().message.orEmpty().contains("#0"))
+        }
+    }
+
+    @Test
+    fun resumingFromErrorBeforeWaitDoesNotLoseWakeup() {
+        lateinit var ctrl: PlaybackController
+        val calls = AtomicLong()
+        val advanced = CountDownLatch(1)
+        val seeker = RecordingSeeker(onExactSeek = {
+            if (calls.incrementAndGet() == 1L) error("bad frame")
+            if (it >= 3L) advanced.countDown()
+        })
+        ctrl = PlaybackController(500, seeker, onPlaybackError = { ctrl.play() })
+        ctrl.use {
+            it.play()
+            assertTrue(advanced.await(3, TimeUnit.SECONDS))
+            assertEquals(PlaybackMode.PLAYING, ctrl.state.mode)
+        }
+    }
+
+    @Test
+    fun errorInPlaybackLoopPausesReportsAndKeepsLoopThreadUsable() {
+        val calls = AtomicLong()
+        val reported = CountDownLatch(1)
+        val advanced = CountDownLatch(1)
+        val seeker = RecordingSeeker(onExactSeek = {
+            if (calls.incrementAndGet() == 1L) throw OutOfMemoryError("frame buffer")
+            if (it >= 3L) advanced.countDown()
+        })
+        PlaybackController(500, seeker, onPlaybackError = { reported.countDown() }).use { ctrl ->
+            ctrl.play()
+            assertTrue(reported.await(3, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (ctrl.state.mode != PlaybackMode.PAUSED && System.nanoTime() < deadline) Thread.sleep(5)
+            assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
+            ctrl.play()
+            assertTrue(advanced.await(3, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun staleFailedSeekCannotPauseNewPlaybackOrReportAfterClose() {
+        for (close in listOf(false, true)) {
+            val clock = ManualClock()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val errors = CopyOnWriteArrayList<Throwable>()
+            val seeker = RecordingSeeker(onExactSeek = {
+                entered.countDown()
+                check(release.await(3, TimeUnit.SECONDS))
+                error("stale")
+            })
+            PlaybackController(100, seeker, clock = clock, autoRunLoop = false, onPlaybackError = errors::add).use { ctrl ->
+                ctrl.play()
+                clock.advanceMs(100)
+                val task = Thread { ctrl.tick() }.apply { start() }
+                try {
+                    assertTrue(entered.await(3, TimeUnit.SECONDS))
+                    if (close) ctrl.close() else ctrl.pause()
+                } finally {
+                    release.countDown()
+                    task.join(3000)
+                }
+                assertFalse(task.isAlive)
+                assertTrue(errors.isEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun viewportRecoveryTimeIsExcludedFromPlaybackClock() {
+        val clock = ManualClock()
+        val seeker = object : FrameSeeker {
+            override fun seekExact(frameIndex: Long): FrameSeekResult {
+                clock.advanceMs(30_000)
+                return FrameSeekResult(frameIndex, frameIndex, false, recovered = true)
+            }
+            override fun scrubApprox(frameIndex: Long) = seekExact(frameIndex)
+        }
+        PlaybackController(50, seeker, uniformPtsNs(50, 100), clock = clock, autoRunLoop = false).use {
+            it.setOutFrame(40)
+            it.setSpeed(PlaybackSpeed.DOUBLE)
+            it.play()
+            clock.advanceMs(50)
+            it.tick()
+            it.tick()
+            assertEquals(1L, it.state.currentFrameIndex)
+            assertEquals(40L, it.state.outFrameIndex)
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            assertEquals(PlaybackSpeed.DOUBLE, it.state.speed)
+        }
+    }
+
+    @Test
+    fun legacyVfrDurationIncludesInferredFinalHold() {
+        val clock = ManualClock()
+        PlaybackController(3, RecordingSeeker(), listOf(0, 30_000_000, 5_030_000_000), clock = clock, autoRunLoop = false).use {
+            assertEquals(10_030_000_000L, it.durationNs)
+            it.play()
+            clock.advanceMs(6000)
+            it.tick()
+            assertEquals(6_000_000_000L, it.displayPositionNs())
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            clock.advanceMs(4030)
+            it.tick()
+            assertEquals(PlaybackMode.PAUSED, it.state.mode)
+        }
+    }
+
+    @Test
+    fun vfrClockAdvancesDuringHoldAndStopsAtExactLastSampleDuration() {
+        for (pts in listOf(listOf(0L), listOf(0L, 30L, 5030L), listOf(0L, 5000L, 5030L))) {
+            val clock = ManualClock()
+            val seeker = RecordingSeeker()
+            PlaybackController(pts.size.toLong(), seeker, pts.map { it * 1_000_000L }, clock = clock,
+                lastFrameDurationNs = 33_000_000L, autoRunLoop = false).use { ctrl ->
+                ctrl.play()
+                clock.advanceMs(20)
+                ctrl.tick()
+                assertEquals(20_000_000L, ctrl.displayPositionNs())
+                assertTrue(seeker.calls.isEmpty())
+                clock.advanceMs(pts.last() + 12L)
+                ctrl.tick()
+                assertEquals(PlaybackMode.PLAYING, ctrl.state.mode)
+                clock.advanceMs(1)
+                ctrl.tick()
+                assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
+                assertEquals(pts.lastIndex.toLong(), ctrl.state.displayedFrameIndex)
+            }
+        }
+    }
+
+    @Test
     fun playPauseAndLoopInsideTrimSelectionAtHalfNormalAndDoubleSpeed() {
         val clock = ManualClock()
         val seeker = RecordingSeeker()

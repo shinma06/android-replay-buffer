@@ -1,6 +1,7 @@
 package io.github.shinma06.arb.playback
 
 import java.io.Closeable
+import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
@@ -37,6 +38,7 @@ class PlaybackController(
     initialAvOffsetMs: Long = audioPlayer?.avOffsetMs ?: 0L,
     private val autoRunLoop: Boolean = true,
     private val closeAudioPlayerOnClose: Boolean = true,
+    private val lastFrameDurationNs: Long? = null,
     private val onPlaybackError: (Throwable) -> Unit = {},
 ) : Closeable {
     init {
@@ -54,6 +56,8 @@ class PlaybackController(
     private val droppedFramesCounter = AtomicLong(0L)
     private val listeners = CopyOnWriteArrayList<(PlaybackState) -> Unit>()
 
+    private var initialSeekGeneration: Long? = null
+    private var wakeVersion = 0L
     private var closed: Boolean = false
     private var anchorWallNs: Long = 0L
     private var anchorMediaPtsNs: Long = 0L
@@ -149,8 +153,9 @@ class PlaybackController(
                 !cur.loopInSelection && cur.currentFrameIndex >= cur.outFrameIndex -> cur.inFrameIndex
                 else -> cur.currentFrameIndex
             }
-            needInitialSeek = if (startFrame != cur.currentFrameIndex || cur.isApproximate) startFrame else null
-            gen = if (needInitialSeek != null) seekGeneration.incrementAndGet() else seekGeneration.get()
+            needInitialSeek = if (startFrame != cur.displayedFrameIndex || startFrame != cur.currentFrameIndex || cur.isApproximate) startFrame else null
+            gen = seekGeneration.incrementAndGet()
+            initialSeekGeneration = gen.takeIf { needInitialSeek != null }
             startPtsNs = frameRelativePtsNs(startFrame)
 
             anchorWallNs = clock.nowNs()
@@ -170,7 +175,7 @@ class PlaybackController(
             playSnapshot = publishStateLocked(updated)
             if (needInitialSeek == null) {
                 ensureLoopThreadStartedLocked()
-                loopWakeup.signalAll()
+                signalLoopLocked()
             }
         }
 
@@ -179,9 +184,10 @@ class PlaybackController(
         }
 
         if (needInitialSeek != null) {
-            performExactSeek(needInitialSeek, gen)
+            seekDuringPlayback(needInitialSeek, gen)
             // Re-anchor after initial seek completes so startup decode time doesn't drop frame 1.
             stateLock.withLock {
+                if (initialSeekGeneration == gen) initialSeekGeneration = null
                 if (!closed && currentState.mode == PlaybackMode.PLAYING) {
                     // A concurrent seek/scrub/trim may have bumped the generation; the loop must
                     // still run while the mode is PLAYING, but only re-anchor if we still own it.
@@ -191,7 +197,7 @@ class PlaybackController(
                         audioPlayer?.seek(anchorMediaPtsNs)
                     }
                     ensureLoopThreadStartedLocked()
-                    loopWakeup.signalAll()
+                    signalLoopLocked()
                 }
             }
         }
@@ -201,6 +207,7 @@ class PlaybackController(
         val snapshot: PlaybackState? = stateLock.withLock {
             if (closed) return
             if (currentState.mode == PlaybackMode.PAUSED) return
+            seekGeneration.incrementAndGet()
             val wasScrubbing = currentState.mode == PlaybackMode.SCRUBBING
             if (wasScrubbing) {
                 audioPlayer?.setScrubbing(false)
@@ -211,7 +218,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             val changed = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
             changed
         }
         if (snapshot != null) {
@@ -248,7 +255,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             pausedSnapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (pausedSnapshot != null) {
@@ -286,7 +293,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             interimSnapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (interimSnapshot != null) {
@@ -308,7 +315,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             val changed = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
             changed
         }
         if (snapshot != null) {
@@ -337,7 +344,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             preSnapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (preSnapshot != null) {
@@ -386,7 +393,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             preSnapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (preSnapshot != null) {
@@ -426,7 +433,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             snapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (snapshot != null) {
@@ -468,7 +475,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             snapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (snapshot != null) {
@@ -500,7 +507,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             val changed = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
             changed
         }
         if (snapshot != null) {
@@ -537,7 +544,7 @@ class PlaybackController(
             if (currentState.loopInSelection == loop) return
             val updated = currentState.copy(loopInSelection = loop)
             val changed = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
             changed
         }
         if (snapshot != null) {
@@ -665,7 +672,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             snapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (snapshot != null) {
@@ -718,7 +725,7 @@ class PlaybackController(
                 audioState = currentAudioState(),
             )
             snapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (snapshot != null) {
@@ -738,7 +745,7 @@ class PlaybackController(
                 outFrameIndex = totalFrames - 1L,
             )
             val changed = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
             changed
         }
         if (snapshot != null) {
@@ -763,7 +770,7 @@ class PlaybackController(
         var notifySnapshot: PlaybackState? = null
 
         stateLock.withLock {
-            if (closed || totalFrames <= 0L || currentState.mode != PlaybackMode.PLAYING) {
+            if (closed || totalFrames <= 0L || initialSeekGeneration == seekGeneration.get() || currentState.mode != PlaybackMode.PLAYING) {
                 return null
             }
 
@@ -848,7 +855,7 @@ class PlaybackController(
         }
         val target = frameToSeek
         if (target != null) {
-            performExactSeek(target, genForSeek)
+            seekDuringPlayback(target, genForSeek)
         }
         return nextWakeupNs
     }
@@ -868,7 +875,7 @@ class PlaybackController(
                 audioState = if (closeAudioPlayerOnClose) AudioState.UNAVAILABLE else currentAudioState(),
             )
             closedSnapshot = publishStateLocked(updated)
-            loopWakeup.signalAll()
+            signalLoopLocked()
         }
 
         if (threadToJoin != null && threadToJoin !== Thread.currentThread()) {
@@ -887,12 +894,19 @@ class PlaybackController(
         }
     }
 
-    private fun performExactSeek(frameIndex: Long, expectedGeneration: Long) {
+    private fun performExactSeek(frameIndex: Long, expectedGeneration: Long, retried: Boolean = false) {
         val result = synchronized(seekLock) {
+            if (seekGeneration.get() != expectedGeneration) return
             frameSeeker.seekExact(frameIndex)
         }
         val postSnapshot = stateLock.withLock {
             if (closed || seekGeneration.get() != expectedGeneration) return
+            if ((result.recovered || retried) && currentState.mode == PlaybackMode.PLAYING) {
+                anchorMediaPtsNs = frameRelativePtsNs(frameIndex)
+                anchorWallNs = clock.nowNs()
+                audioPlayer?.seek(anchorMediaPtsNs)
+                signalLoopLocked()
+            }
             val displayed = result.displayedFrameIndex.coerceIn(0L, (totalFrames - 1L).coerceAtLeast(0L))
             val updated = currentState.copy(
                 currentFrameIndex = frameIndex,
@@ -918,48 +932,90 @@ class PlaybackController(
 
     private fun runPlaybackLoop() {
         while (true) {
-            val wakeupNs = try {
+            val version = stateLock.withLock { wakeVersion }
+            val deadline = try {
                 tick()
             } catch (_: InterruptedException) {
                 if (isClosed) return
                 continue
             } catch (t: Throwable) {
+                // Keep the loop thread alive: settle in PAUSED and report instead of freezing in PLAYING.
                 val errSnapshot = stateLock.withLock {
                     if (closed) return
-                    audioPlayer?.pause()
-                    val updated = currentState.copy(
-                        mode = PlaybackMode.PAUSED,
-                        audioState = currentAudioState(),
-                    )
-                    publishStateLocked(updated)
+                    runCatching { audioPlayer?.pause() }
+                    seekGeneration.incrementAndGet()
+                    publishStateLocked(currentState.copy(mode = PlaybackMode.PAUSED, audioState = currentAudioState()))
                 }
-                if (errSnapshot != null) {
-                    notifyListeners(errSnapshot)
-                }
+                if (errSnapshot != null) runCatching { notifyListeners(errSnapshot) }
                 runCatching { onPlaybackError(t) }
                 null
             }
-
             stateLock.withLock {
                 if (closed) return
-                if (wakeupNs == null || currentState.mode != PlaybackMode.PLAYING) {
-                    try {
+                try {
+                    while (!closed && (currentState.mode != PlaybackMode.PLAYING || initialSeekGeneration == seekGeneration.get())) {
                         loopWakeup.await()
-                    } catch (_: InterruptedException) {
-                        if (closed) return
                     }
-                } else {
-                    val remainingNs = wakeupNs - clock.nowNs()
-                    if (remainingNs > 0L) {
+                    if (closed) return
+                    if (version == wakeVersion && deadline != null) {
+                        val remaining = deadline - clock.nowNs()
+                        if (remaining > 0L) loopWakeup.awaitNanos(remaining)
+                    }
+                } catch (_: InterruptedException) {
+                    if (closed) return
+                }
+            }
+        }
+    }
+
+    private fun signalLoopLocked() {
+        wakeVersion++
+        loopWakeup.signalAll()
+    }
+
+    private fun seekDuringPlayback(frame: Long, generation: Long) {
+        for (attempt in 0..1) {
+            try {
+                if (seekGeneration.get() != generation) return
+                performExactSeek(frame, generation, retried = attempt > 0)
+                return
+            } catch (error: Exception) {
+                if (attempt == 0 && error is IOException) {
+                    stateLock.withLock {
+                        if (closed || seekGeneration.get() != generation) return
                         try {
-                            loopWakeup.awaitNanos(remainingNs)
+                            loopWakeup.awaitNanos(IO_RETRY_DELAY_NS)
                         } catch (_: InterruptedException) {
                             if (closed) return
                         }
                     }
+                    continue
                 }
+                val snapshot = stateLock.withLock {
+                    if (closed || seekGeneration.get() != generation) return
+                    audioPlayer?.pause()
+                    val next = currentState.copy(mode = PlaybackMode.PAUSED, audioState = currentAudioState())
+                    signalLoopLocked()
+                    publishStateLocked(next)
+                }
+                snapshot?.let(::notifyListeners)
+                val reason = error.message ?: error.javaClass.simpleName
+                runCatching { onPlaybackError(IllegalStateException("フレーム #$frame の再生に失敗しました（$reason）", error)) }
+                return
             }
         }
+    }
+
+    /** Exclusive end on the same media clock used by tick(), also for older daemons. */
+    val durationNs: Long
+        get() = if (totalFrames == 0L) 0L else saturatingAdd(frameRelativePtsNs(totalFrames - 1L), frameDurationNs(totalFrames - 1L))
+
+    /** Presentation clock for the text readout during a VFR hold; never schedules a seek. */
+    fun displayPositionNs(): Long = stateLock.withLock {
+        val state = currentState
+        if (state.mode != PlaybackMode.PLAYING) return frameRelativePtsNs(state.currentFrameIndex)
+        val elapsed = state.speed.wallToMediaNs((clock.nowNs() - anchorWallNs).coerceAtLeast(0L))
+        saturatingAdd(anchorMediaPtsNs, elapsed).coerceAtMost(saturatingAdd(frameRelativePtsNs(state.outFrameIndex), frameDurationNs(state.outFrameIndex)))
     }
 
     private fun findTargetFrameInRange(startFrame: Long, outFrame: Long, targetMediaPtsNs: Long): Long {
@@ -986,6 +1042,7 @@ class PlaybackController(
     }
 
     private fun frameDurationNs(frameIndex: Long): Long {
+        if (frameIndex == totalFrames - 1L && lastFrameDurationNs != null && lastFrameDurationNs > 0L) return lastFrameDurationNs
         if (totalFrames <= 1L) return fallbackFrameDurationNs
         val clamped = frameIndex.coerceIn(0L, totalFrames - 1L)
         return when {
@@ -1012,6 +1069,7 @@ class PlaybackController(
     }
 
     companion object {
+        private const val IO_RETRY_DELAY_NS = 25_000_000L
         const val DEFAULT_FALLBACK_FPS: Double = 30.0
         private const val MIN_FRAME_DELTA_NS: Long = 1_000_000L // 1 ms floor for degenerate duplicate PTS
         private const val CLOSE_JOIN_TIMEOUT_MS: Long = 2_000L

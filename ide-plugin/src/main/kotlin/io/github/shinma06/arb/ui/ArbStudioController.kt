@@ -101,6 +101,7 @@ class ArbStudioController(
     initialBurnTapsOnExport: Boolean = true,
     private val onBurnTapsToggled: (enabled: Boolean) -> Unit = {},
     private val onCloseTab: () -> Unit = {},
+    private val displayPositionNs: () -> Long? = { null },
 ) {
     var viewerState: TimelineViewerState? by mutableStateOf(null)
         private set
@@ -218,8 +219,9 @@ class ArbStudioController(
     val timecodeText: String
         get() {
             val s = viewerState ?: return "00:00.00 / 00:00.00 · #0"
-            val curMs = s.frameToRelativeMs(s.currentFrameIndex)
-            return "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(s.totalDurationMs)} · #${s.currentFrameIndex}"
+            val curMs = (if (isPlaying) displayPositionNs()?.div(1_000_000L) else null) ?: s.frameToRelativeMs(s.currentFrameIndex)
+            val durationMs = s.playbackDurationNs?.div(1_000_000L) ?: s.totalDurationMs
+            return "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(durationMs)} · #${s.currentFrameIndex}"
         }
 
     val exportButtonLabel: String
@@ -370,7 +372,15 @@ class ArbStudioController(
         renderState(transform(current), image = null)
     }
 
+    var playbackError by mutableStateOf<String?>(null)
+        private set
+
+    fun showPlaybackError(message: String) {
+        playbackError = message
+    }
+
     fun renderPlaybackState(pb: PlaybackState) {
+        if (pb.mode == PlaybackMode.PLAYING) playbackError = null
         playbackState = pb
         approximatePreviewVisible = pb.isApproximate || (viewerState?.showApproximatePreviewBadge == true)
         val current = viewerState
