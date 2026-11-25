@@ -136,22 +136,9 @@ pub struct SystemHelloResponse {
     pub parent_bound: bool,
 }
 
-/// Honest live audio capture availability state reported in [`CaptureStatusView`].
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AudioCaptureState {
-    /// Audio availability has not been determined yet (idle or connecting).
-    #[default]
-    Unknown,
-    /// Audio capture is active and streaming AAC frames.
-    Available,
-    /// Audio capture was intentionally disabled (e.g., `audio_enabled=false` or `logs_only`).
-    Disabled,
-    /// Audio capture is unavailable on this device (API < 33, where non-muting playback capture
-    /// is unsupported, or the device rejected audio); video + logs + taps continue.
-    Unavailable,
-}
+/// Live audio capture state and its machine-readable cause, both decided by
+/// [`arb_core::audio_policy`] (PDD G8) and reported in [`CaptureStatusView`].
+pub use arb_core::audio_policy::{AudioCaptureState, AudioCause};
 
 /// Live capture telemetry inside [`SystemStatusResponse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,9 +179,18 @@ pub struct CaptureStatusView {
     /// Honest live audio capture availability state (`unknown`, `available`, `disabled`, `unavailable`).
     #[serde(default)]
     pub audio_state: AudioCaptureState,
-    /// Optional honest diagnostic explaining why audio is unavailable (e.g., Android 9 / API 28).
+    /// Machine-readable cause behind `audio_state` (`api_below_min`, `device_capture_failed`,
+    /// `encoder_fatal`, ...). Clients pick their wording from this, never from `audio_reason`;
+    /// only `api_below_min` means the device OS is unsupported. Absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_cause: Option<AudioCause>,
+    /// Optional honest diagnostic explaining why audio is unavailable (e.g., Android 9 / API 28,
+    /// or a runtime failure with the tail of `scrcpy-server` stderr).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_reason: Option<String>,
+    /// Detected Android API level of the capturing device, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_api_level: Option<u32>,
     /// Optional non-blocking warning when the connected device is below the official
     /// Android 9 (API 28) support floor (best-effort capture continues without hard-blocking).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -31,6 +31,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K7 | `k7_empty_and_single_sample_strokes_are_taps`（`f64::hypot` を任意値スタブで過大近似）、`k7_touch_slop_finite_positive`、`k7_decimate_keeps_endpoints_and_cap_len{2..5}_cap{2..4}`（12 本）、`k7_decimate_passes_through_len3_cap0` / `_cap1`、`k7_decimate_passes_through_single_sample` | なし | `core/crates/arb-core/src/kani_proofs.rs` |
 | K8 | `k8_required_buffer_bytes_exact_or_none`、`k8_required_buffer_bytes_rejects_u64_overflow`、`k8_required_buffer_bytes_covers_every_pixel`、`k8_align_up_exact`、`k8_compute_layout_slots_disjoint_and_aligned` | なし | `core/crates/arb-os/src/shm.rs` |
 | K9 | `k9_checked_entry_count_bounds_allocation`、`k9_iter_boxes_children_stay_in_parent`、`k9_ticks_to_ns_exact_ts_1`、`k9_parse_stts_bounded`、`k9_parse_stts_rejects_truncated_header`、`k9_parse_stsc_strictly_increasing`、`k9_parse_stsc_rejects_empty_or_truncated`、`k9_parse_stsz_bounded_by_file`、`k9_parse_stsz_explicit_sizes_fit_box`、`k9_parse_stsz_rejects_truncated_header`（`arb-media/src/kani_proofs.rs`）、`k9_encode_chunk_offset_never_truncates`、`k9_stco_chosen_only_when_every_offset_fits`（`arb-media/src/mux_av.rs`）、`k9_frame_header_accepts_iff_valid_and_roundtrips`、`k9_frame_header_encode_decode_full_u64_len`（`arb-adb/src/wire.rs`） | `k9_ticks_to_ns_exact_ts_90000`、`k9_ticks_to_ns_exact_ts_u32_max`、`k9_ticks_to_ns_monotone_ts_1` / `_90000` / `_u32_max`、`k9_avcc_sample_to_annexb_bounded`（G3 と M2 で確認） | 各ファイル |
+| K11 | `k11_g8_1_api_33_plus_is_never_api_below_min`、`k11_g8_2_unknown_api_is_never_api_below_min`、`k11_g8_4_api_28_to_32_degrades_to_video_and_logs`、`k11_g8_9_disabled_modes_ignore_every_outcome`、`k11_g8_6_fatal_audio_failure_is_sticky_until_restart`（PDD G8。API は `u32` 全域、モード・音声要求・ラッチ・`scrcpy-server` の音声結果 8 種はすべて記号値。G8-6 は再接続 4 回までの有界な監視モデルで、端末の起動は前進のみ・各回の前に停止→開始が入りうる。期待値はハーネス内の独立オラクルで、本番の `is_fatal` や `label_class` を使わない） | なし | `core/crates/arb-core/src/kani_proofs/k11_audio_policy.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -68,6 +69,7 @@ K3〜K9 の一部は、完了しなかった元の形を次のように組み替
 | G5 | `SaveJobMaterializeParams` の過去 JSON 互換（全追加フィールドの `#[serde(default)]` 検査）、リングチャンクの符号化往復と任意バイト非 panic | `core/crates/arbd/src/capture_pdd_g5_tests.rs`、`core/crates/arbd/tests/fixtures/pdd_g5_params_v2_minimal.json` |
 | G6 | wire / scrcpy ストリームの任意分割と `Interrupted`/`TimedOut`/EOF 注入（連続解析と一致、完全レコード接頭辞 + 明示ギャップ） | `core/crates/arb-adb/tests/pdd_g6_stream_fault_props.rs` |
 | G7 | SHM 奇数幅・全 4 形式・stride/padding の Rust/Kotlin パリティ（共通ゴールデン表 48 行）と短いプレーンの拒否 | `core/crates/arb-os/tests/pdd_g7_shm_parity_props.rs`、`ide-plugin/client-core/src/test/kotlin/io/github/shinma06/arb/shm/ShmLayoutParityTest.kt` |
+| G8 | 音声ポリシー（Android 13 の「音声キャプチャ非対応」誤表示の再発防止）。G8-3: `build_server_args` は API 33〜`u32::MAX` で `audio=true audio_source=playback audio_dup=true`、33 未満と無効時は `audio=false`。G8-5: API 33 以上・不明での失敗結果は実行時の原因へ単射に対応し、`scrcpy-server` 標準エラーの末尾が `audio_reason` に入る（純関数と、`codec_id = 0 / 1`・即切断を返す模擬ソケットでの `arbd` 音声リーダー）。G8-6: 致命的な失敗の後は同じ `(serial, boot_id)` が `audio=false` に固定される。G8-7: Kotlin の網羅表（全 `AudioCause` × 状態 × API で「非対応」の表示 ⟺ `api_below_min`）。G8-8: 共有正本表 `docs/specs/audio-policy-table.json`（43 行）を Rust と Kotlin の両方が読み、状態・原因・表示区分の一致を検査 | `core/crates/arb-core/src/audio_policy/tests.rs`、`core/crates/arb-adb/tests/pdd_g8_audio_args_props.rs`、`core/crates/arbd/src/live_adb.rs`（`g8_*`）、`core/crates/arbd/src/capture.rs`（`g8_*`）、`ide-plugin/client-core/src/test/kotlin/io/github/shinma06/arb/state/AudioPolicyTableTest.kt` |
 | M1 | ヒープ上の整列 `RingView`：長さ 0,1,7,8,9,15,16,17、末尾境界、1 ライタ + 2 リーダの多世代並行 | `core/crates/arb-os/src/shm.rs`（`m1_*`） |
 | M2 | `arb-core` 全 lib テスト、`arb-media::mp4` の純粋パーサ（`miri_pure_tests`） | `core/crates/arb-core/src/`、`core/crates/arb-media/src/mp4.rs` |
 
@@ -82,6 +84,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | KON-3 | Swing ウィジェット（`JButton` など）と Swing UI DSL を本番コードで使わない | 同上 |
 | KON-4 | OS 検出は `HostOs.kt` のみ、`HostOs.*` 分岐は `HostOs`/`ArbPaths`/`LocalIpcTransport`/`Win32NamedPipes` のみ | 同上 |
 | KON-5 | `client-core` は IntelliJ/Jewel/Compose/Swing を import しない、`LegacyV1SettingsMigrator` の参照は `ArbStartupActivity` と自身のテストのみ | 同上 |
+| KON-6 | 音声の「非対応」表示（`音声キャプチャ非対応` / `音声: 非対応`）を書けるのは `AudioPolicyTable` だけ。`AudioPolicyTable.classOf` は `else` のない網羅 `when`（PDD G8-7） | 同上 |
 | RS-1 | `arb-core` の通常依存 ⊆ {serde, serde_json, thiserror}、`arb-cli`/`arb-tray` はエンジン crate に依存しない、`arb-storage`/`arb-media`/`arb-adb` 間の横依存なし、`arb-core` 本番コードに FS・ネット・プロセス・スレッド・時計・OS cfg なし | `core/scripts/check-architecture.py` |
 | RS-2 | OS `cfg` は `arb-os`、`arb-media/src/codec/`、`arb-tray/src/native_tray.rs` のみ | 同上 |
 | RS-3 | `forbid(unsafe_code)`: `arb-core`/`arb-storage`/`arb-adb`/`arb-cli`/`arbd`。`deny(unsafe_code)`: `arb-media`/`arb-tray`（許可は `videotoolbox_backend.rs` と `native_tray.rs` のみ） | 同上 |
@@ -102,6 +105,8 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | `arb-media` | 12 / 12 成功（158.9 秒） | K9 `ticks_exact_ts_1` 24.3 秒（乗算オラクル。旧オラクルは 28.3 秒）、`iter_boxes` 23.4 秒、`parse_stts` 17.7 秒・`stts_rejects_truncated` 11.1 秒、`parse_stsc` 14.4 秒・`stsc_rejects` 12.9 秒、`parse_stsz_bounded_by_file` 17.0 秒・`explicit_sizes` 8.8 秒・`stsz_rejects_truncated` 7.3 秒、`checked_entry_count` 1.0 秒、mux_av 5.3 秒・1.6 秒 |
 | `arbd` | 10 / 10 成功（48.5 秒） | K6 `axis_project_range_and_endpoints_span_*` 5 本 3.5〜6.1 秒、`axis_project_monotonic_span_*_display_pixels` 5 本 2.3〜7.9 秒 |
 
+PDD G8 で K11 の 5 本を `arb-core` の必須集合に加えた（2026-11-25、同じ macOS arm64）。`cargo kani -p arb-core -Z stubbing` は 84 / 84 成功（実時間 528.7 秒。最長は K3 `jump_between_read_inside_jump_wall_forward` の 26.6 秒）。K11 は `g8_1` 0.04 秒、`g8_2` 0.04 秒、`g8_4` 0.07 秒、`g8_9` 0.05 秒、`g8_6` 0.23 秒で、すべて 60 秒の基準に十分収まる。K11 の性質の表明で UNREACHABLE になったものは 0 件（`g8_6` で報告される 1 件は std の `fmt::Arguments::from_str` 内部）。
+
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
 
 ハーネス本体の `assert` で UNREACHABLE になったものはない。例外は K1 の参照オラクルの `i128` 溢れ検査（構造上溢れない）と `variant == 2` 専用の表明（`k1_unanchored_always_uncertain` でのみ到達）、K2 `n1` の順序保持ループ（要素 1 件では到達せず、`n2`/`n3` は拡張集合）、K4 `n1` での `stable_sort_stub` のループ本体（長さ 1 以下のスライスでは回らない。TCB-13）だけで、今回昇格したハーネスの性質の表明には 0 件である。`kani::cover!` 4 件（stts の上限到達、stsc 2 エントリ、stsz 定数サイズ複数・明示サイズ 2 件）はすべて SATISFIED。`kani::assume` はハーネスの前提（入力域の分割、ingest の不変条件、性質の前件）にだけ使い、`assume(false)` 相当の空疎な前提はない。
@@ -116,6 +121,12 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | K6 | `gesture.rs` `map_touch_to_frame`: `x / dw` → `(dw - x) / dw` | `k6_monotonic_x_any_f64_pow2_1024_to_512` | `monotonic non-decreasing` |
 | K7 | `gesture.rs` `decimate`: `/ (cap - 1)` → `/ cap` | `k7_decimate_keeps_endpoints_and_cap_len5_cap3` | `last sample kept` |
 | K9 | `mp4.rs` `parse_stsz`: 明示サイズの読み取り位置 `12 + i * 4` → `8 + i * 4` | `k9_parse_stsz_explicit_sizes_fit_box` | `sizes[i] == u32::from_be_bytes(...)` |
+| K11 | `audio_policy.rs` `api_is_below_audio_floor`: `level < MIN` → `level <= MIN` | `k11_g8_1_api_33_plus_is_never_api_below_min` | `API >= 33 is never api_below_min` |
+| K11 | `audio_policy.rs` `api_is_below_audio_floor`: `level > 0 &&` を削除 | `k11_g8_2_unknown_api_is_never_api_below_min` | `unknown API is never api_below_min` |
+| K11 | `audio_policy.rs` `plan_launch`: `if input.runtime_disabled` → `if input.runtime_disabled \|\| input.api.is_none()` | `k11_g8_2_unknown_api_is_never_api_below_min` | `unknown API asks for audio` |
+| K11 | `audio_policy.rs` `plan_launch`: スティッキー判定を API 下限判定より前へ移動 | `k11_g8_4_api_28_to_32_degrades_to_video_and_logs` | `API 28..=32 is proactively off` |
+| K11 | `audio_policy.rs` `evaluate`: `Disabled` の `video_expected` を `!logs_only` → `true` | `k11_g8_9_disabled_modes_ignore_every_outcome` | `video only without logs_only` |
+| K11 | `audio_policy.rs` `is_fatal`: `Code1 \| LaunchFailedAudioOk` → `Code1` | `k11_g8_6_fatal_audio_failure_is_sticky_until_restart` | `a fatal boot never relaunches audio=true` |
 | K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
@@ -138,11 +149,11 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | Stateright | S1 一意状態 1,016,640（総 7,330,826、2.5 秒）、S2 74,988（587,713、0.4 秒）、S2 GC 56（125、1 ms）、S3 16,590（78,470、0.1 秒）、S3 attach 54（112、1 ms）、S4 405（1,277、4 ms）、S5 72（241、1 ms）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」と「物理削除は管理下・非レガシーのみ」は、GC 判定から形式（`!legacy`）を外す変異、場所（`managed`）を外す変異、staging 清掃から所有者印の確認を外す変異のいずれでも反例が出ることを確かめた |
 | Proptest | G1〜G7 は `cargo test --workspace` で全件成功（既定試行回数） |
 | Miri | M1 `arb-os shm::` 5 件成功・FS/mmap の 7 件は除外（109 秒）、M2 `arb-core` 70 件成功（`PROPTEST_CASES=8`、24 秒）、M2 `arb-media mp4::` 2 件成功・FS の 2 件は除外（23 秒）。未定義動作・データ競合の報告なし |
-| Konsist | `ArchitectureKonsistTest` 6 件成功（KON-1〜KON-5 と走査範囲の確認）。`buildPlugin` の配布 ZIP に `konsist` も JUnit などのテスト専用 JAR も含まれない |
+| Konsist | `ArchitectureKonsistTest` 7 件成功（KON-1〜KON-6 と走査範囲の確認。KON-6 は PDD G8 で追加し、`ArbViewModels.kt` に「音声キャプチャ非対応」の文字列を書き戻すと失敗することを確認）。`buildPlugin` の配布 ZIP に `konsist` も JUnit などのテスト専用 JAR も含まれない |
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-16）
+## 4. TCB 公理（TCB-01〜TCB-17）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -164,6 +175,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | TCB-14 | 解析結果（`Vec<u32>` / `MediaError` 内の `io::Error`）の drop は安全に終わる。K9 の表パーサ系ハーネスは戻り値を `ManuallyDrop` で保持し、drop glue を実行しない | K9（mp4） | `cargo test -p arb-media`、Miri M2（`arb-media mp4::`） | 解放処理は std の実装を信頼する。パーサ本体と `Ok`/`Err` の判定は本番コードのまま検証している |
 | TCB-15 | `ClockTimeline::map_device_monotonic` / `map_logcat_wall` は `epochs.get(boot_id)` で選んだ boot epoch の `triples` / `wall_jump_indices` をそのまま抽出関数に渡し、その epoch では `ingest_device_triple` が `monotonic_ns`・`boottime_ns` の非減少と `idx + 1 < len` の飛び添字を保つ | K3（スライス層） | `core/crates/arb-core/src/time.rs` の `time` 単体テスト | `BTreeMap` の参照と ingest 側の不変条件は機械検証していない（`ClockTimeline` 全体を通すハーネスは CBMC のメモリ不足で拡張集合） |
 | TCB-16 | クラッシュ自動保存の重複排除は「boot 修飾付きクラッシュ ID が pin と一緒に永続化される」という前提に立つ。現在の `arbd` は pin と保存ジョブ（`save_jobs/<job>.json`・カタログ行）を永続化して再起動時に 1 回だけ再キューするが、クラッシュ ID は保存せず、繰り返し抑止はメモリ上の `CrashAutoSaveGate` のクールダウンだけである（再起動で空に戻る） | S5（`pdd_stateright_models.rs::s5_crash_watcher_model`） | `core/crates/arbd/src/capture.rs::tests::interrupted_crash_autosave_is_requeued_once_on_startup` | S5 は設計上の前提を検査するモデルで、`arbd` の実装を精緻化したものではない。デーモン再起動後に端末が同じ `am_crash` を再配信した場合の二重保存は未対策。永続クラッシュ ID の実装まで未解決 |
+| TCB-17 | 端末側 `scrcpy-server` 5.0.1 の音声ソケットの意味: `codec_id = 0` は `AudioCaptureException`（`AudioPlaybackCapture` の隠し API リフレクションまたは `registerAudioPolicyStatic` の失敗。非致命で映像は続く）、`codec_id = 1` はそれ以外の例外（致命でサーバーごと終了）。API 33 以上で再生音キャプチャが成功するかは端末・OEM の `AudioPolicy` 実装と、同時に動く他のキャプチャ（Running Devices のミラーリングなど）に依存する | K11、G8 | `core/crates/arbd/src/live_adb.rs::tests::g8_5_runtime_audio_failures_on_api33_carry_cause_and_stderr`、`core/crates/arb-adb/tests/pdd_g8_audio_args_props.rs` | `codec_id` の意味は同梱の `scrcpy-server-v5.0.1` の dex（`AudioEncoder.encode` の catch 構造、`AudioPlaybackCapture.checkCompatibility` の `SDK_INT < 33`）を読んで確かめたもので、機械検証していない。物理 Android 13 端末・OEM ごとの成否は未検証（エミュレータ E2E は API 37 のみ。手順は [実機スモーク](../testing/work-device-smoke-checklist.md) の 9） |
 
 ## 5. Sara 互換性
 
