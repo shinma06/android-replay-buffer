@@ -2864,3 +2864,72 @@ fn open_gc_viewer(client: &mut TestIpcClient, managed_id: &str) -> String {
     );
     opened["lease_id"].as_str().expect("lease_id").to_owned()
 }
+
+#[test]
+fn startup_purge_failure_and_reided_managed_bundle_gc_e2e() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let db_path = paths.data_dir.join("catalog.sqlite");
+    let bundles_root = paths.data_dir.join("bundles");
+
+    // 1. Save a bundle, copy it inside managed_bundles_root, open the copy (re-IDed as `ext-*`),
+    //    and verify GC can purge the re-IDed managed copy cleanly.
+    let (orig_id, orig_path) = {
+        let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd 1");
+        let mut source = build_barcode_mock_source("boot-reid", 30, WallClockMode::Steady);
+        server.ingest_device_source(&mut source).expect("ingest");
+        let mut client = TestIpcClient::connect(server.endpoint());
+
+        let saved = client.call("save.trigger", &json!({}));
+        let orig_id = saved["bundle_id"].as_str().expect("orig id").to_owned();
+        let orig_path = PathBuf::from(saved["bundle_path"].as_str().expect("orig path"));
+
+        let copy_path = bundles_root.join("copied-managed");
+        copy_dir_recursive(&orig_path, &copy_path);
+        let opened = client.call(
+            "bundle.open",
+            &json!({
+                "bundle_id_or_path": copy_path,
+                "holder_kind": "cli",
+                "holder_pid": std::process::id(),
+            }),
+        );
+        let copy_id = opened["bundle_id"].as_str().expect("copy id").to_owned();
+        assert!(
+            copy_id.starts_with("ext-"),
+            "expected ext-* id, got {copy_id}"
+        );
+        client.call("bundle.close", &json!({ "lease_id": opened["lease_id"] }));
+        client.call("bundle.trash", &json!({ "bundle_id": copy_id }));
+
+        let gc = client.call("bundle.gc", &json!({ "ignore_grace": true }));
+        assert_eq!(gc["purged_bundle_ids"], json!([copy_id]));
+        assert_eq!(gc["failed"], json!([]));
+        assert!(!copy_path.exists());
+
+        client.call("bundle.trash", &json!({ "bundle_id": orig_id }));
+        server.shutdown();
+        (orig_id, orig_path)
+    };
+
+    // 2. Simulate a crashed `purging` row whose on-disk manifest fails identity verification,
+    //    then restart arbd and confirm `system.status` exposes the startup purge failure.
+    rusqlite::Connection::open(&db_path)
+        .expect("open catalog")
+        .execute(
+            "UPDATE bundles SET state = 'purging' WHERE bundle_id = ?1",
+            [&orig_id],
+        )
+        .expect("mark purging");
+    fs::write(orig_path.join("manifest.json"), b"{").expect("corrupt manifest");
+
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("start arbd 2");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let status = client.call("system.status", &json!({}));
+    assert_eq!(status["recovery"]["failed_purging_bundles"], 1);
+    assert_eq!(
+        status["recovery"]["failed_purging_bundle_ids"],
+        json!([orig_id])
+    );
+    server.shutdown();
+}

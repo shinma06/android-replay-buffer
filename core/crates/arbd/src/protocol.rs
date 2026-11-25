@@ -212,6 +212,12 @@ pub struct RecoverySummaryView {
     pub recovered_jobs: usize,
     /// Count of previously `Purging` bundles finalized at startup.
     pub completed_purging_bundles: usize,
+    /// Count of interrupted `Purging` bundles that failed to finalize at startup.
+    #[serde(default)]
+    pub failed_purging_bundles: usize,
+    /// Bundle IDs of interrupted `Purging` bundles that failed to finalize at startup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_purging_bundle_ids: Vec<String>,
     /// Count of pin journals released at startup (job completed/discarded/unknown).
     #[serde(default)]
     pub released_pin_journals: usize,

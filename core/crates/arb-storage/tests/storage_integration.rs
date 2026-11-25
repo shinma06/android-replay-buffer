@@ -2643,3 +2643,102 @@ fn gc_rejects_corrupt_or_wrong_owner_manifest_and_links() {
             .is_symlink()
     );
 }
+
+#[test]
+fn interrupted_unverified_claim_finishes_when_symlink_replaces_public_path() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("claimed");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "claimed", &source, "job", b"payload");
+    catalog.trash_bundle("claimed", now).unwrap();
+    drop(catalog);
+
+    let token = "d".repeat(32);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('claimed', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+
+    // Crash between `.purging-<token>` rename and `.purged-<token>` rename, while a symlink now
+    // occupies the public path.
+    let claim = root.join(format!(".purging-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"keep").unwrap();
+    symlink_dir(&outside, &source).unwrap();
+
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["claimed"]);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(!claim.exists());
+    assert!(fs::symlink_metadata(&source).unwrap().is_symlink());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+}
+
+#[test]
+fn reided_bundle_inside_managed_root_verifies_recorded_manifest_id() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+
+    let valid_path = root.join("copy-valid");
+    let valid_manifest =
+        V2BundleWriter::write(&valid_path, "job-valid", &build_draft("orig-id", vec![1])).unwrap();
+    catalog
+        .register_bundle_with_manifest_id(
+            &NewBundleEntry {
+                bundle_id: "ext-valid".to_owned(),
+                path: valid_path.clone(),
+                format_version: CatalogFormatVersion::V2,
+                parent_bundle_id: None,
+                created_at_utc: valid_manifest.created_at_utc,
+            },
+            "orig-id",
+        )
+        .unwrap();
+    catalog.trash_bundle("ext-valid", now).unwrap();
+
+    let foreign_path = root.join("copy-foreign");
+    let foreign_manifest = V2BundleWriter::write(
+        &foreign_path,
+        "job-foreign",
+        &build_draft("orig-id", vec![2]),
+    )
+    .unwrap();
+    catalog
+        .register_bundle_with_manifest_id(
+            &NewBundleEntry {
+                bundle_id: "ext-foreign".to_owned(),
+                path: foreign_path.clone(),
+                format_version: CatalogFormatVersion::V2,
+                parent_bundle_id: None,
+                created_at_utc: foreign_manifest.created_at_utc,
+            },
+            "orig-id",
+        )
+        .unwrap();
+    catalog.trash_bundle("ext-foreign", now).unwrap();
+    edit_json(&foreign_path.join("manifest.json"), |v| {
+        v["bundle_id"] = serde_json::json!("other-id");
+    });
+
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.purged_bundle_ids, ["ext-valid"]);
+    assert!(!valid_path.exists());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].bundle_id, "ext-foreign");
+    assert!(report.failed[0].error.contains("identity mismatch"));
+    assert!(foreign_path.is_dir());
+}

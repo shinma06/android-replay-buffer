@@ -1835,16 +1835,20 @@ impl Model for PurgeModel {
                 n.claim = s.public;
                 n.public = Entity::Missing;
             }
-            // Second identity check on the claimed entity. A foreign entity is handed back
-            // only while the public name is free; otherwise it stays in the claim, undeleted.
-            Verify if s.marked && !s.verified && s.claim != Entity::Missing => match s.claim {
-                Entity::Original => n.verified = true,
-                _ if s.public == Entity::Missing => {
-                    n.public = s.claim;
-                    n.claim = Entity::Missing;
+            // Second identity check on the claimed entity. A foreign entity returns the row to
+            // `trashed` (`marked = false`) and is handed back only while the public name is free;
+            // otherwise it stays in the claim, undeleted.
+            Verify if s.marked && !s.verified && s.claim != Entity::Missing => {
+                if s.claim == Entity::Original {
+                    n.verified = true;
+                } else {
+                    n.marked = false;
+                    if s.public == Entity::Missing {
+                        n.public = s.claim;
+                        n.claim = Entity::Missing;
+                    }
                 }
-                _ => return None,
-            },
+            }
             // The recursive delete takes whatever sits at the verified private name, so the
             // property below only holds because `Verify` is its sole way in.
             Delete if s.marked && s.verified => {

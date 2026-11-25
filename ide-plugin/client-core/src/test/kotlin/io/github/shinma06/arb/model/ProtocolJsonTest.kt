@@ -274,8 +274,19 @@ class ProtocolJsonTest {
                 """"ring_pinned_chunk_count":0,"active_viewports":0,"active_save_jobs":0,"recovery":{}"""
         val armed = gson.fromJson("""{$statusBase,"capture_enabled":true}""", SystemStatusResponse::class.java)
         assertTrue(armed.captureEnabled)
+        assertEquals(0L, armed.recovery.failedPurgingBundles)
+        assertEquals(emptyList<String>(), armed.recovery.failedPurgingBundleIds)
         val legacy = gson.fromJson("""{$statusBase}""", SystemStatusResponse::class.java)
         assertEquals(false, legacy.captureEnabled)
+        val withFailedPurge = gson.fromJson(
+            """{"pid":7,"uptime_ms":1,"capture":{"active":false},"ring_chunk_count":0,"ring_total_bytes":0,""" +
+                """"ring_pinned_chunk_count":0,"active_viewports":0,"active_save_jobs":0,""" +
+                """"recovery":{"completed_purging_bundles":1,"failed_purging_bundles":2,"failed_purging_bundle_ids":["b-a","b-b"]}}""",
+            SystemStatusResponse::class.java,
+        )
+        assertEquals(1L, withFailedPurge.recovery.completedPurgingBundles)
+        assertEquals(2L, withFailedPurge.recovery.failedPurgingBundles)
+        assertEquals(listOf("b-a", "b-b"), withFailedPurge.recovery.failedPurgingBundleIds)
     }
 
     @Test
