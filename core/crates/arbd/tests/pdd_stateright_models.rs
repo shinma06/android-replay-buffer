@@ -746,7 +746,9 @@ enum S2Action {
     Phase1PinAndParams,
     Phase1SqlCommit,
     Phase2StageWrite,
-    Phase2AtomicRename { parent_sync_ok: bool },
+    Phase2AtomicRename {
+        parent_sync_ok: bool,
+    },
     Phase2CatalogRegister,
     Phase2CompleteJob,
     Retry,
@@ -758,6 +760,9 @@ enum S2Action {
     ReleaseLease,
     GcMark,
     GcPurge,
+    /// Explicit user "Empty Trash" (`bundle.gc` with `ignore_grace: true`): bypasses the 24 h
+    /// grace period only; active-lease, active-job, managed-root, and legacy guards stay enforced.
+    EmptyTrashImmediate,
     AdvanceClock,
     DaemonCrashAndRecover,
     HostReboot,
@@ -786,10 +791,16 @@ impl S2State {
     /// (v2 format and inside the managed root), trashed past the grace period, lease-free,
     /// and no active job.
     fn purge_allowed_for(&self, b: &Bundle) -> bool {
+        self.purge_allowed_for_immediate(b)
+            && self.clock.saturating_sub(b.trashed_at) >= GRACE_STEPS
+    }
+    /// Eligibility for explicit user "Empty Trash" (`ignore_grace: true`): identical to
+    /// [`Self::purge_allowed_for`] except grace is omitted; legacy, unmanaged, leased, and
+    /// active-job protections remain mandatory.
+    fn purge_allowed_for_immediate(&self, b: &Bundle) -> bool {
         !b.legacy
             && b.managed
             && b.state == BState::Trashed
-            && self.clock.saturating_sub(b.trashed_at) >= GRACE_STEPS
             && b.leases == 0
             && self.active_jobs() == 0
     }
@@ -897,6 +908,7 @@ impl Model for S2Model {
             S2Action::ReleaseLease,
             S2Action::GcMark,
             S2Action::GcPurge,
+            S2Action::EmptyTrashImmediate,
             S2Action::AdvanceClock,
             S2Action::DaemonCrashAndRecover,
             S2Action::HostReboot,
@@ -1143,6 +1155,30 @@ impl Model for S2Model {
                 if n.bundle.is_some_and(|b| b.state == BState::Purged)
                     && s.bundle.is_some_and(|b| b.state != BState::Purged)
                     && !s.purge_allowed()
+                {
+                    n.bad_purge = true;
+                }
+            }
+            S2Action::EmptyTrashImmediate => {
+                // Explicit user Empty Trash (`ignore_grace: true`) re-checks all non-grace guards
+                // under the catalog transaction before purging.
+                let mut changed = false;
+                if s.bundle.is_some_and(|b| s.purge_allowed_for_immediate(&b)) {
+                    let mut b = s.bundle?;
+                    b.state = BState::Purged;
+                    n.bundle = Some(b);
+                    changed = true;
+                }
+                if s.purge_allowed_for_immediate(&s.legacy) {
+                    n.legacy.state = BState::Purged;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+                if n.bundle.is_some_and(|b| b.state == BState::Purged)
+                    && s.bundle.is_some_and(|b| b.state != BState::Purged)
+                    && !s.bundle.is_some_and(|b| s.purge_allowed_for_immediate(&b))
                 {
                     n.bad_purge = true;
                 }

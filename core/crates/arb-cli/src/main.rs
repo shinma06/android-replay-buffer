@@ -270,7 +270,13 @@ enum CommandSpec {
     BundlesRestore {
         bundle_id: String,
     },
-    BundlesGc,
+    BundlesGc {
+        ignore_grace: bool,
+    },
+    BundlesForget {
+        bundle_id: Option<String>,
+        all_missing: bool,
+    },
     Inspect {
         target: String,
     },
@@ -934,9 +940,37 @@ fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 .clone();
             Ok(CommandSpec::BundlesRestore { bundle_id })
         }
-        Some("gc") => Ok(CommandSpec::BundlesGc),
+        Some("gc") => {
+            let mut ignore_grace = false;
+            for flag in args.iter().skip(1) {
+                match flag.as_str() {
+                    "--now" => ignore_grace = true,
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unknown bundles gc option `{other}` (expected optional `--now`)"
+                        )));
+                    }
+                }
+            }
+            Ok(CommandSpec::BundlesGc { ignore_grace })
+        }
+        Some("forget") => match args.get(1).map(String::as_str) {
+            Some("--all-missing") if args.len() == 2 => Ok(CommandSpec::BundlesForget {
+                bundle_id: None,
+                all_missing: true,
+            }),
+            Some(id) if !id.starts_with("--") && args.len() == 2 => {
+                Ok(CommandSpec::BundlesForget {
+                    bundle_id: Some(id.to_owned()),
+                    all_missing: false,
+                })
+            }
+            _ => Err(CliError::usage(
+                "usage: arb-cli bundles forget (<bundle-id> | --all-missing)",
+            )),
+        },
         other => Err(CliError::usage(format!(
-            "usage: arb-cli bundles <list|open|close|trash|restore|gc> (got {other:?})"
+            "usage: arb-cli bundles <list|open|close|trash|restore|gc|forget> (got {other:?})"
         ))),
     }
 }
@@ -1324,7 +1358,25 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             json!({ "bundle_id": bundle_id }),
             "bundle restored",
         ),
-        CommandSpec::BundlesGc => ("bundle.gc", json!({}), "bundle gc"),
+        CommandSpec::BundlesGc { ignore_grace } => {
+            let params = if ignore_grace {
+                json!({ "ignore_grace": true })
+            } else {
+                json!({})
+            };
+            ("bundle.gc", params, "bundle gc")
+        }
+        CommandSpec::BundlesForget {
+            bundle_id,
+            all_missing,
+        } => {
+            let params = if all_missing {
+                json!({ "all_missing": true })
+            } else {
+                json!({ "bundle_id": bundle_id })
+            };
+            ("bundle.forget", params, "bundle forgotten")
+        }
         CommandSpec::Trim {
             target,
             in_frame,
@@ -1699,7 +1751,7 @@ COMMANDS:\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  bundles trash <ID> | restore <ID> | gc\n  \
+  bundles trash <ID> | restore <ID> | gc [--now] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
@@ -2026,6 +2078,39 @@ mod tests {
             },
             "bundles close must parse lease_id"
         );
+
+        let (_, gc_default) = parse_args(&vec_str(&["bundles", "gc"])).expect("bundles gc");
+        assert_eq!(
+            gc_default,
+            CommandSpec::BundlesGc {
+                ignore_grace: false,
+            }
+        );
+        let (_, gc_now) =
+            parse_args(&vec_str(&["bundles", "gc", "--now"])).expect("bundles gc --now");
+        assert_eq!(gc_now, CommandSpec::BundlesGc { ignore_grace: true });
+        assert!(parse_args(&vec_str(&["bundles", "gc", "--bogus"])).is_err());
+
+        let (_, forget_one) =
+            parse_args(&vec_str(&["bundles", "forget", "b-1"])).expect("bundles forget <id>");
+        assert_eq!(
+            forget_one,
+            CommandSpec::BundlesForget {
+                bundle_id: Some("b-1".to_owned()),
+                all_missing: false,
+            }
+        );
+        let (_, forget_all) = parse_args(&vec_str(&["bundles", "forget", "--all-missing"]))
+            .expect("bundles forget --all-missing");
+        assert_eq!(
+            forget_all,
+            CommandSpec::BundlesForget {
+                bundle_id: None,
+                all_missing: true,
+            }
+        );
+        assert!(parse_args(&vec_str(&["bundles", "forget"])).is_err());
+        assert!(parse_args(&vec_str(&["bundles", "forget", "b-1", "--all-missing"])).is_err());
     }
 
     #[test]

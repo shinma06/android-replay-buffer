@@ -51,7 +51,7 @@ use arb_storage::StorageError;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
 use arb_storage::catalog::{
     BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
-    PinReconcileReport, RecoveryReport,
+    PinReconcileReport, RecoveryReport, probe_bundle_disk_state,
 };
 use arb_storage::config::ConfigStore;
 use arb_storage::ring::{DiskSpaceProvider, PinJournal};
@@ -70,19 +70,20 @@ use crate::error::{
 use crate::live_adb::{LiveCaptureHandle, select_live_target, start_selected_capture};
 use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
 use crate::protocol::{
-    BundleEntryView, BundleGcFailure, BundleGcParams, BundleGcResponse, BundleIdParams,
-    BundleListParams, BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams,
-    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, ConfigResponse,
-    CrashAutoSaveStatusView, DEFAULT_QUERY_LIMIT, DeviceListResponse, EditGetSessionParams,
-    EditSessionView, EditUpdateSessionParams, ExportPngParams, ExportShareMp4Params,
-    ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MAX_QUERY_LIMIT,
-    MediaCloseViewportParams, MediaDecodeAudioPcmParams, MediaFilmstripParams,
-    MediaFrameRequestParams, MediaInspectFramesParams, MediaOpenViewportParams, QueryBucket,
-    RecoverySummaryView, RpcRequest, RpcResponse, SaveJobIdParams, SaveListJobsResponse,
-    SaveLogsParams, SaveMode, SaveOutcomeResponse, SaveRetargetParams, SaveScreenshotParams,
-    SaveScreenshotResponse, SaveTriggerParams, SystemHelloResponse, SystemStatusResponse,
-    TimelineCrashesResponse, TimelineDiscontinuitiesResponse, TimelineLogsResponse,
-    TimelineOverviewParams, TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
+    BundleEntryView, BundleForgetParams, BundleForgetResponse, BundleGcFailure, BundleGcParams,
+    BundleGcResponse, BundleIdParams, BundleListParams, BundleListResponse, BundleOpenParams,
+    BundleOpenResponse, BundleRefParams, CaptureStartParams, CaptureStartResponse,
+    CaptureStopResponse, ConfigResponse, CrashAutoSaveStatusView, DEFAULT_QUERY_LIMIT,
+    DeviceListResponse, EditGetSessionParams, EditSessionView, EditUpdateSessionParams,
+    ExportPngParams, ExportShareMp4Params, ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION,
+    LeaseIdParams, MAX_QUERY_LIMIT, MediaCloseViewportParams, MediaDecodeAudioPcmParams,
+    MediaFilmstripParams, MediaFrameRequestParams, MediaInspectFramesParams,
+    MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
+    SaveJobIdParams, SaveListJobsResponse, SaveLogsParams, SaveMode, SaveOutcomeResponse,
+    SaveRetargetParams, SaveScreenshotParams, SaveScreenshotResponse, SaveTriggerParams,
+    SystemHelloResponse, SystemStatusResponse, TimelineCrashesResponse,
+    TimelineDiscontinuitiesResponse, TimelineLogsResponse, TimelineOverviewParams,
+    TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
 };
 use crate::screenshot::{ScreenshotOverwrite, SharedScreenshotProvider, write_screenshot_atomic};
 use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
@@ -577,6 +578,7 @@ impl DaemonState {
             "bundle.trash" => self.handle_bundle_trash(params),
             "bundle.restore" => self.handle_bundle_restore(params),
             "bundle.gc" => self.handle_bundle_gc(params),
+            "bundle.forget" => self.handle_bundle_forget(params),
             "timeline.summary" => self.handle_timeline_summary(params),
             "timeline.overview" => self.handle_timeline_overview(params),
             "timeline.query_logs" => self.handle_timeline_query_logs(params),
@@ -1123,6 +1125,7 @@ impl DaemonState {
                 .catalog
                 .active_leases_for_bundle(&entry.bundle_id)?
                 .len();
+            let disk_state = probe_bundle_disk_state(&entry.path);
             views.push(BundleEntryView {
                 bundle_id: entry.bundle_id,
                 path: entry.path,
@@ -1132,6 +1135,7 @@ impl DaemonState {
                 parent_bundle_id: entry.parent_bundle_id,
                 created_at_utc: entry.created_at_utc,
                 active_leases,
+                disk_state,
             });
         }
         Ok(serde_json::to_value(BundleListResponse { bundles: views })?)
@@ -1219,6 +1223,7 @@ impl DaemonState {
             .catalog
             .active_leases_for_bundle(&entry.bundle_id)?
             .len();
+        let disk_state = probe_bundle_disk_state(&entry.path);
         Ok(serde_json::to_value(BundleEntryView {
             bundle_id: entry.bundle_id,
             path: entry.path,
@@ -1228,6 +1233,7 @@ impl DaemonState {
             parent_bundle_id: entry.parent_bundle_id,
             created_at_utc: entry.created_at_utc,
             active_leases,
+            disk_state,
         })?)
     }
 
@@ -1238,6 +1244,7 @@ impl DaemonState {
             .catalog
             .active_leases_for_bundle(&entry.bundle_id)?
             .len();
+        let disk_state = probe_bundle_disk_state(&entry.path);
         Ok(serde_json::to_value(BundleEntryView {
             bundle_id: entry.bundle_id,
             path: entry.path,
@@ -1247,6 +1254,7 @@ impl DaemonState {
             parent_bundle_id: entry.parent_bundle_id,
             created_at_utc: entry.created_at_utc,
             active_leases,
+            disk_state,
         })?)
     }
 
@@ -1254,7 +1262,11 @@ impl DaemonState {
         let parsed: BundleGcParams = parse_optional_params(params)?;
         let now_utc = utc_now_iso8601();
         let cutoff = parsed.now_utc.as_deref().unwrap_or(&now_utc);
-        let grace = self.lock(&self.user_config, "user config")?.gc_grace_secs;
+        let grace = if parsed.ignore_grace {
+            0
+        } else {
+            self.lock(&self.user_config, "user config")?.gc_grace_secs
+        };
         let report = self.catalog.gc_as_of(cutoff, grace, &now_utc)?;
         Ok(serde_json::to_value(BundleGcResponse {
             purged_bundle_ids: report.purged_bundle_ids,
@@ -1271,6 +1283,38 @@ impl DaemonState {
                     error: f.error,
                 })
                 .collect(),
+        })?)
+    }
+
+    fn handle_bundle_forget(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: BundleForgetParams = parse_optional_params(params)?;
+        let target_id = parsed
+            .bundle_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if parsed.all_missing && target_id.is_some() {
+            return Err(DaemonError::InvalidParams(
+                "specify either `bundle_id` or `all_missing: true`, not both".to_owned(),
+            ));
+        }
+        let now_utc = utc_now_iso8601();
+        let report = if parsed.all_missing {
+            self.catalog.prune_missing_bundles(&now_utc)?
+        } else if let Some(bundle_id) = target_id {
+            self.catalog.forget_missing_bundle(bundle_id, &now_utc)?
+        } else {
+            return Err(DaemonError::InvalidParams(
+                "`bundle.forget` requires `bundle_id` or `all_missing: true`".to_owned(),
+            ));
+        };
+        Ok(serde_json::to_value(BundleForgetResponse {
+            forgotten_bundle_ids: report.forgotten_bundle_ids,
+            skipped_present_bundle_ids: report.skipped_present_bundle_ids,
+            skipped_storage_unavailable_bundle_ids: report.skipped_storage_unavailable_bundle_ids,
+            skipped_leased_bundle_ids: report.skipped_leased_bundle_ids,
+            skipped_active_job_bundle_ids: report.skipped_active_job_bundle_ids,
+            reaped_lease_ids: report.reaped_lease_ids,
         })?)
     }
 

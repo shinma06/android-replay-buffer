@@ -6,6 +6,7 @@ import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.AudioCaptureState
 import io.github.shinma06.arb.model.AudioStreamMeta
 import io.github.shinma06.arb.model.AvOffsetStatus
+import io.github.shinma06.arb.model.BundleDiskState
 import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleFormat
 import io.github.shinma06.arb.model.BundleKind
@@ -367,6 +368,7 @@ data class BundleCatalogItem(
     val hasCrash: Boolean = false,
     val bundleKind: BundleKind = BundleKind.FULL,
     val displayTitle: String = bundleId,
+    val diskState: BundleDiskState = BundleDiskState.PRESENT,
 ) {
     val formatBadge: String
         get() = if (isLegacyReadOnly) LEGACY_READ_ONLY_BADGE_TEXT else "ARB"
@@ -374,8 +376,22 @@ data class BundleCatalogItem(
     val isTrimmed: Boolean
         get() = !parentBundleId.isNullOrBlank()
 
+    val isMissingOnDisk: Boolean
+        get() = diskState == BundleDiskState.MISSING
+
+    val isStorageUnavailable: Boolean
+        get() = diskState == BundleDiskState.STORAGE_UNAVAILABLE
+
+    val canOpen: Boolean
+        get() = diskState == BundleDiskState.PRESENT
+
+    val canForget: Boolean
+        get() = diskState == BundleDiskState.MISSING
+
     val semanticTags: List<String>
         get() = buildList {
+            if (isMissingOnDisk) add(MISSING_ON_DISK_BADGE_TEXT)
+            if (isStorageUnavailable) add(STORAGE_UNAVAILABLE_BADGE_TEXT)
             if (isTrimmed) add("トリム済み")
             if (hasCrash) add("クラッシュ")
             if (bundleKind == BundleKind.LOGS_ONLY) add("ログのみ")
@@ -387,13 +403,18 @@ data class BundleCatalogItem(
         get() = durationSecs?.let { ArbFormatters.formatSeconds(it) } ?: "--"
 
     val canTrash: Boolean
-        get() = state == BundleLifecycleState.ACTIVE
+        get() = state == BundleLifecycleState.ACTIVE && !isMissingOnDisk
 
     val canRestore: Boolean
-        get() = state == BundleLifecycleState.TRASHED
+        get() = state == BundleLifecycleState.TRASHED && !isMissingOnDisk
 
     val isProtectedByLease: Boolean
         get() = activeLeases > 0
+
+    companion object {
+        const val MISSING_ON_DISK_BADGE_TEXT: String = "フォルダなし"
+        const val STORAGE_UNAVAILABLE_BADGE_TEXT: String = "保存先未接続"
+    }
 }
 
 data class BundleCatalogState(
@@ -403,6 +424,12 @@ data class BundleCatalogState(
 ) {
     val visibleItems: List<BundleCatalogItem>
         get() = if (showTrashed) items else items.filter { it.state == BundleLifecycleState.ACTIVE }
+
+    val missingItems: List<BundleCatalogItem>
+        get() = items.filter { it.isMissingOnDisk }
+
+    val missingCount: Int
+        get() = missingItems.size
 
     /** Items matching the active Library filter chip (`すべて` / `トリム済み` / `クラッシュ` / `ゴミ箱`). */
     val filteredItems: List<BundleCatalogItem>
@@ -441,6 +468,7 @@ data class BundleCatalogState(
                     durationSecs = durationsByBundleId[e.bundleId],
                     hasCrash = e.bundleId in crashBundleIds,
                     bundleKind = kindsByBundleId[e.bundleId] ?: BundleKind.FULL,
+                    diskState = e.diskState,
                 )
             },
             showTrashed = showTrashed,

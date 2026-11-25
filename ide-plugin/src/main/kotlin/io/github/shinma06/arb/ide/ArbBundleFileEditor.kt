@@ -495,9 +495,22 @@ class ArbBundleFileEditor internal constructor(
             } catch (t: Throwable) {
                 if (disposed) return@submitWork
                 logger.warn("Failed to open ARB bundle $bundleIdOrPath", t)
+                val msg = t.message.orEmpty()
+                val looksMissing = msg.contains("canonicalize_bundle", ignoreCase = true) ||
+                    msg.contains("not found", ignoreCase = true) ||
+                    msg.contains("No such file", ignoreCase = true) ||
+                    msg.contains("cannot find the path", ignoreCase = true)
+                if (looksMissing) {
+                    daemonService.notifyCatalogChanged()
+                }
+                val displayError = if (looksMissing) {
+                    "バンドルフォルダが見つかりませんでした（手動削除または移動された可能性があります）。ARB パネルの一覧から削除できます。詳細: $msg"
+                } else {
+                    "バンドルを開けませんでした: $msg"
+                }
                 publishEdt {
                     if (!disposed) {
-                        studioController.showError("バンドルを開けませんでした: ${t.message}")
+                        studioController.showError(displayError)
                     }
                 }
             }
