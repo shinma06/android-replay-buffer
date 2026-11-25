@@ -990,6 +990,10 @@ class PlaybackController(
         }
     }
 
+    /** Exclusive end on the same media clock used by tick(), also for older daemons. */
+    val durationNs: Long
+        get() = if (totalFrames == 0L) 0L else saturatingAdd(frameRelativePtsNs(totalFrames - 1L), frameDurationNs(totalFrames - 1L))
+
     /** Presentation clock for the text readout during a VFR hold; never schedules a seek. */
     fun displayPositionNs(): Long = stateLock.withLock {
         val state = currentState

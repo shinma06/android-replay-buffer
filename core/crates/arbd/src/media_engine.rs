@@ -313,21 +313,30 @@ impl MediaEngine {
 
         let mut preview = vp.scrub.preview_scrub(&vp.track, params.frame_index)?;
         if preview.is_none() {
-            // Auto-load/generate filmstrip if caller scrubbed before invoking `media.filmstrip`.
+            let requested_generation = vp.scrub.latest_generation();
+            let track = Arc::clone(&vp.track);
+            let id = vp.bundle_id.clone();
+            drop(viewport_guard);
             let loaded = FilmstripCache::load_or_generate(
                 &self.cache_dir,
-                &vp.bundle_id,
-                &vp.track,
+                &id,
+                &track,
                 FilmstripConfig::default(),
                 self.backend.as_ref(),
             )?;
-            viewport
+            viewport_guard = viewport
                 .lock()
-                .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?
-                .scrub
-                .set_filmstrip(loaded.cache);
+                .map_err(|_| DaemonError::Internal("viewport lock poisoned".into()))?;
+            let vp = &mut *viewport_guard;
+            vp.scrub.set_filmstrip(loaded.cache);
+            if vp.scrub.latest_generation() != requested_generation {
+                return Err(DaemonError::Conflict(
+                    "scrub superseded during filmstrip generation".into(),
+                ));
+            }
             preview = vp.scrub.preview_scrub(&vp.track, params.frame_index)?;
         }
+        let vp = &mut *viewport_guard;
 
         let frame = preview.ok_or_else(|| {
             DaemonError::Media(arb_media::MediaError::Codec(
@@ -1686,6 +1695,13 @@ mod concurrent_viewport_tests {
                     state.dispatch("system.status", json!({})).unwrap()["active_viewports"],
                     1
                 );
+                // Exercise the implicit cold filmstrip path before the explicit loader completes.
+                state
+                    .dispatch(
+                        "media.scrub",
+                        json!({"viewport_id":seek_id,"frame_index":0}),
+                    )
+                    .unwrap();
                 let frame = state
                     .dispatch(
                         "media.seek_frame",

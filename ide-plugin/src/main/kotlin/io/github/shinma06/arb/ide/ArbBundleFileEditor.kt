@@ -416,7 +416,7 @@ class ArbBundleFileEditor internal constructor(
                             publishEdt { if (!disposed) studioController.showPlaybackError(err.message ?: "映像の再生に失敗しました") }
                         },
                     )
-                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs, lastFrameDurationNs = lastFrameDurationNs)
+                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs, playbackDurationNs = ctrl.durationNs)
                     ctrl.addStateListener { _ ->
                         publishEdt {
                             if (!disposed) {

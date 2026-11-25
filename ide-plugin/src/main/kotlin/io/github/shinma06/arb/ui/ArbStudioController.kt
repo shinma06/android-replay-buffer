@@ -220,7 +220,8 @@ class ArbStudioController(
         get() {
             val s = viewerState ?: return "00:00.00 / 00:00.00 · #0"
             val curMs = (if (isPlaying) displayPositionNs()?.div(1_000_000L) else null) ?: s.frameToRelativeMs(s.currentFrameIndex)
-            return "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(s.totalDurationMs)} · #${s.currentFrameIndex}"
+            val durationMs = s.playbackDurationNs?.div(1_000_000L) ?: s.totalDurationMs
+            return "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(durationMs)} · #${s.currentFrameIndex}"
         }
 
     val exportButtonLabel: String

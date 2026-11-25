@@ -181,6 +181,22 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun legacyVfrDurationIncludesInferredFinalHold() {
+        val clock = ManualClock()
+        PlaybackController(3, RecordingSeeker(), listOf(0, 30_000_000, 5_030_000_000), clock = clock, autoRunLoop = false).use {
+            assertEquals(10_030_000_000L, it.durationNs)
+            it.play()
+            clock.advanceMs(6000)
+            it.tick()
+            assertEquals(6_000_000_000L, it.displayPositionNs())
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            clock.advanceMs(4030)
+            it.tick()
+            assertEquals(PlaybackMode.PAUSED, it.state.mode)
+        }
+    }
+
+    @Test
     fun vfrClockAdvancesDuringHoldAndStopsAtExactLastSampleDuration() {
         for (pts in listOf(listOf(0L), listOf(0L, 30L, 5030L), listOf(0L, 5000L, 5030L))) {
             val clock = ManualClock()
