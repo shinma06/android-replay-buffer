@@ -66,11 +66,59 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
-/** Default bounded read timeout for a single JSON-RPC response (30 s, R4 S5/C5). */
+/** Default bounded read timeout for quick control-plane JSON-RPC calls (30 s, R4 S5/C5). */
 const val DEFAULT_READ_TIMEOUT_MS: Long = 30_000L
 
-/** Generous per-call read timeout for long-running exports & PCM audio decodes (120 s, T-6A). */
+/** Generous read timeout for long-running RPCs (saves, capture, GC, timeline, etc.: 120 s, SPEC-03). */
 const val LONG_RUNNING_READ_TIMEOUT_MS: Long = 120_000L
+
+/** Extended read timeout for heavy re-encode exports & full-window PCM audio decodes (600 s, SPEC-03). */
+const val EXPORT_READ_TIMEOUT_MS: Long = 600_000L
+
+/** Environment variable overriding [LONG_RUNNING_READ_TIMEOUT_MS] in milliseconds. */
+const val ENV_RPC_LONG_TIMEOUT_MS: String = "ARB_RPC_LONG_TIMEOUT_MS"
+
+/** Environment variable overriding [EXPORT_READ_TIMEOUT_MS] in milliseconds. */
+const val ENV_RPC_EXPORT_TIMEOUT_MS: String = "ARB_RPC_EXPORT_TIMEOUT_MS"
+
+internal fun resolveLongReadTimeoutMs(raw: String? = System.getenv(ENV_RPC_LONG_TIMEOUT_MS)): Long =
+    raw?.trim()?.toLongOrNull()?.takeIf { it > 0L } ?: LONG_RUNNING_READ_TIMEOUT_MS
+
+internal fun resolveExportReadTimeoutMs(
+    longTimeoutMs: Long = resolveLongReadTimeoutMs(),
+    raw: String? = System.getenv(ENV_RPC_EXPORT_TIMEOUT_MS),
+): Long = raw?.trim()?.toLongOrNull()?.takeIf { it > 0L } ?: maxOf(EXPORT_READ_TIMEOUT_MS, longTimeoutMs)
+
+/**
+ * Mirrors `arb_os::rpc::is_quick_method` so IDE, CLI, MCP, and tray share identical timeout tiers.
+ */
+internal fun isQuickRpcMethod(method: String): Boolean = when (method) {
+    "system.hello",
+    "system.status",
+    "system.shutdown",
+    "config.get",
+    "save.list_jobs",
+    "save.discard",
+    "bundle.list",
+    "bundle.lease_renew",
+    "bundle.close",
+    "bundle.forget",
+    "edit.get_session",
+    "edit.update_session",
+    -> true
+    else -> false
+}
+
+/**
+ * Mirrors `arb_os::rpc::is_export_method` for heavy re-encode exports and full-window audio decode.
+ */
+internal fun isExportRpcMethod(method: String): Boolean = when (method) {
+    "export.trim",
+    "export.share_mp4",
+    "media.decode_audio_pcm",
+    -> true
+    else -> false
+}
 
 /**
  * Transport-level IPC failure tagged with the JSON-RPC `method` that was in flight, so the
@@ -88,7 +136,8 @@ class ArbdIoException(
 class ArbdRpcClient(
     private val transport: LocalIpcTransport,
     private val readTimeoutMs: Long = DEFAULT_READ_TIMEOUT_MS,
-    private val longRunningReadTimeoutMs: Long = LONG_RUNNING_READ_TIMEOUT_MS,
+    private val longRunningReadTimeoutMs: Long = resolveLongReadTimeoutMs(),
+    private val exportReadTimeoutMs: Long = resolveExportReadTimeoutMs(longRunningReadTimeoutMs),
 ) : Closeable {
     private val gson = ProtocolJson.gson
     // Preserves explicit JsonNull entries placed intentionally by adapters (e.g. OutputDirPatch.Clear)
@@ -300,13 +349,13 @@ class ArbdRpcClient(
     // ---------------- Export ----------------
 
     fun exportTrim(params: ExportTrimParams): ExportTrimResponse =
-        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java, timeoutMs = longRunningReadTimeoutMs)
+        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
 
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
     fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response =
-        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java, timeoutMs = longRunningReadTimeoutMs)
+        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
 
     /**
      * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected
@@ -367,7 +416,6 @@ class ArbdRpcClient(
         "media.decode_audio_pcm",
         gson.toJsonTree(MediaDecodeAudioPcmParams(bundleIdOrPath, outputPath)),
         MediaDecodeAudioPcmResponse::class.java,
-        timeoutMs = longRunningReadTimeoutMs,
     )
 
     /**
@@ -385,11 +433,17 @@ class ArbdRpcClient(
 
     // ---------------- Low-level JSON-RPC 2.0 ----------------
 
+    internal fun defaultTimeoutFor(method: String): Long = when {
+        isQuickRpcMethod(method) -> readTimeoutMs
+        isExportRpcMethod(method) -> exportReadTimeoutMs
+        else -> longRunningReadTimeoutMs
+    }
+
     fun <T> call(
         method: String,
         params: JsonElement,
         responseType: Class<T>,
-        timeoutMs: Long = readTimeoutMs,
+        timeoutMs: Long = defaultTimeoutFor(method),
     ): T {
         val resultElement = callRaw(method, params, timeoutMs)
         return gson.fromJson(resultElement, responseType)
@@ -399,7 +453,7 @@ class ArbdRpcClient(
     fun callRaw(
         method: String,
         params: JsonElement = JsonObject(),
-        timeoutMs: Long = readTimeoutMs,
+        timeoutMs: Long = defaultTimeoutFor(method),
     ): JsonElement = synchronized(callLock) {
         val id = nextId.getAndIncrement()
         val req = JsonObject().apply {

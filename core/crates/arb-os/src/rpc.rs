@@ -20,8 +20,11 @@ pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
 
 const DEFAULT_AUTO_START_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Budget for methods that synchronously write bundles, run `adb`, decode or re-encode media.
+/// Budget for methods that synchronously write bundles, run `adb`, or inspect media/timeline.
 const DEFAULT_LONG_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Budget for heavy re-encode exports (`export.trim`, `export.share_mp4`) and full-window audio
+/// PCM decoding (`media.decode_audio_pcm`), which can legitimately exceed 120 s on a 300 s clip.
+const DEFAULT_EXPORT_CALL_TIMEOUT: Duration = Duration::from_mins(10);
 /// Minimum budget for the last-chance hello after the spawned daemon lost the lock race.
 const FINAL_HELLO_MIN_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -44,6 +47,15 @@ fn is_quick_method(method: &str) -> bool {
             | "bundle.forget"
             | "edit.get_session"
             | "edit.update_session"
+    )
+}
+
+/// Heavy media re-encode / full-window audio decode methods that can take several minutes on a
+/// 300 s 1080p30 clip (e.g. `burn_taps=true` software H.264 re-encode).
+fn is_export_method(method: &str) -> bool {
+    matches!(
+        method,
+        "export.trim" | "export.share_mp4" | "media.decode_audio_pcm"
     )
 }
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
@@ -160,7 +172,10 @@ fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
     let mut response: serde_json::Map<String, Value> = serde_json::from_str(raw)?;
     // `arbd` answers frames it cannot attribute to a request (oversized, unparsable) with
     // `id: null`. Keep its code and message, but as a transport-level error: the connection is dropped.
-    if response.get("id").is_some_and(Value::is_null)
+    if response.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && response.get("id").is_some_and(Value::is_null)
+        && !response.contains_key("result")
+        && !response.contains_key("method")
         && let Some(error) = response.remove("error")
     {
         let error: IncomingError = serde_json::from_value(error)?;
@@ -246,6 +261,7 @@ pub struct RpcClient {
     next_id: u64,
     default_timeout: Duration,
     long_timeout: Duration,
+    export_timeout: Duration,
 }
 
 /// Resolves the auto-start timeout from `ARB_AUTO_START_TIMEOUT_MS` (default 5000 ms, R3 S16d).
@@ -262,7 +278,7 @@ fn auto_start_timeout_from_str(raw: Option<&str>) -> Duration {
 }
 
 /// Resolves the budget for long-running RPCs from `ARB_RPC_LONG_TIMEOUT_MS` (default 120 s), so a
-/// very long export is not reported as failed while `arbd` still completes it.
+/// slow save or device operation is not reported as failed while `arbd` still completes it.
 fn long_call_timeout() -> Duration {
     long_call_timeout_from_str(std::env::var("ARB_RPC_LONG_TIMEOUT_MS").ok().as_deref())
 }
@@ -271,6 +287,25 @@ fn long_call_timeout_from_str(raw: Option<&str>) -> Duration {
     raw.and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
         .map_or(DEFAULT_LONG_CALL_TIMEOUT, Duration::from_millis)
+}
+
+/// Resolves the budget for heavy export / audio-decode RPCs from `ARB_RPC_EXPORT_TIMEOUT_MS`
+/// (default `max(600 s, long_timeout)`), so a 300 s `burn_taps` re-encode does not time out while
+/// `arbd` is still writing the output.
+fn export_call_timeout(long_timeout: Duration) -> Duration {
+    export_call_timeout_from_str(
+        std::env::var("ARB_RPC_EXPORT_TIMEOUT_MS").ok().as_deref(),
+        long_timeout,
+    )
+}
+
+fn export_call_timeout_from_str(raw: Option<&str>, long_timeout: Duration) -> Duration {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map_or_else(
+            || DEFAULT_EXPORT_CALL_TIMEOUT.max(long_timeout),
+            Duration::from_millis,
+        )
 }
 
 impl RpcClient {
@@ -315,24 +350,33 @@ impl RpcClient {
             started: Instant::now(),
             timeout: Duration::ZERO,
         });
+        let long_timeout = long_call_timeout();
         Ok(Self {
             connection: Some(connection),
             next_id: 1,
             default_timeout: DEFAULT_CALL_TIMEOUT,
-            long_timeout: long_call_timeout(),
+            long_timeout,
+            export_timeout: export_call_timeout(long_timeout),
         })
     }
 
-    /// Sets the budget for normal RPCs on this connection. Saves, capture control, device
-    /// listing, GC and export/audio decoding use a separate budget (120 seconds by default, see
-    /// [`Self::set_long_timeout`]); callers can override either with [`Self::call_with_timeout`].
+    /// Sets the budget for quick control-plane RPCs on this connection. Saves, capture control,
+    /// device listing and GC use [`Self::set_long_timeout`] (120 s by default), while heavy
+    /// exports and full-window audio decoding use [`Self::set_export_timeout`] (600 s by default);
+    /// callers can override per call with [`Self::call_with_timeout`].
     pub const fn set_default_timeout(&mut self, timeout: Duration) {
         self.default_timeout = timeout;
     }
 
-    /// Sets the budget for long-running methods (saves, capture control, export, ...).
+    /// Sets the budget for long-running methods (saves, capture control, GC, timeline, ...).
     pub const fn set_long_timeout(&mut self, timeout: Duration) {
         self.long_timeout = timeout;
+    }
+
+    /// Sets the budget for heavy export / audio-decode methods (`export.trim`, `export.share_mp4`,
+    /// `media.decode_audio_pcm`).
+    pub const fn set_export_timeout(&mut self, timeout: Duration) {
+        self.export_timeout = timeout;
     }
 
     /// Calls `system.hello` and verifies that `protocol_version` matches
@@ -366,6 +410,8 @@ impl RpcClient {
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
         let timeout = if is_quick_method(method) {
             self.default_timeout
+        } else if is_export_method(method) {
+            self.export_timeout
         } else {
             self.long_timeout
         };
@@ -800,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn long_timeout_env_override_parses_and_defaults() {
+    fn long_and_export_timeout_env_overrides_parse_and_default() {
         assert_eq!(
             super::long_call_timeout_from_str(None),
             Duration::from_secs(120)
@@ -816,6 +862,75 @@ mod tests {
                 "{bad}"
             );
         }
+        assert_eq!(
+            super::export_call_timeout_from_str(None, Duration::from_secs(120)),
+            Duration::from_mins(10)
+        );
+        assert_eq!(
+            super::export_call_timeout_from_str(None, Duration::from_mins(15)),
+            Duration::from_mins(15),
+            "raising long_timeout above 600 s must also raise the default export budget"
+        );
+        assert_eq!(
+            super::export_call_timeout_from_str(Some(" 1800000 "), Duration::from_secs(120)),
+            Duration::from_mins(30)
+        );
+        for bad in ["0", "-1", "abc", ""] {
+            assert_eq!(
+                super::export_call_timeout_from_str(Some(bad), Duration::from_secs(120)),
+                Duration::from_mins(10),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_and_audio_decode_use_the_export_budget_above_the_long_budget() {
+        for method in ["export.trim", "export.share_mp4", "media.decode_audio_pcm"] {
+            assert!(super::is_export_method(method), "{method}");
+            assert!(!super::is_quick_method(method), "{method}");
+        }
+        for method in ["save.trigger", "export.png", "media.inspect_frames"] {
+            assert!(!super::is_export_method(method), "{method}");
+        }
+
+        let dir = TestDir::new("exp");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().expect("accept"));
+            for delay_ms in [350, 350] {
+                let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"].clone();
+                thread::sleep(Duration::from_millis(delay_ms));
+                let response = json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}});
+                let _ = write_frame_line(
+                    reader.get_mut(),
+                    &response.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                );
+            }
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        client.set_default_timeout(Duration::from_millis(100));
+        client.set_long_timeout(Duration::from_millis(150));
+        client.set_export_timeout(Duration::from_secs(5));
+        assert_eq!(
+            client.call("export.share_mp4", json!({})).unwrap()["ok"],
+            json!(true)
+        );
+        assert!(matches!(
+            client.call("save.trigger", json!({})),
+            Err(RpcClientError::Timeout)
+        ));
+        server.join().unwrap();
     }
 
     #[test]
@@ -893,6 +1008,68 @@ mod tests {
     }
 
     #[test]
+    fn tolerate_closed_peer_ignores_only_invalid_input() {
+        assert!(super::tolerate_closed_peer(Ok(())).is_ok());
+        assert!(
+            super::tolerate_closed_peer(Err(crate::OsError::Ipc {
+                operation: "set_read_timeout",
+                endpoint: "test".into(),
+                source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+            }))
+            .is_ok()
+        );
+        assert!(
+            super::tolerate_closed_peer(Err(crate::OsError::Ipc {
+                operation: "set_read_timeout",
+                endpoint: "test".into(),
+                source: std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reply_delivered_when_daemon_drains_and_closes() {
+        let dir = TestDir::new("drain");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).expect("bind");
+        let server = thread::spawn(move || {
+            let mut stream = listener.accept().expect("accept");
+            write_frame_line(
+                &mut stream,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .expect("reply");
+            // On Windows named pipes `drain` waits until the client consumes the buffer before
+            // `DisconnectNamedPipe` runs on drop, so the client reads concurrently below.
+            stream.drain().expect("drain");
+            drop(stream);
+        });
+        let stream = super::LocalIpcStream::connect(&endpoint).expect("connect");
+        let mut connection = BufReader::new(super::DeadlineStream {
+            stream,
+            started: std::time::Instant::now(),
+            timeout: Duration::from_secs(5),
+        });
+        let line = read_frame_line(&mut connection, DEFAULT_MAX_IPC_LINE_BYTES)
+            .expect("drained reply must be readable across all OSes")
+            .expect("reply line");
+        assert!(line.contains(r#""ok":true"#), "{line}");
+        server.join().unwrap();
+    }
+
+    // Unix-only facility: Unix domain sockets retain unread reply bytes in the client receive
+    // buffer after peer close, and macOS rejects `SO_RCVTIMEO` on that socket with `EINVAL`.
+    // Windows named pipes discard unread bytes on `DisconnectNamedPipe` unless `drain()` waits for
+    // the reader (covered by `reply_delivered_when_daemon_drains_and_closes`).
+    #[cfg(unix)]
+    #[test]
     fn reply_buffered_before_the_daemon_closed_is_still_delivered() {
         let dir = TestDir::new("closed");
         let endpoint = ArbPaths {
@@ -911,7 +1088,6 @@ mod tests {
                 DEFAULT_MAX_IPC_LINE_BYTES,
             )
             .expect("reply");
-            stream.drain().expect("drain");
             drop(stream);
             closed_tx.send(()).unwrap();
         });

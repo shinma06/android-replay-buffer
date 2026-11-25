@@ -1477,10 +1477,11 @@ fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str)
     )
 }
 
-/// Checks whether a `save.trigger` / `save.retry` / `save.retarget` response indicates a
-/// failed-retryable outcome (`bundle_id == null`, R3 S17).
+/// Checks whether a `save.trigger` / `save.logs` / `save.retry` / `save.retarget` response
+/// indicates a failed-retryable outcome (`bundle_id == null` or `job.state == "failed_retryable"`,
+/// R3 S17; shared by CLI and MCP).
 fn save_outcome_failed(resp: &Value) -> bool {
-    resp.get("bundle_id").is_none_or(Value::is_null)
+    resp.get("bundle_id").is_none_or(Value::is_null) || resp["job"]["state"] == "failed_retryable"
 }
 
 fn call_and_emit(
@@ -2154,6 +2155,12 @@ mod tests {
                 &json!({ "bundle_id": null, "job": { "state": "failed_retryable" } })
             ),
             "null bundle_id must be detected as failed save"
+        );
+        assert!(
+            save_outcome_failed(
+                &json!({ "bundle_id": "bundle-1", "job": { "state": "failed_retryable" } })
+            ),
+            "failed_retryable state must be detected as failed save even when bundle_id is set"
         );
         assert!(
             !save_outcome_failed(
