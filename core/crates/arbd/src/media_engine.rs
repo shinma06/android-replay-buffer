@@ -21,6 +21,7 @@ use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::{
     FilmstripCache, FilmstripConfig, FilmstripOrigin, GopLruCache, ScrubController,
 };
+use arb_media::timeline::{end_ns, viewport_timestamps};
 use arb_media::trim::{PngExportMetadata, export_frame_png_with_metadata, trim_video};
 use arb_os::shm::{FrameDescriptor, PixelFormat as ShmPixelFormat, ShmFrameRingWriter};
 use arb_storage::bundle_io::{
@@ -41,19 +42,6 @@ use crate::time_util::{next_id, utc_now_iso8601};
 const DEFAULT_GOP_CACHE_GOPS: usize = 4;
 const DEFAULT_GOP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MIN_SHM_SLOT_CAPACITY: usize = 4096;
-
-/// The maximum JSON representation of 100,000 signed 64-bit timestamps is under 2.2 MiB.
-fn viewport_timestamps(mut pts: impl ExactSizeIterator<Item = i64>) -> Vec<i64> {
-    if pts.len() > 100_000 {
-        return Vec::new();
-    }
-    let Some(origin) = pts.next() else {
-        return Vec::new();
-    };
-    std::iter::once(0)
-        .chain(pts.map(|t| t.saturating_sub(origin)))
-        .collect()
-}
 
 #[derive(Debug)]
 struct OpenViewport {
@@ -177,6 +165,15 @@ impl MediaEngine {
         let frame_count = track.frame_count();
         let keyframe_count = track.keyframes().len();
         let frame_pts_ns = viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
+        let tail = last_frame_duration_ns.map(|d| i64::try_from(d).unwrap_or(i64::MAX));
+        let timeline_duration_ns = if frame_pts_ns.is_empty() && !track.frames().is_empty() {
+            let samples = track.frames();
+            let last = &samples[samples.len() - 1];
+            let span = last.pts_ns.saturating_sub(samples[0].pts_ns).max(0);
+            end_ns(&[span], tail, 1)
+        } else {
+            end_ns(&frame_pts_ns, tail, 1)
+        };
         let scrub = ScrubController::new(
             GopLruCache::new(DEFAULT_GOP_CACHE_GOPS, DEFAULT_GOP_CACHE_BYTES),
             None,
@@ -202,6 +199,7 @@ impl MediaEngine {
         registry.insert(viewport_id.clone(), viewport);
 
         Ok(MediaOpenViewportResponse {
+            timeline_duration_ns,
             last_frame_duration_ns,
             frame_pts_ns,
             viewport_id,

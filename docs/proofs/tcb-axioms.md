@@ -31,6 +31,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K7 | `k7_empty_and_single_sample_strokes_are_taps`（`f64::hypot` を任意値スタブで過大近似）、`k7_touch_slop_finite_positive`、`k7_decimate_keeps_endpoints_and_cap_len{2..5}_cap{2..4}`（12 本）、`k7_decimate_passes_through_len3_cap0` / `_cap1`、`k7_decimate_passes_through_single_sample` | なし | `core/crates/arb-core/src/kani_proofs.rs` |
 | K8 | `k8_required_buffer_bytes_exact_or_none`、`k8_required_buffer_bytes_rejects_u64_overflow`、`k8_required_buffer_bytes_covers_every_pixel`、`k8_align_up_exact`、`k8_compute_layout_slots_disjoint_and_aligned` | なし | `core/crates/arb-os/src/shm.rs` |
 | K9 | `k9_checked_entry_count_bounds_allocation`、`k9_iter_boxes_children_stay_in_parent`、`k9_ticks_to_ns_exact_ts_1`、`k9_parse_stts_bounded`、`k9_parse_stts_rejects_truncated_header`、`k9_parse_stsc_strictly_increasing`、`k9_parse_stsc_rejects_empty_or_truncated`、`k9_parse_stsz_bounded_by_file`、`k9_parse_stsz_explicit_sizes_fit_box`、`k9_parse_stsz_rejects_truncated_header`（`arb-media/src/kani_proofs.rs`）、`k9_encode_chunk_offset_never_truncates`、`k9_stco_chosen_only_when_every_offset_fits`（`arb-media/src/mux_av.rs`）、`k9_frame_header_accepts_iff_valid_and_roundtrips`、`k9_frame_header_encode_decode_full_u64_len`（`arb-adb/src/wire.rs`） | `k9_ticks_to_ns_exact_ts_90000`、`k9_ticks_to_ns_exact_ts_u32_max`、`k9_ticks_to_ns_monotone_ts_1` / `_90000` / `_u32_max`、`k9_avcc_sample_to_annexb_bounded`（G3 と M2 で確認） | 各ファイル |
+| K10 | `k10_normalization`（任意の i64 PTS 3 個を正規化し終端用の余地を保存）、`k10_frame_and_trim`（3 枚、各間隔・末尾長 1〜65536 ns、全時刻で床検索・単調性・包括 OUT 逆変換）、`k10_fraction`（1 枚、D が 4 または 7 ns の全整数時刻で端点・単調性・往復） | 長尺・1 枚・静止とバーストは G3 と JVM の共通ベクトル・仮想時計でも検証 | `arb-media/src/timeline.rs`、`arb-media/src/kani_proofs.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -102,6 +103,8 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | `arb-media` | 12 / 12 成功（158.9 秒） | K9 `ticks_exact_ts_1` 24.3 秒（乗算オラクル。旧オラクルは 28.3 秒）、`iter_boxes` 23.4 秒、`parse_stts` 17.7 秒・`stts_rejects_truncated` 11.1 秒、`parse_stsc` 14.4 秒・`stsc_rejects` 12.9 秒、`parse_stsz_bounded_by_file` 17.0 秒・`explicit_sizes` 8.8 秒・`stsz_rejects_truncated` 7.3 秒、`checked_entry_count` 1.0 秒、mux_av 5.3 秒・1.6 秒 |
 | `arbd` | 10 / 10 成功（48.5 秒） | K6 `axis_project_range_and_endpoints_span_*` 5 本 3.5〜6.1 秒、`axis_project_monotonic_span_*_display_pixels` 5 本 2.3〜7.9 秒 |
 
+K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10 追加前の比較記録。
+
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
 
 ハーネス本体の `assert` で UNREACHABLE になったものはない。例外は K1 の参照オラクルの `i128` 溢れ検査（構造上溢れない）と `variant == 2` 専用の表明（`k1_unanchored_always_uncertain` でのみ到達）、K2 `n1` の順序保持ループ（要素 1 件では到達せず、`n2`/`n3` は拡張集合）、K4 `n1` での `stable_sort_stub` のループ本体（長さ 1 以下のスライスでは回らない。TCB-13）だけで、今回昇格したハーネスの性質の表明には 0 件である。`kani::cover!` 4 件（stts の上限到達、stsc 2 エントリ、stsz 定数サイズ複数・明示サイズ 2 件）はすべて SATISFIED。`kani::assume` はハーネスの前提（入力域の分割、ingest の不変条件、性質の前件）にだけ使い、`assume(false)` 相当の空疎な前提はない。
@@ -116,6 +119,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | K6 | `gesture.rs` `map_touch_to_frame`: `x / dw` → `(dw - x) / dw` | `k6_monotonic_x_any_f64_pow2_1024_to_512` | `monotonic non-decreasing` |
 | K7 | `gesture.rs` `decimate`: `/ (cap - 1)` → `/ cap` | `k7_decimate_keeps_endpoints_and_cap_len5_cap3` | `last sample kept` |
 | K9 | `mp4.rs` `parse_stsz`: 明示サイズの読み取り位置 `12 + i * 4` → `8 + i * 4` | `k9_parse_stsz_explicit_sizes_fit_box` | `sizes[i] == u32::from_be_bytes(...)` |
+| K10 | 表示フレームの二分探索で `PTS <= t` を `PTS < t` に変更 | `k10_frame_and_trim` | PTS が 65536 ns の境界で前フレームを返し、区間被覆の表明が失敗（具体的反例を取得） |
 | K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
@@ -142,7 +146,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-16）
+## 4. TCB 公理（TCB-01〜TCB-17）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -164,6 +168,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | TCB-14 | 解析結果（`Vec<u32>` / `MediaError` 内の `io::Error`）の drop は安全に終わる。K9 の表パーサ系ハーネスは戻り値を `ManuallyDrop` で保持し、drop glue を実行しない | K9（mp4） | `cargo test -p arb-media`、Miri M2（`arb-media mp4::`） | 解放処理は std の実装を信頼する。パーサ本体と `Ok`/`Err` の判定は本番コードのまま検証している |
 | TCB-15 | `ClockTimeline::map_device_monotonic` / `map_logcat_wall` は `epochs.get(boot_id)` で選んだ boot epoch の `triples` / `wall_jump_indices` をそのまま抽出関数に渡し、その epoch では `ingest_device_triple` が `monotonic_ns`・`boottime_ns` の非減少と `idx + 1 < len` の飛び添字を保つ | K3（スライス層） | `core/crates/arb-core/src/time.rs` の `time` 単体テスト | `BTreeMap` の参照と ingest 側の不変条件は機械検証していない（`ClockTimeline` 全体を通すハーネスは CBMC のメモリ不足で拡張集合） |
 | TCB-16 | クラッシュ自動保存の重複排除は「boot 修飾付きクラッシュ ID が pin と一緒に永続化される」という前提に立つ。現在の `arbd` は pin と保存ジョブ（`save_jobs/<job>.json`・カタログ行）を永続化して再起動時に 1 回だけ再キューするが、クラッシュ ID は保存せず、繰り返し抑止はメモリ上の `CrashAutoSaveGate` のクールダウンだけである（再起動で空に戻る） | S5（`pdd_stateright_models.rs::s5_crash_watcher_model`） | `core/crates/arbd/src/capture.rs::tests::interrupted_crash_autosave_is_requeued_once_on_startup` | S5 は設計上の前提を検査するモデルで、`arbd` の実装を精緻化したものではない。デーモン再起動後に端末が同じ `am_crash` を再配信した場合の二重保存は未対策。永続クラッシュ ID の実装まで未解決 |
+| TCB-17 | viewport の ns 値が Rust・JSON・JVM 間で同じフレームと終端を表し、Studio が単調時計から得た共通のメディア時刻を描画・操作に使う | K10、G3、Kotlin 決定論的時計 | `pdd_g3_media_props.rs` と `PlaybackControllerTest` が同じ 11 秒・61 枚のベクトルを読み、`ArbUiComponentsTest.vfrTimelineLayersAndGesturesUseOnePixelCoordinate` が各層の画素を検査 | Kani の有界証明は JVM・JBR・Compose の実装を含まない。旧 daemon・10 万枚超の CFR フォールバックは中間 PTS を推定する。実画面の描画周期と入力遅延は Studio 受け入れで確認する |
 
 ## 5. Sara 互換性
 

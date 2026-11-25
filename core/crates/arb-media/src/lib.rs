@@ -28,6 +28,7 @@ pub mod mux_av;
 pub use output::copy_new;
 mod output;
 pub mod playback;
+pub mod timeline;
 pub mod trim;
 
 pub use crate::audio::{

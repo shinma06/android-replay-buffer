@@ -370,7 +370,7 @@ class ArbT4StudioModelTest {
     }
 
     @Test
-    fun boottimeMappingUsesFilmstripAcrossEpochs() {
+    fun boottimeMappingUsesBootAnchorsAcrossEpochs() {
         val base = healthySummary()
         val summary = base.copy(
             epochs = listOf(
@@ -390,7 +390,7 @@ class ArbT4StudioModelTest {
         )
         assertEquals(25L, state.boottimeNsToFrameIndex(6_000_000_000L))
         assertTrue(state.boottimeNsToFrameIndex(905_000_000_000L) in 74L..76L)
-        assertEquals(100L, state.boottimeNsToFrameIndex(2_000_000_000_000L))
+        assertNull(state.boottimeNsToFrameIndex(2_000_000_000_000L), "unknown epoch stays unsynchronized")
     }
 
     @Test
@@ -583,7 +583,7 @@ class ArbT4StudioModelTest {
         assertNull(overlapping.boottimeNsToFrameIndex(10_000_000_000L))
 
         // Total duration sums both epochs cleanly (10s + 10s = 20s) even though epoch 1 reset boottime!
-        assertEquals(20_000L, state.totalDurationMs)
+        assertEquals(20_200L, state.totalDurationMs, "duration includes the inferred final sample")
         assertTrue(state.primaryCrashFrameIndex() in 75L..76L)
 
         // Tap overlay at epoch-0 frame 25 shows ONLY Tap #1; at epoch-1 frame 76 shows ONLY Tap #2.

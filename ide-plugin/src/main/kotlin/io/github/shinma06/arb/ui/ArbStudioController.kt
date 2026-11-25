@@ -85,7 +85,7 @@ class ArbStudioController(
     private val onPngExport: (frameIndex: Long, outputPath: Path) -> Unit,
     private val onRangeChanged: (inFrameIndex: Long, outFrameIndex: Long, playhead: Long) -> Unit = { _, _, _ -> },
     private val onPlayPauseToggle: () -> Unit = {},
-    private val onStepFrame: (delta: Int) -> Unit = {},
+    private val onStepFrame: ((delta: Int) -> Unit)? = null,
     private val onSpeedChange: (PlaybackSpeed) -> Unit = {},
     private val onMuteToggle: () -> Unit = {},
     private val onLoopToggle: () -> Unit = {},
@@ -108,6 +108,7 @@ class ArbStudioController(
     private val onRetryAuxStream: (AuxStream) -> Unit = {},
     /** Re-sends the IN/OUT range that `edit.update_session` could not persist ("再保存"). */
     private val onRetryEditSave: () -> Unit = {},
+    private val onTimeSeek: ((Long, Boolean) -> Unit)? = null,
     private val displayPositionNs: () -> Long? = { null },
 ) {
     var viewerState: TimelineViewerState? by mutableStateOf(null)
@@ -261,11 +262,18 @@ class ArbStudioController(
     val loopTooltip: String
         get() = if (isLoopEnabled) "ループ再生 ON" else "ループ再生 OFF"
 
+    var playheadTimeNs by mutableStateOf(0L)
+        private set
+
+    fun sampleClock() {
+        displayPositionNs()?.let { playheadTimeNs = it }
+    }
+
     val timecodeText: String
         get() {
             val s = viewerState ?: return "00:00.00 / 00:00.00 · #0"
-            val curMs = (if (isPlaying) displayPositionNs()?.div(1_000_000L) else null) ?: s.frameToRelativeMs(s.currentFrameIndex)
-            val durationMs = s.playbackDurationNs?.div(1_000_000L) ?: s.totalDurationMs
+            val curMs = playheadTimeNs / 1_000_000L
+            val durationMs = s.totalDurationMs
             return "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(durationMs)} · #${s.currentFrameIndex}"
         }
 
@@ -283,7 +291,7 @@ class ArbStudioController(
         get() = selectedExportFormat == StudioExportFormat.SHARE_MP4
 
     val activeTapOverlays: List<ActiveTapOverlay>
-        get() = viewerState?.activeTapsAtFrame().orEmpty()
+        get() = viewerState?.activeTapsAtFrame(timeNs = playheadTimeNs).orEmpty()
 
     val isTapOverlayEnabled: Boolean
         get() = viewerState?.showTapOverlay ?: true
@@ -359,6 +367,7 @@ class ArbStudioController(
      * the UI thread; a `null` [bitmap] keeps the previous frame.
      */
     fun renderFrame(next: TimelineViewerState, bitmap: ImageBitmap?, width: Int, height: Int) {
+        if (viewerState == null) playheadTimeNs = next.axis.start(next.currentFrameIndex)
         viewerState = next
         errorMessage = null
         if (width > 0 && height > 0) {
@@ -436,6 +445,7 @@ class ArbStudioController(
         approximatePreviewVisible = pb.isApproximate || (viewerState?.showApproximatePreviewBadge == true)
         val current = viewerState
         if (current != null) {
+            playheadTimeNs = displayPositionNs() ?: current.axis.start(pb.currentFrameIndex)
             val synced = current.copy(currentFrameIndex = pb.currentFrameIndex)
             viewerState = synced
             rebuildSyncedRows(synced)
@@ -494,16 +504,17 @@ class ArbStudioController(
         val next = TimelineViewerReducer.stepFrame(s, delta.toLong())
         viewerState = next
         rebuildSyncedRows(next)
-        onStepFrame(delta)
-        onSeekExact(next.currentFrameIndex)
+        playheadTimeNs = next.axis.start(next.currentFrameIndex)
+        onStepFrame?.invoke(delta) ?: onSeekExact(next.currentFrameIndex)
         onRangeChanged(next.inFrameIndex, next.outFrameIndex, next.currentFrameIndex)
     }
 
     fun cycleSpeed() {
         val nextSpeed = when (playbackState.speed) {
+            PlaybackSpeed.QUARTER -> PlaybackSpeed.HALF
             PlaybackSpeed.HALF -> PlaybackSpeed.NORMAL
             PlaybackSpeed.NORMAL -> PlaybackSpeed.DOUBLE
-            PlaybackSpeed.DOUBLE -> PlaybackSpeed.HALF
+            PlaybackSpeed.DOUBLE -> PlaybackSpeed.QUARTER
         }
         playbackState = playbackState.copy(speed = nextSpeed)
         onSpeedChange(nextSpeed)
@@ -521,7 +532,7 @@ class ArbStudioController(
 
     /** Index into [syncedRows] of the row most relevant to the current playhead, or `null`. */
     val activeTimelineItemIndex: Int?
-        get() = activeTimelineItemIndex(syncedRows, viewerState?.currentFrameIndex ?: 0L)
+        get() = activeTimelineItemIndex(syncedRows, playheadTimeNs)
 
     /** Explicitly sets [followPlayhead]. Turning it back ON snaps immediately (next recompose). */
     fun selectFollowPlayhead(enabled: Boolean) {
@@ -533,10 +544,22 @@ class ArbStudioController(
         followPlayhead = !followPlayhead
     }
 
+    fun seekTime(timeNs: Long, settled: Boolean = true) {
+        val s = viewerState ?: return
+        if (s.frameCount == 0L) return
+        playheadTimeNs = timeNs.coerceIn(0, s.axis.endNs)
+        val frame = s.axis.frameAt(playheadTimeNs)
+        viewerState = s.copy(currentFrameIndex = frame)
+        rebuildSyncedRows(viewerState!!)
+        onTimeSeek?.invoke(playheadTimeNs, settled) ?: if (settled) onSeekExact(frame) else onScrub(frame)
+        if (settled) onRangeChanged(s.inFrameIndex, s.outFrameIndex, frame)
+    }
+
     fun scrubToFrame(frameIndex: Long) {
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)
+        playheadTimeNs = s.axis.start(clamped)
         viewerState = s.copy(currentFrameIndex = clamped)
         rebuildSyncedRows(viewerState!!)
         onScrub(clamped)
@@ -546,6 +569,7 @@ class ArbStudioController(
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)
+        playheadTimeNs = s.axis.start(clamped)
         viewerState = s.copy(currentFrameIndex = clamped)
         rebuildSyncedRows(viewerState!!)
         onSeekExact(clamped)
@@ -686,29 +710,27 @@ class ArbStudioController(
             System.identityHashCode(s.crashes),
             System.identityHashCode(s.screens),
             System.identityHashCode(s.summary.epochs),
-            System.identityHashCode(s.filmstrip),
+            System.identityHashCode(s.summary.epochFrameRanges),
+            s.axis,
             s.frameCount,
             eventFilter,
             searchQuery,
         )
         if (structureKey != lastStructureKey) {
             lastStructureKey = structureKey
-            lastFlagKey = listOf(s.currentFrameIndex, s.inFrameIndex, s.outFrameIndex)
+            lastFlagKey = listOf(s.inFrameIndex, s.outFrameIndex)
             syncedRows = s.buildSyncedEventRows(filter = eventFilter, keyword = searchQuery)
             return
         }
-        val flagKey = listOf(s.currentFrameIndex, s.inFrameIndex, s.outFrameIndex)
+        val flagKey = listOf(s.inFrameIndex, s.outFrameIndex)
         if (flagKey == lastFlagKey) return
         lastFlagKey = flagKey
-        val hasRange = s.frameCount > 0L
         syncedRows = syncedRows.map { row ->
-            val f = row.frameIndex
-            val inRange = f == null || !hasRange || f in s.inFrameIndex..s.outFrameIndex
-            val atPlayhead = f != null && f == s.currentFrameIndex
-            if (row.isInTrimRange == inRange && row.isAtPlayhead == atPlayhead) {
+            val inRange = s.isTimeInTrimRange(row.mediaTimeNs)
+            if (row.isInTrimRange == inRange) {
                 row
             } else {
-                row.copy(isInTrimRange = inRange, isAtPlayhead = atPlayhead)
+                row.copy(isInTrimRange = inRange)
             }
         }
     }

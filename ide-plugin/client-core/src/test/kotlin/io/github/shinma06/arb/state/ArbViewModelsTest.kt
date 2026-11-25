@@ -127,7 +127,8 @@ class ArbViewModelsTest {
         )
         assertFalse(settled.showApproximatePreviewBadge)
         assertNull(settled.approximateBadgeText)
-        assertEquals(43L, settled.currentFrameIndex)
+        assertEquals(43L, settled.currentFrameMeta?.frameIndex)
+        assertEquals(initial.currentFrameIndex, settled.currentFrameIndex, "SHM cannot move the intended playhead")
     }
 
     @Test

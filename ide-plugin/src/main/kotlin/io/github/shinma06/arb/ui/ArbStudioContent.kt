@@ -117,7 +117,6 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.roundToLong
 import kotlin.math.sin
 
 /**
@@ -135,6 +134,12 @@ fun ArbStudioContent(controller: ArbStudioController) {
     var searchHasFocus by remember { mutableStateOf(false) }
     var splitFraction by remember { mutableFloatStateOf(0.58f) }
 
+    LaunchedEffect(controller, controller.isPlaying) {
+        while (controller.isPlaying) {
+            controller.sampleClock()
+            kotlinx.coroutines.delay(50L)
+        }
+    }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
     LaunchedEffect(controller.searchFieldState) {
         snapshotFlow { controller.searchFieldState.text.toString() }.collect { q ->
@@ -764,15 +769,8 @@ private fun TransportBar(controller: ArbStudioController) {
 
 @Composable
 private fun PlaybackTimecode(controller: ArbStudioController) {
-    var playingTime by remember(controller, controller.isPlaying) { mutableStateOf(controller.timecodeText) }
-    LaunchedEffect(controller, controller.isPlaying) {
-        while (controller.isPlaying) {
-            playingTime = controller.timecodeText
-            kotlinx.coroutines.delay(50L)
-        }
-    }
     Text(
-        text = if (controller.isPlaying) playingTime else controller.timecodeText,
+        text = controller.timecodeText,
         style = ArbJewelPalette.tabularMonoStyle(sizeSp = 11f, bold = true),
         maxLines = 1,
         softWrap = false,
@@ -887,7 +885,7 @@ private fun RightEventsAndLogsPane(
                         val followPlayhead = controller.followPlayhead
 
                         // Key on `(followPlayhead, activeIndex, activeRowKey)` rather than `rows`
-                        // so per-frame `isAtPlayhead` / trim-handle flag rebuilds don't cancel and
+                        // so trim membership changes do not cancel and
                         // restart `animateScrollToItem` while the active row itself hasn't changed.
                         LaunchedEffect(followPlayhead, activeIndex, activeRowKey) {
                             if (followPlayhead && activeIndex != null && activeIndex in rows.indices) {
@@ -909,7 +907,8 @@ private fun RightEventsAndLogsPane(
                                 SyncedEventItemRow(
                                     row = row,
                                     isAutoFollowActive = followPlayhead && rowIndex == activeIndex,
-                                    onSeek = { row.frameIndex?.let(controller::seekExactFrame) },
+                                    playheadTimeNs = controller.playheadTimeNs,
+                                    onSeek = { row.mediaTimeNs?.let { controller.seekTime(it) } },
                                     onSnapIn = { row.frameIndex?.let { controller.applyInFrame(it, settled = true) } },
                                     onSnapOut = { row.frameIndex?.let { controller.applyOutFrame(it, settled = true) } },
                                     onSourceJump = { row.sourceJumpTarget?.let(controller::jumpToSource) },
@@ -1012,6 +1011,7 @@ private fun AppPackageFilterRow(controller: ArbStudioController) {
 @Composable
 private fun SyncedEventItemRow(
     row: SyncedEventRow,
+    playheadTimeNs: Long,
     onSeek: () -> Unit,
     onSnapIn: () -> Unit,
     onSnapOut: () -> Unit,
@@ -1023,8 +1023,7 @@ private fun SyncedEventItemRow(
     val isCorrelatedLog = row.kind == SyncedEventKind.LOG && row.correlatedTapIndex != null
 
     // Owner trial feedback T-6H item 4: the auto-follow active row gets its own wider accent bar
-    // so the video <-> log sync position is unmistakable even when `isAtPlayhead` (exact frame
-    // match) never fires between discrete events.
+    // between discrete event times.
     val stripeColor = when {
         isAutoFollowActive -> ArbJewelPalette.accent()
         row.kind == SyncedEventKind.CRASH -> ArbJewelPalette.recRed()
@@ -1035,7 +1034,7 @@ private fun SyncedEventItemRow(
     val stripeWidth = if (isAutoFollowActive) 3.5.dp else 2.5.dp
     val rowBg = when {
         isAutoFollowActive -> ArbJewelPalette.accentSoft()
-        row.isAtPlayhead -> ArbJewelPalette.accentSoft()
+        row.mediaTimeNs != null && row.mediaTimeNs == playheadTimeNs -> ArbJewelPalette.accentSoft()
         hovered -> ArbJewelPalette.subtleHoverFill()
         isCorrelatedLog && row.isInTrimRange -> ArbJewelPalette.infoCyanSoft().copy(alpha = 0.45f)
         else -> Color.Transparent
@@ -1070,7 +1069,7 @@ private fun SyncedEventItemRow(
         )
 
         Text(
-            text = row.relativeMs?.let(ArbFormatters::formatTimecode) ?: "--:--.--",
+            text = row.mediaTimeNs?.div(1_000_000L)?.let(ArbFormatters::formatTimecode) ?: "未同期",
             style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10f, color = secondaryColor),
             maxLines = 1,
             softWrap = false,
@@ -1423,26 +1422,18 @@ private fun MultiTrackTimelineCanvas(
         val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val trackW = (widthPx - padHPx * 2f).coerceAtLeast(1f)
 
-        fun frameToX(frameIndex: Long, totalFrames: Long): Float {
-            if (totalFrames <= 1L) return padHPx
-            val ratio = frameIndex.coerceIn(0L, totalFrames - 1L).toFloat() / (totalFrames - 1L).toFloat()
-            return padHPx + ratio * trackW
-        }
-
-        fun xToFrame(x: Float, totalFrames: Long): Long {
-            if (totalFrames <= 1L) return 0L
-            val ratio = ((x - padHPx) / trackW).coerceIn(0f, 1f)
-            return (ratio * (totalFrames - 1L).toDouble()).roundToLong().coerceIn(0L, totalFrames - 1L)
-        }
+        val geometry = state?.let { StudioTimelineGeometry(it, padHPx, trackW) }
+        val latestGeometry by rememberUpdatedState(geometry)
 
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .semantics { contentDescription = "マルチトラックタイムライン" }
-                .pointerInput(widthPx) {
+                .pointerInput(widthPx, padHPx, state?.axis) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         val s = currentState ?: return@awaitEachGesture
+                        val g = latestGeometry ?: return@awaitEachGesture
                         if (s.frameCount <= 0L) return@awaitEachGesture
                         val x = down.position.x
                         val y = down.position.y
@@ -1450,43 +1441,40 @@ private fun MultiTrackTimelineCanvas(
                         // Track 2 click: check Activity Screen Span or Tap/Crash marker pin snap
                         if (y in markerTopPx..(markerTopPx + markerHeightPx)) {
                             val spanHit = s.screens.firstOrNull { span ->
-                                val sf = span.startFrameIndex ?: s.boottimeNsToFrameIndex(span.startNs) ?: return@firstOrNull false
-                                val ef = span.endFrameIndex ?: s.boottimeNsToFrameIndex(span.endNs) ?: sf
-                                val x1 = frameToX(sf, s.frameCount)
-                                val x2 = frameToX(ef, s.frameCount).coerceAtLeast(x1 + 8f)
+                                val x1 = g.screen(span) ?: return@firstOrNull false
+                                val x2 = g.screen(span, end = true) ?: x1
                                 x in x1..x2
                             }
                             if (spanHit != null && y <= markerTopPx + markerHeightPx * 0.55f) {
-                                val target = spanHit.startFrameIndex ?: s.boottimeNsToFrameIndex(spanHit.startNs)
+                                val target = s.screenTime(spanHit)
                                 if (target != null) {
-                                    controller.seekExactFrame(target)
+                                    controller.seekTime(target)
                                     down.consume()
                                     return@awaitEachGesture
                                 }
                             }
                             // Snap to nearest tap or crash marker pin within 7dp
                             val pinSnapRadiusPx = 7.dp.toPx()
-                            val markerFrames = buildList<Pair<Float, Long>> {
+                            val markerTimes = buildList<Pair<Float, Long>> {
                                 for (tap in s.mainTaps) {
-                                    val bt = TimelineViewerState.alignmentBoottimeNs(tap.alignment) ?: continue
-                                    val f = s.boottimeNsToFrameIndex(bt) ?: continue
-                                    add(frameToX(f, s.frameCount) to f)
+                                    val time = s.tapTime(tap) ?: continue
+                                    add(g.at(time) to time)
                                 }
                                 for (crash in s.crashes) {
-                                    val f = crash.frameIndexHint ?: crash.boottimeNs?.let(s::boottimeNsToFrameIndex) ?: continue
-                                    add(frameToX(f, s.frameCount) to f)
+                                    val time = s.crashTime(crash) ?: continue
+                                    add(g.at(time) to time)
                                 }
                             }
-                            val nearestPin = markerFrames.minByOrNull { abs(it.first - x) }
+                            val nearestPin = markerTimes.minByOrNull { abs(it.first - x) }
                             if (nearestPin != null && abs(nearestPin.first - x) <= pinSnapRadiusPx) {
-                                controller.seekExactFrame(nearestPin.second)
+                                controller.seekTime(nearestPin.second)
                                 down.consume()
                                 return@awaitEachGesture
                             }
                         }
 
-                        val inX = frameToX(s.inFrameIndex, s.frameCount)
-                        val outX = frameToX(s.outFrameIndex, s.frameCount)
+                        val inX = g.inX
+                        val outX = g.outX
                         val dragTarget = when {
                             y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f) &&
                                 abs(x - inX) <= handleHitPx -> TimelineDragTarget.IN_HANDLE
@@ -1497,18 +1485,20 @@ private fun MultiTrackTimelineCanvas(
 
                         fun dispatch(posX: Float, settled: Boolean) {
                             val st = currentState ?: return
-                            val targetFrame = xToFrame(posX, st.frameCount)
+                            val time = g.timeAt(posX)
                             when (dragTarget) {
                                 TimelineDragTarget.IN_HANDLE -> {
+                                    val targetFrame = if (posX == x) s.inFrameIndex else st.axis.frameAt(time)
                                     controller.applyInFrame(targetFrame, settled)
                                     if (settled) controller.seekExactFrame(targetFrame) else controller.scrubToFrame(targetFrame)
                                 }
                                 TimelineDragTarget.OUT_HANDLE -> {
+                                    val targetFrame = if (posX == x) s.outFrameIndex else st.axis.outFrame(time)
                                     controller.applyOutFrame(targetFrame, settled)
                                     if (settled) controller.seekExactFrame(targetFrame) else controller.scrubToFrame(targetFrame)
                                 }
                                 TimelineDragTarget.PLAYHEAD -> {
-                                    if (settled) controller.seekExactFrame(targetFrame) else controller.scrubToFrame(targetFrame)
+                                    controller.seekTime(time, settled)
                                 }
                                 TimelineDragTarget.NONE -> Unit
                             }
@@ -1530,12 +1520,13 @@ private fun MultiTrackTimelineCanvas(
                 },
         ) {
             val s = state
+            val g = geometry ?: return@Canvas
             // 1. Subtle ruler line & ticks
             drawLine(hairline, Offset(padHPx, rulerHeightPx), Offset(padHPx + trackW, rulerHeightPx), strokeWidth = 1f)
-            if (s != null && s.frameCount > 0L) {
+            if (s.frameCount > 0L) {
                 val ticks = (trackW / 90.dp.toPx()).toInt().coerceIn(3, 12)
                 for (i in 0..ticks) {
-                    val tx = padHPx + (i.toFloat() / ticks.toFloat()) * trackW
+                    val tx = g.tick(i, ticks)
                     drawLine(hairline, Offset(tx, rulerHeightPx - 5.dp.toPx()), Offset(tx, rulerHeightPx), strokeWidth = 1f)
                 }
             }
@@ -1549,7 +1540,7 @@ private fun MultiTrackTimelineCanvas(
                 cornerRadius = trackRadius,
             )
 
-            if (s != null && s.frameCount > 0L) {
+            if (s.frameCount > 0L) {
                 clipRect(padHPx, filmstripTopPx, padHPx + trackW, filmstripTopPx + filmstripHeightPx) {
                     val slotCount = s.filmstrip.size.coerceIn(6, 20)
                     val slotW = trackW / slotCount.toFloat()
@@ -1574,7 +1565,7 @@ private fun MultiTrackTimelineCanvas(
 
                     // Keyframe tick marks
                     for (kf in s.filmstrip) {
-                        val kx = frameToX(kf.frameIndex, s.frameCount)
+                        val kx = g.frame(kf.frameIndex)
                         drawLine(
                             color = mutedText.copy(alpha = 0.55f),
                             start = Offset(kx, filmstripTopPx + filmstripHeightPx - 5.dp.toPx()),
@@ -1583,8 +1574,8 @@ private fun MultiTrackTimelineCanvas(
                         )
                     }
 
-                    val inX = frameToX(s.inFrameIndex, s.frameCount)
-                    val outX = frameToX(s.outFrameIndex, s.frameCount)
+                    val inX = g.inX
+                    val outX = g.outX
 
                     // Dimmed out-of-range overlays
                     if (inX > padHPx) {
@@ -1596,8 +1587,8 @@ private fun MultiTrackTimelineCanvas(
                 }
 
                 // QuickTime-inspired soft rounded warm gold dual In/Out trim frame & handles
-                val inX = frameToX(s.inFrameIndex, s.frameCount)
-                val outX = frameToX(s.outFrameIndex, s.frameCount)
+                val inX = g.inX
+                val outX = g.outX
                 val borderW = 2.5.dp.toPx()
                 drawRoundRect(
                     color = trimAccent,
@@ -1634,21 +1625,19 @@ private fun MultiTrackTimelineCanvas(
                 cornerRadius = trackRadius,
             )
 
-            if (s != null && s.frameCount > 0L) {
+            if (s.frameCount > 0L) {
                 val screenBandH = markerHeightPx * 0.50f
                 val pinY = markerTopPx + screenBandH + (markerHeightPx - screenBandH) * 0.52f
 
                 clipRect(padHPx, markerTopPx, padHPx + trackW, markerTopPx + markerHeightPx) {
                     // Activity screen spans
                     for ((idx, span) in s.screens.withIndex()) {
-                        val sf = span.startFrameIndex ?: s.boottimeNsToFrameIndex(span.startNs) ?: continue
-                        val ef = span.endFrameIndex ?: s.boottimeNsToFrameIndex(span.endNs) ?: sf
-                        val x1 = frameToX(sf, s.frameCount)
-                        val x2 = frameToX(ef, s.frameCount).coerceAtLeast(x1 + 6.dp.toPx())
+                        val x1 = g.screen(span) ?: continue
+                        val x2 = g.screen(span, end = true) ?: x1
                         drawRoundRect(
                             color = screenColors[idx % screenColors.size],
                             topLeft = Offset(x1, markerTopPx + 1f),
-                            size = Size((x2 - x1).coerceAtMost(padHPx + trackW - x1), screenBandH - 1f),
+                            size = Size((x2 - x1).coerceAtLeast(0f), screenBandH - 1f),
                             cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
                         )
                     }
@@ -1657,11 +1646,9 @@ private fun MultiTrackTimelineCanvas(
                     for (disc in s.discontinuities) {
                         val startBt = disc.startBoottimeNs ?: continue
                         val endBt = disc.endBoottimeNs ?: startBt
-                        val sf = s.boottimeNsToFrameIndex(startBt) ?: continue
-                        val ef = s.boottimeNsToFrameIndex(endBt) ?: sf
-                        val x1 = frameToX(sf, s.frameCount)
-                        val x2 = frameToX(ef, s.frameCount).coerceAtLeast(x1 + 5.dp.toPx())
-                        val bw = (x2 - x1).coerceAtMost(padHPx + trackW - x1)
+                        val x1 = g.event(startBt, disc.bootId) ?: continue
+                        val x2 = g.event(endBt, disc.bootId) ?: x1
+                        val bw = (x2 - x1).coerceAtLeast(0f)
                         drawRect(amber.copy(alpha = 0.22f), Offset(x1, markerTopPx), Size(bw, markerHeightPx))
                         val step = 5.dp.toPx()
                         var sx = x1
@@ -1680,19 +1667,9 @@ private fun MultiTrackTimelineCanvas(
                     val tapR = 3.5.dp.toPx()
                     val swipeBarHeight = 2.5.dp.toPx()
                     for (tap in s.mainTaps) {
-                        val bt = TimelineViewerState.alignmentBoottimeNs(tap.alignment) ?: continue
-                        val f = s.boottimeNsToFrameIndex(bt) ?: continue
-                        val tx = frameToX(f, s.frameCount)
-                        val endOffsetNs = tap.endTOffsetNs
-                        val endFrame = if (tap.gestureKind == GestureKind.SWIPE && endOffsetNs != null) {
-                            s.boottimeNsToFrameIndex(bt + endOffsetNs)
-                        } else {
-                            null
-                        }
-                        if (endFrame != null) {
-                            // Minimum visible span width (6dp) so even a very fast/short swipe
-                            // still reads as a bar rather than collapsing into a single pin.
-                            val ex = frameToX(endFrame, s.frameCount).coerceAtLeast(tx + 6.dp.toPx())
+                        val tx = g.tap(tap) ?: continue
+                        val ex = g.swipeEnd(tap)
+                        if (ex != null) {
                             drawRoundRect(
                                 color = cyan,
                                 topLeft = Offset(tx, pinY - swipeBarHeight / 2f),
@@ -1711,8 +1688,7 @@ private fun MultiTrackTimelineCanvas(
                 val dashEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                 val crashR = 4.5.dp.toPx()
                 for (crash in s.crashes) {
-                    val f = crash.frameIndexHint ?: crash.boottimeNs?.let(s::boottimeNsToFrameIndex) ?: continue
-                    val cx = frameToX(f, s.frameCount)
+                    val cx = g.crash(crash) ?: continue
                     drawLine(
                         color = red,
                         start = Offset(cx, filmstripTopPx),
@@ -1731,7 +1707,7 @@ private fun MultiTrackTimelineCanvas(
                 }
 
                 // 4. Unified crisp full-height playhead across ruler + tracks
-                val px = frameToX(s.currentFrameIndex, s.frameCount)
+                val px = g.playhead(controller.playheadTimeNs)
                 drawLine(
                     color = playheadOutline,
                     start = Offset(px, rulerHeightPx - 4.dp.toPx()),
@@ -1755,27 +1731,28 @@ private fun MultiTrackTimelineCanvas(
         }
 
         // Ruler time labels + Floating selection summary pill (crisp Compose Text overlays)
-        if (state != null && state.frameCount > 0L) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("0.0s", style = ArbJewelPalette.tabularMonoStyle(9.5f, color = mutedText))
-                Text(
-                    ArbFormatters.formatDurationSeconds(state.totalDurationMs / 2L),
-                    style = ArbJewelPalette.tabularMonoStyle(9.5f, color = mutedText),
-                )
-                Text(
-                    ArbFormatters.formatDurationSeconds(state.totalDurationMs),
-                    style = ArbJewelPalette.tabularMonoStyle(9.5f, color = mutedText),
-                )
+        if (state != null && geometry != null && state.frameCount > 0L) {
+            androidx.compose.ui.layout.Layout(
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                content = {
+                    for (tick in 0..2) {
+                        val timeMs = state.axis.timeAtFraction(tick / 2.0) / 1_000_000L
+                        Text(ArbFormatters.formatDurationSeconds(timeMs), style = ArbJewelPalette.tabularMonoStyle(9.5f, color = mutedText))
+                    }
+                },
+            ) { measurables, limits ->
+                val labels = measurables.map { it.measure(limits.copy(minWidth = 0, minHeight = 0)) }
+                layout(limits.maxWidth, labels.maxOf { it.height }) {
+                    labels.forEachIndexed { tick, label ->
+                        val x = geometry.tick(tick, 2).roundToInt() - label.width * tick / 2
+                        label.place(x, 0)
+                    }
+                }
             }
 
             // Floating selection summary pill centered over the trim selection
-            val inX = frameToX(state.inFrameIndex, state.frameCount)
-            val outX = frameToX(state.outFrameIndex, state.frameCount)
+            val inX = geometry.inX
+            val outX = geometry.outX
             val centerX = ((inX + outX) / 2f).coerceIn(padHPx + 90f, (padHPx + trackW - 90f).coerceAtLeast(padHPx + 90f))
             val pillShape = RoundedCornerShape(5.dp)
             Box(

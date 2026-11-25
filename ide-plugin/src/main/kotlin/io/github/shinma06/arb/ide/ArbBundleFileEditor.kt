@@ -57,7 +57,6 @@ import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
-import kotlin.math.roundToLong
 
 /**
  * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (ARB and Legacy RO bundles),
@@ -136,6 +135,7 @@ class ArbBundleFileEditor internal constructor(
 
     internal val studioController: ArbStudioController = ArbStudioController(
         displayPositionNs = { currentPlaybackController()?.displayPositionNs() },
+        onTimeSeek = { time, settled -> performTimeSeek(time, settled) },
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
         onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
@@ -362,6 +362,7 @@ class ArbBundleFileEditor internal constructor(
                 // displays immediately even when log bundles are huge or slow.
                 var viewportId: String? = null
                 var frameCount = opened.summary.frameCount.toLong()
+                var timelineDurationNs: Long? = null
                 var lastFrameDurationNs: Long? = null
                 var framePtsNs: List<Long> = emptyList()
 
@@ -370,6 +371,7 @@ class ArbBundleFileEditor internal constructor(
                     viewportId = vp.viewportId
                     frameCount = vp.frameCount
                     framePtsNs = vp.framePtsNs
+                    timelineDurationNs = vp.timelineDurationNs
                     lastFrameDurationNs = vp.lastFrameDurationNs
                 }
 
@@ -399,8 +401,10 @@ class ArbBundleFileEditor internal constructor(
                 var activeCtrl: PlaybackController? = null
                 if (viewportId != null && frameCount > 0L) {
                     val seeker = object : FrameSeeker {
-                        override fun seekExact(frameIndex: Long): FrameSeekResult {
-                            val (resp, frame, replacementId) = mediaSession.request { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
+                        override fun seekExact(frameIndex: Long): FrameSeekResult = seekExact(frameIndex) {}
+
+                        override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
+                            val (resp, frame, replacementId) = mediaSession.request(onRecovery) { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
                             if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
                             readShmAndRender(frame)
                             return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate, recovered = replacementId != null)
@@ -420,7 +424,8 @@ class ArbBundleFileEditor internal constructor(
                         frameSeeker = seeker,
                         framePtsNs = framePtsNs,
                         lastFrameDurationNs = lastFrameDurationNs,
-                        fallbackFps = initialState.estimatedFps,
+                        timelineDurationNs = timelineDurationNs,
+                        fallbackFps = 1_000_000_000.0 / initialState.axis.outTime(0).coerceAtLeast(1L),
                         audioPlayer = null,
                         clock = playbackClock,
                         initialFrameIndex = initialPlayhead,
@@ -433,7 +438,7 @@ class ArbBundleFileEditor internal constructor(
                             publishEdt { if (!disposed) studioController.showPlaybackError(err.message ?: "映像の再生に失敗しました") }
                         },
                     )
-                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs, playbackDurationNs = ctrl.durationNs)
+                    initialState = initialState.copy(axis = ctrl.axis)
                     ctrl.addStateListener { _ ->
                         publishEdt {
                             if (!disposed) {
@@ -768,6 +773,17 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
+    private fun performTimeSeek(timeNs: Long, settled: Boolean) {
+        val ctrl = currentPlaybackController() ?: return
+        submitWork {
+            runCatching {
+                if (settled) ctrl.seekToTime(timeNs) else ctrl.scrubToTime(timeNs)
+            }.onFailure { error ->
+                publishEdt { if (!disposed) studioController.showPlaybackError(error.message ?: "シークに失敗しました") }
+            }
+        }
+    }
+
     private fun performScrub(frameIndex: Long) {
         val ctrl = currentPlaybackController() ?: return
         submitWork {
@@ -812,23 +828,21 @@ class ArbBundleFileEditor internal constructor(
 
     private fun applySelectTapRange() {
         val current = viewerState ?: return
-        val frames = current.mainTapFrameIndices()
-        if (frames.isEmpty()) return
-        val before = current.estimatedFps.roundToLong().coerceAtLeast(1L)
-        val after = (current.estimatedFps * 2.0).roundToLong().coerceAtLeast(1L)
-        val range = PlaybackController.paddedRange(frames.min(), frames.max(), before, after, current.frameCount)
+        val times = current.mainTaps.mapNotNull(current::tapTime)
+        if (times.isEmpty()) return
+        val axis = current.axis
+        val range = axis.frameAt(times.min() - 1_000_000_000L)..axis.outFrame(times.max() + (axis.endNs - times.max()).coerceAtMost(2_000_000_000L))
         val playhead = current.currentFrameIndex.takeIf { it in range } ?: range.first
-        selectPreset(range, playhead) { it.selectTapRange(frames, before, after, playhead) }
+        selectPreset(range, playhead) { it.selectRange(range, playhead) }
     }
 
     private fun applySelectAroundCrash() {
         val current = viewerState ?: return
-        if (current.frameCount <= 0) return
-        val crash = current.primaryCrashFrameIndex()?.coerceIn(0L, current.frameCount - 1L) ?: return
-        val before = (current.estimatedFps * 5.0).roundToLong().coerceAtLeast(1L)
-        val after = (current.estimatedFps * 2.0).roundToLong().coerceAtLeast(1L)
-        val range = PlaybackController.paddedRange(crash, crash, before, after, current.frameCount)
-        selectPreset(range, crash) { it.selectAroundCrash(crash, before, after) }
+        val time = current.crashes.firstOrNull()?.let(current::crashTime) ?: return
+        val axis = current.axis
+        val crash = axis.frameAt(time)
+        val range = axis.frameAt(time - 5_000_000_000L)..axis.outFrame(time + (axis.endNs - time).coerceAtMost(2_000_000_000L))
+        selectPreset(range, crash) { it.selectRangeAtTime(range, time) }
     }
 
     private fun applyResetFullRange() {

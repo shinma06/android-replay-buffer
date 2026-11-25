@@ -63,6 +63,67 @@ class ArbUiComponentsTest {
      * P2-06: the Studio header renders [ArbStudioController.headerSubtitle] verbatim. A bundle of
      * the current format without device info used to show its wire name `v2` there.
      */
+    private fun videoState() = TimelineViewerState(
+            bundleId = "b-approx",
+            path = "/tmp/b-approx",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l-1",
+            summary = TimelineSummaryResponse(
+                bundleId = "b-approx",
+                path = "/tmp/b-approx",
+                format = BundleFormat.V2,
+                isLegacy = false,
+                provenance = Provenance.Original,
+                streams = StreamsSummary(),
+                unanchoredSummary = UnanchoredSummary(0L, 0L),
+                epochs = emptyList(),
+                frameCount = 20,
+                keyframeCount = 2,
+                logMainCount = 0,
+                logUnanchoredCount = 0,
+                tapMainCount = 0,
+                tapUnanchoredCount = 0,
+                discontinuityCount = 0,
+            ),
+            frameCount = 20L,
+        )
+
+    @Test
+    fun vfrTimelineLayersAndGesturesUseOnePixelCoordinate() {
+        val original = videoState()
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(4, listOf(0, 10, 1000, 1001), lastDurationNs = 999)
+        val state = original.copy(axis = axis, frameCount = 4, inFrameIndex = 2, outFrameIndex = 2,
+            summary = original.summary.copy(epochs = listOf(EpochSpan("b", 50, 2050))))
+        val geo = StudioTimelineGeometry(state, 14f, 1000f)
+        val out = StudioTimelineGeometry(state.copy(inFrameIndex = 0, outFrameIndex = 1), 14f, 1000f)
+        val tap = TapRecord(1, bootId = "b", pcIngestContNs = 0, action = "DOWN", bucket = RecordBucket.MAIN,
+            alignment = TimeAlignment.Anchored("b", 1050, 0, TimestampSemantics.INPUT_EVENT_TIME))
+        val swipe = tap.copy(gestureKind = io.github.shinma06.arb.model.GestureKind.SWIPE, endTOffsetNs = 100,
+            alignment = TimeAlignment.Anchored("b", 950, 0, TimestampSemantics.INPUT_EVENT_TIME))
+        val span = ScreenSpan(1050, 1050, packageName = "p", activityName = "A", shortName = "A")
+        val crash = CrashMarker(1050, 0, "p", "p", exceptionClass = "E", message = "", sourceLogSeq = 2)
+        val expected = 514f
+        for (pixel in listOf(geo.playhead(1000), geo.inX, out.outX, geo.frame(2), geo.screen(span), geo.screen(span, true),
+            geo.event(1050, "b"), geo.tap(tap), geo.swipeEnd(swipe), geo.crash(crash), geo.tick(1, 2))) {
+            assertEquals(expected, pixel)
+        }
+        var last = -1L
+        for (pixel in 0..1030) {
+            val time = geo.timeAt(pixel.toFloat())
+            assertTrue(time >= last && time in 0..2000)
+            assertEquals(pixel.toFloat().coerceIn(14f, 1014f), geo.at(time))
+            last = time
+        }
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        studio.renderState(state, null)
+        studio.seekTime(500)
+        studio.applyFramePublished(ShmFrameMeta(1L, 0, true, 40, 80, 160, ShmPixelFormat.RGBA8, 50), null)
+        assertEquals(500L, studio.playheadTimeNs)
+        assertEquals(1L, studio.viewerState?.currentFrameIndex)
+        assertEquals(264f, geo.playhead(studio.playheadTimeNs))
+    }
+
     @Test
     fun studioHeaderSubtitleNeverFallsBackToTheWireFormatName() {
         fun subtitleFor(format: BundleFormat, device: io.github.shinma06.arb.model.DeviceInfo?): String {
@@ -124,31 +185,7 @@ class ArbUiComponentsTest {
         assertFalse(studio.approximatePreviewVisible)
 
         val img = BufferedImage(40, 80, BufferedImage.TYPE_INT_ARGB)
-        val baseState = TimelineViewerState(
-            bundleId = "b-approx",
-            path = "/tmp/b-approx",
-            format = BundleFormat.V2,
-            isLegacy = false,
-            leaseId = "l-1",
-            summary = TimelineSummaryResponse(
-                bundleId = "b-approx",
-                path = "/tmp/b-approx",
-                format = BundleFormat.V2,
-                isLegacy = false,
-                provenance = Provenance.Original,
-                streams = StreamsSummary(),
-                unanchoredSummary = UnanchoredSummary(0L, 0L),
-                epochs = emptyList(),
-                frameCount = 20,
-                keyframeCount = 2,
-                logMainCount = 0,
-                logUnanchoredCount = 0,
-                tapMainCount = 0,
-                tapUnanchoredCount = 0,
-                discontinuityCount = 0,
-            ),
-            frameCount = 20L,
-        )
+        val baseState = videoState()
         studio.renderState(baseState, image = img)
         studio.applyFramePublished(
             ShmFrameMeta(1L, 10L, true, 40, 80, 160, ShmPixelFormat.RGBA8, 100L),
