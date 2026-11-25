@@ -1837,7 +1837,7 @@ def self_test() -> int:
     png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1020, 588) + b"\x08\x06\x00\x00\x00"
     require("png dims", png_dimensions(png) == (1020, 588) and png_dimensions(b"nope") is None)
     require("snapshot diff", diff_snapshots({"a": "1", "b": "2"}, {"a": "1", "b": "3", "c": "4"}) == ["modified: b", "added: c"])
-    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 17)
+    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 19)
     require("gesture probes", [p["label"] for p in gesture_probe_points({"gestures": [
         {"kind": "tap", "parent_frame": 20, "in_trim_range": False, "trim_frame": -27, "x": 1, "y": 1},
         {"kind": "tap", "parent_frame": 120, "in_trim_range": True, "trim_frame": 73, "x": 960.0, "y": 540.0},

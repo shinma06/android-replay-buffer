@@ -228,11 +228,15 @@ class ArbCatalogReconcileAndEmptyTrashTest {
                 capture = CaptureBarState(daemonConnected = true),
                 catalog = BundleCatalogState.fromEntries(
                     entries = listOf(
-                        BundleEntryView("b-1", "/p", CatalogFormatVersion.V2, BundleLifecycleState.TRASHED, "2026-11-25T00:00:00Z", null, "2026-11-25T00:00:00Z", 0),
+                        BundleEntryView("b-1", "/p", CatalogFormatVersion.V2, BundleLifecycleState.PURGING, "2026-11-25T00:00:00Z", null, "2026-11-25T00:00:00Z", 0),
                     ),
                     activeFilter = BundleFilter.TRASH,
                 ),
             )
+            assertEquals(1, controller.trashCount)
+            assertTrue(controller.emptyTrashEnabled)
+            assertFalse(controller.displayedBundles.single().canRestore)
+            assertFalse(controller.displayedBundles.single().canOpen)
             controller.requestEmptyTrash()
             SwingUtilities.invokeAndWait {}
             controller.confirmEmptyTrash()

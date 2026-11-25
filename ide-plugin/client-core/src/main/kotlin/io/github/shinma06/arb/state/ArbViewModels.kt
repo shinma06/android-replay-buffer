@@ -382,8 +382,11 @@ data class BundleCatalogItem(
     val isStorageUnavailable: Boolean
         get() = diskState == BundleDiskState.STORAGE_UNAVAILABLE
 
+    val inTrash: Boolean
+        get() = state == BundleLifecycleState.TRASHED || state == BundleLifecycleState.PURGING
+
     val canOpen: Boolean
-        get() = diskState == BundleDiskState.PRESENT
+        get() = diskState == BundleDiskState.PRESENT && state != BundleLifecycleState.PURGING
 
     val canForget: Boolean
         get() = diskState == BundleDiskState.MISSING
@@ -437,14 +440,14 @@ data class BundleCatalogState(
             BundleFilter.ALL -> items.filter { it.state == BundleLifecycleState.ACTIVE }
             BundleFilter.TRIMMED -> items.filter { it.state == BundleLifecycleState.ACTIVE && it.isTrimmed }
             BundleFilter.CRASH -> items.filter { it.state == BundleLifecycleState.ACTIVE && it.hasCrash }
-            BundleFilter.TRASH -> items.filter { it.state == BundleLifecycleState.TRASHED }
+            BundleFilter.TRASH -> items.filter { it.inTrash }
         }
 
     fun countFor(filter: BundleFilter): Int = when (filter) {
         BundleFilter.ALL -> items.count { it.state == BundleLifecycleState.ACTIVE }
         BundleFilter.TRIMMED -> items.count { it.state == BundleLifecycleState.ACTIVE && it.isTrimmed }
         BundleFilter.CRASH -> items.count { it.state == BundleLifecycleState.ACTIVE && it.hasCrash }
-        BundleFilter.TRASH -> items.count { it.state == BundleLifecycleState.TRASHED }
+        BundleFilter.TRASH -> items.count { it.inTrash }
     }
 
     companion object {
