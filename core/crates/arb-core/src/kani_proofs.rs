@@ -538,7 +538,9 @@ fn k3_map_logcat_wall_no_panic_and_causal_ceiling() {
 }
 
 // ---------------------------------------------------------------- K4
-const IDS: [&str; 4] = ["c0", "c1", "c2", "c3"];
+/// One-byte chunk IDs: `chunk_id` breaks `created_cont_ns` ties in the planner's sort and is
+/// compared for pin protection, so longer IDs only add `memcmp` work.
+const IDS: [&str; 4] = ["a", "b", "c", "d"];
 
 fn any_chunks(n: usize, small: bool) -> Vec<RingChunkMeta> {
     let mut v = Vec::new();
@@ -574,8 +576,51 @@ fn any_chunks(n: usize, small: bool) -> Vec<RingChunkMeta> {
     v
 }
 
-fn check_plan(small: bool) {
-    let n = usize::from(kani::any::<u8>() % 5);
+/// Index of the chunk with ID `id`. IDs are `IDS[i]` (one distinct byte each), so the byte
+/// identifies the chunk without a `memcmp` over a symbolically chosen `String`.
+fn chunk_index(chunks: &[RingChunkMeta], id: &str) -> usize {
+    assert_eq!(id.len(), 1, "evicted ID must name an input chunk");
+    let i = usize::from(id.as_bytes()[0].wrapping_sub(b'a'));
+    assert!(i < chunks.len(), "evicted ID must name an input chunk");
+    i
+}
+
+/// `(created_cont_ns, chunk_id)` order of the planner; IDs are `IDS[i]`, so comparing the
+/// indices compares the IDs.
+fn older(chunks: &[RingChunkMeta], a: usize, b: usize) -> bool {
+    (chunks[a].created_cont_ns, a) < (chunks[b].created_cont_ns, b)
+}
+
+#[expect(
+    unused_extern_crates,
+    reason = "names `alloc::slice::stable_sort` for `kani::stub`"
+)]
+extern crate alloc;
+
+/// Stable insertion sort standing in for `alloc::slice::stable_sort`, the body of
+/// `<[T]>::sort_by` (TCB: std's stable sort is correct).
+fn stable_sort_stub<T, F: FnMut(&T, &T) -> bool>(v: &mut [T], mut is_less: F) {
+    let mut i = 1;
+    while i < v.len() {
+        let mut j = i;
+        while j > 0 && is_less(&v[j], &v[j - 1]) {
+            v.swap(j - 1, j);
+            j -= 1;
+        }
+        i += 1;
+    }
+}
+
+/// One K4 input: concrete chunk count, symbolic chunk metadata, policy and write, and the plan.
+struct K4Case {
+    chunks: Vec<RingChunkMeta>,
+    policy: RingBudgetPolicy,
+    incoming: u64,
+    free: u64,
+    decision: RingWriteDecision,
+}
+
+fn k4_case(n: usize, small: bool) -> K4Case {
     let chunks = any_chunks(n, small);
     let policy = RingBudgetPolicy {
         max_ring_bytes: if small {
@@ -592,53 +637,47 @@ fn check_plan(small: bool) {
     };
     let (incoming, free): (u64, u64) = (kani::any(), kani::any());
     let decision = RingEvictionPlanner::new(policy).plan(&chunks, incoming, free);
-    let mut eligible: Vec<&RingChunkMeta> = chunks.iter().filter(|c| c.is_evictable()).collect();
-    eligible.sort_by(|a, b| {
-        a.created_cont_ns
-            .cmp(&b.created_cont_ns)
-            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
-    });
-    let total: u128 = chunks.iter().map(|c| u128::from(c.bytes)).sum();
-    match decision {
+    K4Case {
+        chunks,
+        policy,
+        incoming,
+        free,
+        decision,
+    }
+}
+
+/// Safety half of K4: every evicted ID names an evictable input chunk (REQ-04), an allowed
+/// write fits the byte quota and the free-space floor, and every stop decision is justified.
+fn check_plan_safety(c: &K4Case) {
+    let total: u128 = c.chunks.iter().map(|m| u128::from(m.bytes)).sum();
+    match &c.decision {
         RingWriteDecision::Allow { evict_chunk_ids } => {
-            assert!(evict_chunk_ids.len() <= eligible.len());
             let mut freed: u128 = 0;
-            let mut i = 0;
-            while i < evict_chunk_ids.len() {
-                assert_eq!(
-                    evict_chunk_ids[i], eligible[i].chunk_id,
-                    "oldest-first prefix"
-                );
-                freed += u128::from(eligible[i].bytes);
-                i += 1;
+            for id in evict_chunk_ids {
+                let i = chunk_index(&c.chunks, id);
+                assert!(c.chunks[i].is_evictable(), "REQ-04 pin protection");
+                freed += u128::from(c.chunks[i].bytes);
             }
-            for c in &chunks {
-                if c.pin == PinStatus::Pinned || c.status == RingChunkStatus::Open {
-                    assert!(
-                        !evict_chunk_ids.contains(&c.chunk_id),
-                        "REQ-04 pin protection"
-                    );
-                }
-            }
-            assert!(total - freed + u128::from(incoming) <= u128::from(policy.max_ring_bytes));
-            assert!(free.saturating_sub(incoming) >= policy.min_free_disk_bytes);
+            assert!(total - freed + u128::from(c.incoming) <= u128::from(c.policy.max_ring_bytes));
+            assert!(c.free.saturating_sub(c.incoming) >= c.policy.min_free_disk_bytes);
         }
         RingWriteDecision::StopStoragePressure { .. } => {
             assert!(
-                free < policy.min_free_disk_bytes
-                    || free.saturating_sub(incoming) < policy.min_free_disk_bytes
+                c.free < c.policy.min_free_disk_bytes
+                    || c.free.saturating_sub(c.incoming) < c.policy.min_free_disk_bytes
             );
         }
         RingWriteDecision::ChunkTooLarge => {
-            assert!(incoming > policy.max_ring_bytes);
+            assert!(c.incoming > c.policy.max_ring_bytes);
         }
         RingWriteDecision::StopRingFullPinned { .. } => {
-            let protected: u128 = chunks
+            let protected: u128 = c
+                .chunks
                 .iter()
-                .filter(|c| !c.is_evictable())
-                .map(|c| u128::from(c.bytes))
+                .filter(|m| !m.is_evictable())
+                .map(|m| u128::from(m.bytes))
                 .sum();
-            assert!(protected + u128::from(incoming) > u128::from(policy.max_ring_bytes));
+            assert!(protected + u128::from(c.incoming) > u128::from(c.policy.max_ring_bytes));
             assert!(
                 protected > 0,
                 "only pinned/open data can block a fitting write"
@@ -647,14 +686,118 @@ fn check_plan(small: bool) {
     }
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k4_ring_eviction_plan_realistic_sizes() {
-    check_plan(true);
+/// Ordering half of K4 (reachable only with two or more chunks): evicted IDs are strictly
+/// increasing in planner order and older than every evictable chunk kept. For distinct keys
+/// this is "oldest-first prefix of the evictable chunks", checked without re-sorting a
+/// symbolic-length `Vec`.
+fn check_plan_order(c: &K4Case) {
+    if let RingWriteDecision::Allow { evict_chunk_ids } = &c.decision {
+        let n = c.chunks.len();
+        let mut evicted = [false; IDS.len()];
+        let mut prev: Option<usize> = None;
+        for id in evict_chunk_ids {
+            let i = chunk_index(&c.chunks, id);
+            if let Some(p) = prev {
+                assert!(older(&c.chunks, p, i), "oldest-first order");
+            }
+            prev = Some(i);
+            evicted[i] = true;
+        }
+        let mut kept = 0;
+        while kept < n {
+            if c.chunks[kept].is_evictable() && !evicted[kept] {
+                let mut e = 0;
+                while e < n {
+                    if evicted[e] {
+                        assert!(older(&c.chunks, e, kept), "oldest-first prefix");
+                    }
+                    e += 1;
+                }
+            }
+            kept += 1;
+        }
+    }
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof, kani::unwind(6))]
-fn k4_ring_eviction_plan_extreme_u64() {
-    check_plan(false);
+fn check_plan(n: usize, small: bool) {
+    let c = k4_case(n, small);
+    check_plan_safety(&c);
+    check_plan_order(&c);
+}
+
+/// One chunk: the safety half only, since the ordering obligations need two chunks.
+#[kani::proof]
+#[kani::unwind(6)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_ring_eviction_plan_realistic_sizes_n1() {
+    check_plan_safety(&k4_case(1, true));
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n2() {
+    check_plan(2, true);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n3() {
+    check_plan(3, true);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_realistic_sizes_n4() {
+    check_plan(4, true);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+fn k4_ring_eviction_plan_extreme_u64_n1() {
+    check_plan_safety(&k4_case(1, false));
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n2() {
+    check_plan(2, false);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n3() {
+    check_plan(3, false);
+}
+
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
+fn k4_ring_eviction_plan_extreme_u64_n4() {
+    check_plan(4, false);
 }
 
 // ---------------------------------------------------------------- K5
@@ -667,17 +810,19 @@ const STATES: [SaveJobState; 6] = [
     SaveJobState::Discarded,
 ];
 
+/// Both payload strings are allocated before the match so a symbolic `k` selects among fixed
+/// heap objects instead of merging per-branch allocations.
 fn event(k: u8, path: &str) -> SaveJobEvent {
+    let error_message = "e".to_owned();
+    let new_destination_path = path.to_owned();
     match k % 7 {
         0 => SaveJobEvent::BeginDrain,
         1 => SaveJobEvent::BeginMaterialize,
         2 => SaveJobEvent::Complete,
-        3 => SaveJobEvent::FailRetryable {
-            error_message: "e".to_owned(),
-        },
+        3 => SaveJobEvent::FailRetryable { error_message },
         4 => SaveJobEvent::Retry,
         5 => SaveJobEvent::Retarget {
-            new_destination_path: path.to_owned(),
+            new_destination_path,
         },
         _ => SaveJobEvent::Discard,
     }
@@ -689,36 +834,203 @@ fn job_in(state: SaveJobState) -> SaveJob {
     job
 }
 
-#[cfg_attr(feature = "kani-extended", kani::proof)]
-fn k5_save_job_apply_matches_transition_table() {
-    let from = STATES[usize::from(kani::any::<u8>() % 6)];
-    let k: u8 = kani::any();
-    let path = match kani::any::<u8>() % 3 {
-        0 => "",
-        1 => "  ",
-        _ => "/new",
-    };
-    let before = job_in(from);
+/// Job in `state` holding the first `pins` (0–2) of two fixed chunk IDs.
+fn k5_job(state: SaveJobState, pins: usize) -> SaveJob {
+    let ids: Vec<String> = ["c0", "c1"][..pins]
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+    let mut job = SaveJob::new("j", "/d", ids);
+    job.state = state;
+    job
+}
+
+/// K5 body for one concrete source state and retarget path over every event (`k` is symbolic;
+/// only `k % 7` matters) and 0–2 pins. The path stays concrete: `str::trim` over a path chosen
+/// symbolically among literals did not finish in 4 min, and the 6×7 state×event product in one
+/// harness exhausted CBMC memory (31 GB). Each obligation is an implication asserted on every
+/// path, so none sits in a branch that a concrete `from` makes dead (terminal states reject
+/// every event, so for them the obligations reduce to rejection and immutability).
+fn k5_case(from: SaveJobState, pins: usize, path: &str) {
+    let before = k5_job(from, pins);
     let mut job = before.clone();
-    match job.apply(event(k, path)) {
-        Ok(to) => {
-            assert!(from.can_transition_to(to), "apply ⊆ can_transition_to");
-            assert_eq!(job.state, to);
-            assert!(!from.is_terminal(), "terminal states reject every event");
-            if !matches!(to, SaveJobState::Completed | SaveJobState::Discarded) {
-                assert_eq!(
-                    job.pinned_chunk_ids, before.pinned_chunk_ids,
-                    "pins conserved"
-                );
-            } else {
-                assert!(job.pinned_chunk_ids.is_empty(), "terminal releases pins");
-            }
-            if k % 7 == 5 {
-                assert!(!path.trim().is_empty(), "empty retarget rejected");
-            }
-        }
-        Err(_) => assert_eq!(job, before, "rejected transition leaves job unchanged"),
-    }
+    let k: u8 = kani::any();
+    let accepted = job.apply(event(k, path)).ok();
+    let ok = accepted.is_some();
+    let to = accepted.unwrap_or(from);
+    let released = matches!(to, SaveJobState::Completed | SaveJobState::Discarded);
+    let pins_kept = job.pinned_chunk_ids == before.pinned_chunk_ids;
+    let pins_empty = job.pinned_chunk_ids.is_empty();
+    let unchanged = job == before;
+    let path_blank = path.trim().is_empty();
+    let retarget = k % 7 == 5;
+    assert!(
+        !ok || from.can_transition_to(to),
+        "apply ⊆ can_transition_to"
+    );
+    assert!(!ok || job.state == to, "job.state is the returned target");
+    assert!(
+        !ok || !from.is_terminal(),
+        "terminal states reject every event"
+    );
+    assert!(!ok || released || pins_kept, "pins conserved");
+    assert!(!ok || !released || pins_empty, "terminal releases pins");
+    assert!(!ok || !retarget || !path_blank, "empty retarget rejected");
+    assert!(ok || unchanged, "rejected transition leaves job unchanged");
+}
+
+/// K5 for one source state and pin count over every event and an empty, blank or real
+/// retarget path. Pin counts get separate harnesses: looping 0–2 pins in one harness took
+/// 74–81 s for `FailedRetryable` (CBMC cost grows faster than the number of cases).
+fn k5_apply_from(from: SaveJobState, pins: usize) {
+    k5_case(from, pins, "");
+    k5_case(from, pins, "  ");
+    k5_case(from, pins, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins0() {
+    k5_apply_from(SaveJobState::Pinned, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins1() {
+    k5_apply_from(SaveJobState::Pinned, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_pinned_pins2() {
+    k5_apply_from(SaveJobState::Pinned, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins0() {
+    k5_apply_from(SaveJobState::Draining, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins1() {
+    k5_apply_from(SaveJobState::Draining, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_draining_pins2() {
+    k5_apply_from(SaveJobState::Draining, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins0() {
+    k5_apply_from(SaveJobState::Materializing, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins1() {
+    k5_apply_from(SaveJobState::Materializing, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_materializing_pins2() {
+    k5_apply_from(SaveJobState::Materializing, 2);
+}
+
+/// `FailedRetryable` is also split per path: it is the only state accepting `Retarget`.
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_empty_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "  ");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins0() {
+    k5_case(SaveJobState::FailedRetryable, 0, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins1() {
+    k5_case(SaveJobState::FailedRetryable, 1, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_failed_retryable_path_real_pins2() {
+    k5_case(SaveJobState::FailedRetryable, 2, "/new");
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins0() {
+    k5_apply_from(SaveJobState::Completed, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins1() {
+    k5_apply_from(SaveJobState::Completed, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_completed_pins2() {
+    k5_apply_from(SaveJobState::Completed, 2);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins0() {
+    k5_apply_from(SaveJobState::Discarded, 0);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins1() {
+    k5_apply_from(SaveJobState::Discarded, 1);
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn k5_save_job_apply_matches_transition_table_discarded_pins2() {
+    k5_apply_from(SaveJobState::Discarded, 2);
 }
 
 #[kani::proof]
