@@ -564,6 +564,19 @@ open class ArbdDaemonService internal constructor(
         }
     }
 
+    /** An editor owns this connection, including the lifetime of its daemon viewport. */
+    internal open fun openMediaClient(): ArbdRpcClient {
+        check(!disposed)
+        val endpoint = processManager.paths.ipcEndpoint()
+        return try {
+            ArbdRpcClient.connectVerified(endpoint)
+        } catch (_: IOException) {
+            // The daemon may have exited. Only recovery needs the shared spawn/adoption path.
+            withClient { it.systemHello() }
+            ArbdRpcClient.connectVerified(endpoint)
+        }
+    }
+
     fun isConnected(): Boolean = client != null
 
     fun disconnect() = synchronized(lock) {

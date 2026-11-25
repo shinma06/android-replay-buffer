@@ -361,7 +361,7 @@ class ArbdProcessManager(
         val next = replaceConnectedDaemon(running, binary, startupTimeout, identityUpgrade = false)
         if (next === running) {
             running.client.close()
-            throw IOException("arbd は保存中、別の IDE が所有中、または安全な再起動に未対応です。")
+            throw IOException("arbd は保存中、動画を開いている Studio タブがある、別の IDE が所有中、または安全な再起動に未対応です。")
         }
         return next
     }

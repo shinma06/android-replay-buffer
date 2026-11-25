@@ -620,6 +620,7 @@ data class TimelineViewerState(
     val exportCompletion: ExportCompletionInfo? = null,
     val lastActionMessage: String? = null,
     val relativeFramePtsNs: List<Long> = emptyList(),
+    val playbackDurationNs: Long? = null,
 ) {
     /**
      * Mandatory ARB requirement (`SPEC-03`): show approximate-preview badge whenever `isApproximate == true`,

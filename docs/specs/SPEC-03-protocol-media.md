@@ -30,7 +30,7 @@ satisfies:
 
 - **制御プレーン**: バージョン付き JSON-RPC 2.0 / NDJSON（Linux: `$XDG_RUNTIME_DIR/arb/arbd.sock`、macOS: `~/Library/Caches/arb/arbd.sock`、Windows: `\\.\pipe\arb-daemon-<sid>`）。`system.*`, `device.*`, `capture.*`, `save.*`, `bundle.*`, `timeline.*`, `edit.*`, `export.*`, `media.*` を提供する。
 - `system.hello` は `parent_bound`（真偽値）を返す。`--exit-on-stdin-eof` で起動され、親の終了とともに終了する `arbd` だけが `true`。古い `arbd` は返さず、クライアントは `false` とみなす。
-- `system.shutdown_for_handover` は非 system RPC・クラッシュ自動保存と排他的に引き継ぐ。親付き daemon は、起動した IDE が子の環境変数 `ARB_HANDOVER_OWNER` に設定したランダム値と RPC 引数 `owner` の一致も要求する。処理中または所有確認に失敗した場合は `{"ok":false}`。受理時は次の保存の受付を閉じて通常終了し、`{"ok":true}` を返す。旧版の method not found では、所有者が停止するまで更新を延期する。
+- `system.shutdown_for_handover` は非 system RPC・クラッシュ自動保存と排他的に引き継ぐ。親付き daemon は、起動した IDE が子の環境変数 `ARB_HANDOVER_OWNER` に設定したランダム値と RPC 引数 `owner` の一致も要求する。処理中、開いている映像 viewport（Studio のタブ）がある場合、または所有確認に失敗した場合は `{"ok":false}`（タブを閉じると受理される）。受理時は次の保存の受付を閉じて通常終了し、`{"ok":true}` を返す。旧版の method not found では、所有者が停止するまで更新を延期する。
 - `timeline.query_logs` と MCP の `arb_query_logs` は省略可能な `after_seq` を受け付ける。指定時は同じ条件のうち、指定した番号より後の行を `seq` 順に返す。これにより同一時刻のログも分割して取得できる。
 - `bundle.list`（および `bundle.trash` / `bundle.restore`）は各 `BundleEntryView` に実ディスク状態 `disk_state`（`present` / `missing` / `storage_unavailable`、旧 `arbd` 省略時は `present` 扱い）を非破壊の純粋読取で付与する。`bundle.forget`（CLI: `bundles forget <ID>|--all-missing`、MCP: `arb_forget_bundle`）はディスクを一切触らず `missing` かつリース・保存ジョブ 0 件の行のみカタログから解除する。`bundle.gc`（CLI: `bundles gc [--now]`、MCP: `arb_gc_bundles`）は省略可能な `ignore_grace`（既定 `false`）を受け付け、`true` 指定時のみ `gc_grace_secs` を 0 として管理下 v2 の即時物理削除を行う（リース・保存ジョブ・管理域外・旧形式保護は維持）。
 - **高帯域データプレーン**: ビューポート単位のトリプルバッファ共有メモリ（mmap）フレームリングで 1080p30 RGBA/BGRA を配信する。スロットヘッダには `generation`, `frame_index`, `is_approximate`, `width`, `height`, `stride`, `pixel_format`, `boottime_ns` を持ち、`is_approximate == true` の間は UI に近似プレビューバッジを必ず表示する。
@@ -48,3 +48,10 @@ satisfies:
   - **外部フィルムストリップキャッシュ**（`cache/<bundle-id>/filmstrip.bin`）＋マルチスレッドキーフレーム復号で開いて 1 秒以内を達成。
   - **GOP-LRU 復号済みフレームキャッシュ**＋最新優先キャンセルで任意シーク 0.2〜0.5 秒以内、前後 1 フレームコマ送りの遅延ゼロを達成。
   - **フレーム単位トリム**: `[in_frame_index, out_frame_index]` 契約で先頭が非キーフレーム時のみ先頭 GOP 残余を新規 IDR から再エンコードし、後続 GOP は無劣化ストリームコピー。関連トラックは `arb-core::selection` の同一 3 値選別エンジンで抽出し元バンドルを一切変更しない。
+
+
+### Studio の連続再生と接続復旧
+
+- 表示用時計は単調時計で進み、静止区間は次の PTS まで同じフレームを表示する。`media.open_viewport` の任意フィールド `last_frame_duration_ns` は MP4 の最終サンプル長を返す。旧デーモンでは直前のフレーム間隔を使用する。
+- 再生タブごとに専用 IPC 接続と SHM viewport を保持する。切断または viewport 失効時は一度だけ開き直して同じ位置をシークする。復旧後も選択範囲と速度を保持する。再生継続が困難なときはフレーム番号と理由を表示する。
+- 解像度と GOP 長から復号画像がキャッシュ上限を超える場合は、先頭 IDR から順次復号し、上限内の直近フレームを再利用する。

@@ -480,6 +480,18 @@ class ArbdRpcClient(
 
     companion object {
         @Throws(IOException::class)
+        fun connectVerified(endpoint: String): ArbdRpcClient {
+            val client = connect(endpoint)
+            try {
+                client.systemHello()
+                return client
+            } catch (e: Exception) {
+                client.close()
+                throw e
+            }
+        }
+
+        @Throws(IOException::class)
         fun connect(endpoint: String, os: HostOs = HostOs.detect()): ArbdRpcClient =
             ArbdRpcClient(LocalIpcTransport.connect(endpoint, os))
     }
