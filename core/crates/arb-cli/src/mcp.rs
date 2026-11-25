@@ -253,13 +253,21 @@ impl McpServer {
             };
             match client.call(method, params.clone()) {
                 Ok(val) => return Ok(val),
-                Err(
-                    err @ (RpcClientError::UnexpectedEof
-                    | RpcClientError::Os(_)
-                    | RpcClientError::Io(_)),
-                ) => {
+                Err(err) if err.is_transport() => {
                     self.client = None;
-                    if !(retry_safe && attempt == 0) {
+                    // A request rejected locally (too large / invalid) would fail identically again.
+                    let interrupted = match &err {
+                        RpcClientError::UnexpectedEof | RpcClientError::Io(_) => true,
+                        RpcClientError::Os(os) => !matches!(
+                            os,
+                            arb_os::OsError::FrameTooLarge { .. }
+                                | arb_os::OsError::InvalidArgument { .. }
+                        ),
+                        _ => false,
+                    };
+                    // `Closed` means nothing was sent, so even a mutating call may reconnect once.
+                    let nothing_sent = matches!(err, RpcClientError::Closed);
+                    if !((nothing_sent || (retry_safe && interrupted)) && attempt == 0) {
                         return Err(err.to_string());
                     }
                 }
@@ -403,7 +411,7 @@ impl McpServer {
         {
             obj.insert("note".to_owned(), Value::String(note.to_owned()));
         }
-        Ok(vec![text_block(&resp)])
+        save_content(&resp)
     }
 
     fn tool_screenshot(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -448,7 +456,7 @@ impl McpServer {
             params.insert("drain_timeout_ms".to_owned(), drain.clone());
         }
         let resp = self.call_daemon("save.logs", &Value::Object(params))?;
-        Ok(vec![text_block(&resp)])
+        save_content(&resp)
     }
 
     fn tool_timeline_overview(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
@@ -713,6 +721,14 @@ fn rpc_error(id: &Value, code: i32, message: impl Into<String>) -> Value {
             "message": message.into(),
         }
     })
+}
+
+fn save_content(response: &Value) -> Result<Vec<Value>, String> {
+    if super::save_outcome_failed(response) {
+        // MCP error content uses the same JSON body, including the job ID and durable pins.
+        return Err(response.to_string());
+    }
+    Ok(vec![text_block(response)])
 }
 
 fn text_block(value: &Value) -> Value {
@@ -1285,5 +1301,125 @@ mod tests {
         assert_eq!(arr[1]["id"], 2);
         let empty = srv.handle_line("[]").expect("empty batch error");
         assert_eq!(empty["error"]["code"], -32600);
+    }
+    #[test]
+    fn mutation_timeout_is_reported_without_connecting_again() {
+        use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line};
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let req = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&req).unwrap()["method"],
+                "save.trigger"
+            );
+            // Keep the listener alive while withholding the response.
+            assert!(
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let mut client = super::RpcClient::connect_endpoint(&endpoint).unwrap();
+        client.set_default_timeout(Duration::from_millis(250));
+        client.set_long_timeout(Duration::from_millis(250));
+        let mut mcp = super::McpServer {
+            paths,
+            client: Some(client),
+        };
+        let result = mcp
+            .call_daemon("save.trigger", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(result.contains("timed out"), "{result}");
+        assert!(mcp.client.is_none());
+        server.join().unwrap();
+    }
+    #[test]
+    fn closed_client_reconnects_once_even_for_mutating_call() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            // Connection 1: withhold reply so the client times out and marks itself Closed.
+            let first = listener.accept().unwrap();
+            let mut r1 = std::io::BufReader::new(first);
+            let _ = read_frame_line(&mut r1, DEFAULT_MAX_IPC_LINE_BYTES).unwrap();
+            let _ = read_frame_line(&mut r1, DEFAULT_MAX_IPC_LINE_BYTES);
+            drop(r1);
+
+            // Connection 2: MCP reconnects -> system.hello, then save.trigger.
+            let second = listener.accept().unwrap();
+            let mut r2 = std::io::BufReader::new(second);
+            for expected in ["system.hello", "save.trigger"] {
+                let line = read_frame_line(&mut r2, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(req["method"], expected);
+                let result = if expected == "system.hello" {
+                    json!({ "protocol_version": arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION })
+                } else {
+                    json!({ "bundle_id": "b-reconnected", "job": { "state": "completed" } })
+                };
+                let resp = json!({ "jsonrpc": "2.0", "id": req["id"], "result": result });
+                write_frame_line(r2.get_mut(), &resp.to_string(), DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap();
+            }
+            r2.get_mut().drain().unwrap();
+        });
+
+        let mut closed_client = super::RpcClient::connect_endpoint(&endpoint).unwrap();
+        assert!(matches!(
+            closed_client.call_with_timeout("system.status", json!({}), Duration::from_millis(120)),
+            Err(super::RpcClientError::Timeout)
+        ));
+        let mut mcp = super::McpServer {
+            paths,
+            client: Some(closed_client),
+        };
+        let resp = mcp
+            .call_daemon("save.trigger", &json!({}))
+            .expect("Closed client sent nothing so mutating call may reconnect once");
+        assert_eq!(resp["bundle_id"], "b-reconnected");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn save_content_only_accepts_a_recovered_job_with_a_bundle() {
+        let mut body = serde_json::json!({"job":{"job_id":"same-job","state":"failed_retryable","pinned_chunk_ids":["c1"]}, "bundle_id":"b1"});
+        assert!(super::save_content(&body).is_err());
+        body["job"]["state"] = serde_json::json!("completed");
+        let content = super::save_content(&body).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(content[0]["text"].as_str().unwrap())
+                .unwrap(),
+            body
+        );
+        body["bundle_id"] = serde_json::Value::Null;
+        assert!(super::save_content(&body).is_err());
     }
 }

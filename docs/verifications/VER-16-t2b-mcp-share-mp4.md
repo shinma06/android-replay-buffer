@@ -60,3 +60,11 @@ verifies:
 - **実機 Android の AAC 音声由来入力**: `ffmpeg` 生成 AAC-LC による検証。実機結合は統合タスクで確認する。
 - **HE-AAC / マルチブロック ADTS**: 暗黙破損を避けるため既存パーサ同様に明示的に拒否。
 - **実際の MCP クライアント（Claude Desktop 等）との接続**: プロトコル準拠の自前 stdio クライアントによる検証のみ。
+
+## 5. 追補: 保存失敗契約と RPC クライアントの堅牢化（H-1）
+
+- `mcp_stdio_integration::mcp_reports_retryable_saves_with_recoverable_job_and_pins` / `arb-cli` 単体試験: `arb_save` / `arb_save_logs` の `failed_retryable`（`bundle_id: null`）が `isError: true` で、`job_id`・`last_error`・`pinned_chunk_ids` を保持すること、`save.retry` 後の再保存が `isError: false` になること、CLI と MCP が共通の `save_outcome_failed`（`bundle_id` 欠落または `failed_retryable`）を使うこと、および MCP が既に `Closed` なクライアントで状態変更 RPC でも 1 回だけ再接続することを確認。
+- `arb-os` `rpc` と `ide-plugin` `ArbdRpcClientTest` の単体試験: `id` 不一致・欠落・通知混入・`result`/`error` 両欠落または両方ありの拒否と接続破棄、`"result": null` の受理、無応答・応答の細切れ送信での期限切れ、状態変更 RPC を再送しないこと、3 段階期限（quick 30 s / long 120 s・`ARB_RPC_LONG_TIMEOUT_MS` / export & audio decode 600 s・`ARB_RPC_EXPORT_TIMEOUT_MS`）が `arb-os` と IDE `ArbdRpcClient` で一致すること、閉じた接続への呼び出しが `Closed` を返すこと、daemon が `drain` 後に接続を閉じる応答の受信（全 OS）と Unix での peer 切断後バッファ応答の受信（macOS `SO_RCVTIMEO` `EINVAL` 許容）、`id: null` の daemon エラーをコードと理由を保った転送層の `Rejected` として返し接続を破棄すること、サイズ超過の要求を送信前に拒否して接続を保つこと。
+- `arb-tray`: アイコンとツールチップの更新が互いを止めないこと、未知の job state を警告付きで表示し再試行・破棄を出さないこと、メニュー再構築失敗後の再同期、期限切れ後の次回更新での再接続（再送なし）。
+- `verify_release_bundle.py --self-test`: `capture_enabled` が `False` 以外（`True` / `None` / `0` / 欠落）の変異を検出する。
+- 未検証: Windows 名前付きパイプ上の期限切れ動作は CI の `os-parity (windows-latest)` で確認する。

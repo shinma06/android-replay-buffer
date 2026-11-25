@@ -135,7 +135,10 @@ fn handle_one_request(
     let params = request["params"].clone();
     let _ = on_call.send(ObservedCall { method, params });
 
-    let text = serde_json::to_string(reply).expect("serialize mock reply");
+    let mut response = reply.clone();
+    response["jsonrpc"] = json!("2.0");
+    response["id"] = request["id"].clone();
+    let text = serde_json::to_string(&response).expect("serialize mock reply");
     write_frame_line(writer, &text, DEFAULT_MAX_IPC_LINE_BYTES).expect("mock write reply");
     true
 }

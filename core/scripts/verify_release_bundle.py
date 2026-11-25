@@ -921,6 +921,10 @@ def section_parent_bound(report: Report, iso: Isolated) -> None:
                 proc.wait(timeout=5)
 
 
+def fresh_config_matches(cfg: dict[str, Any]) -> bool:
+    return cfg.get("save_window_secs") == 300 and cfg.get("capture_mode") == "video_and_logs" and cfg.get("capture_enabled") is False
+
+
 def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> None:
     with report.section("cold-start-ipc", "コールド起動と IPC / CLI") as sec:
         versions = {}
@@ -947,7 +951,7 @@ def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> No
         sec.check("status: build_id is <version>:sha256:<digest>", str(hello.get("build_id", "")).startswith(f"{core_version}:sha256:"), hello.get("build_id"))
         sec.check("status: data/cache dirs are the isolated ones", Path(str(hello.get("data_dir", ""))).resolve() == iso.data.resolve() and Path(str(hello.get("cache_dir", ""))).resolve() == iso.cache.resolve())
         cfg = (iso.cli("config", "get").data or {}).get("config", {})
-        sec.check("config get: defaults (300 s window, capture off, video_and_logs)", cfg.get("save_window_secs") == 300 and cfg.get("capture_mode") == "video_and_logs", cfg)
+        sec.check("config get: defaults (300 s window, capture off, video_and_logs)", fresh_config_matches(cfg), cfg)
         upd = iso.cli("config", "set", "--save-window-secs", "120")
         sec.check("config set --save-window-secs 120", upd.rc == 0, upd.err.strip()[:200])
         cfg2 = (iso.cli("config", "get").data or {}).get("config", {})
@@ -1827,6 +1831,12 @@ def self_test() -> int:
     launcher = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(5)'], stdout=sys.stdout, stderr=sys.stderr); print('ready')"
     launched = run_proc([sys.executable, "-c", launcher], timeout=2)
     require("launcher exits without waiting for daemon output handles", launched.rc == 0 and launched.out.strip() == "ready" and launched.secs < 4, launched.rc)
+
+    defaults = {"save_window_secs": 300, "capture_mode": "video_and_logs", "capture_enabled": False}
+    require("fresh config matches defaults", fresh_config_matches(defaults))
+    for mutation in [True, None, 0]:
+        require(f"capture_enabled mutation {mutation!r} rejected", not fresh_config_matches(dict(defaults, capture_enabled=mutation)))
+    require("missing capture_enabled rejected", not fresh_config_matches({k: v for k, v in defaults.items() if k != "capture_enabled"}))
 
     # pure helpers
     require("normalize_os", normalize_os("Darwin") == "macos" and normalize_os("win32") == "windows" and normalize_os("Linux") == "linux")

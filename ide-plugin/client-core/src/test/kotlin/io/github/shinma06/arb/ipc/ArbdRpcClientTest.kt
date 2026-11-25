@@ -271,4 +271,74 @@ class ArbdRpcClientTest {
             client.close()
         }
     }
+
+    @Test
+    fun `timeout tiers and env overrides match arb-os quick long and export split`() {
+        assertEquals(30_000L, DEFAULT_READ_TIMEOUT_MS)
+        assertEquals(120_000L, LONG_RUNNING_READ_TIMEOUT_MS)
+        assertEquals(600_000L, EXPORT_READ_TIMEOUT_MS)
+
+        assertEquals(120_000L, resolveLongReadTimeoutMs(null))
+        assertEquals(240_000L, resolveLongReadTimeoutMs(" 240000 "))
+        for (bad in listOf("", "0", "-5", "abc")) {
+            assertEquals(120_000L, resolveLongReadTimeoutMs(bad), "bad long env: $bad")
+        }
+
+        assertEquals(600_000L, resolveExportReadTimeoutMs(120_000L, null))
+        assertEquals(900_000L, resolveExportReadTimeoutMs(900_000L, null))
+        assertEquals(1_800_000L, resolveExportReadTimeoutMs(120_000L, " 1800000 "))
+        for (bad in listOf("", "0", "-1", "xyz")) {
+            assertEquals(600_000L, resolveExportReadTimeoutMs(120_000L, bad), "bad export env: $bad")
+        }
+
+        val client = ArbdRpcClient(
+            transport = FakeTransport(emptyList()),
+            readTimeoutMs = 30_000L,
+            longRunningReadTimeoutMs = 120_000L,
+            exportReadTimeoutMs = 600_000L,
+        )
+        try {
+            for (quick in listOf(
+                "system.hello",
+                "system.status",
+                "system.shutdown",
+                "config.get",
+                "save.list_jobs",
+                "save.discard",
+                "bundle.list",
+                "bundle.lease_renew",
+                "bundle.close",
+                "bundle.forget",
+                "edit.get_session",
+                "edit.update_session",
+            )) {
+                assertEquals(30_000L, client.defaultTimeoutFor(quick), "quick method: $quick")
+            }
+            for (longMethod in listOf(
+                "save.trigger",
+                "save.logs",
+                "save.retry",
+                "save.retarget",
+                "capture.start",
+                "capture.stop",
+                "config.update",
+                "device.list",
+                "bundle.open",
+                "bundle.gc",
+                "timeline.overview",
+                "export.png",
+            )) {
+                assertEquals(120_000L, client.defaultTimeoutFor(longMethod), "long method: $longMethod")
+            }
+            for (exportMethod in listOf(
+                "export.trim",
+                "export.share_mp4",
+                "media.decode_audio_pcm",
+            )) {
+                assertEquals(600_000L, client.defaultTimeoutFor(exportMethod), "export method: $exportMethod")
+            }
+        } finally {
+            client.close()
+        }
+    }
 }
