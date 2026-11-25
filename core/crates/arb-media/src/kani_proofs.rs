@@ -1,4 +1,6 @@
 //! Layer-1 PDD (K9a): bounded model checking of the MP4 box/table parsers.
+//! K12: GOP cache byte budget, sequential forward decode window and filmstrip cache identity
+//! of `playback.rs`.
 //!
 //! Inputs are symbolic byte arrays of bounded length; unwinding assertions stay enabled.
 //!
@@ -13,9 +15,16 @@
 //! job of `.github/workflows/pdd-kani.yml`; `docs/proofs/tcb-axioms.md` §3 lists them.
 #![cfg_attr(not(feature = "kani-extended"), allow(dead_code))]
 
+use std::convert::Infallible;
+
+use crate::codec::PixelFormat;
 use crate::mp4::{
     AvccConfig, ParamSetMode, avcc_sample_to_annexb, checked_entry_count, iter_boxes, parse_stsc,
     parse_stsz, parse_stts, ticks_to_ns_signed, ticks_to_ns_unsigned,
+};
+use crate::playback::{
+    FILMSTRIP_MAGIC, FilmstripCache, FrameWindow, WindowFrame, advance_forward_window,
+    estimated_frame_bytes, fnv1a_64, full_gop_exceeds_budget, reuses_forward_window, window_frame,
 };
 
 const N: usize = 24;
@@ -377,4 +386,599 @@ fn k10_fraction() {
     assert_eq!(time_to_fraction(0, end), 0.0);
     assert_eq!(time_to_fraction(end, end), 1.0);
     assert_eq!(fraction_to_time(time_to_fraction(t, end), end), t);
+}
+
+// ---------------- K12: playback GOP budget, forward window, filmstrip identity ----------------
+
+/// Production budget of the daemon GOP caches (`media_engine.rs`, `inspect_export.rs`).
+const BUDGET_128_MIB: usize = 128 * 1024 * 1024;
+
+/// Phone and desktop capture sizes (portrait and landscape).
+const RESOLUTIONS: [(u16, u16); 8] = [
+    (0, 1080),
+    (1, 1),
+    (1920, 1080),
+    (1080, 2400),
+    (1440, 3120),
+    (3840, 2160),
+    (720, 1280),
+    (u16::MAX, u16::MAX),
+];
+
+const FORMATS: [PixelFormat; 4] = [
+    PixelFormat::Yuv420p,
+    PixelFormat::Rgb24,
+    PixelFormat::Rgba8,
+    PixelFormat::Bgra8,
+];
+
+fn any_format() -> PixelFormat {
+    match kani::any::<u8>() % 4 {
+        0 => PixelFormat::Yuv420p,
+        1 => PixelFormat::Rgb24,
+        2 => PixelFormat::Rgba8,
+        _ => PixelFormat::Bgra8,
+    }
+}
+
+/// Any cache budget an allocation can hold (`1..=isize::MAX`, the Rust allocation limit;
+/// production budgets are the 128 MiB constants). At `usize::MAX` the saturated eviction test
+/// `cached + bytes > max_bytes` cannot fire and the counter would overflow.
+fn any_budget() -> usize {
+    let max_bytes: usize = kani::any();
+    kani::assume(max_bytes >= 1 && max_bytes <= isize::MAX as usize);
+    max_bytes
+}
+
+/// Decoded frame stand-in: only the index and the byte size reach the window logic.
+#[derive(Clone, Copy)]
+struct Frame {
+    index: u64,
+    bytes: usize,
+}
+
+impl WindowFrame for Frame {
+    fn index(&self) -> u64 {
+        self.index
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+const WINDOW_CAP: usize = 8;
+
+/// FIFO model of the production `VecDeque` window (std container semantics are a TCB axiom):
+/// `buf[head..tail]` holds the retained frames, oldest first.
+struct Window {
+    buf: [Frame; WINDOW_CAP],
+    head: usize,
+    tail: usize,
+}
+
+impl Window {
+    const fn new() -> Self {
+        Self {
+            buf: [Frame { index: 0, bytes: 0 }; WINDOW_CAP],
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    const fn len(&self) -> usize {
+        self.tail - self.head
+    }
+
+    fn back(&self) -> Option<&Frame> {
+        if self.len() == 0 {
+            None
+        } else {
+            Some(&self.buf[self.tail - 1])
+        }
+    }
+}
+
+impl FrameWindow for Window {
+    type Frame = Frame;
+
+    fn front(&self) -> Option<&Frame> {
+        self.get(0)
+    }
+
+    fn get(&self, offset: usize) -> Option<&Frame> {
+        if offset < self.len() {
+            Some(&self.buf[self.head + offset])
+        } else {
+            None
+        }
+    }
+
+    fn push_back(&mut self, frame: Frame) {
+        assert!(self.tail < WINDOW_CAP, "model capacity");
+        self.buf[self.tail] = frame;
+        self.tail += 1;
+    }
+
+    fn pop_front(&mut self) -> Option<Frame> {
+        if self.len() == 0 {
+            return None;
+        }
+        self.head += 1;
+        Some(self.buf[self.head - 1])
+    }
+}
+
+fn retained_bytes(frames: &Window) -> usize {
+    let mut sum = 0usize;
+    let mut i = frames.head;
+    while i < frames.tail {
+        sum += frames.buf[i].bytes;
+        i += 1;
+    }
+    sum
+}
+
+/// Window invariant after every production step: the budget counter equals the retained
+/// payload, stays within `max_bytes`, and the window is the contiguous run ending at `next - 1`.
+fn assert_window_invariant(frames: &Window, cached: usize, max_bytes: usize, next: u64) {
+    assert_eq!(
+        cached,
+        retained_bytes(frames),
+        "counter tracks retained bytes"
+    );
+    assert!(cached <= max_bytes, "cached_bytes <= max_bytes");
+    if let Some(last) = frames.back() {
+        assert_eq!(last.index + 1, next, "window ends at the decoder position");
+    }
+    let mut i = frames.head + 1;
+    while i < frames.tail {
+        assert_eq!(
+            frames.buf[i - 1].index + 1,
+            frames.buf[i].index,
+            "window is contiguous"
+        );
+        i += 1;
+    }
+}
+
+/// Frame byte size and the full-GOP budget decision never overflow or panic for any `u16` frame
+/// size (the track header type: `0`, `1x1`, 1080p, 1080x2400, 1440x3120, 4K up to `u16::MAX`),
+/// any pixel format, any GOP length and any budget. When the decision keeps the GOP in the cache
+/// its full payload fits in `max_bytes`; a Full-HD RGBA 30-frame GOP (about 237 MiB) is streamed
+/// instead of cached under 128 MiB.
+#[kani::proof]
+#[kani::unwind(9)]
+fn k12_frame_and_gop_byte_budget_no_overflow_and_bounded() {
+    let mut i = 0;
+    while i < RESOLUTIONS.len() {
+        let (w, h) = RESOLUTIONS[i];
+        let px = usize::from(w) * usize::from(h);
+        assert_eq!(estimated_frame_bytes(w, h, PixelFormat::Rgba8), px * 4);
+        assert_eq!(estimated_frame_bytes(h, w, PixelFormat::Bgra8), px * 4);
+        assert_eq!(estimated_frame_bytes(w, h, PixelFormat::Rgb24), px * 3);
+        let yuv = estimated_frame_bytes(w, h, PixelFormat::Yuv420p);
+        assert!(yuv >= px + px / 2 && yuv <= px * 3, "4:2:0 is 1.5 bytes/px");
+        i += 1;
+    }
+    assert_eq!(estimated_frame_bytes(0, 1080, any_format()), 0);
+    assert_eq!(estimated_frame_bytes(1920, 0, any_format()), 0);
+
+    let frame = estimated_frame_bytes(kani::any(), kani::any(), any_format());
+    assert!(
+        frame <= 65_535 * 65_535 * 4,
+        "frame bytes bounded by u16::MAX^2 * 4"
+    );
+
+    let gop_start: u64 = kani::any();
+    let gop_end: u64 = kani::any();
+    kani::assume(gop_start <= gop_end && gop_end - gop_start < u64::MAX);
+    let max_bytes: usize = kani::any();
+    let _ = full_gop_exceeds_budget(
+        kani::any(),
+        kani::any(),
+        any_format(),
+        (gop_start, gop_end),
+        max_bytes,
+    );
+
+    // Exact decision under the production 128 MiB budget for every listed resolution and pixel
+    // format: the GOP is streamed iff `frame * len > budget`, i.e. `len > budget / frame`.
+    let len = gop_end - gop_start + 1;
+    let (mut streamed, mut cached) = (false, false);
+    let mut i = 0;
+    while i < RESOLUTIONS.len() {
+        let (w, h) = RESOLUTIONS[i];
+        for format in FORMATS {
+            let frame = estimated_frame_bytes(w, h, format);
+            let exceeds =
+                full_gop_exceeds_budget(w, h, format, (gop_start, gop_end), BUDGET_128_MIB);
+            let fits = (BUDGET_128_MIB / frame.max(1)) as u64;
+            assert_eq!(exceeds, frame > 0 && len > fits, "exact 128 MiB decision");
+            streamed |= exceeds;
+            cached |= !exceeds && frame > 0 && len > 1;
+        }
+        i += 1;
+    }
+    kani::cover!(streamed, "GOP streamed");
+    kani::cover!(cached, "GOP cached");
+
+    assert!(full_gop_exceeds_budget(
+        1920,
+        1080,
+        PixelFormat::Rgba8,
+        (0, 29),
+        BUDGET_128_MIB
+    ));
+    assert!(full_gop_exceeds_budget(
+        1080,
+        2400,
+        PixelFormat::Rgba8,
+        (0, 29),
+        BUDGET_128_MIB
+    ));
+    assert!(!full_gop_exceeds_budget(
+        320,
+        180,
+        PixelFormat::Rgb24,
+        (0, 29),
+        BUDGET_128_MIB
+    ));
+}
+
+/// One forward request through `advance_forward_window` from a fresh window (as after an IDR
+/// restart) to any target, with symbolic per-frame sizes of any `usize` and any allocatable
+/// budget: no arithmetic overflow, eviction keeps `cached_bytes == retained payload <=
+/// max_bytes` with a contiguous window ending at the decoder position, and the served frame is
+/// always `target` (retained, or returned uncached when it alone is larger than the budget).
+#[kani::proof]
+#[kani::unwind(4)]
+fn k12_forward_window_eviction_keeps_cached_bytes_within_budget() {
+    const N: u64 = 3;
+    let sizes: [usize; N as usize] = kani::any();
+    let max_bytes: usize = any_budget();
+    let start: u64 = kani::any();
+    kani::assume(start <= u64::MAX - N);
+
+    let mut frames = Window::new();
+    let mut next = start;
+    let mut cached = 0usize;
+    let target = start + u64::from(kani::any::<u8>()) % N;
+    let Ok(served) = advance_forward_window(
+        &mut frames,
+        &mut next,
+        &mut cached,
+        max_bytes,
+        target,
+        |i| {
+            Ok::<_, Infallible>(Frame {
+                index: i,
+                bytes: sizes[(i - start) as usize],
+            })
+        },
+    );
+    assert_window_invariant(&frames, cached, max_bytes, next);
+    assert_eq!(next, target + 1, "decoder stops right after target");
+    let served_uncached = served.is_some();
+    if let Some(f) = served {
+        assert!(f.index == target && f.bytes > max_bytes, "oversized target");
+    } else {
+        assert_eq!(window_frame(&frames, target).map(|f| f.index), Some(target));
+    }
+    kani::cover!(served_uncached, "oversized target served uncached");
+    kani::cover!(
+        frames.len() >= 2 && cached == max_bytes,
+        "budget filled exactly"
+    );
+    kani::cover!(
+        frames.front().is_some_and(|f| f.index > start),
+        "oldest frames evicted"
+    );
+}
+
+/// Production glue of `GopLruCache::fetch_forward` around the extracted helpers: reuse the
+/// window when `reuses_forward_window` says so, otherwise restart a fresh window at the GOP's
+/// IDR frame (`clear()` + new sequential decoder).
+struct ForwardModel {
+    frames: Window,
+    next: u64,
+    cached: usize,
+    key: Option<(u64, PixelFormat)>,
+    idr_restarts: u32,
+    decoded: u64,
+}
+
+impl ForwardModel {
+    const fn new() -> Self {
+        Self {
+            frames: Window::new(),
+            next: 0,
+            cached: 0,
+            key: None,
+            idr_restarts: 0,
+            decoded: 0,
+        }
+    }
+
+    fn reuses(&self, key: (u64, PixelFormat), target: u64) -> bool {
+        self.key
+            .is_some_and(|wk| reuses_forward_window(wk, &self.frames, self.next, key, target))
+    }
+
+    /// Serves `target` of the GOP `key.0` starting at IDR `idr`; returns the served index.
+    fn fetch(
+        &mut self,
+        key: (u64, PixelFormat),
+        idr: u64,
+        target: u64,
+        frame_bytes: usize,
+        max_bytes: usize,
+    ) -> u64 {
+        if !self.reuses(key, target) {
+            self.frames = Window::new();
+            self.cached = 0;
+            self.next = idr;
+            self.key = Some(key);
+            self.idr_restarts += 1;
+        }
+        if target < self.next {
+            return window_frame(&self.frames, target).map_or(u64::MAX, |f| f.index);
+        }
+        let decoded = &mut self.decoded;
+        let Ok(served) = advance_forward_window(
+            &mut self.frames,
+            &mut self.next,
+            &mut self.cached,
+            max_bytes,
+            target,
+            |i| {
+                assert!(idr <= i && i <= target, "decodes only IDR..=target");
+                *decoded += 1;
+                Ok::<_, Infallible>(Frame {
+                    index: i,
+                    bytes: frame_bytes,
+                })
+            },
+        );
+        assert!(self.cached <= max_bytes, "cached_bytes <= max_bytes");
+        match served {
+            Some(f) => f.index,
+            None => window_frame(&self.frames, target).map_or(u64::MAX, |f| f.index),
+        }
+    }
+}
+
+/// Up to `MAX_RETAINED` frames of any allocatable sizes retained by a forward window positioned
+/// at `next`: the contiguous run `next - len..next` inside the GOP starting at `idr`, with
+/// `cached_bytes` equal to their total within `max_bytes` (the window invariant).
+const MAX_RETAINED: u8 = 3;
+
+fn any_retained_window(idr: u64, next: u64, max_bytes: usize) -> (Window, usize) {
+    let len = u64::from(kani::any::<u8>() % (MAX_RETAINED + 1));
+    kani::assume(len <= next - idr);
+    let mut frames = Window::new();
+    let mut cached = 0usize;
+    let mut i = 0;
+    while i < len {
+        let bytes: usize = kani::any();
+        kani::assume(bytes <= max_bytes - cached);
+        cached += bytes;
+        frames.push_back(Frame {
+            index: next - len + i,
+            bytes,
+        });
+        i += 1;
+    }
+    (frames, cached)
+}
+
+/// A GOP of any length (up to `u32::MAX` frames), any decoded frame size and any budget,
+/// including the streamed case where the full GOP exceeds the budget (a 30-frame Full-HD RGBA
+/// GOP of about 237 MiB under 128 MiB, which `full_gop_exceeds_budget` sends to the forward
+/// window). Base: a cold seek to `idr + s` restarts once at the IDR and decodes `s + 1` frames.
+/// Step: from any window state the forward cursor can hold after serving `prev` (up to
+/// `MAX_RETAINED` retained frames), the request `prev + 1` reuses the cursor (no IDR restart),
+/// decodes exactly one frame, serves it and preserves the window invariant. By induction a run
+/// of `k` `+1` steps decodes `k` frames, not `k * (k + 1) / 2`.
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k12_sequential_forward_decode_avoids_idr_restart_even_over_128mib() {
+    let key = (kani::any::<u64>(), any_format());
+    let frame_bytes: usize = kani::any();
+    let max_bytes: usize = if kani::any() {
+        BUDGET_128_MIB
+    } else {
+        any_budget()
+    };
+    let idr: u64 = kani::any();
+    let gop_len: u64 = kani::any();
+    kani::assume(gop_len >= 1 && gop_len <= u64::from(u32::MAX));
+    kani::assume(idr <= u64::MAX - gop_len);
+
+    let seek = u64::from(kani::any::<u8>() % 3);
+    kani::assume(seek < gop_len);
+    let mut cold = ForwardModel::new();
+    assert_eq!(
+        cold.fetch(key, idr, idr + seek, frame_bytes, max_bytes),
+        idr + seek
+    );
+    assert_eq!(cold.idr_restarts, 1, "a cold seek starts at the IDR once");
+    assert_eq!(cold.decoded, seek + 1, "seek decodes IDR..=target once");
+
+    let prev: u64 = kani::any();
+    kani::assume(idr <= prev && prev - idr < gop_len - 1);
+    let (frames, cached) = any_retained_window(idr, prev + 1, max_bytes);
+    let retained = frames.len();
+    let mut m = ForwardModel {
+        frames,
+        next: prev + 1,
+        cached,
+        key: Some(key),
+        idr_restarts: 0,
+        decoded: 0,
+    };
+    assert!(m.reuses(key, prev + 1), "+1 step keeps the cursor");
+    assert_eq!(
+        m.fetch(key, idr, prev + 1, frame_bytes, max_bytes),
+        prev + 1
+    );
+    assert_eq!(m.idr_restarts, 0, "no IDR restart on a +1 step");
+    assert_eq!(m.decoded, 1, "+1 step decodes exactly one frame");
+    assert_window_invariant(&m.frames, m.cached, max_bytes, m.next);
+    kani::cover!(
+        max_bytes == BUDGET_128_MIB
+            && frame_bytes == 1920 * 1080 * 4
+            && gop_len == 30
+            && prev == idr + 28,
+        "Full-HD RGBA 30-frame GOP (237 MiB) stepped under 128 MiB"
+    );
+    kani::cover!(
+        retained == usize::from(MAX_RETAINED) && m.frames.len() <= retained,
+        "full window evicts while stepping"
+    );
+    kani::cover!(
+        frame_bytes > max_bytes,
+        "frame larger than the budget served uncached"
+    );
+}
+
+/// From any window state the cursor can hold after serving `prev` in GOP `a` (up to
+/// `MAX_RETAINED` retained frames), a request for `target` reuses the window only for the same
+/// GOP and format and only when `target` is ahead of the decoder or still retained; a reused
+/// backward step serves the retained frame without decoding. Otherwise (backward past the
+/// window, another GOP or format) decoding restarts from the target GOP's IDR
+/// `idr <= target < frame_count` and decodes exactly `IDR..=target`. The served frame is always
+/// `target`, never a frame of another GOP.
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k12_backward_or_cross_gop_seek_restarts_from_target_idr_and_bounds() {
+    const MAX_GOP: u64 = 3;
+    let frame_bytes: usize = kani::any();
+    let max_bytes: usize = any_budget();
+    let frame_count: u64 = kani::any();
+    let (fmt_a, fmt_b) = (any_format(), any_format());
+    let (gop_a, gop_b): (u64, u64) = (kani::any(), kani::any());
+    let (idr_a, idr_b): (u64, u64) = (kani::any(), kani::any());
+    let len_a = 1 + u64::from(kani::any::<u8>()) % MAX_GOP;
+    let len_b = 1 + u64::from(kani::any::<u8>()) % MAX_GOP;
+    kani::assume(idr_a <= u64::MAX - MAX_GOP && idr_b <= u64::MAX - MAX_GOP);
+    kani::assume(idr_a + len_a <= frame_count && idr_b + len_b <= frame_count);
+    // GOP ids name disjoint frame ranges (Mp4VideoTrack index, TCB).
+    kani::assume(
+        (gop_a == gop_b && idr_a == idr_b && len_a == len_b)
+            || (gop_a != gop_b && (idr_a + len_a <= idr_b || idr_b + len_b <= idr_a)),
+    );
+    let (off_a, off_b): (u64, u64) = (kani::any(), kani::any());
+    kani::assume(off_a < len_a && off_b < len_b);
+    let prev = idr_a + off_a;
+    let target = idr_b + off_b;
+
+    let (frames, cached) = any_retained_window(idr_a, prev + 1, max_bytes);
+    let mut m = ForwardModel {
+        frames,
+        next: prev + 1,
+        cached,
+        key: Some((gop_a, fmt_a)),
+        idr_restarts: 0,
+        decoded: 0,
+    };
+    let key_b = (gop_b, fmt_b);
+    let reused = m.reuses(key_b, target);
+    let retained = window_frame(&m.frames, target).is_some();
+    assert_eq!(
+        reused,
+        gop_a == gop_b && fmt_a == fmt_b && (target > prev || retained),
+        "reuse only for same GOP/format, ahead or retained"
+    );
+    let served = m.fetch(key_b, idr_b, target, frame_bytes, max_bytes);
+    assert_eq!(served, target, "served frame is the target");
+    assert!(idr_b <= target && target < frame_count);
+    if reused {
+        assert_eq!(m.idr_restarts, 0);
+        if target <= prev {
+            assert_eq!(m.decoded, 0, "retained backward step decodes nothing");
+        } else {
+            assert_eq!(
+                m.decoded,
+                target - prev,
+                "forward reuse decodes prev+1..=target"
+            );
+        }
+    } else {
+        assert_eq!(m.idr_restarts, 1, "restart from the target IDR");
+        assert_eq!(m.decoded, target - idr_b + 1, "decodes IDR..=target");
+    }
+    kani::cover!(
+        reused && target < prev,
+        "backward step served from the window"
+    );
+    kani::cover!(
+        !reused && gop_a == gop_b && fmt_a == fmt_b && target < prev,
+        "backward past the window restarts"
+    );
+    kani::cover!(!reused && gop_a != gop_b, "cross-GOP seek restarts");
+    kani::cover!(
+        !reused && gop_a == gop_b && fmt_a != fmt_b,
+        "format change restarts"
+    );
+}
+
+/// Two `filmstrip.bin` files with valid checksums and no entries, one with the current
+/// `ARBFS002` header and one with the legacy `ARBFS001` header, both recording file length,
+/// frame count and SHA-256 content digest of a source track. Against a source with any
+/// (symbolic) file length, frame count and digest, the current file is accepted exactly when
+/// all three fingerprint fields are equal: any digest mismatch is a cache miss even when
+/// `file_len` and `frame_count` match. The legacy header is always rejected.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+#[kani::unwind(62)]
+fn k12_filmstrip_cache_rejects_mismatched_content_digest() {
+    const LEN: u64 = 0x0123_4567_89ab_cdef;
+    const COUNT: u64 = 1_800;
+    const DIGEST: [u8; 32] = [0xa5; 32];
+    fn bundle(magic: &[u8; 8]) -> [u8; 68] {
+        let mut bytes = [0u8; 68];
+        bytes[..8].copy_from_slice(magic);
+        bytes[8..16].copy_from_slice(&LEN.to_le_bytes());
+        bytes[16..24].copy_from_slice(&COUNT.to_le_bytes());
+        bytes[24..56].copy_from_slice(&DIGEST);
+        let checksum = fnv1a_64(&bytes[..60]);
+        bytes[60..].copy_from_slice(&checksum.to_le_bytes());
+        bytes
+    }
+    let legacy: bool = kani::any();
+    let bytes = if legacy {
+        bundle(b"ARBFS001")
+    } else {
+        bundle(&FILMSTRIP_MAGIC)
+    };
+    let expected_len: u64 = kani::any();
+    let expected_count: u64 = kani::any();
+    let expected_digest: [u8; 32] = kani::any();
+
+    let r = keep(FilmstripCache::from_bytes(
+        &bytes,
+        expected_len,
+        expected_count,
+        &expected_digest,
+    ));
+    let len_ok = expected_len == LEN;
+    let count_ok = expected_count == COUNT;
+    let digest_ok = expected_digest == DIGEST;
+    assert_eq!(
+        r.is_ok(),
+        !legacy && len_ok && count_ok && digest_ok,
+        "accepted exactly on ARBFS002 with a full fingerprint match"
+    );
+    kani::cover!(r.is_ok(), "matching cache is a hit");
+    kani::cover!(
+        r.is_err() && !legacy && len_ok && count_ok && !digest_ok,
+        "digest-only mismatch is a miss"
+    );
+    kani::cover!(
+        r.is_err() && legacy && len_ok && count_ok && digest_ok,
+        "legacy header is a miss"
+    );
 }
