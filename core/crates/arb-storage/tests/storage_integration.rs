@@ -1940,18 +1940,18 @@ fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
             .expect("query")
             .expect("row kept")
             .state,
-        BundleLifecycleState::Purging,
-        "failed bundle stays Purging for retry"
+        BundleLifecycleState::Trashed,
+        "a bundle that fails the identity check never enters Purging and is retried by GC"
     );
 
-    // The obstruction disappears: the next GC retries the Purging row.
+    // The obstruction disappears: the next GC retries the row.
     fs::remove_file(&failing_path).expect("unblock");
     let retry = catalog
         .gc_with_grace("2026-11-22T12:00:01Z", 0)
         .expect("second gc");
     assert!(
         retry.purged_bundle_ids.contains(&"b-fail".to_owned()),
-        "Purging rows are retried by GC"
+        "failed rows are retried by GC"
     );
     assert!(
         retry.purged_bundle_ids.contains(&"b-grace".to_owned()),
@@ -2371,4 +2371,374 @@ fn gc_keeps_catalog_rows_when_managed_parent_is_unavailable() {
             "offline {id} retained"
         );
     }
+}
+
+fn tree_hashes(root: &Path) -> BTreeMap<PathBuf, [u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut result = BTreeMap::new();
+    let mut dirs = vec![root.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).expect("list replacement") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                result.insert(
+                    path.strip_prefix(root)
+                        .expect("fixture under root")
+                        .to_owned(),
+                    Sha256::digest(fs::read(path).expect("read replacement file")).into(),
+                );
+            }
+        }
+    }
+    result
+}
+
+#[test]
+fn gc_and_recovery_preserve_replacement_trees() {
+    let now = "2026-11-22T12:00:00Z";
+    for restart in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("catalog.sqlite");
+        let root = tmp.path().join("bundles");
+        let catalog = Catalog::open(&db, &root).unwrap();
+        for id in ["other", "personal", "valid"] {
+            register_v2_bundle(&catalog, id, &root.join(id), id, b"original");
+            catalog.trash_bundle(id, now).unwrap();
+        }
+        fs::rename(root.join("other"), tmp.path().join("moved-other")).unwrap();
+        V2BundleWriter::write(
+            root.join("other"),
+            "different-job",
+            &build_draft("different", vec![42]),
+        )
+        .unwrap();
+        fs::rename(root.join("personal"), tmp.path().join("moved-personal")).unwrap();
+        fs::create_dir_all(root.join("personal/nested")).unwrap();
+        fs::write(root.join("personal/nested/document"), b"keep").unwrap();
+        let before = [
+            tree_hashes(&root.join("other")),
+            tree_hashes(&root.join("personal")),
+        ];
+        if restart {
+            drop(catalog);
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .execute("UPDATE bundles SET state = 'purging'", [])
+                .unwrap();
+            let reopened = Catalog::open(&db, &root).unwrap();
+            let recovery = reopened.recover_on_startup(now).unwrap();
+            assert_eq!(recovery.completed_purging_bundle_ids, ["valid"]);
+            assert_eq!(recovery.failed.len(), 2);
+            assert!(
+                recovery
+                    .failed
+                    .iter()
+                    .all(|f| f.error.contains("identity mismatch"))
+            );
+        }
+        let catalog = Catalog::open(&db, &root).unwrap();
+        let report = catalog.gc_with_grace(now, 0).unwrap();
+        if !restart {
+            assert_eq!(report.purged_bundle_ids, ["valid"]);
+        }
+        assert!(!root.join("valid").exists());
+        assert_eq!(report.failed.len(), 2);
+        for (id, hashes) in ["other", "personal"].into_iter().zip(before) {
+            assert!(
+                report
+                    .failed
+                    .iter()
+                    .any(|f| f.bundle_id == id && f.error.contains("identity mismatch"))
+            );
+            assert!(catalog.bundle(id).unwrap().is_some());
+            assert_eq!(tree_hashes(&root.join(id)), hashes);
+        }
+    }
+}
+
+#[test]
+fn interrupted_claim_is_recovered_even_if_public_path_is_reused() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("original");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "original", &source, "job", b"payload");
+    catalog.trash_bundle("original", now).unwrap();
+    drop(catalog);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let token = "a".repeat(32);
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('original', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    let claim = root.join(format!(".purging-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    let reopened = Catalog::open(&db, &root).unwrap();
+    assert_eq!(
+        reopened
+            .prune_missing_bundles(now)
+            .unwrap()
+            .skipped_storage_unavailable_bundle_ids,
+        ["original"]
+    );
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("keep"), b"replacement").unwrap();
+    let before = tree_hashes(&source);
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["original"]);
+    assert!(!claim.exists());
+    assert_eq!(tree_hashes(&source), before);
+}
+
+#[test]
+fn partially_deleted_claim_is_finished_not_restored_or_stuck() {
+    // A crash or a locked file during `remove_dir_all` can leave the verified private claim
+    // without its manifest. GC must finish it instead of handing a half-deleted bundle back to
+    // the public path and failing forever.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("original");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "original", &source, "job", b"payload");
+    catalog.trash_bundle("original", now).unwrap();
+    drop(catalog);
+    let token = "b".repeat(32);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('original', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    let claim = root.join(format!(".purged-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    fs::remove_file(claim.join("manifest.json")).unwrap();
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["original"]);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(!claim.exists());
+    assert!(!source.exists());
+    assert!(reopened.bundle("original").unwrap().is_none());
+}
+
+#[test]
+fn identity_mismatch_keeps_bundle_trashed_and_restorable() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+    let path = root.join("owner");
+    register_v2_bundle(&catalog, "owner", &path, "owner", b"private");
+    catalog.trash_bundle("owner", now).unwrap();
+    fs::write(path.join("manifest.json"), b"{").unwrap();
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.failed.len(), 1);
+    let row = catalog.bundle("owner").unwrap().unwrap();
+    assert_eq!(row.state, arb_core::state::BundleLifecycleState::Trashed);
+    catalog.restore_bundle("owner").unwrap();
+}
+
+#[test]
+fn purging_row_failing_identity_returns_to_trashed_and_verified_claim_ignores_public_path() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "foreign", &root.join("foreign"), "j1", b"x");
+    register_v2_bundle(&catalog, "half", &root.join("half"), "j2", b"y");
+    for id in ["foreign", "half"] {
+        catalog.trash_bundle(id, now).unwrap();
+    }
+    drop(catalog);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    let token = "c".repeat(32);
+    conn.execute("INSERT INTO purge_claims VALUES ('half', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    fs::write(root.join("foreign/manifest.json"), b"{").unwrap();
+    // A verified half-deleted claim, while a link now occupies the public path.
+    let claim = root.join(format!(".purged-{token}"));
+    fs::rename(root.join("half"), &claim).unwrap();
+    fs::remove_file(claim.join("manifest.json")).unwrap();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"keep").unwrap();
+    symlink_dir(&outside, root.join("half")).unwrap();
+
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["half"]);
+    assert_eq!(report.failed.len(), 1);
+    assert!(!claim.exists());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+    let foreign = reopened.bundle("foreign").unwrap().unwrap();
+    assert_eq!(
+        foreign.state,
+        arb_core::state::BundleLifecycleState::Trashed
+    );
+    reopened.restore_bundle("foreign").unwrap();
+}
+
+#[test]
+fn gc_rejects_corrupt_or_wrong_owner_manifest_and_links() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+    for id in ["corrupt", "schema", "owner", "link"] {
+        let path = root.join(id);
+        register_v2_bundle(&catalog, id, &path, id, b"private");
+        catalog.trash_bundle(id, now).unwrap();
+        let manifest = path.join("manifest.json");
+        match id {
+            "corrupt" => fs::write(manifest, b"{").unwrap(),
+            "link" => {
+                let moved = tmp.path().join("target");
+                fs::rename(&path, &moved).unwrap();
+                symlink_dir(&moved, &path).unwrap();
+            }
+            _ => {
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+                if id == "schema" {
+                    value["schema_version"] = serde_json::json!(4);
+                } else {
+                    value["created_at_utc"] = serde_json::json!("2020-01-01T00:00:00Z");
+                }
+                fs::write(manifest, value.to_string()).unwrap();
+            }
+        }
+    }
+    let before = tree_hashes(&root);
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.failed.len(), 4);
+    assert!(
+        report
+            .failed
+            .iter()
+            .all(|f| f.error.contains("identity mismatch"))
+    );
+    assert_eq!(tree_hashes(&root), before);
+    assert!(
+        fs::symlink_metadata(root.join("link"))
+            .unwrap()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn interrupted_unverified_claim_finishes_when_symlink_replaces_public_path() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let source = root.join("claimed");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "claimed", &source, "job", b"payload");
+    catalog.trash_bundle("claimed", now).unwrap();
+    drop(catalog);
+
+    let token = "d".repeat(32);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    conn.execute("INSERT INTO purge_claims VALUES ('claimed', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+
+    // Crash between `.purging-<token>` rename and `.purged-<token>` rename, while a symlink now
+    // occupies the public path.
+    let claim = root.join(format!(".purging-{token}"));
+    fs::rename(&source, &claim).unwrap();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"keep").unwrap();
+    symlink_dir(&outside, &source).unwrap();
+
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["claimed"]);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(!claim.exists());
+    assert!(fs::symlink_metadata(&source).unwrap().is_symlink());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+}
+
+#[test]
+fn reided_bundle_inside_managed_root_verifies_recorded_manifest_id() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog"), &root).unwrap();
+    let now = "2026-11-22T12:00:00Z";
+
+    let valid_path = root.join("copy-valid");
+    let valid_manifest =
+        V2BundleWriter::write(&valid_path, "job-valid", &build_draft("orig-id", vec![1])).unwrap();
+    catalog
+        .register_bundle_with_manifest_id(
+            &NewBundleEntry {
+                bundle_id: "ext-valid".to_owned(),
+                path: valid_path.clone(),
+                format_version: CatalogFormatVersion::V2,
+                parent_bundle_id: None,
+                created_at_utc: valid_manifest.created_at_utc,
+            },
+            "orig-id",
+        )
+        .unwrap();
+    catalog.trash_bundle("ext-valid", now).unwrap();
+
+    let foreign_path = root.join("copy-foreign");
+    let foreign_manifest = V2BundleWriter::write(
+        &foreign_path,
+        "job-foreign",
+        &build_draft("orig-id", vec![2]),
+    )
+    .unwrap();
+    catalog
+        .register_bundle_with_manifest_id(
+            &NewBundleEntry {
+                bundle_id: "ext-foreign".to_owned(),
+                path: foreign_path.clone(),
+                format_version: CatalogFormatVersion::V2,
+                parent_bundle_id: None,
+                created_at_utc: foreign_manifest.created_at_utc,
+            },
+            "orig-id",
+        )
+        .unwrap();
+    catalog.trash_bundle("ext-foreign", now).unwrap();
+    edit_json(&foreign_path.join("manifest.json"), |v| {
+        v["bundle_id"] = serde_json::json!("other-id");
+    });
+
+    let report = catalog.gc_with_grace(now, 0).unwrap();
+    assert_eq!(report.purged_bundle_ids, ["ext-valid"]);
+    assert!(!valid_path.exists());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].bundle_id, "ext-foreign");
+    assert!(report.failed[0].error.contains("identity mismatch"));
+    assert!(foreign_path.is_dir());
 }

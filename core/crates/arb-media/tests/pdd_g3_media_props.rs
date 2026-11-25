@@ -152,7 +152,7 @@ proptest! {
         let p = tmp.path().join("x.mp4");
         std::fs::write(&p, &bytes).expect("write");
         read_everything(&p);
-        let _ = FilmstripCache::load_from_file(&p, bytes.len() as u64, 4);
+        let _ = FilmstripCache::load_from_file(&p, bytes.len() as u64, 4, &[0; 32]);
     }
 
     #[test]

@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS bundles (
   created_at_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS purge_claims (
+  bundle_id TEXT PRIMARY KEY REFERENCES bundles(bundle_id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS bundle_manifest_ids (
+  bundle_id TEXT PRIMARY KEY REFERENCES bundles(bundle_id) ON DELETE CASCADE,
+  manifest_bundle_id TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS leases (
   lease_id TEXT PRIMARY KEY,
   bundle_id TEXT NOT NULL REFERENCES bundles(bundle_id),
@@ -307,16 +317,18 @@ pub struct GcReport {
     /// could not be parsed, the safe direction).
     pub skipped_in_grace_bundle_ids: Vec<String>,
     /// Bundles whose purge failed this run (e.g. a Windows sharing violation from an AV
-    /// scanner). They stay `Purging` and are retried by the next GC run.
+    /// scanner, or an identity mismatch). Identity mismatches stay/return to `Trashed`;
+    /// transient removal errors stay `Purging` and are retried by the next GC run.
     pub failed: Vec<GcFailure>,
     /// Lease IDs reaped at the start of this GC run because their `holder_pid` was dead.
     pub reaped_lease_ids: Vec<String>,
 }
 
-/// One bundle whose physical purge failed during [`Catalog::gc_trashed_bundles`].
+/// One bundle whose physical purge failed during [`Catalog::gc_trashed_bundles`] or
+/// [`Catalog::recover_on_startup`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GcFailure {
-    /// Bundle identifier left in `Purging` for retry.
+    /// Bundle identifier whose purge failed.
     pub bundle_id: String,
     /// Human-readable failure description.
     pub error: String,
@@ -353,6 +365,8 @@ pub struct RecoveryReport {
     pub recovered_job_ids: Vec<String>,
     /// Previously interrupted `Purging` managed bundle IDs cleaned up on restart.
     pub completed_purging_bundle_ids: Vec<String>,
+    /// Individual interrupted purges that could not be completed safely.
+    pub failed: Vec<GcFailure>,
 }
 
 /// Zone-3 `SQLite` WAL catalog managing bundles, leases, save jobs, and edit sessions.
@@ -444,6 +458,80 @@ impl Catalog {
             ],
         )
         .map_err(|source| StorageError::sqlite("register_bundle", source))?;
+
+        Ok(BundleEntry {
+            bundle_id: entry.bundle_id.clone(),
+            path: entry.path.clone(),
+            format_version: entry.format_version,
+            state: BundleLifecycleState::Active,
+            trashed_at_utc: None,
+            parent_bundle_id: entry.parent_bundle_id.clone(),
+            created_at_utc: entry.created_at_utc.clone(),
+        })
+    }
+
+    /// Registers a bundle whose catalog `bundle_id` differs from the `bundle_id` inside its
+    /// on-disk `manifest.json` (for example, when `bundle.open` re-IDs an ID collision as
+    /// `ext-<id>`), recording `manifest_bundle_id` atomically so GC identity verification
+    /// compares against the observed manifest ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidArgument`] if `bundle_id`, `manifest_bundle_id`, or
+    /// `path` is empty, or [`StorageError::Sqlite`] on constraint violations or DB failures.
+    pub fn register_bundle_with_manifest_id(
+        &self,
+        entry: &NewBundleEntry,
+        manifest_bundle_id: &str,
+    ) -> Result<BundleEntry, StorageError> {
+        if manifest_bundle_id.trim().is_empty() {
+            return Err(StorageError::InvalidArgument {
+                name: "manifest_bundle_id",
+                reason: "manifest_bundle_id must not be empty".to_owned(),
+            });
+        }
+        if manifest_bundle_id == entry.bundle_id {
+            return self.register_bundle(entry);
+        }
+        if entry.bundle_id.trim().is_empty() {
+            return Err(StorageError::InvalidArgument {
+                name: "bundle_id",
+                reason: "bundle_id must not be empty".to_owned(),
+            });
+        }
+        if entry.path.as_os_str().is_empty() {
+            return Err(StorageError::InvalidArgument {
+                name: "path",
+                reason: "bundle path must not be empty".to_owned(),
+            });
+        }
+        let path_str = entry.path.to_string_lossy().into_owned();
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|source| StorageError::sqlite("begin_register_bundle_tx", source))?;
+        tx.execute(
+            "INSERT INTO bundles (
+                bundle_id, path, format_version, state, trashed_at_utc,
+                parent_bundle_id, created_at_utc
+            ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
+            params![
+                entry.bundle_id,
+                path_str,
+                entry.format_version.as_str(),
+                bundle_state_to_str(BundleLifecycleState::Active),
+                entry.parent_bundle_id,
+                entry.created_at_utc,
+            ],
+        )
+        .map_err(|source| StorageError::sqlite("register_bundle", source))?;
+        tx.execute(
+            "INSERT INTO bundle_manifest_ids (bundle_id, manifest_bundle_id) VALUES (?1, ?2)",
+            params![entry.bundle_id, manifest_bundle_id],
+        )
+        .map_err(|source| StorageError::sqlite("record_manifest_bundle_id", source))?;
+        tx.commit()
+            .map_err(|source| StorageError::sqlite("commit_register_bundle_tx", source))?;
 
         Ok(BundleEntry {
             bundle_id: entry.bundle_id.clone(),
@@ -932,6 +1020,10 @@ impl Catalog {
         match probe_bundle_disk_state(&current.path) {
             BundleDiskState::Present => return Ok(ForgetGate::Present),
             BundleDiskState::StorageUnavailable => return Ok(ForgetGate::StorageUnavailable),
+            // Only GC can finish an interrupted delete: the bundle can still exist at its claim.
+            BundleDiskState::Missing if current.state == BundleLifecycleState::Purging => {
+                return Ok(ForgetGate::StorageUnavailable);
+            }
             BundleDiskState::Missing => {}
         }
         let active_leases = count_active_leases(&tx, &current.bundle_id)?;
@@ -973,9 +1065,27 @@ impl Catalog {
         Ok(reaped)
     }
 
-    fn is_purgeable_location(&self, bundle: &BundleEntry) -> bool {
-        bundle.format_version == CatalogFormatVersion::V2
-            && is_strictly_inside_managed_root(&bundle.path, &self.managed_bundles_root)
+    fn is_purgeable_location(&self, bundle: &BundleEntry) -> Result<bool, StorageError> {
+        if bundle.format_version != CatalogFormatVersion::V2 {
+            return Ok(false);
+        }
+        if fs::symlink_metadata(&bundle.path).is_ok_and(|m| m.is_symlink()) {
+            // A link planted inside the managed root is a failure to report; a link on an
+            // unmanaged row is just unmanaged, as before.
+            let root = canonical_or_lexical(&self.managed_bundles_root);
+            let parent = bundle.path.parent().map(canonical_or_lexical);
+            if parent.is_some_and(|p| p.starts_with(&root)) {
+                return Err(StorageError::InvalidBundle {
+                    path: bundle.path.clone(),
+                    reason: "bundle identity mismatch: path is a symlink".into(),
+                });
+            }
+            return Ok(false);
+        }
+        Ok(is_strictly_inside_managed_root(
+            &bundle.path,
+            &self.managed_bundles_root,
+        ))
     }
 
     /// Atomically re-checks a `Trashed` bundle (state, leases, active jobs) and marks it
@@ -998,7 +1108,7 @@ impl Catalog {
         }
         let disk_state = probe_bundle_disk_state(&current.path);
         if current.path != bundle.path
-            || (disk_state != BundleDiskState::Missing && !self.is_purgeable_location(&current))
+            || (disk_state != BundleDiskState::Missing && !self.is_purgeable_location(&current)?)
         {
             return Ok(PurgeGate::Unmanaged);
         }
@@ -1033,6 +1143,10 @@ impl Catalog {
                 .map_err(|source| StorageError::sqlite("commit_gc_forget_missing", source))?;
             return Ok(PurgeGate::ForgottenMissing);
         }
+        // Refuse before the one-way `Trashed -> Purging` transition: a bundle that fails the
+        // identity check stays `Trashed`, so it can still be restored or forgotten.
+        let expected_manifest_id = fetch_expected_manifest_bundle_id(&tx, &current.bundle_id)?;
+        verify_purge_identity(&current, &current.path, expected_manifest_id.as_deref())?;
         let purging = current.state.begin_purge(active_leases, active_jobs)?;
         tx.execute(
             "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
@@ -1045,8 +1159,37 @@ impl Catalog {
     }
 
     /// Physically removes a `Purging` bundle directory, then deletes its catalog rows.
+    ///
+    /// A bundle that fails the identity check is never touched and goes back to `Trashed`, so
+    /// a row cannot stay `Purging` forever with no way to restore or forget it.
     fn finish_purge(&self, bundle: &BundleEntry) -> Result<PurgeGate, StorageError> {
         let mut conn = self.lock_conn()?;
+        // Persist the private rename target before touching disk so recovery can find it
+        // after a crash between the rename and the catalog commit.
+        conn.execute(
+            "INSERT OR IGNORE INTO purge_claims SELECT bundle_id, lower(hex(randomblob(16)))
+             FROM bundles WHERE bundle_id = ?1 AND state = 'purging'",
+            params![bundle.bundle_id],
+        )
+        .map_err(|e| StorageError::sqlite("reserve_purge_claim", e))?;
+        let result = self.finish_purge_tx(&mut conn, bundle);
+        if let Err(StorageError::InvalidBundle { reason, .. }) = &result
+            && reason.starts_with("bundle identity mismatch")
+        {
+            conn.execute(
+                "UPDATE bundles SET state = 'trashed' WHERE bundle_id = ?1 AND state = 'purging'",
+                params![bundle.bundle_id],
+            )
+            .map_err(|e| StorageError::sqlite("restore_trashed_after_mismatch", e))?;
+        }
+        result
+    }
+
+    fn finish_purge_tx(
+        &self,
+        conn: &mut rusqlite::Connection,
+        bundle: &BundleEntry,
+    ) -> Result<PurgeGate, StorageError> {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|source| StorageError::sqlite("begin_gc_delete_tx", source))?;
@@ -1056,27 +1199,40 @@ impl Catalog {
         if current.state != BundleLifecycleState::Purging || current.path != bundle.path {
             return Ok(PurgeGate::Gone);
         }
-        if !self.is_purgeable_location(&current) {
-            return Ok(PurgeGate::Unmanaged);
-        }
         if count_active_leases(&tx, &current.bundle_id)? > 0 {
             return Ok(PurgeGate::Leased);
         }
         if count_active_jobs_for_path(&tx, &current.path)? > 0 {
             return Ok(PurgeGate::ActiveJobs);
         }
-        match probe_bundle_disk_state(&current.path) {
-            BundleDiskState::StorageUnavailable => {
-                return Err(StorageError::io(
-                    "probe_managed_bundle",
-                    &current.path,
-                    io::Error::other("bundle directory is inaccessible or is not a directory"),
-                ));
-            }
-            BundleDiskState::Missing => {}
-            BundleDiskState::Present => fs::remove_dir_all(&current.path)
-                .map_err(|source| StorageError::io("remove_managed_dir", &current.path, source))?,
+        let token: String = tx
+            .query_row(
+                "SELECT token FROM purge_claims WHERE bundle_id = ?1",
+                params![current.bundle_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| StorageError::sqlite("read_purge_claim", e))?;
+        if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(StorageError::InvalidBundle {
+                path: current.path,
+                reason: "invalid purge claim".into(),
+            });
         }
+        // A private claim (`.purged-<token>` or `.purging-<token>`) already moved inside the
+        // managed root is ours to verify/finish even if something else (including a symlink) now
+        // occupies the public path.
+        let verified = current.path.with_file_name(format!(".purged-{token}"));
+        let claim = current.path.with_file_name(format!(".purging-{token}"));
+        let has_managed_claim = current.format_version == CatalogFormatVersion::V2
+            && ((fs::symlink_metadata(&verified).is_ok_and(|m| m.is_dir())
+                && is_strictly_inside_managed_root(&verified, &self.managed_bundles_root))
+                || (fs::symlink_metadata(&claim).is_ok_and(|m| m.is_dir())
+                    && is_strictly_inside_managed_root(&claim, &self.managed_bundles_root)));
+        if !has_managed_claim && !self.is_purgeable_location(&current)? {
+            return Ok(PurgeGate::Unmanaged);
+        }
+        let expected_manifest_id = fetch_expected_manifest_bundle_id(&tx, &current.bundle_id)?;
+        purge_claimed_directory(&current, &token, expected_manifest_id.as_deref())?;
         delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
         tx.commit()
             .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))?;
@@ -1387,13 +1543,15 @@ impl Catalog {
     pub fn recover_on_startup(&self, now_utc: &str) -> Result<RecoveryReport, StorageError> {
         let removed_staging_dirs = self.cleanup_orphan_staging_dirs()?;
         let recovered = self.recover_catalog_rows(now_utc)?;
-        let completed_purging_bundle_ids = self.finish_purging_bundles(recovered.purging_bundles);
+        let (completed_purging_bundle_ids, failed) =
+            self.finish_purging_bundles(recovered.purging_bundles);
 
         Ok(RecoveryReport {
             removed_staging_dirs,
             reaped_lease_ids: recovered.reaped_lease_ids,
             recovered_job_ids: recovered.recovered_job_ids,
             completed_purging_bundle_ids,
+            failed,
         })
     }
 
@@ -1584,16 +1742,25 @@ impl Catalog {
         })
     }
 
-    fn finish_purging_bundles(&self, purging_bundles: Vec<BundleEntry>) -> Vec<String> {
+    fn finish_purging_bundles(
+        &self,
+        purging_bundles: Vec<BundleEntry>,
+    ) -> (Vec<String>, Vec<GcFailure>) {
+        let mut failed = Vec::new();
         let mut completed = Vec::new();
         for bundle in purging_bundles {
             // A bundle that cannot be removed right now (e.g. locked by another process)
             // stays `Purging`; `gc_trashed_bundles` retries it and reports the failure.
-            if matches!(self.finish_purge(&bundle), Ok(PurgeGate::Marked)) {
-                completed.push(bundle.bundle_id);
+            match self.finish_purge(&bundle) {
+                Ok(PurgeGate::Marked) => completed.push(bundle.bundle_id),
+                Err(e) => failed.push(GcFailure {
+                    bundle_id: bundle.bundle_id,
+                    error: e.to_string(),
+                }),
+                Ok(_) => {}
             }
         }
-        completed
+        (completed, failed)
     }
 
     /// Inserts or updates a non-destructive [`EditSession`] outside the immutable bundle.
@@ -1752,6 +1919,114 @@ enum ForgetGate {
     Leased,
     ActiveJobs,
     Gone,
+}
+
+/// Validate before moving anything, then validate the claimed entity again. A replacement
+/// installed at the public bundle path after the rename is never the recursive delete target.
+///
+/// The private name has two stages. `.purging-<token>` is claimed but not yet proven to be the
+/// catalog's bundle. Once the claimed entity passes the identity check it is renamed to
+/// `.purged-<token>`, which only this function creates from a verified entity. A retry after a
+/// crash or a locked file halfway through the recursive delete therefore finishes the delete
+/// even though the manifest may already be gone, instead of treating the remains as foreign.
+fn purge_claimed_directory(
+    bundle: &BundleEntry,
+    token: &str,
+    expected_manifest_id: Option<&str>,
+) -> Result<(), StorageError> {
+    let claim = bundle.path.with_file_name(format!(".purging-{token}"));
+    let verified = bundle.path.with_file_name(format!(".purged-{token}"));
+    match fs::symlink_metadata(&verified) {
+        Ok(_) => return remove_verified_claim(&verified),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(StorageError::io("probe_purge_claim", &verified, e)),
+    }
+    match fs::symlink_metadata(&claim) {
+        Ok(_) => {} // resume an interrupted rename
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if probe_bundle_disk_state(&bundle.path) == BundleDiskState::Missing {
+                return Ok(());
+            }
+            verify_purge_identity(bundle, &bundle.path, expected_manifest_id)?;
+            arb_os::fs::rename_no_replace(&bundle.path, &claim)
+                .map_err(|e| StorageError::io("claim_managed_dir", &bundle.path, e))?;
+        }
+        Err(e) => return Err(StorageError::io("probe_purge_claim", &claim, e)),
+    }
+    if let Err(e) = verify_purge_identity(bundle, &claim, expected_manifest_id) {
+        // If a replacement raced the first check, give it back without overwriting a new entry.
+        let _ = arb_os::fs::rename_no_replace(&claim, &bundle.path);
+        return Err(e);
+    }
+    arb_os::fs::rename_no_replace(&claim, &verified)
+        .map_err(|e| StorageError::io("mark_purge_verified", &claim, e))?;
+    remove_verified_claim(&verified)
+}
+
+fn remove_verified_claim(verified: &Path) -> Result<(), StorageError> {
+    if !fs::symlink_metadata(verified).is_ok_and(|m| m.is_dir()) {
+        return Err(StorageError::InvalidBundle {
+            path: verified.to_owned(),
+            reason: "bundle identity mismatch: verified purge claim is not a directory".into(),
+        });
+    }
+    fs::remove_dir_all(verified).map_err(|e| StorageError::io("remove_managed_dir", verified, e))
+}
+
+fn fetch_expected_manifest_bundle_id(
+    conn: &Connection,
+    bundle_id: &str,
+) -> Result<Option<String>, StorageError> {
+    conn.query_row(
+        "SELECT manifest_bundle_id FROM bundle_manifest_ids WHERE bundle_id = ?1",
+        params![bundle_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|source| StorageError::sqlite("fetch_manifest_bundle_id", source))
+}
+
+fn verify_purge_identity(
+    bundle: &BundleEntry,
+    path: &Path,
+    expected_manifest_id: Option<&str>,
+) -> Result<(), StorageError> {
+    use arb_core::bundle::{ManifestV2, Provenance};
+    let mismatch = |reason: &str| StorageError::InvalidBundle {
+        path: path.to_owned(),
+        reason: format!("bundle identity mismatch: {reason}"),
+    };
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(mismatch("expected a directory"));
+    }
+    let manifest_path = path.join("manifest.json");
+    if !fs::symlink_metadata(&manifest_path).is_ok_and(|m| m.is_file()) {
+        return Err(mismatch("expected a regular manifest.json"));
+    }
+    let file = fs::File::open(&manifest_path)
+        .map_err(|e| StorageError::io("open_manifest", &manifest_path, e))?;
+    let manifest: ManifestV2 =
+        serde_json::from_reader(io::BufReader::new(file)).map_err(|e| mismatch(&e.to_string()))?;
+    manifest.validate().map_err(|e| mismatch(&e.to_string()))?;
+    let parent = match &manifest.provenance {
+        Provenance::Trimmed {
+            parent_bundle_id, ..
+        } => Some(parent_bundle_id),
+        Provenance::Original => None,
+        _ => return Err(mismatch("unknown provenance")),
+    };
+    // Rows registered by `bundle.open` before parents were recorded hold `None`, which means
+    // "unknown" and is not a mismatch; a recorded parent must still agree with the manifest.
+    let parent_agrees =
+        bundle.parent_bundle_id.is_none() || parent == bundle.parent_bundle_id.as_ref();
+    let expected_id = expected_manifest_id.unwrap_or(&bundle.bundle_id);
+    if manifest.bundle_id != expected_id
+        || manifest.created_at_utc != bundle.created_at_utc
+        || !parent_agrees
+    {
+        return Err(mismatch("catalog and manifest ownership differ"));
+    }
+    Ok(())
 }
 
 fn delete_bundle_catalog_rows(
@@ -2251,6 +2526,10 @@ fn opt_i64_to_u64(value: Option<i64>, field: &'static str) -> Result<Option<u64>
 }
 
 #[cfg(test)]
+#[path = "../tests/support/catalog_fixture.rs"]
+mod catalog_fixture;
+
+#[cfg(test)]
 mod tests {
     use arb_core::state::{BundleLifecycleState, SaveJobState};
     use tempfile::TempDir;
@@ -2399,6 +2678,7 @@ mod tests {
         let catalog = Catalog::open(tmp.path().join("cat"), &root).unwrap();
         let path = root.join("one");
         std::fs::create_dir_all(&path).unwrap();
+        super::catalog_fixture::write_manifest(&path, "one", "2026-11-22T10:00:00Z");
         catalog
             .register_bundle(&entry("one", path.clone()))
             .unwrap();
@@ -2469,6 +2749,7 @@ mod tests {
             .expect("catalog open must succeed");
         let path = managed_root.join("b-gc");
         std::fs::create_dir_all(&path).expect("bundle dir must be created");
+        super::catalog_fixture::write_manifest(&path, "b-gc", "2026-11-22T10:00:00Z");
         catalog
             .register_bundle(&entry("b-gc", path.clone()))
             .expect("register must succeed");

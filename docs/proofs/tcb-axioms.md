@@ -51,7 +51,11 @@ K3〜K9 の一部は、完了しなかった元の形を次のように組み替
 |---|---|---|
 | S1 | IDE JVM 2 台・daemon・tray・CLI 常駐 daemon・単一インスタンスロック | ロック所有者は高々 1、保存中・クラッシュ処理中の強制停止なし、所有者以外は許可済みハンドオーバーなしに停止できない、全親の死亡と EOF 後に親結合子が残らない、ウィンドウ 1 枚を閉じても子は生存、tray 無効化で daemon は止まらない、CLI 常駐 daemon は CLI 終了後も生存。収束: 全親死亡後に子とロックが解放される／生存 IDE の supervisor が tray を再取得し、手動終了は自動復活しない |
 | S2 | REQ-04 二相保存・単一ライタ・ディスク圧迫・クラッシュ／再起動／アップグレード・ゴミ箱 24h 猶予・リース・GC | `data_dir` ライタは高々 1、非終端ジョブが pin したチャンクは退避されない、Phase-1 後は `Committed` か回復可能、物理削除は管理下・非レガシー・`Trashed`・24h 経過・リース 0・ジョブ 0 のときのみ、レガシー schema 3/4 と非 ARB `.staging-*` は不変、クラッシュ回復後に ARB 所有 staging が残らない、再起動後の保存窓は新しい boot を選ぶ。到達性: ディスク回復後 `FailedRetryable` は `Completed` に到達できる |
+| S2 GC | GC の公開パス置換・二段階 claim（`.purging-` → `.purged-`）・再検証・クラッシュ再開 | 外来実体は決して物理削除されない、照合失敗時は `Trashed` に戻り公開パスが空なら返却する。到達性: 事前照合と claim の間の置換が最終照合で止まる／元実体が削除されても公開パスの置換物は残る |
 | S3 | 世代 0..=2・キャプチャ・ストレージ圧迫・シャットダウン・映像／音声（API 28–32 と 33+）・制御・古いワーカ・保存ドレイン水位・ロック順序 | 古い世代のイベントは現世代を変更しない、遅れた水位があるのにドレイン完了を報告しない（タイムアウト／ギャップ記録を除く）、`handover_gate` → `capture` のロック順序を逆転しない、ユーザーの再有効化を `AutoAttachTick` が消さない、`shutting_down` は `capture_enabled` を永続化しない、映像のみの EOF は再接続／ギャップに遷移する |
+| S3 attach | 遅延アタッチ（`(serial, generation)` トークン）・端末切替・ストレージ圧迫・再有効化 | 選択中の端末・現世代のみ稼働する、再有効化状態は遅延アタッチ完了後も保持される。到達性: 別端末の古いアタッチが棄却される／圧迫回復後に再開できる |
+| S4 | 2 接続 × 2 世代のビューポート開閉・書き出し完了・接続 EOF・ハンドオーバー | ビューポートまたは書き出し稼働中のハンドオーバーは拒否される、EOF と完了のドレインで必ずアイドルに収束する、1 要求あたりの公開は高々 1 回。到達性: EOF 後も書き出しが生存する／両世代で両クライアントが公開できる |
+| S5 | クラッシュ自動保存の検出・永続 pin・再起動リプレイ・端末再起動（設計前提、TCB-16） | 同一 boot 内の同一クラッシュ確定は高々 1 回、永続 pin は再起動後に必ずリプレイされる。到達性: 別 boot の同一署名は 2 回保存される |
 
 ### 2.3 Layer 3: Proptest / Miri
 
@@ -131,14 +135,14 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 
 | 層 | 結果 |
 |---|---|
-| Stateright | S1 一意状態 1,016,640（総 7,330,826、2.2 秒）、S2 71,028（557,161、0.3 秒）、S3 16,590（78,470、0.1 秒）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」と「物理削除は管理下・非レガシーのみ」は、GC 判定から形式（`!legacy`）を外す変異、場所（`managed`）を外す変異、staging 清掃から所有者印の確認を外す変異のいずれでも反例が出ることを確かめた |
+| Stateright | S1 一意状態 1,016,640（総 7,330,826、2.5 秒）、S2 74,988（587,713、0.4 秒）、S2 GC 56（125、1 ms）、S3 16,590（78,470、0.1 秒）、S3 attach 54（112、1 ms）、S4 405（1,277、4 ms）、S5 72（241、1 ms）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」と「物理削除は管理下・非レガシーのみ」は、GC 判定から形式（`!legacy`）を外す変異、場所（`managed`）を外す変異、staging 清掃から所有者印の確認を外す変異のいずれでも反例が出ることを確かめた |
 | Proptest | G1〜G7 は `cargo test --workspace` で全件成功（既定試行回数） |
 | Miri | M1 `arb-os shm::` 5 件成功・FS/mmap の 7 件は除外（109 秒）、M2 `arb-core` 70 件成功（`PROPTEST_CASES=8`、24 秒）、M2 `arb-media mp4::` 2 件成功・FS の 2 件は除外（23 秒）。未定義動作・データ競合の報告なし |
 | Konsist | `ArchitectureKonsistTest` 6 件成功（KON-1〜KON-5 と走査範囲の確認）。`buildPlugin` の配布 ZIP に `konsist` も JUnit などのテスト専用 JAR も含まれない |
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-15）
+## 4. TCB 公理（TCB-01〜TCB-16）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -153,12 +157,13 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | TCB-07 | ホストの連続／単調時計（`CLOCK_BOOTTIME`/`CLOCK_MONOTONIC_RAW`/`GetTickCount64`）がサスペンドと再起動を通じて仕様どおり振る舞う | K3、S2、G2 | `core/crates/arb-os/src/clock.rs::tests::host_clock_is_monotonic_over_ten_thousand_samples` | 実サスペンド・実再起動は Stage 3 |
 | TCB-08 | Android ADB / `scrcpy-server` / `getevent` / `logcat` / OEM MediaCodec の API 28–37 での意味 | K9（wire）、S3、G6 | `core/crates/arb-adb/tests/pdd_g6_stream_fault_props.rs` | 物理 USB 端末と OEM 差は未検証（エミュレータのみ） |
 | TCB-09 | VideoToolbox / OpenH264 FFI のメモリ安全性と外部プレイヤー（QuickTime / Chrome / Edge / VLC）での再生互換 | K9（mp4）、G3 | `core/crates/arb-media/tests/media_pipeline.rs::mux_parse_and_index_exact_frames_and_gops`、`core/crates/arb-media/tests/audio_pipeline.rs::round_trip_mux_and_open_verifies_exact_packets_asc_faststart_and_zero_elst` | FFI 内部は Miri/Kani の対象外。外部プレイヤー再生は Stage 3 |
-| TCB-10 | Android Studio 2026.2 / JBR ランタイム ABI、`dispose()` ライフサイクル、リフレクション対象、Compose/Skiko 描画 | KON-1..5、S1 | `ide-plugin/src/test/kotlin/io/github/shinma06/arb/ArchitectureKonsistTest.kt` | IDE 上の実描画と実ライフサイクルは VM IDE 受け入れ（`docs/verification/vm-acceptance.md`） |
+| TCB-10 | Android Studio 2026.2 / JBR ランタイム ABI、`dispose()` ライフサイクル、リフレクション対象、Compose/Skiko 描画 | KON-1..5、S1 | `ide-plugin/src/test/kotlin/io/github/shinma06/arb/ArchitectureKonsistTest.kt` | IDE 上の実描画と実ライフサイクルは VM IDE 受け入れ（[develop 受け入れ](../verifications/VER-31-pre-develop-acceptance-e2e.md)、[main リリースゲート](../verifications/VER-34-main-release-gate.md)、[実機手順](../testing/work-device-smoke-checklist.md)） |
 | TCB-11 | FHD 30fps の体感遅延基準（open ≤ 1s、seek 0.2–0.5s、trim は数秒以内）を対象開発機で満たす | なし（性能は形式層の対象外） | `core/crates/arb-media/tests/media_pipeline.rs` | 実機ハードウェアでの計測は Stage 3 |
 | TCB-12 | 配布 ZIP のバイナリ / JAR / `THIRD_PARTY_NOTICES.md` の法的来歴（GPL/AGPL/LGPL 0 件、PDD ツールは開発専用） | RS-1、ライセンス検査 | `core/scripts/check-licenses.py`、`core/scripts/package_distribution.py --self-test` | Kani・Miri・Stateright・Konsist は dev/test 依存でのみ使い、配布物に含めない（ZIP 構造検査で確認） |
 | TCB-13 | `alloc::slice::stable_sort`（`<[T]>::sort_by` の本体）は正しい安定ソートである。K4 ではこれを挿入ソートのスタブに置き換える | K4 | `core/crates/arb-core/src/state.rs::tests::ring_planner_evicts_oldest_unpinned_closed_and_stops_on_storage_pressure`、`core/crates/arb-storage/tests/pdd_g2_ring_crash_props.rs`（G2） | 必須集合の K4 は 1 チャンクなのでスタブは長さ 1 以下のスライスにしか呼ばれず、std と同じく何もしない。std のソートと挿入スタブの同値性は機械検証していない（2 チャンク以上の拡張集合でのみ意味を持つ） |
 | TCB-14 | 解析結果（`Vec<u32>` / `MediaError` 内の `io::Error`）の drop は安全に終わる。K9 の表パーサ系ハーネスは戻り値を `ManuallyDrop` で保持し、drop glue を実行しない | K9（mp4） | `cargo test -p arb-media`、Miri M2（`arb-media mp4::`） | 解放処理は std の実装を信頼する。パーサ本体と `Ok`/`Err` の判定は本番コードのまま検証している |
 | TCB-15 | `ClockTimeline::map_device_monotonic` / `map_logcat_wall` は `epochs.get(boot_id)` で選んだ boot epoch の `triples` / `wall_jump_indices` をそのまま抽出関数に渡し、その epoch では `ingest_device_triple` が `monotonic_ns`・`boottime_ns` の非減少と `idx + 1 < len` の飛び添字を保つ | K3（スライス層） | `core/crates/arb-core/src/time.rs` の `time` 単体テスト | `BTreeMap` の参照と ingest 側の不変条件は機械検証していない（`ClockTimeline` 全体を通すハーネスは CBMC のメモリ不足で拡張集合） |
+| TCB-16 | クラッシュ自動保存の重複排除は「boot 修飾付きクラッシュ ID が pin と一緒に永続化される」という前提に立つ。現在の `arbd` は pin と保存ジョブ（`save_jobs/<job>.json`・カタログ行）を永続化して再起動時に 1 回だけ再キューするが、クラッシュ ID は保存せず、繰り返し抑止はメモリ上の `CrashAutoSaveGate` のクールダウンだけである（再起動で空に戻る） | S5（`pdd_stateright_models.rs::s5_crash_watcher_model`） | `core/crates/arbd/src/capture.rs::tests::interrupted_crash_autosave_is_requeued_once_on_startup` | S5 は設計上の前提を検査するモデルで、`arbd` の実装を精緻化したものではない。デーモン再起動後に端末が同じ `am_crash` を再配信した場合の二重保存は未対策。永続クラッシュ ID の実装まで未解決 |
 
 ## 5. Sara 互換性
 

@@ -16,6 +16,9 @@
     reason = "PDD model/property code: long linearized models and generators read best unsplit"
 )]
 
+#[path = "support/catalog_fixture.rs"]
+mod catalog_fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -128,11 +131,12 @@ fn run_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                     path: path(b),
                     format_version: CatalogFormatVersion::V2,
                     parent_bundle_id: None,
-                    created_at_utc: t,
+                    created_at_utc: t.clone(),
                 });
                 let expect_ok = matches!(r.bundles.get(&b), None | Some(RefBundle::Purged));
                 prop_assert_eq!(res.is_ok(), expect_ok, "register {:?}", op);
                 if expect_ok {
+                    catalog_fixture::write_manifest(&path(b), &format!("b{b}"), &t);
                     r.bundles.insert(b, RefBundle::Active);
                 }
             }

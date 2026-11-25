@@ -150,9 +150,15 @@ fn read_barcode_from_frame(frame: &DecodedFrame) -> Option<u64> {
 
 /// Builds a synthetic 90-frame (3 GOPs of 30 frames) barcode-stamped H.264 MP4 using `OpenH264`.
 fn build_synthetic_fixture_mp4(path: &Path) {
+    build_offset_fixture_mp4(path, 0);
+}
+
+fn build_offset_fixture_mp4(path: &Path, offset: u64) {
     let backend = OpenH264Backend::new();
     let frames: Vec<DecodedFrame> = (0..FRAME_COUNT)
-        .map(|i| synthesize_barcode_yuv420p_frame(u64::try_from(i).expect("index fits u64")))
+        .map(|i| {
+            synthesize_barcode_yuv420p_frame(offset + u64::try_from(i).expect("index fits u64"))
+        })
         .collect();
     let packets = backend
         .encode_yuv420p_sequence(
@@ -1239,6 +1245,7 @@ fn single_gop_mid_gop_trim_and_bounds_validation() {
 
 #[test]
 fn corrupt_filmstrip_cache_is_safely_regenerated() {
+    use sha2::Digest as _;
     let tmp = TempDir::new().expect("tempdir creation must succeed");
     let bundle_dir = tmp.path().join("bundle");
     std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
@@ -1269,8 +1276,12 @@ fn corrupt_filmstrip_cache_is_safely_regenerated() {
     bytes[mid] ^= 0xFF;
     std::fs::write(&first.cache_path, &bytes).expect("corrupting filmstrip.bin must succeed");
 
-    let direct_err =
-        FilmstripCache::load_from_file(&first.cache_path, track.file_len(), track.frame_count());
+    let direct_err = FilmstripCache::load_from_file(
+        &first.cache_path,
+        track.file_len(),
+        track.frame_count(),
+        &sha2::Sha256::digest(std::fs::read(track.path()).expect("source bytes")).into(),
+    );
     assert!(
         matches!(direct_err, Err(MediaError::CacheCorrupt(_))),
         "corrupted filmstrip.bin must fail checksum with CacheCorrupt"
@@ -1288,4 +1299,125 @@ fn corrupt_filmstrip_cache_is_safely_regenerated() {
         recovered.cache, first.cache,
         "regenerated filmstrip must match original"
     );
+}
+
+#[test]
+fn equal_length_replacement_invalidates_filmstrip_pixels() {
+    let tmp = TempDir::new().unwrap();
+    let bundle = tmp.path().join("bundle");
+    std::fs::create_dir(&bundle).unwrap();
+    let path = bundle.join("video.mp4");
+    let replacement = tmp.path().join("replacement.mp4");
+    build_offset_fixture_mp4(&path, 0);
+    build_offset_fixture_mp4(&replacement, 128);
+    let mut movies = [&path, &replacement].map(|p| std::fs::read(p).unwrap());
+    let size = movies.iter().map(Vec::len).max().unwrap() + 8;
+    for movie in &mut movies {
+        let padding = u32::try_from(size - movie.len()).unwrap();
+        movie.extend(padding.to_be_bytes());
+        movie.extend(b"free");
+        movie.resize(size, 0);
+    }
+    let codec = OpenH264Backend::new();
+    for (movie, offset) in movies.iter().zip([0, 128]) {
+        std::fs::write(&path, movie).unwrap();
+        let track = Mp4VideoTrack::open(&path).unwrap();
+        let result = FilmstripCache::load_or_generate(
+            tmp.path().join("cache"),
+            "same",
+            &track,
+            FilmstripConfig {
+                max_width: WIDTH,
+                max_height: HEIGHT,
+                max_threads: 1,
+            },
+            &codec,
+        )
+        .unwrap();
+        assert_eq!(result.origin, FilmstripOrigin::Generated);
+        assert_eq!(result.cache.len(), 3);
+        for thumb in result.cache.entries() {
+            assert_eq!(
+                read_barcode_from_rgb24(
+                    &thumb.image.data,
+                    usize::try_from(thumb.image.width).unwrap()
+                ),
+                Some(offset + thumb.frame_index)
+            );
+        }
+        let exact = codec
+            .decode_frame(&track, 17, PixelFormat::Yuv420p)
+            .unwrap();
+        assert_eq!(read_barcode_from_frame(&exact), Some(offset + 17));
+    }
+}
+
+#[test]
+fn legacy_arbfs001_filmstrip_cache_is_rejected_and_regenerated_as_v2() {
+    use sha2::Digest as _;
+    let tmp = TempDir::new().expect("tempdir");
+    let bundle_dir = tmp.path().join("bundle");
+    std::fs::create_dir_all(&bundle_dir).expect("bundle dir");
+    let src_path = bundle_dir.join("video.mp4");
+    let cache_dir = tmp.path().join("cache");
+    build_synthetic_fixture_mp4(&src_path);
+
+    let track = Mp4VideoTrack::open(&src_path).expect("open track");
+    let digest: [u8; 32] = sha2::Sha256::digest(std::fs::read(&src_path).expect("read mp4")).into();
+    let backend = OpenH264Backend::new();
+    let cfg = FilmstripConfig {
+        max_width: 160,
+        max_height: 90,
+        max_threads: 2,
+    };
+
+    let fnv1a_64 = |data: &[u8]| -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in data {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    };
+
+    // Build both a short (< 68B) and a full-length (>= 68B) legacy ARBFS001 file with valid FNV-1a.
+    for (bundle_id, extra_payload) in [("legacy-short", 0usize), ("legacy-full", 64usize)] {
+        let cache_path = FilmstripCache::cache_path(&cache_dir, bundle_id).expect("cache path");
+        std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("mkdir");
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(b"ARBFS001");
+        legacy.extend_from_slice(&track.file_len().to_le_bytes());
+        legacy.extend_from_slice(&track.frame_count().to_le_bytes());
+        legacy.extend_from_slice(&0u32.to_le_bytes());
+        legacy.resize(legacy.len() + extra_payload, 0);
+        let checksum = fnv1a_64(&legacy);
+        legacy.extend_from_slice(&checksum.to_le_bytes());
+        std::fs::write(&cache_path, &legacy).expect("write legacy cache");
+
+        let direct = FilmstripCache::load_from_file(
+            &cache_path,
+            track.file_len(),
+            track.frame_count(),
+            &digest,
+        );
+        assert!(
+            matches!(direct, Err(MediaError::CacheCorrupt(_))),
+            "legacy ARBFS001 ({bundle_id}) must be rejected as CacheCorrupt"
+        );
+
+        let regenerated =
+            FilmstripCache::load_or_generate(&cache_dir, bundle_id, &track, cfg, &backend)
+                .expect("legacy cache must regenerate cleanly");
+        assert_eq!(regenerated.origin, FilmstripOrigin::Generated);
+        assert_eq!(
+            &std::fs::read(&cache_path).expect("read upgraded")[0..8],
+            b"ARBFS002"
+        );
+
+        let reloaded =
+            FilmstripCache::load_or_generate(&cache_dir, bundle_id, &track, cfg, &backend)
+                .expect("upgraded v2 cache must reload");
+        assert_eq!(reloaded.origin, FilmstripOrigin::DiskCache);
+        assert_eq!(reloaded.cache, regenerated.cache);
+    }
 }
