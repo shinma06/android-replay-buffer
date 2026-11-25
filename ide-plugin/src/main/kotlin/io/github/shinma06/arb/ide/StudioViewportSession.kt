@@ -52,30 +52,35 @@ internal class StudioViewportSession(
     @Synchronized
     fun <T> request(onRecovery: () -> Unit = {}, call: (ArbdRpcClient, String) -> T): ReadResult<T> {
         check(!disposed())
-        val reopened = current == null
-        if (reopened) {
-            onRecovery()
-            open(checkNotNull(sourceBundleId))
+        current?.let { generation ->
+            try {
+                return read(generation, call, replacementId = null)
+            } catch (e: Exception) {
+                if (current != null) throw e
+            }
         }
-        val generation = checkNotNull(current)
+        onRecovery()
+        try {
+            val viewport = open(checkNotNull(sourceBundleId))
+            return read(checkNotNull(current), call, viewport.viewportId)
+        } catch (e: Exception) {
+            throw IllegalStateException("映像接続を復元できませんでした（${e.message}）", e)
+        }
+    }
+
+    private fun <T> read(generation: Generation, call: (ArbdRpcClient, String) -> T, replacementId: String?): ReadResult<T> {
         val result = try {
             call(generation.rpc, generation.viewport.viewportId)
         } catch (e: Exception) {
-            if (e !is IOException && (e !is ArbdRpcException || e.code != VIEWPORT_NOT_FOUND)) throw e
-            // Disconnecting the owning socket also reclaims a viewport whose reply was lost.
-            onRecovery()
-            generation.rpc.close()
-            generation.reader.close()
-            current = null
-            try {
-                open(generation.viewport.bundleId)
-                val fresh = checkNotNull(current)
-                return ReadResult(call(fresh.rpc, fresh.viewport.viewportId), fresh.reader.readLatest(), fresh.viewport.viewportId)
-            } catch (recovery: Exception) {
-                throw IllegalStateException("映像接続を復元できませんでした（${recovery.message}）", recovery)
+            if (e is IOException || (e is ArbdRpcException && e.code == VIEWPORT_NOT_FOUND)) {
+                // Socket EOF also reclaims a viewport whose reply was lost.
+                current = null
+                generation.rpc.close()
+                generation.reader.close()
             }
+            throw e
         }
-        return ReadResult(result, generation.reader.readLatest(), generation.viewport.viewportId.takeIf { reopened })
+        return ReadResult(result, generation.reader.readLatest(), replacementId)
     }
 
     fun seekFrame(

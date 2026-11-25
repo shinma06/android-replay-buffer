@@ -19,6 +19,8 @@ enum Action {
     SeekTransientError,
     SeekPermanentError,
     ViewportNotFoundDisconnect,
+    AcquireMissing,
+    ReopenFailed,
     SharedRpcDisconnect,
     ConnectViewport,
     Reopen,
@@ -208,24 +210,28 @@ impl Model for S6 {
         }
         match s.phase {
             Phase::Idle => {
-                out.extend(s.queued.map(SeekRequestIssued));
+                if let Some(target) = s.queued {
+                    out.push(if s.viewport {
+                        SeekRequestIssued(target)
+                    } else {
+                        AcquireMissing
+                    });
+                }
                 if s.disposed && !s.closed {
                     out.push(CloseSession);
                 }
             }
             Phase::Connecting => out.extend([SharedRpcDisconnect, ConnectViewport]),
             Phase::SharedReconnect => out.push(ConnectViewport),
-            Phase::Opening => out.push(Reopen),
+            Phase::Opening => out.extend([Reopen, ReopenFailed]),
             Phase::Seeking | Phase::Replaying => {
                 out.extend([
                     SeekSuccess(0),
                     SeekSuccess(1),
                     SeekPermanentError,
+                    SeekTransientError,
                     ViewportNotFoundDisconnect,
                 ]);
-                if s.phase == Phase::Seeking {
-                    out.push(SeekTransientError);
-                }
             }
         }
     }
@@ -322,7 +328,23 @@ impl Model for S6 {
                     n.clock = Clock::Frozen;
                 }
             }
-            SeekTransientError | SeekPermanentError | ViewportNotFoundDisconnect => {
+            ViewportNotFoundDisconnect => {
+                n.viewport = false;
+                n.reader = false;
+                self.fail(&mut n);
+            }
+            SeekTransientError | SeekPermanentError => {
+                self.fail(&mut n);
+            }
+            AcquireMissing => {
+                n.flight = n.queued.take();
+                n.phase = Phase::Connecting;
+                if s.playing {
+                    n.clock = Clock::Frozen;
+                }
+            }
+            ReopenFailed => {
+                n.viewport = false;
                 self.fail(&mut n);
             }
             SharedRpcDisconnect => n.phase = Phase::SharedReconnect,
@@ -369,6 +391,7 @@ impl Model for S6 {
                 | SeekPermanentError
                 | SeekTransientError
                 | ViewportNotFoundDisconnect
+                | ReopenFailed
                 | Reopen
         ) && (n.t != s.t || (s.stale && (s.playing != n.playing || s.error != n.error)))
         {
@@ -376,6 +399,7 @@ impl Model for S6 {
         }
         if !s.stale
             && (a == SeekPermanentError
+                || a == ReopenFailed
                 || (a == SeekTransientError && s.retry)
                 || (a == ViewportNotFoundDisconnect && s.phase == Phase::Replaying))
             && (n.playing || !n.error)
@@ -422,7 +446,7 @@ impl Model for S6 {
                 },
             ),
             Property::always("at most one controller retry", |m: &Self, s: &State| {
-                if s.phase != Phase::Seeking || s.stale || s.retry {
+                if !matches!(s.phase, Phase::Seeking | Phase::Replaying) || s.stale || s.retry {
                     return true;
                 }
                 let first = m

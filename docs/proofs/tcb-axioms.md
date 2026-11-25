@@ -60,7 +60,7 @@ K3〜K9 の一部は、完了しなかった元の形を次のように組み替
 | S5 | クラッシュ自動保存の検出・永続 pin・再起動リプレイ・端末再起動（設計前提、TCB-16） | 同一 boot 内の同一クラッシュ確定は高々 1 回、永続 pin は再起動後に必ずリプレイされる。到達性: 別 boot の同一署名は 2 回保存される |
 | S6 | Studio の再生時計、seek 世代、共有 RPC の再接続、編集タブが所有する viewport と SHM reader | 遅延応答が意図時刻と新しい再生を保つ。同一フレームの保持中に seek を追加しない。失敗時は有限回で理由を表示して停止し、再生再開時はループが起床する。再取得と破棄が競合しても資源を解放する。 |
 
-S6 は `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright_playback_s6 -- --nocapture` で再現できる。PTS を 0・3 ns、終端を 4 ns とした 2 枚の VFR 映像について、通常再生 4,814 状態、ループ 4,814 状態、単一フレーム区間ループ 4,056 状態を探索した（Apple Silicon の debug ビルドで合計 0.10 秒）。世代は実行中の要求が現行か旧世代かで区別する。`seekLock` の待ち行列では、世代照合を通れる最新の要求を保持する。復旧と解放の収束は RPC が返り、待機スレッドが実行されることを前提とする。
+S6 は `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright_playback_s6 -- --nocapture` で再現できる。PTS を 0・3 ns、終端を 4 ns とした 2 枚の VFR 映像について、通常再生 5,157 状態、ループ 5,157 状態、単一フレーム区間ループ 4,334 状態を探索した（Apple Silicon の debug ビルドで合計 0.12 秒）。世代は実行中の要求が現行か旧世代かで区別する。`seekLock` の待ち行列では、世代照合を通れる最新の要求を保持する。復旧と解放の収束は RPC が返り、待機スレッドが実行されることを前提とする。SHM 所有数はセッションが保持する reader と開いたファイルチャネルを数える。JVM が `MappedByteBuffer` の OS マッピングを回収する時刻は検証範囲外。
 
 [共有トレース](../specs/playback-s6-traces.json) の16本では、同じ操作と障害の順序から Stateright が発行する seek 列を再構成し、最終状態を Kotlin と照合する。`PddS6PlaybackTraceReplayTest` は本番の再生・表示状態、接続サービス、viewport セッションと SHM reader を実行する。時計と daemon 側の応答・接続 EOF はテストで制御する。3個の変異（到着フレーム時刻の書き戻し、古い失敗の受理、再取得中の解放漏れ）に対して反例を確認する。
 

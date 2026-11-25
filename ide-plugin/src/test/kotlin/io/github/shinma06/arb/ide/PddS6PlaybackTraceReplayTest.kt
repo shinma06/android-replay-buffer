@@ -129,7 +129,9 @@ class PddS6PlaybackTraceReplayTest {
                 when (method) {
                     "media.open_viewport" -> {
                         leases[id] = socket
-                        if (index > 0) exchange("open", -1)
+                        if (index > 0 && exchange("open", -1).first == "ReopenFailed") {
+                            throw IOException("viewport open reply lost")
+                        }
                         val path = Gson().toJson(shm.toString())
                         """{"viewport_id":"$id","bundle_id":"bundle","shm_path":$path,"width":2,"height":2,"stride":8,"pixel_format":"rgba8","slot_capacity":64,"frame_count":2,"keyframe_count":1}"""
                     }
@@ -216,6 +218,13 @@ class PddS6PlaybackTraceReplayTest {
                         receive("connect")
                     }
                 }
+                "AcquireMissing" -> gate = receive("connect")
+                "ReopenFailed" -> {
+                    val opening = checkNotNull(gate)
+                    opening.response.complete(name)
+                    opening.call.done.get(5, TimeUnit.SECONDS)
+                    gate = null
+                }
                 "SharedRpcDisconnect" -> {
                     checkNotNull(gate).response.complete(name)
                     gate = receive("connect")
@@ -254,6 +263,7 @@ class PddS6PlaybackTraceReplayTest {
 
         fun observe(): JsonObject {
             calls.forEach { it.done.get(5, TimeUnit.SECONDS) }
+            check(gates.isEmpty()) { "unexpected RPC after the last trace event" }
             return JsonObject().apply {
                 addProperty("mode", controller.state.mode.name)
                 addProperty("playheadTimeNs", controller.displayPositionNs())
