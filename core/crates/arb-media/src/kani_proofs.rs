@@ -128,31 +128,61 @@ fn k9_parse_stsz_bounded_by_file() {
 }
 
 /// Exact saturating conversion over the full `i64`/`u64` tick domain for one timescale:
-/// the floor quotient clamped to the target range, with no intermediate overflow. A fully
-/// symbolic `u32` timescale (a symbolic 128-bit divisor) did not finish within 15 minutes,
-/// so the harnesses below fix the timescales real tracks use, including both extremes.
+/// the truncated quotient clamped to the target range, with no intermediate overflow.
+///
+/// The oracle checks the quotient-remainder identity with multiplications only, so the
+/// production division is the only one CBMC bit-blasts. Every product is bounded by
+/// `2^63 * 10^9` or `2^64 * 2^32`, far below `2^127`, so the wrapping operations are exact
+/// and the oracle adds no overflow checks of its own.
+///
+/// Only `ts = 1` verifies in the required set. For any other constant the production
+/// 128-bit divider stays the bottleneck: with `ts = 90_000` the unsigned half alone did not
+/// finish within 10 minutes (Kani 0.68 / CBMC 6.11 / CaDiCaL, Linux), also with Kissat,
+/// MiniSat or Z3, with ticks limited to 32 bits, and with an oracle that avoids every
+/// multiplication of the result; ticks limited to 16 bits took 100 seconds. A fully
+/// symbolic `u32` timescale did not finish within 15 minutes.
 fn ticks_exact(ts: u32) {
+    let d = i128::from(ts);
     let a: i64 = kani::any();
-    let exact = i128::from(a) * 1_000_000_000 / i128::from(ts);
+    let n = i128::from(a).wrapping_mul(1_000_000_000);
     let na = ticks_to_ns_signed(a, ts);
-    if exact > i128::from(i64::MAX) {
-        assert_eq!(na, i64::MAX, "positive overflow saturates");
-    } else if exact < i128::from(i64::MIN) {
-        assert_eq!(na, i64::MIN, "negative overflow saturates");
+    let qd = i128::from(na).wrapping_mul(d);
+    if na == i64::MAX {
+        assert!(n >= qd, "positive overflow saturates");
+    } else if na == i64::MIN {
+        assert!(n <= qd, "negative overflow saturates");
+    } else if n >= 0 {
+        assert!(
+            qd <= n && n < qd.wrapping_add(d),
+            "in-range value is the truncated quotient"
+        );
     } else {
-        assert_eq!(i128::from(na), exact, "in-range value is exact");
+        assert!(
+            qd.wrapping_sub(d) < n && n <= qd,
+            "in-range value is the truncated quotient"
+        );
     }
+    let d = u128::from(ts);
     let ua: u64 = kani::any();
-    let uexact = u128::from(ua) * 1_000_000_000 / u128::from(ts);
+    let n = u128::from(ua).wrapping_mul(1_000_000_000);
     let nu = ticks_to_ns_unsigned(ua, ts);
-    if uexact > u128::from(u64::MAX) {
-        assert_eq!(nu, u64::MAX, "unsigned overflow saturates");
+    let qd = u128::from(nu).wrapping_mul(d);
+    if nu == u64::MAX {
+        assert!(n >= qd, "unsigned overflow saturates");
     } else {
-        assert_eq!(u128::from(nu), uexact, "in-range value is exact");
+        assert!(
+            qd <= n && n < qd.wrapping_add(d),
+            "in-range value is the floor quotient"
+        );
     }
 }
 
 /// Adjacent-tick monotonicity for one timescale (all pairs follow by induction).
+///
+/// All three timescales stay `kani-extended`: comparing two production results makes CBMC
+/// relate two separate 128-bit products (`a * 10^9` and `(a + 1) * 10^9`), which did not
+/// finish within 10 minutes even for `ts = 1` with the unsigned half alone, or for
+/// unsigned ticks limited to 32 bits.
 fn ticks_monotone(ts: u32) {
     let a: i64 = kani::any();
     kani::assume(a < i64::MAX);
