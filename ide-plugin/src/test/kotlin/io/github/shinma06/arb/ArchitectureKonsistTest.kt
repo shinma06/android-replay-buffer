@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Layer-4 PDD (KON-1..KON-5): architecture rules over the plugin and `client-core` sources.
+ * Layer-4 PDD (KON-1..KON-6): architecture rules over the plugin and `client-core` sources.
  * Each rule reports the offending files so a regression names its own fix site.
  */
 class ArchitectureKonsistTest {
@@ -112,5 +112,23 @@ class ArchitectureKonsistTest {
             .map { it.name }
             .toSet()
         assertEquals(setOf("LegacyV1SettingsMigrator", "ArbStartupActivity", "LegacyV1SettingsMigratorTest"), legacyUsers)
+    }
+
+    /**
+     * KON-6 (PDD G8-7): audio "unsupported" wording is produced only by `AudioPolicyTable`, which
+     * shows it solely for `AudioCause.API_BELOW_MIN`; no other UI code may label audio unsupported.
+     */
+    @Test
+    fun kon6AudioUnsupportedWordingLivesOnlyInAudioPolicyTable() {
+        val wording = Regex("""音声(?:キャプチャ)?[のは：:\s]*非対応""")
+        val table = main().single { it.rel() == "client-core/src/main/kotlin/io/github/shinma06/arb/state/AudioPolicyTable.kt" }
+        // Skip comments before inspecting string literals, including multiline strings.
+        val tokens = Regex("""//[^\n]*|/\*[\s\S]*?\*/|"{3}[\s\S]*?"{3}|"(?:\\.|[^"\\])*" """.trimEnd())
+        fun hasWording(file: KoFileDeclaration) =
+            tokens.findAll(file.text).any { it.value.startsWith('"') && wording.containsMatchIn(it.value) }
+        assertNone("KON-6", main().filter { it.rel() != table.rel() && hasWording(it) }.map { it.rel() })
+        assertTrue(hasWording(table), "AudioPolicyTable owns the unsupported wording")
+        val classOf = table.objects().single { it.name == "AudioPolicyTable" }.functions().single { it.name == "classOf" }
+        assertTrue(!Regex("""\belse\s*->""").containsMatchIn(classOf.text), "classOf handles every AudioCause explicitly")
     }
 }

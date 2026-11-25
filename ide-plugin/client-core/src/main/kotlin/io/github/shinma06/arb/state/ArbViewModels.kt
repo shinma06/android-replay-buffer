@@ -89,6 +89,10 @@ data class CaptureBarState(
         get() = capture?.takeIf { it.effectiveAudioState == AudioCaptureState.UNAVAILABLE }?.audioReason
             ?.takeIf { it.isNotBlank() }
 
+    /** Tool Window audio label: configured setting plus live state (PDD G8). */
+    val audioStatusLabel: String
+        get() = AudioPolicyTable.statusLabel(config.audioEnabled, isLogsOnlyMode, capture)
+
     val multipleDevicesNeedSelection: Boolean
         get() = deviceSelection is DeviceSelectionOutcome.MultipleDevicesNeedSelection
 
@@ -245,17 +249,9 @@ object CaptureBarReducer {
                     ),
                 )
             }
-            if (status.capture.effectiveAudioState == AudioCaptureState.UNAVAILABLE &&
-                !status.capture.audioReason.isNullOrBlank()
-            ) {
-                add(
-                    CaptureBanner(
-                        kind = CaptureBannerKind.CONFIG_WARNING,
-                        title = "音声キャプチャ非対応（映像＋ログで継続中）",
-                        detail = status.capture.audioReason,
-                    ),
-                )
-            }
+            // PDD G8: wording comes from the machine-readable audio cause, never from the API
+            // level alone, so a runtime failure on Android 13+ is never shown as "unsupported".
+            AudioPolicyTable.banner(status.capture)?.let(::add)
         }
 
         // Strict no-auto-switch policy:
