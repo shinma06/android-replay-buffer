@@ -586,11 +586,6 @@ class PlaybackController(
         }
     }
 
-    /**
-     * Attaches (or replaces) an asynchronously decoded [AudioSyncPlayer] after construction,
-     * syncing its A/V offset, playback speed, mute state, playhead PTS, and active transport mode.
-     * If this controller is already closed, [player] is closed immediately to avoid leaking resources.
-     */
     private fun observeAudioFailure(player: AudioSyncPlayer) {
         audioSubscription = player.addStateListener { state ->
             if (state == AudioState.UNAVAILABLE) {
@@ -603,6 +598,11 @@ class PlaybackController(
         }
     }
 
+    /**
+     * Attaches (or replaces) an asynchronously decoded [AudioSyncPlayer] after construction,
+     * syncing its A/V offset, playback speed, mute state, playhead PTS, and active transport mode.
+     * If this controller is already closed, [player] is closed immediately to avoid leaking resources.
+     */
     fun attachAudioPlayer(player: AudioSyncPlayer, avOffsetMs: Long = player.avOffsetMs) {
         var oldToClose: AudioSyncPlayer? = null
         var rejectNew = false

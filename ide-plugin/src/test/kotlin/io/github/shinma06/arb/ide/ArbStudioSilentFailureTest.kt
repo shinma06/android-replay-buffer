@@ -188,9 +188,13 @@ class ArbStudioSilentFailureTest {
             older.awaitQueuedWorkForTest()
             assertNotNull(older.studioController.editSaveFailure)
             daemon.faults.remove("edit.update_session")
+            daemon.loseEditResponse = true
             newer.studioController.applyInFrame(4, settled = true)
             newer.awaitQueuedWorkForTest()
+            assertNotNull(newer.studioController.editSaveFailure)
+            daemon.loseEditResponse = false
             assertTrue(older.flushBeforeClose())
+            assertTrue(older.studioController.timelineWarnings.any { it.contains("別のタブ") })
             assertEquals(listOf(4L), daemon.storedRanges.map { it.first })
         } finally {
             older.dispose()

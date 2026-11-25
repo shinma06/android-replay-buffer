@@ -27,6 +27,7 @@ class VirtualClock : PlaybackClock {
 /** A scripted daemon serving one video bundle with per-method fault injection and an edit-session store. */
 class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 0) {
     val faults = java.util.concurrent.ConcurrentHashMap<String, Fault>()
+    @Volatile var loseEditResponse = false
     val storedSession = AtomicReference<String?>(null)
     val storedRanges = java.util.concurrent.CopyOnWriteArrayList<Triple<Long?, Long?, Long?>>()
     val crashes = AtomicReference(crashesJson())
@@ -54,6 +55,7 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
                     """"out_frame_index":${p("out_frame_index")},"playhead_frame_index":${p("playhead_frame_index")},""" +
                     """"updated_at_utc":"2026-11-25T00:00:00Z"}"""
                 storedSession.set(json)
+                if (loseEditResponse) throw TransportDown("response lost")
                 """{"session":$json}"""
             }
             "export.trim" -> {
