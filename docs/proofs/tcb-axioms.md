@@ -6,7 +6,7 @@
 
 | 層 | 道具 | 対象 | 実行コマンド | 実行頻度 |
 |---|---|---|---|---|
-| 1 | Kani（CBMC） | 純粋関数の全入力域（有界） | `cd core && cargo kani -p <crate> -Z stubbing`（必須集合: `arb-core` / `arb-os` / `arb-adb` / `arb-media`）、拡張集合は `--features kani-extended` を追加（`arb-core` / `arb-media` / `arbd`） | `.github/workflows/pdd-kani.yml`（毎週・手動・`workflow_call`・証明ファイルを変更した `develop` への push） |
+| 1 | Kani（CBMC） | 純粋関数の全入力域（有界） | `cd core && cargo kani -p <crate> -Z stubbing`（必須集合: `arb-core` / `arb-os` / `arb-adb` / `arb-media` / `arbd`）、拡張集合は `--features kani-extended` を追加（`arb-core` / `arb-media` / `arbd`） | `.github/workflows/pdd-kani.yml`（毎週・手動・`workflow_call`・証明ファイルを変更した `develop` への push） |
 | 2 | Stateright | 並行ライフサイクルの全インターリーブ | `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright_models -- --nocapture` | 毎回の `cargo test`（3 OS） |
 | 3 | Proptest / Miri | 実 I/O（SQLite・FS・MP4・ワイヤ）と未定義動作 | `cargo test --manifest-path core/Cargo.toml --workspace`、`cargo +nightly miri test -p arb-os --lib shm::`、`PROPTEST_CASES=8 cargo +nightly miri test -p arb-core --lib`、`PROPTEST_CASES=8 cargo +nightly miri test -p arb-media --lib mp4::` | Proptest は毎回、Miri は `pdd-kani.yml` |
 | 4 | Konsist / 構造ガード | Kotlin と Rust のアーキテクチャ規則 | `cd ide-plugin && ./gradlew test --tests io.github.shinma06.arb.ArchitectureKonsistTest`、`python3 core/scripts/check-architecture.py` | 毎回（Gradle テスト、`core/scripts/verify.sh`、CI `os-parity`） |
@@ -18,24 +18,32 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 
 ### 2.1 Layer 1: Kani
 
-ハーネスは二つの集合に分かれる。**必須集合**は `pdd-kani.yml` の `kani` ジョブ（`cargo kani -p <crate> -Z stubbing`）で毎回すべて検証し、失敗・打ち切りはワークフローの失敗になる。**拡張集合**は手元の実行（Kani 0.68 / CBMC 6.11、Apple Silicon）で 5 分以内に検証が終わらなかったハーネスで、`#[cfg_attr(feature = "kani-extended", kani::proof, ...)]` で通常の `cargo kani` から外し、`--features kani-extended` を付けたときと、結果を記録するだけの `kani-extended` ジョブ（`continue-on-error`、ハーネスごと 15 分打ち切り）でのみ実行する。拡張集合の性質は**形式的には未証明**であり、括弧内の既存テストで確認しているにとどまる。
+ハーネスは二つの集合に分かれる。**必須集合**は `pdd-kani.yml` の `kani` ジョブ（`cargo kani -p <crate> -Z stubbing`）で毎回すべて検証し、失敗・打ち切りはワークフローの失敗になる。必須集合のハーネスは手元の実行（Kani 0.68 / CBMC 6.11）でいずれも 1 本 60 秒以内に終わる。**拡張集合**は手元でこの時間内に検証が終わらなかったハーネス（多くは 5〜15 分で打ち切り、またはメモリ不足）で、`#[cfg_attr(feature = "kani-extended", kani::proof, ...)]` で通常の `cargo kani` から外し、`--features kani-extended` を付けたときと、結果を記録するだけの `kani-extended` ジョブ（`continue-on-error`、ハーネスごと 15 分打ち切り）でのみ実行する。拡張集合の性質は**形式的には未証明**であり、括弧内の既存テストで確認しているにとどまる。
 
 | ID | 必須集合 | 拡張集合（未証明） | ファイル |
 |---|---|---|---|
 | K1 | `k1_anchored_matches_oracle_and_swap_invariant`、`k1_bounded_matches_oracle_and_swap_invariant`、`k1_unanchored_always_uncertain`、`k1_anchored_window_expansion_never_demotes`、`k1_bounded_window_expansion_never_demotes`、`k1_frame_range_anchored_by_index_only`、`k1_frame_range_bounded_by_index_only`、`k1_frame_range_unanchored_never_main` | なし | `core/crates/arb-core/src/kani_proofs.rs` |
 | K2 | `k2_select_records_equals_trim_with_empty_sidecar_n1` | `k2_select_records_equals_trim_with_empty_sidecar_n2` / `_n3`、`k2_prior_sidecar_none_main_two`、`k2_prior_sidecar_one_consumes_budget_first`、`k2_prior_sidecar_two_consumes_budget_first`（G4 で確認） | 同上 |
-| K3 | `k3_pc_sync_probe_boundary_math`、`k3_elapsed_same_boot` | `k3_map_device_one_triple_no_panic_and_boot_isolated`、`k3_map_device_two_triples_no_panic_and_boot_isolated`、`k3_map_device_monotonic_monotone_on_two_triples`、`k3_map_logcat_wall_no_panic_and_causal_ceiling`（`arb-core` の `time` 単体テストで確認） | 同上 |
-| K4 | なし | `k4_ring_eviction_plan_realistic_sizes`、`k4_ring_eviction_plan_extreme_u64`（G2 で確認） | 同上 |
-| K5 | `k5_every_table_edge_is_reachable_by_apply`、`k5_bundle_lifecycle` | `k5_save_job_apply_matches_transition_table`（G1 で確認） | 同上 |
-| K6 | `k6_physical_one_pixel_never_jumps_to_bottom_right` | `k6_map_touch_to_frame_bounds_and_monotonic`（`arb-core`）、`k6_axis_project_range_and_endpoints`、`k6_axis_project_monotonic`（`arbd`、`capture.rs` の `axis_calibration_is_per_device_and_preserves_uncalibrated_pixels` などで確認） | `core/crates/arb-core/src/kani_proofs.rs`、`core/crates/arbd/src/touch_calibration.rs` |
-| K7 | `k7_empty_and_single_sample_strokes_are_taps`（`f64::hypot` を任意値スタブで過大近似）、`k7_touch_slop_finite_positive` | `k7_decimate_keeps_endpoints_and_cap`（`gesture` 単体テストで確認） | `core/crates/arb-core/src/kani_proofs.rs` |
+| K3 | `k3_pc_sync_probe_boundary_math`、`k3_elapsed_same_boot`、スライス層 13 本: `k3_slice_map_monotonic_one_triple_no_panic_and_boot_tagged`、`k3_slice_map_monotonic_two_triples_no_panic_and_boot_tagged`、`k3_slice_map_monotonic_monotone_on_two_ingest_ordered_triples`、`k3_slice_map_logcat_wall_one_triple_no_panic_and_causal_ceiling`、`k3_slice_map_logcat_wall_two_triples_stable_epoch_causal_ceiling`、`k3_slice_map_logcat_wall_three_triples_stable_epoch_causal_ceiling`（壁時計の飛びなし）、`k3_slice_map_logcat_wall_two_triples_jump_between_read_{before_jump,inside_jump,after_jump}_wall_{forward,rollback}`、`k3_slice_map_logcat_wall_two_triples_jump_between_without_read` | `k3_map_device_one_triple_no_panic_and_boot_isolated`、`k3_map_device_two_triples_no_panic_and_boot_isolated`、`k3_map_device_monotonic_monotone_on_two_triples`、`k3_map_logcat_wall_no_panic_and_causal_ceiling`（`ClockTimeline` 全体経由）、`k3_slice_map_logcat_wall_three_triples_with_jumps_causal_ceiling`（`arb-core` の `time` 単体テストで確認） | 同上 |
+| K4 | `k4_ring_eviction_plan_realistic_sizes_n1`、`k4_ring_eviction_plan_extreme_u64_n1`（1 チャンクでの REQ-04 ピン保護・容量・空き容量下限・各停止判定の正当性） | `k4_ring_eviction_plan_realistic_sizes_n2` / `_n3` / `_n4`、`k4_ring_eviction_plan_extreme_u64_n2` / `_n3` / `_n4`（最古優先の順序を含む。G2 で確認） | 同上 |
+| K5 | `k5_every_table_edge_is_reachable_by_apply`、`k5_bundle_lifecycle`、`k5_save_job_apply_matches_transition_table_{pinned,draining,materializing,completed,discarded}_pins{0,1,2}`（15 本）、`k5_save_job_apply_matches_transition_table_failed_retryable_path_{empty,blank,real}_pins{0,1,2}`（9 本） | なし | 同上 |
+| K6 | `k6_physical_one_pixel_never_jumps_to_bottom_right`、`k6_map_touch_to_frame_bounds_and_domain`、`k6_monotonic_{x,y}_integer_pixels_*`（6 本: 1080→460、2400→1024、1080→1080、1920→1920、3840→1920、2160→1080、整数座標）、`k6_monotonic_x_any_f64_pow2_1024_to_512`、`k6_monotonic_y_any_f64_pow2_2048_to_1024`、`k6_monotonic_x_any_f64_pow2_1_to_1024`（2 の冪寸法、有限 `f64` 全域）（以上 `arb-core`）、`k6_axis_project_range_and_endpoints_span_{0_32767,0_4095,0_1079,0_1080,m1000_1000}`、`k6_axis_project_monotonic_span_{同上}_display_pixels`（`arbd`、軸範囲は固定、値は任意の `i32`） | `k6_map_touch_to_frame_bounds_and_monotonic`、`k6_monotonic_x_integer_pixels_symbolic_dims_le_4096`、`k6_monotonic_x_any_f64_1080_to_460`、`k6_monotonic_y_any_f64_2400_to_1024`（`arb-core`）、`k6_axis_project_range_and_endpoints`、`k6_axis_project_monotonic`（`arbd`、記号的な `(min, max)`。`capture.rs` の `axis_calibration_is_per_device_and_preserves_uncalibrated_pixels` などで確認） | `core/crates/arb-core/src/kani_proofs.rs`、`core/crates/arbd/src/touch_calibration.rs` |
+| K7 | `k7_empty_and_single_sample_strokes_are_taps`（`f64::hypot` を任意値スタブで過大近似）、`k7_touch_slop_finite_positive`、`k7_decimate_keeps_endpoints_and_cap_len{2..5}_cap{2..4}`（12 本）、`k7_decimate_passes_through_len3_cap0` / `_cap1`、`k7_decimate_passes_through_single_sample` | なし | `core/crates/arb-core/src/kani_proofs.rs` |
 | K8 | `k8_required_buffer_bytes_exact_or_none`、`k8_required_buffer_bytes_rejects_u64_overflow`、`k8_required_buffer_bytes_covers_every_pixel`、`k8_align_up_exact`、`k8_compute_layout_slots_disjoint_and_aligned` | なし | `core/crates/arb-os/src/shm.rs` |
-| K9 | `k9_checked_entry_count_bounds_allocation`、`k9_iter_boxes_children_stay_in_parent`、`k9_ticks_to_ns_exact_ts_1`（`arb-media/src/kani_proofs.rs`）、`k9_encode_chunk_offset_never_truncates`、`k9_stco_chosen_only_when_every_offset_fits`（`arb-media/src/mux_av.rs`）、`k9_frame_header_accepts_iff_valid_and_roundtrips`、`k9_frame_header_encode_decode_full_u64_len`（`arb-adb/src/wire.rs`） | `k9_parse_stts_bounded`、`k9_parse_stsc_strictly_increasing`、`k9_parse_stsz_bounded_by_file`、`k9_ticks_to_ns_exact_ts_90000`、`k9_ticks_to_ns_exact_ts_u32_max`、`k9_ticks_to_ns_monotone_ts_1` / `_90000` / `_u32_max`、`k9_avcc_sample_to_annexb_bounded`（G3 と M2 で確認） | 各ファイル |
+| K9 | `k9_checked_entry_count_bounds_allocation`、`k9_iter_boxes_children_stay_in_parent`、`k9_ticks_to_ns_exact_ts_1`、`k9_parse_stts_bounded`、`k9_parse_stts_rejects_truncated_header`、`k9_parse_stsc_strictly_increasing`、`k9_parse_stsc_rejects_empty_or_truncated`、`k9_parse_stsz_bounded_by_file`、`k9_parse_stsz_explicit_sizes_fit_box`、`k9_parse_stsz_rejects_truncated_header`（`arb-media/src/kani_proofs.rs`）、`k9_encode_chunk_offset_never_truncates`、`k9_stco_chosen_only_when_every_offset_fits`（`arb-media/src/mux_av.rs`）、`k9_frame_header_accepts_iff_valid_and_roundtrips`、`k9_frame_header_encode_decode_full_u64_len`（`arb-adb/src/wire.rs`） | `k9_ticks_to_ns_exact_ts_90000`、`k9_ticks_to_ns_exact_ts_u32_max`、`k9_ticks_to_ns_monotone_ts_1` / `_90000` / `_u32_max`、`k9_avcc_sample_to_annexb_bounded`（G3 と M2 で確認） | 各ファイル |
 
-K8 と K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。
+K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
 - K8: 二つの 64 ビット乗算器の同値性と `y * stride` の非線形境界を一度に解かせる形は 13 分経っても終わらなかった。`exact_or_none`（高さ 2^16 以下で `len == stride * rows`）、`rejects_u64_overflow`（溢れる唯一の形）、`covers_every_pixel`（全 `u32` 域での `row < rows` と `col < stride` の線形な事実）に分け、三つを合わせて 8K を含む高さ 2^16 以下の全フレームで元の性質を導く。高さ 2^16〜2^31 の厳密値は機械検証していない。
 - K9 のパーサ: エラー文の `format!` が記号整数を十進文字列にする処理（64 ビット除算のループ）で CBMC が止まるため、`#[kani::stub(std::fmt::format, ...)]` で文字列生成だけを空文字に置き換える。`Ok`/`Err` の判定と境界検査はすべて本番コードのまま検証する。
+- K9 の表パーサ（`parse_stts` / `parse_stsc` / `parse_stsz`）: 記号長スライスをやめ、固定長配列（stts 24 バイト、stsc 32 バイト、stsz は定数サイズ分岐 12 バイト・明示サイズ分岐 20 バイト）にした。エントリ数と各フィールドは記号値で、0〜2 エントリと末尾の余りバイトを含む。短すぎる入力の拒否は別ハーネス（7 / 11 バイト、stsc は 7・11・15 バイト）で検証する。長さによる受理条件は `checked_entry_count`（24 バイト以下の全長さ）で別に証明済み。各ハーネスの `kani::cover!` で `Ok` 経路が到達可能（SATISFIED）であることも確かめている。パーサの戻り値は `ManuallyDrop` で保持し、`MediaError` 内の `io::Error` の drop glue だけを解かせない（TCB-14）。
+- K9 `ticks_to_ns`: `ts = 1` のオラクルを除算から乗算だけの商余り関係（符号なしは `q·ts ≤ n < (q+1)·ts`、符号付きは 0 方向切り捨て版、飽和は `n ≥ MAX·ts` / `n ≤ MIN·ts`）に置き換えた。積はすべて 2^127 未満なので `wrapping_*` は正確である。`ts = 90000` / `u32::MAX` と単調性 3 本は、本番側の 128 ビット除算器がボトルネックのまま（ソルバーを CaDiCaL / Kissat / MiniSat / Z3 に替えても、ticks を 24 ビットに制限しても 10 分で終わらない）。
+- K3: `ClockTimeline` は `ingest_device_triple` を通さないと作れず、`BTreeMap<String, BootEpochState>`・`String`・`Vec<DiscontinuityEvent>` の展開で triple 1 本でも CBMC がメモリ不足になる。そこで `time.rs` から、`epochs.get(boot_id)` で boot epoch を選んだ後の本体を `map_monotonic_in_epoch` / `map_logcat_wall_in_epoch`（`pub(crate)`）として抽出し（挙動不変のリファクタ。`epoch.triples` → `triples`、`self.config` → `config`、`epoch.wall_jump_indices` → `wall_jump_indices` の置き換えのみ）、固定長の triple 配列（1〜3 本）と記号的な設定値で直接検証する。単調性と飛びあり経路は ingest の不変条件（同じ epoch 内で `monotonic_ns` と `boottime_ns` が非減少）を前提にし、`wall_jump_indices` は ingest が記録しうる全添字集合の上位集合を与える。飛びありの 2 triple は、読み取り時刻の位置（飛びの前・中・後・読み取りなし）× 壁時計オフセットの向き（前進・巻き戻し）で入力を分割した（求解時間のためだけの分割で、合わせて全入力を被覆する）。`ClockTimeline` 全体を通す元の 4 本と、3 triple・飛びありの 1 本は拡張集合に残す（TCB-15）。
+- K4: チャンク ID を 1 バイト（`"a".."d"`）にし、オラクル側で記号長 `Vec` を再ソートせず、出力の順序を直接検査する。必須集合に入れたのは 1 チャンクでの安全性（REQ-04 ピン保護、容量、空き容量の下限、各停止判定の正当性）だけ。最古優先の順序は 2 チャンク以上でのみ意味を持ち、n = 2 の安全性だけでも 150 秒で打ち切ったため拡張集合に残す。`alloc::slice::stable_sort` は挿入ソートでスタブ化する（TCB-13。必須の n = 1 では長さ 1 以下のスライスにしか呼ばれず、std と同じく何もしない）。
+- K5: 6 状態 × 7 イベントの直積を一度に解かせる形は CBMC が 31 GB でメモリ不足になった。開始状態とピン数（0〜2）ごとに分け、`Retarget` を受理する唯一の状態 `FailedRetryable` はさらに再ターゲット先（空・空白・実パス）ごとに分ける。イベントは記号値 `k % 7` のまま 7 種すべてを検証し、各性質は含意形（`!ok || …`）で全経路の表明に到達させる。24 本を合わせると、ピン 2 個以下・パス 3 種での元の性質になる。
+- K6 `map_touch_to_frame`: 境界側（Some になる条件と出力範囲）は記号的な寸法（2^14 以下、0 を含む）・全 4 形の表示ジオメトリ・NaN と ±∞ を含む任意の `f64` 座標で検証する。単調性は軸ごとに分け（他方の軸は `1 → 1` の `0.0` に固定）、非 2 冪の具体寸法 6 組では整数座標、2 の冪寸法 3 組では有限 `f64` 全域で検証する。非 2 冪の定数による記号 `f64` 除算は 10 分で終わらず、記号的な寸法も 5 分で終わらないため拡張集合に残す。`1 → 1` 寸法は `min(frame - 1)` で出力が常に 0 になり単調性の検査にならないため、必須集合に入れない。
+- K6 `Axis::project`（`arbd`）: 記号的な `(min, max)` では除数が記号になり 128 ビット × 128 ビットの乗算器が残る。実在するタッチ軸の範囲 5 種（`0..=32767`、`0..=4095`、`0..=1079`、`0..=1080`、`-1000..=1000`）に固定し、値は任意の `i32` で検証する。範囲・端点は画素数 `1..=2^13` の記号値、単調性は画素数 720/1080/1440/2400/3120/4096 のいずれかで `v` と `v + 1` を比べる（全組は帰納法で従う）。`0..=1080` と `0..=1079` は `min == 0` のドライバ特例（`max == pixels` / `max == pixels - 1`）を通る。
+- K7 `decimate`: `len` と `cap` が両方記号だと `u128` の歩幅除算で CBMC がメモリ不足になる。具体的な `(len, cap)` ごとに分け、元の記号的定義域 `len ∈ 1..=5`、`cap ∈ 2..=4` を全て被覆する（`len = 1` は `cap` 記号の単一サンプル版）。性質も強化した（出力長、各出力が無改変の入力で添字が厳密増加、先頭と末尾を保持、座標は任意の `f64`）。元の記号版は削除した。
 
 ### 2.2 Layer 2: Stateright（`core/crates/arbd/tests/pdd_stateright_models.rs`）
 
@@ -84,20 +92,38 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 
 | crate | 結果 | ハーネスごとの検証時間 |
 |---|---|---|
-| `arb-core` | 16 / 16 成功 | K1 8 本 0.3〜1.1 秒、K2 `n1` 18.5 秒、K3 `pc_sync` 3.5 秒・`elapsed` 0.7 秒、K5 `every_table_edge` 6.0 秒・`bundle_lifecycle` 0.07 秒、K6 `physical_one_pixel` 1.1 秒、K7 `empty_and_single` 0.2 秒・`touch_slop` 0.1 秒 |
-| `arb-os` | 5 / 5 成功 | K8 各 0.06〜4.8 秒 |
-| `arb-adb` | 2 / 2 成功 | K9 wire 3.3 秒・5.7 秒 |
-| `arb-media` | 5 / 5 成功 | K9 `ticks_exact_ts_1` 28.3 秒、`iter_boxes` 22.2 秒、`checked_entry_count` 1.0 秒、mux_av 5.2 秒・1.5 秒 |
+| `arb-core` | 80 / 80 成功（実時間 534.6 秒） | K1 8 本 0.3〜1.1 秒、K2 `n1` 23.3 秒、K3 `pc_sync` 4.5 秒・`elapsed` 0.9 秒・スライス層 13 本 1.1〜26.4 秒（最長は `jump_between_read_before_jump_wall_forward`）、K4 `realistic_sizes_n1` 21.8 秒・`extreme_u64_n1` 24.3 秒、K5 `every_table_edge` 8.3 秒・`bundle_lifecycle` 0.1 秒・`apply_matches_transition_table` 24 本 4.4〜15.6 秒、K6 `physical_one_pixel` 1.1 秒・`bounds_and_domain` 1.2 秒・単調性 9 本 0.3〜4.9 秒、K7 `empty_and_single` 0.2 秒・`touch_slop` 0.2 秒・`decimate` 15 本 0.5〜3.7 秒 |
+| `arb-os` | 5 / 5 成功（7.3 秒） | K8 各 0.1〜5.2 秒 |
+| `arb-adb` | 2 / 2 成功（11.8 秒） | K9 wire 6.1 秒・3.4 秒 |
+| `arb-media` | 12 / 12 成功（158.9 秒） | K9 `ticks_exact_ts_1` 24.3 秒（乗算オラクル。旧オラクルは 28.3 秒）、`iter_boxes` 23.4 秒、`parse_stts` 17.7 秒・`stts_rejects_truncated` 11.1 秒、`parse_stsc` 14.4 秒・`stsc_rejects` 12.9 秒、`parse_stsz_bounded_by_file` 17.0 秒・`explicit_sizes` 8.8 秒・`stsz_rejects_truncated` 7.3 秒、`checked_entry_count` 1.0 秒、mux_av 5.3 秒・1.6 秒 |
+| `arbd` | 10 / 10 成功（48.5 秒） | K6 `axis_project_range_and_endpoints_span_*` 5 本 3.5〜6.1 秒、`axis_project_monotonic_span_*_display_pixels` 5 本 2.3〜7.9 秒 |
 
-ハーネス本体の `assert` で UNREACHABLE になったものはない。例外は K1 の参照オラクルの `i128` 溢れ検査（構造上溢れない）と、K2 `n1` の順序保持ループ（要素 1 件では到達せず、`n2`/`n3` は拡張集合）だけである。
+必須集合は 28 本から 109 本になった（`arb-core` 16 → 80、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。PoC の Linux VM（8 コア）では同じハーネスが手元のおよそ 1.5〜2.3 倍かかった（最長は K4 `extreme_u64_n1` の 50.3〜56.9 秒）。
+
+ハーネス本体の `assert` で UNREACHABLE になったものはない。例外は K1 の参照オラクルの `i128` 溢れ検査（構造上溢れない）と `variant == 2` 専用の表明（`k1_unanchored_always_uncertain` でのみ到達）、K2 `n1` の順序保持ループ（要素 1 件では到達せず、`n2`/`n3` は拡張集合）だけで、今回昇格したハーネスには 0 件である。`kani::cover!` 4 件（stts の上限到達、stsc 2 エントリ、stsz 定数サイズ複数・明示サイズ 2 件）はすべて SATISFIED。`kani::assume` はハーネスの前提（入力域の分割、ingest の不変条件、性質の前件）にだけ使い、`assume(false)` 相当の空疎な前提はない。
+
+昇格したハーネスが本番コードのバグを検出することを、1 行の変異を入れて確かめた（確認後すぐに元に戻し、差分が変異前と同一であることを確認）。
+
+| 区分 | 変異（本番コード） | 検出したハーネス | 失敗した表明 |
+|---|---|---|---|
+| K3 | `time.rs` 飛びの中の読み取り: `min_boottime_ns: i64::MIN` → `before.boottime_ns` | `k3_slice_map_logcat_wall_two_triples_jump_between_read_inside_jump_wall_forward` | `read inside a jump: bounded by (i64::MIN, read]` |
+| K4 | `state.rs` `plan`: 空き容量判定の `host_free_bytes.saturating_sub(incoming_bytes)` → `host_free_bytes` | `k4_ring_eviction_plan_realistic_sizes_n1` | `free.saturating_sub(incoming) >= min_free_disk_bytes` |
+| K5 | `state.rs` `Retarget`: `trim().is_empty()` → `is_empty()` | `k5_save_job_apply_matches_transition_table_failed_retryable_path_blank_pins1` | `empty retarget rejected` |
+| K6 | `gesture.rs` `map_touch_to_frame`: `x / dw` → `(dw - x) / dw` | `k6_monotonic_x_any_f64_pow2_1024_to_512` | `monotonic non-decreasing` |
+| K7 | `gesture.rs` `decimate`: `/ (cap - 1)` → `/ cap` | `k7_decimate_keeps_endpoints_and_cap_len5_cap3` | `last sample kept` |
+| K9 | `mp4.rs` `parse_stsz`: 明示サイズの読み取り位置 `12 + i * 4` → `8 + i * 4` | `k9_parse_stsz_explicit_sizes_fit_box` | `sizes[i] == u32::from_be_bytes(...)` |
+| K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
 
-次の 25 本は、ハーネスごとに 5 分（arb-media の元の形は 15 分、arbd の元の形は 13 分）で打ち切っても検証が終わらなかった。原因は記号的な 64/128 ビットの乗除算（`ticks_to_ns`、`Axis::project`、K4 の予算計算、K6 の `f64` 除算の単調性）と、記号長のスライス・`Vec` を伴うループ（K2 の 2 件以上、K3 の `ClockTimeline`、MP4 テーブル）である。
+次の 28 本は必須集合に入れていない（`--features kani-extended --only-codegen` で 3 crate ともコンパイルできることは確認済み）。元の 25 本のうち K5・K7 `decimate`・K9 表パーサ 3 本の計 5 本は性質ごと必須集合へ移し、K3・K4・K6 は定義域を絞った版を必須集合に入れたうえで元の形（または分割後の大きい側）を残した。原因は二つに分かれる。
 
-- `arb-core`（14）: K2 `n2`・`n3`・`prior_sidecar` 3 本、K3 `map_device` 3 本・`map_logcat_wall`、K4 2 本、K5 `apply_matches_transition_table`、K6 `map_touch_to_frame`、K7 `decimate`
-- `arb-media`（9）: K9 `parse_stts`・`parse_stsc`・`parse_stsz`・`avcc_sample_to_annexb`・`ticks_exact_ts_90000`・`ticks_exact_ts_u32_max`・`ticks_monotone` 3 本
-- `arbd`（2）: K6 `axis_project_range_and_endpoints`・`axis_project_monotonic`
+- **SAT 段の時間**: 記号的な 64/128 ビットの乗除算。`ticks_to_ns`（定数 90000 / `u32::MAX` の 128 ビット除算器、単調性は 128 ビット積 2 つの突き合わせ）、`Axis::project`（記号的な除数 `max - min`）、K4 の 2 チャンク以上（`u64`/`u128` の和と記号的な時刻比較。n = 2 は 195 秒で成功、安全性だけでも 150 秒で打ち切り）、K6 の非 2 冪の定数・記号寸法による `f64` 除算（10 分超・5 分超）。
+- **メモリ不足（OOM）**: 記号長のスライス・`Vec`・`BTreeMap` の展開。K2 の 2 件以上（SAT 段で約 31 GB）、K3 の `ClockTimeline` 全体（triple 1 本でも 30 GB 超）と 3 triple・飛びあり、`avcc_sample_to_annexb`（NAL スライスの読み戻しで 4 バイト入力でも 7 GB 超）。
+
+- `arb-core`（20）: K2 `n2`・`n3`・`prior_sidecar` 3 本、K3 `map_device` 3 本・`map_logcat_wall`・`slice_map_logcat_wall_three_triples_with_jumps`、K4 `realistic_sizes_n2`〜`_n4`・`extreme_u64_n2`〜`_n4`、K6 `map_touch_to_frame_bounds_and_monotonic`・`monotonic_x_integer_pixels_symbolic_dims_le_4096`・`monotonic_x_any_f64_1080_to_460`・`monotonic_y_any_f64_2400_to_1024`
+- `arb-media`（6）: K9 `avcc_sample_to_annexb`・`ticks_exact_ts_90000`・`ticks_exact_ts_u32_max`・`ticks_monotone` 3 本
+- `arbd`（2）: K6 `axis_project_range_and_endpoints`・`axis_project_monotonic`（記号的な `(min, max)`）
 
 ### 3.3 Layer 2〜4
 
@@ -110,7 +136,7 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-12）
+## 4. TCB 公理（TCB-01〜TCB-15）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -128,6 +154,9 @@ Miri の隔離環境ではファイルシステムと mmap を使えないため
 | TCB-10 | Android Studio 2026.2 / JBR ランタイム ABI、`dispose()` ライフサイクル、リフレクション対象、Compose/Skiko 描画 | KON-1..5、S1 | `ide-plugin/src/test/kotlin/io/github/shinma06/arb/ArchitectureKonsistTest.kt` | IDE 上の実描画と実ライフサイクルは VM IDE 受け入れ（`docs/verification/vm-acceptance.md`） |
 | TCB-11 | FHD 30fps の体感遅延基準（open ≤ 1s、seek 0.2–0.5s、trim は数秒以内）を対象開発機で満たす | なし（性能は形式層の対象外） | `core/crates/arb-media/tests/media_pipeline.rs` | 実機ハードウェアでの計測は Stage 3 |
 | TCB-12 | 配布 ZIP のバイナリ / JAR / `THIRD_PARTY_NOTICES.md` の法的来歴（GPL/AGPL/LGPL 0 件、PDD ツールは開発専用） | RS-1、ライセンス検査 | `core/scripts/check-licenses.py`、`core/scripts/package_distribution.py --self-test` | Kani・Miri・Stateright・Konsist は dev/test 依存でのみ使い、配布物に含めない（ZIP 構造検査で確認） |
+| TCB-13 | `alloc::slice::stable_sort`（`<[T]>::sort_by` の本体）は正しい安定ソートである。K4 ではこれを挿入ソートのスタブに置き換える | K4 | `core/crates/arb-core/src/state.rs::tests::ring_planner_evicts_oldest_unpinned_closed_and_stops_on_storage_pressure`、`core/crates/arb-storage/tests/pdd_g2_ring_crash_props.rs`（G2） | 必須集合の K4 は 1 チャンクなのでスタブは長さ 1 以下のスライスにしか呼ばれず、std と同じく何もしない。std のソートと挿入スタブの同値性は機械検証していない（2 チャンク以上の拡張集合でのみ意味を持つ） |
+| TCB-14 | 解析結果（`Vec<u32>` / `MediaError` 内の `io::Error`）の drop は安全に終わる。K9 の表パーサ系ハーネスは戻り値を `ManuallyDrop` で保持し、drop glue を実行しない | K9（mp4） | `cargo test -p arb-media`、Miri M2（`arb-media mp4::`） | 解放処理は std の実装を信頼する。パーサ本体と `Ok`/`Err` の判定は本番コードのまま検証している |
+| TCB-15 | `ClockTimeline::map_device_monotonic` / `map_logcat_wall` は `epochs.get(boot_id)` で選んだ boot epoch の `triples` / `wall_jump_indices` をそのまま抽出関数に渡し、その epoch では `ingest_device_triple` が `monotonic_ns`・`boottime_ns` の非減少と `idx + 1 < len` の飛び添字を保つ | K3（スライス層） | `core/crates/arb-core/src/time.rs` の `time` 単体テスト | `BTreeMap` の参照と ingest 側の不変条件は機械検証していない（`ClockTimeline` 全体を通すハーネスは CBMC のメモリ不足で拡張集合） |
 
 ## 5. Sara 互換性
 

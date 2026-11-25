@@ -45,6 +45,8 @@ jobs:
             group: K9-wire
           - crate: arb-media
             group: K9-mp4
+          - crate: arbd
+            group: K6-axis
     name: kani (${{ matrix.crate }} ${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
