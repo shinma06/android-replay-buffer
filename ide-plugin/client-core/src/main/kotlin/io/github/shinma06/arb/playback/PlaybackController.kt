@@ -788,9 +788,10 @@ class PlaybackController(
                     val inPtsNs = frameRelativePtsNs(cur.inFrameIndex)
                     anchorWallNs = nowNs
                     anchorMediaPtsNs = inPtsNs
-                    if (cur.inFrameIndex == cur.outFrameIndex) {
+                    if (cur.inFrameIndex == cur.outFrameIndex && cur.currentFrameIndex == cur.inFrameIndex) {
                         // Single-frame selection: stay on frame without redundant video seeks,
-                        // but keep audio inside the selection.
+                        // but keep audio inside the selection. (A playhead that a user seek left
+                        // outside the selection falls through and is brought back to `in`.)
                         audioPlayer?.seek(inPtsNs)
                         nextWakeupNs = saturatingAdd(nowNs, cur.speed.mediaToWallNs(outFrameDurNs))
                     } else {
