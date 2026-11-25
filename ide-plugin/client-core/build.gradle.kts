@@ -41,6 +41,7 @@ tasks.withType<KotlinJvmCompile>().configureEach {
 tasks.test {
     useJUnitPlatform()
     // Provide repository root so real-arbd integration tests can locate core/target/debug/arbd and fixtures.
+    inputs.files(rootProject.fileTree("../docs/specs") { include("*-table.json") })
     systemProperty("arb.repo.root", rootProject.projectDir.parentFile.absolutePath)
     // The Windows Named Pipe client binds Win32 through java.lang.foreign (restricted methods).
     jvmArgs("--enable-native-access=ALL-UNNAMED")

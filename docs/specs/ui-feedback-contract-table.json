@@ -1,0 +1,1068 @@
+{
+  "$comment": "PDD SSOT: Rust (arb-core/arbd/arb-cli の pdd_contract_tables テスト) と Kotlin (client-core PddContractTablesTest / ide-plugin PddUiFeedbackContractTest) が全行を検証する。",
+  "schema_version": 1,
+  "semantics": {
+    "severity": "info = IDE の通常通知、warning = 警告通知（保護・スキップ・失敗で要求どおりにならなかった項目が残る）、error = 操作失敗通知（RPC が失敗）。0 でないバケットは必ず summary に件数付きで出す。",
+    "gc_bucket_labels": "BundleGcResponse の各フィールドと IDE summary の表示ラベル。",
+    "save": "cli_exit_code は arb-cli の終了コード、mcp_is_error は MCP tools/call の isError、ide_feedback は IDE の保存結果（success = 保存通知・エディタを開く、warning = ジョブ状態の警告。どちらも RPC 成功なので接続状態は変えない）。",
+    "errors": "is_transport は arb-os RpcClientError::is_transport。ide_daemon_connected は IDE が操作失敗後も接続中と表示するか。"
+  },
+  "gc_bucket_labels": {
+    "purged_bundle_ids": "削除=",
+    "skipped_leased_bundle_ids": "使用中(Lease)保護=",
+    "skipped_in_grace_bundle_ids": "猶予中=",
+    "skipped_unmanaged_or_legacy_bundle_ids": "外部保存先/旧形式保護=",
+    "skipped_active_job_bundle_ids": "保存ジョブ保護=",
+    "failed": "失敗=",
+    "reaped_lease_ids": "期限切れLease解放="
+  },
+  "gc_rows": [
+    {
+      "id": "GC-01",
+      "description": "対象なし",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "info",
+        "summary_tokens": [],
+        "hint_tokens": [],
+        "summary_equals": "ゴミ箱に削除対象はありませんでした"
+      }
+    },
+    {
+      "id": "GC-02",
+      "description": "削除のみ",
+      "response": {
+        "purged_bundle_ids": [
+          "b1",
+          "b2"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "info",
+        "summary_tokens": [
+          "削除=2"
+        ],
+        "hint_tokens": [],
+        "summary_equals": "ゴミ箱整理完了: 削除=2"
+      }
+    },
+    {
+      "id": "GC-03",
+      "description": "猶予中のみ",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [
+          "b1"
+        ],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "猶予中=1"
+        ],
+        "hint_tokens": [
+          "猶予期間内の項目が残っています"
+        ]
+      }
+    },
+    {
+      "id": "GC-04",
+      "description": "Lease保護のみ",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [
+          "b1"
+        ],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "使用中(Lease)保護=1"
+        ],
+        "hint_tokens": [
+          "タブを閉じてから削除"
+        ]
+      }
+    },
+    {
+      "id": "GC-05",
+      "description": "保存ジョブ保護のみ",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [
+          "b1"
+        ],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "保存ジョブ保護=1"
+        ],
+        "hint_tokens": [
+          "保存処理中の項目は保護されています"
+        ]
+      }
+    },
+    {
+      "id": "GC-06",
+      "description": "外部保存先/旧形式のみ",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [
+          "b1",
+          "b2",
+          "b3"
+        ],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "外部保存先/旧形式保護=3"
+        ],
+        "hint_tokens": [
+          "安全のため自動削除していません"
+        ]
+      }
+    },
+    {
+      "id": "GC-07",
+      "description": "削除失敗のみ",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [
+          {
+            "bundle_id": "b1",
+            "error": "sharing violation"
+          }
+        ],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "失敗=1"
+        ],
+        "hint_tokens": [
+          "削除失敗: sharing violation"
+        ]
+      }
+    },
+    {
+      "id": "GC-08",
+      "description": "削除＋猶予中",
+      "response": {
+        "purged_bundle_ids": [
+          "b1"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [
+          "b2"
+        ],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "削除=1",
+          "猶予中=1"
+        ],
+        "hint_tokens": [
+          "猶予期間内"
+        ]
+      }
+    },
+    {
+      "id": "GC-09",
+      "description": "削除＋失敗",
+      "response": {
+        "purged_bundle_ids": [
+          "b1"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [
+          {
+            "bundle_id": "b2",
+            "error": "EACCES"
+          }
+        ],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "削除=1",
+          "失敗=1"
+        ],
+        "hint_tokens": [
+          "削除失敗: EACCES"
+        ]
+      }
+    },
+    {
+      "id": "GC-10",
+      "description": "全バケット",
+      "response": {
+        "purged_bundle_ids": [
+          "a"
+        ],
+        "skipped_leased_bundle_ids": [
+          "b"
+        ],
+        "skipped_active_job_bundle_ids": [
+          "c"
+        ],
+        "skipped_unmanaged_or_legacy_bundle_ids": [
+          "d"
+        ],
+        "skipped_in_grace_bundle_ids": [
+          "e"
+        ],
+        "failed": [
+          {
+            "bundle_id": "f",
+            "error": "busy"
+          }
+        ],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "削除=1",
+          "使用中(Lease)保護=1",
+          "保存ジョブ保護=1",
+          "外部保存先/旧形式保護=1",
+          "猶予中=1",
+          "失敗=1"
+        ],
+        "hint_tokens": [
+          "タブを閉じてから削除",
+          "安全のため自動削除していません",
+          "猶予期間内",
+          "保存処理中",
+          "削除失敗: busy"
+        ]
+      }
+    },
+    {
+      "id": "GC-11",
+      "description": "複数失敗は先頭エラーを表示し件数は全件",
+      "response": {
+        "purged_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [
+          {
+            "bundle_id": "b1",
+            "error": "first error"
+          },
+          {
+            "bundle_id": "b2",
+            "error": "second error"
+          }
+        ],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "失敗=2"
+        ],
+        "hint_tokens": [
+          "削除失敗: first error"
+        ]
+      }
+    },
+    {
+      "id": "GC-12",
+      "description": "削除と期限切れ Lease の解放をそれぞれ表示する",
+      "response": {
+        "purged_bundle_ids": [
+          "b1"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": [
+          "l1"
+        ]
+      },
+      "expected": {
+        "severity": "info",
+        "summary_tokens": [
+          "削除=1",
+          "期限切れLease解放=1"
+        ],
+        "hint_tokens": [],
+        "summary_equals": "ゴミ箱整理完了: 削除=1, 期限切れLease解放=1"
+      }
+    },
+    {
+      "id": "GC-13",
+      "description": "Lease＋外部保存先（実機で見た組合せ）",
+      "response": {
+        "purged_bundle_ids": [
+          "m"
+        ],
+        "skipped_leased_bundle_ids": [
+          "l"
+        ],
+        "skipped_active_job_bundle_ids": [],
+        "skipped_unmanaged_or_legacy_bundle_ids": [
+          "x"
+        ],
+        "skipped_in_grace_bundle_ids": [],
+        "failed": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "削除=1",
+          "使用中(Lease)保護=1",
+          "外部保存先/旧形式保護=1"
+        ],
+        "hint_tokens": [
+          "タブを閉じてから削除",
+          "安全のため自動削除していません"
+        ]
+      }
+    }
+  ],
+  "forget_bucket_labels": {
+    "forgotten_bundle_ids": "一覧から削除=",
+    "skipped_present_bundle_ids": "実在のためスキップ=",
+    "skipped_storage_unavailable_bundle_ids": "保存先未接続のため保護=",
+    "skipped_leased_bundle_ids": "使用中(Lease)保護=",
+    "skipped_active_job_bundle_ids": "保存ジョブ保護=",
+    "reaped_lease_ids": "期限切れLease解放="
+  },
+  "forget_rows": [
+    {
+      "id": "FG-01",
+      "description": "missing を一覧から削除",
+      "mode": "single",
+      "response": {
+        "forgotten_bundle_ids": [
+          "b1"
+        ],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "info",
+        "summary_tokens": [
+          "一覧から削除=1"
+        ],
+        "summary_equals": "一覧整理完了: 一覧から削除=1"
+      }
+    },
+    {
+      "id": "FG-02",
+      "description": "実在のためスキップ（一覧から削除されなかったので警告）",
+      "mode": "single",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [
+          "b1"
+        ],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "実在のためスキップ=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-03",
+      "description": "保存先未接続は保護（自動で忘れない）",
+      "mode": "single",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [
+          "b1"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "保存先未接続のため保護=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-04",
+      "description": "Lease 保護",
+      "mode": "single",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [
+          "b1"
+        ],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "使用中(Lease)保護=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-05",
+      "description": "保存ジョブ保護",
+      "mode": "single",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [
+          "b1"
+        ],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "保存ジョブ保護=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-06",
+      "description": "一括: 対象なし",
+      "mode": "all_missing",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "info",
+        "summary_tokens": [],
+        "summary_equals": "一覧から整理する対象はありませんでした"
+      }
+    },
+    {
+      "id": "FG-07",
+      "description": "一括: missing 削除＋保存先未接続は保護",
+      "mode": "all_missing",
+      "response": {
+        "forgotten_bundle_ids": [
+          "b1",
+          "b2"
+        ],
+        "skipped_present_bundle_ids": [],
+        "skipped_storage_unavailable_bundle_ids": [
+          "b3"
+        ],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "一覧から削除=2",
+          "保存先未接続のため保護=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-08",
+      "description": "一括: 全バケット",
+      "mode": "all_missing",
+      "response": {
+        "forgotten_bundle_ids": [
+          "a"
+        ],
+        "skipped_present_bundle_ids": [
+          "b"
+        ],
+        "skipped_storage_unavailable_bundle_ids": [
+          "c"
+        ],
+        "skipped_leased_bundle_ids": [
+          "d"
+        ],
+        "skipped_active_job_bundle_ids": [
+          "e"
+        ],
+        "reaped_lease_ids": [
+          "l"
+        ]
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "一覧から削除=1",
+          "実在のためスキップ=1",
+          "保存先未接続のため保護=1",
+          "使用中(Lease)保護=1",
+          "保存ジョブ保護=1",
+          "期限切れLease解放=1"
+        ]
+      }
+    },
+    {
+      "id": "FG-09",
+      "description": "一括: 実在のためスキップのみでも警告（単体 forget と同じ規則）",
+      "mode": "all_missing",
+      "response": {
+        "forgotten_bundle_ids": [],
+        "skipped_present_bundle_ids": [
+          "b1"
+        ],
+        "skipped_storage_unavailable_bundle_ids": [],
+        "skipped_leased_bundle_ids": [],
+        "skipped_active_job_bundle_ids": [],
+        "reaped_lease_ids": []
+      },
+      "expected": {
+        "severity": "warning",
+        "summary_tokens": [
+          "実在のためスキップ=1"
+        ]
+      }
+    }
+  ],
+  "save_rows": [
+    {
+      "id": "SV-01",
+      "description": "completed＋bundle_id → 成功",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "completed",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": "b-42",
+        "bundle_path": "/data/bundles/b-42",
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": {
+          "included_count": 0,
+          "truncated_count": 0
+        }
+      },
+      "expected": {
+        "cli_exit_code": 0,
+        "mcp_is_error": false,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "success",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false
+      }
+    },
+    {
+      "id": "SV-02",
+      "description": "failed_retryable（bundle_id なし）→ 再試行可能な警告（切断扱いしない）",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "failed_retryable",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": "ENOSPC: no space left on device",
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": null,
+        "bundle_path": null,
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": true
+      }
+    },
+    {
+      "id": "SV-03",
+      "description": "failed_retryable なのに bundle_id あり → 失敗として扱う（成功扱いしない）",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "failed_retryable",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": "parent fsync failed",
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": "b-42",
+        "bundle_path": "/data/bundles/b-42",
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": true
+      }
+    },
+    {
+      "id": "SV-04",
+      "description": "completed だが bundle_id なし → 失敗として扱う",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "completed",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": null,
+        "bundle_path": null,
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false
+      }
+    },
+    {
+      "id": "SV-05",
+      "description": "completed＋warning（CommittedParentSyncFailed）→ 成功（警告を併記）",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "completed",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": "b-42",
+        "bundle_path": "/data/bundles/b-42",
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null,
+        "warning": "parent directory fsync failed"
+      },
+      "expected": {
+        "cli_exit_code": 0,
+        "mcp_is_error": false,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "success",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false
+      }
+    },
+    {
+      "id": "SV-06",
+      "description": "completed＋末尾欠落の可能性 → 成功",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "completed",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": "b-42",
+        "bundle_path": "/data/bundles/b-42",
+        "tail_may_be_incomplete": true,
+        "unanchored_summary": {
+          "included_count": 3,
+          "truncated_count": 1
+        }
+      },
+      "expected": {
+        "cli_exit_code": 0,
+        "mcp_is_error": false,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "success",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false
+      }
+    },
+    {
+      "id": "SV-07",
+      "description": "discarded（bundle_id なし）→ 失敗として扱う",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "discarded",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z"
+        },
+        "bundle_id": null,
+        "bundle_path": null,
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false
+      }
+    }
+  ],
+  "disk_state_rows": [
+    {
+      "id": "DK-01",
+      "description": "present → 通常どおり開ける・2秒 poll 対象",
+      "entry": {
+        "bundle_id": "b-1",
+        "path": "/data/bundles/b-1",
+        "format_version": "v2",
+        "state": "active",
+        "trashed_at_utc": null,
+        "parent_bundle_id": null,
+        "created_at_utc": "2026-11-25T00:00:00Z",
+        "active_leases": 0,
+        "disk_state": "present"
+      },
+      "expected": {
+        "effective_disk_state": "present",
+        "timeline_polling": true,
+        "can_open": true,
+        "can_forget": false,
+        "badge": null,
+        "forget_bucket": "skipped_present_bundle_ids",
+        "disk_untouched": true
+      }
+    },
+    {
+      "id": "DK-02",
+      "description": "missing → poll しない・フォルダなし表示・forget 可（ディスクは触らない）",
+      "entry": {
+        "bundle_id": "b-1",
+        "path": "/data/bundles/b-1",
+        "format_version": "v2",
+        "state": "active",
+        "trashed_at_utc": null,
+        "parent_bundle_id": null,
+        "created_at_utc": "2026-11-25T00:00:00Z",
+        "active_leases": 0,
+        "disk_state": "missing"
+      },
+      "expected": {
+        "effective_disk_state": "missing",
+        "timeline_polling": false,
+        "can_open": false,
+        "can_forget": true,
+        "badge": "フォルダなし",
+        "forget_bucket": "forgotten_bundle_ids",
+        "disk_untouched": true
+      }
+    },
+    {
+      "id": "DK-03",
+      "description": "storage_unavailable → poll しない・保存先未接続表示・自動 forget / 削除しない",
+      "entry": {
+        "bundle_id": "b-1",
+        "path": "/data/bundles/b-1",
+        "format_version": "v2",
+        "state": "active",
+        "trashed_at_utc": null,
+        "parent_bundle_id": null,
+        "created_at_utc": "2026-11-25T00:00:00Z",
+        "active_leases": 0,
+        "disk_state": "storage_unavailable"
+      },
+      "expected": {
+        "effective_disk_state": "storage_unavailable",
+        "timeline_polling": false,
+        "can_open": false,
+        "can_forget": false,
+        "badge": "保存先未接続",
+        "forget_bucket": "skipped_storage_unavailable_bundle_ids",
+        "disk_untouched": true
+      }
+    },
+    {
+      "id": "DK-04",
+      "description": "disk_state なし（旧 arbd）→ present 扱い",
+      "entry": {
+        "bundle_id": "b-1",
+        "path": "/data/bundles/b-1",
+        "format_version": "v2",
+        "state": "active",
+        "trashed_at_utc": null,
+        "parent_bundle_id": null,
+        "created_at_utc": "2026-11-25T00:00:00Z",
+        "active_leases": 0
+      },
+      "expected": {
+        "effective_disk_state": "present",
+        "timeline_polling": true,
+        "can_open": true,
+        "can_forget": false,
+        "badge": null,
+        "forget_bucket": "skipped_present_bundle_ids",
+        "disk_untouched": true
+      }
+    }
+  ],
+  "error_rows": [
+    {
+      "id": "ER-01",
+      "description": "-32001 NotFound → 接続維持・操作エラー表示",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32001
+      },
+      "expected": {
+        "cli_exit_code": 4,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-02",
+      "description": "-32002 Conflict → 接続維持・操作エラー表示",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32002
+      },
+      "expected": {
+        "cli_exit_code": 5,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-03",
+      "description": "-32602 InvalidParams → 接続維持・操作エラー表示",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32602
+      },
+      "expected": {
+        "cli_exit_code": 2,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-04",
+      "description": "-32003（その他の業務エラー）→ 接続維持",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32003
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-05",
+      "description": "-32603 Internal → 接続維持",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32603
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-06",
+      "description": "-32600 InvalidRequest → 接続維持",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32600
+      },
+      "expected": {
+        "cli_exit_code": 2,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-07",
+      "description": "-32601 MethodNotFound → 古い arbd（再起動を促すため未接続＋stale 表示）",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32601
+      },
+      "expected": {
+        "cli_exit_code": 2,
+        "is_transport": false,
+        "ide_daemon_connected": false,
+        "ide_stale_daemon_banner": true,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-08",
+      "description": "EOF（応答前に切断）→ 未接続",
+      "failure": {
+        "kind": "eof"
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": true,
+        "ide_daemon_connected": false,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-09",
+      "description": "I/O（broken pipe）→ 未接続",
+      "failure": {
+        "kind": "io"
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": true,
+        "ide_daemon_connected": false,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    },
+    {
+      "id": "ER-10",
+      "description": "読み取りタイムアウト → 未接続",
+      "failure": {
+        "kind": "timeout"
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": true,
+        "ide_daemon_connected": false,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true
+      }
+    }
+  ]
+}

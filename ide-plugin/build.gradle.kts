@@ -176,6 +176,7 @@ tasks.buildPlugin {
 tasks.test {
     useJUnitPlatform()
     systemProperty("java.awt.headless", "true")
+    inputs.files(rootProject.fileTree("../docs/specs") { include("*-table.json") })
     systemProperty("arb.repo.root", projectDir.parentFile.absolutePath)
     testLogging {
         events("passed", "skipped", "failed")

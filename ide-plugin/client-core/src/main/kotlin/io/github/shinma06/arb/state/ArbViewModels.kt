@@ -131,13 +131,13 @@ data class CaptureBarState(
         get() = ArbFormatters.formatSecondarySaveLabel(defaultSaveAction)
 
     val hasOnlineDevice: Boolean
-        get() = devices.any { it.state == io.github.shinma06.arb.model.AdbDeviceState.Device }
+        get() = devices.any(DeviceSelectionPolicy::isSelectableOnline)
 
     val selectedDevice: AdbDeviceInfo?
         get() = selectedSerial?.let { target -> devices.firstOrNull { it.serial == target } }
 
     val isSelectedDeviceOnline: Boolean
-        get() = selectedDevice?.state == io.github.shinma06.arb.model.AdbDeviceState.Device
+        get() = selectedDevice?.let(DeviceSelectionPolicy::isSelectableOnline) == true
 
     val statusBadgeText: String
         get() = when {
@@ -278,7 +278,8 @@ object CaptureBarReducer {
                 null to null
             DeviceSelectionOutcome.NoOnlineDevices -> when {
                 boundSerial != null -> boundSerial to null
-                devices.size == 1 -> devices.first().serial to devices.first().serial
+                devices.size == 1 && DeviceSelectionPolicy.isValidAdbSerial(devices.first().serial) ->
+                    devices.first().serial to devices.first().serial
                 else -> null to null
             }
         }

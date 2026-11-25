@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Layer-4 PDD (KON-1..KON-6): architecture rules over the plugin and `client-core` sources.
+ * Layer-4 PDD (KON-1..KON-7): architecture rules over the plugin and `client-core` sources.
  * Each rule reports the offending files so a regression names its own fix site.
  */
 class ArchitectureKonsistTest {
@@ -130,5 +130,40 @@ class ArchitectureKonsistTest {
         assertTrue(hasWording(table), "AudioPolicyTable owns the unsupported wording")
         val classOf = table.objects().single { it.name == "AudioPolicyTable" }.functions().single { it.name == "classOf" }
         assertTrue(!Regex("""\belse\s*->""").containsMatchIn(classOf.text), "classOf handles every AudioCause explicitly")
+    }
+
+    /**
+     * KON-7: structured `bundle.gc` / `bundle.forget` / save outcomes always reach user feedback
+     * (`docs/specs/ui-feedback-contract-table.json`): GC / forget go through the shared
+     * formatters, save success uses `SaveOutcomeResponse.savedBundleId` (the CLI/MCP rule, never a
+     * raw `bundleId`), and feedback paths neither open modal dialogs nor swallow those calls in
+     * `runCatching`.
+     */
+    @Test
+    fun kon7StructuredOutcomesAreAlwaysProjected() {
+        val plugin = main().filterNot { it.rel().startsWith("client-core/") }
+        val functions = plugin.flatMap { file -> file.functions(true, true).map { file to it } }
+        for ((rpc, projection) in mapOf(
+            "bundleGc" to "formatGcNotification",
+            "bundleForget" to "formatForgetSummary",
+            "saveTrigger" to "savedBundleId",
+            "saveLogs" to "savedBundleId",
+        )) {
+            val call = Regex("""\b$rpc\s*\(""")
+            val callers = functions.filter { (_, function) -> call.containsMatchIn(function.text) }
+            assertTrue(callers.isNotEmpty(), "KON-7: no $rpc call found")
+            val projected = Regex("""\b$projection\b""")
+            assertNone(
+                "KON-7 ($rpc requires $projection)",
+                callers.filterNot { (_, function) -> projected.containsMatchIn(function.text) }
+                    .map { (file, function) -> "${file.rel()}::${function.name}" },
+            )
+        }
+
+        val feedback = plugin.filter { "/arb/ui/" in it.path.replace('\\', '/') || it.name in setOf("ArbActions", "ArbNotifications") }
+        val modal = Regex("""\bMessages\.show\w*\(|\bDialogWrapper\b""")
+        assertNone("KON-7 (modal feedback)", feedback.filter { modal.containsMatchIn(it.code()) }.map { it.rel() })
+        val swallowed = Regex("""runCatching\s*\{[^}]*\b(bundleGc|bundleForget|saveTrigger|saveLogs|saveRetry|saveRetarget|bundleTrash|bundleRestore)\(""")
+        assertNone("KON-7 (swallowed outcome)", main().filter { swallowed.containsMatchIn(it.code()) }.map { it.rel() })
     }
 }
