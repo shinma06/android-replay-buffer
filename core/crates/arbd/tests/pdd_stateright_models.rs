@@ -1,4 +1,4 @@
-//! Layer-2 PDD: exhaustive Stateright interleaving models (S1–S3).
+//! Layer-2 PDD: exhaustive Stateright interleaving models (S1–S5).
 //!
 //! Each model is a linearized abstraction of production lifecycle/durability/media
 //! rules. Liveness-style requirements are checked as `always` properties over a
@@ -1755,4 +1755,463 @@ fn s3_live_media_discontinuity_model() {
         states > 1_000,
         "S3 must explore a non-trivial interleaving space"
     );
+}
+
+// Factor orthogonal protocols out of the chunk/watermark product. Each projection explores
+// every ordering at its own persistence and ownership boundaries, including stale completions.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum Entity {
+    Original,
+    Foreign,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PurgeState {
+    public: Entity,
+    claim: Entity,
+    marked: bool,
+    grace_elapsed: bool,
+    checked: bool,
+    /// The claimed entity passed the identity check and was renamed to its delete-only name
+    /// (`.purged-<token>`), which survives a crash.
+    verified: bool,
+    crashed: bool,
+    done: bool,
+    foreign_deleted: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum PurgeAction {
+    Replace,
+    Elapse,
+    Mark,
+    EmptyTrash,
+    Check,
+    Claim,
+    Verify,
+    Delete,
+    Crash,
+    Restart,
+}
+struct PurgeModel;
+
+impl Model for PurgeModel {
+    type State = PurgeState;
+    type Action = PurgeAction;
+    fn init_states(&self) -> Vec<Self::State> {
+        vec![PurgeState {
+            public: Entity::Original,
+            claim: Entity::Missing,
+            marked: false,
+            grace_elapsed: false,
+            checked: false,
+            verified: false,
+            crashed: false,
+            done: false,
+            foreign_deleted: false,
+        }]
+    }
+    fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
+        use PurgeAction::*;
+        out.extend([
+            Replace, Elapse, Mark, EmptyTrash, Check, Claim, Verify, Delete, Crash, Restart,
+        ]);
+    }
+    fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
+        use PurgeAction::*;
+        let mut n = *s;
+        match a {
+            Replace => n.public = Entity::Foreign,
+            Restart if s.crashed => n.crashed = false,
+            _ if s.crashed => return None,
+            Elapse => n.grace_elapsed = true,
+            Mark if s.grace_elapsed && !s.done => n.marked = true,
+            EmptyTrash if !s.done => n.marked = true,
+            Check if s.marked && s.public == Entity::Original && s.claim == Entity::Missing => {
+                n.checked = true;
+            }
+            Claim if s.checked => {
+                n.checked = false;
+                n.claim = s.public;
+                n.public = Entity::Missing;
+            }
+            // Second identity check on the claimed entity. A foreign entity returns the row to
+            // `trashed` (`marked = false`) and is handed back only while the public name is free;
+            // otherwise it stays in the claim, undeleted.
+            Verify if s.marked && !s.verified && s.claim != Entity::Missing => {
+                if s.claim == Entity::Original {
+                    n.verified = true;
+                } else {
+                    n.marked = false;
+                    if s.public == Entity::Missing {
+                        n.public = s.claim;
+                        n.claim = Entity::Missing;
+                    }
+                }
+            }
+            // The recursive delete takes whatever sits at the verified private name, so the
+            // property below only holds because `Verify` is its sole way in.
+            Delete if s.marked && s.verified => {
+                n.foreign_deleted |= s.claim == Entity::Foreign;
+                n.claim = Entity::Missing;
+                n.verified = false;
+                n.done = true;
+                n.marked = false;
+            }
+            Crash => {
+                n.checked = false;
+                n.crashed = true;
+            } // Purging row, claim name and both FS entries survive.
+            _ => return None,
+        }
+        (n != *s).then_some(n)
+    }
+    fn properties(&self) -> Vec<Property<Self>> {
+        vec![
+            Property::<Self>::always("S2 no foreign entity physically removed", |_, s| {
+                !s.foreign_deleted
+            }),
+            Property::<Self>::sometimes(
+                "replacement between check and claim reaches final guard",
+                |_, s| s.claim == Entity::Foreign,
+            ),
+            Property::<Self>::sometimes(
+                "claimed original purged while replacement survives",
+                |_, s| s.done && s.public == Entity::Foreign,
+            ),
+        ]
+    }
+}
+
+#[test]
+fn s2_gc_path_replacement_model() {
+    run("S2 GC", PurgeModel);
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct AttachToken {
+    serial: u8,
+    generation: u8,
+}
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct AttachState {
+    selected: AttachToken,
+    pending: Option<AttachToken>,
+    live: Option<AttachToken>,
+    pressure: bool,
+    armed: bool,
+    rearmed: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum AttachAction {
+    Begin,
+    Finish,
+    Select(u8),
+    Pressure,
+    Recover,
+    Rearm,
+}
+struct AttachModel;
+impl Model for AttachModel {
+    type State = AttachState;
+    type Action = AttachAction;
+    fn init_states(&self) -> Vec<Self::State> {
+        vec![AttachState {
+            selected: AttachToken {
+                serial: 0,
+                generation: 0,
+            },
+            pending: None,
+            live: None,
+            pressure: false,
+            armed: true,
+            rearmed: false,
+        }]
+    }
+    fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
+        use AttachAction::*;
+        out.extend([
+            Begin,
+            Finish,
+            Select(0),
+            Select(1),
+            Pressure,
+            Recover,
+            Rearm,
+        ]);
+    }
+    fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
+        use AttachAction::*;
+        let mut n = *s;
+        match a {
+            Begin if s.armed && !s.pressure && s.pending.is_none() && s.live.is_none() => {
+                n.pending = Some(s.selected);
+            }
+            Finish => {
+                let token = n.pending.take()?;
+                if s.armed && !s.pressure && token == s.selected {
+                    n.live = Some(token);
+                }
+            }
+            Select(serial) if s.selected.generation < 2 => {
+                n.selected = AttachToken {
+                    serial,
+                    generation: s.selected.generation + 1,
+                };
+                n.live = None;
+            }
+            Pressure if !s.pressure && s.selected.generation < 2 => {
+                n.pressure = true;
+                n.armed = false;
+                n.live = None;
+                n.rearmed = false;
+                n.selected.generation += 1;
+            }
+            Recover if s.pressure => n.pressure = false,
+            Rearm if !s.pressure && !s.armed => {
+                n.armed = true;
+                n.rearmed = true;
+            }
+            _ => return None,
+        }
+        (n != *s).then_some(n)
+    }
+    fn properties(&self) -> Vec<Property<Self>> {
+        vec![
+            Property::<Self>::always(
+                "S3 only selected serial and current generation live",
+                |_, s| {
+                    s.live
+                        .is_none_or(|t| t == s.selected && s.armed && !s.pressure)
+                },
+            ),
+            Property::<Self>::always("S3 rearm persists through late attach", |_, s| {
+                !s.rearmed || s.armed
+            }),
+            Property::<Self>::sometimes("S3 stale attach on other serial", |_, s| {
+                s.pending.is_some_and(|t| t.serial != s.selected.serial)
+            }),
+            Property::<Self>::sometimes("S3 capture resumes after pressure", |_, s| {
+                s.rearmed && s.live.is_some()
+            }),
+        ]
+    }
+}
+#[test]
+fn s3_delayed_attach_model() {
+    run("S3 attach", AttachModel);
+}
+
+// One export request per connection per daemon generation. EOF releases viewports;
+// an export worker can outlive the connection until its completion callback.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ViewState {
+    generation: u8,
+    connected: u8,
+    viewports: u8,
+    running: u8,
+    publications: [u8; 4],
+}
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ViewAction {
+    Open(u8),
+    Export(u8),
+    Eof(u8),
+    Complete(u8),
+    Handover,
+}
+struct ViewModel;
+impl Model for ViewModel {
+    type State = ViewState;
+    type Action = ViewAction;
+    fn init_states(&self) -> Vec<Self::State> {
+        vec![ViewState {
+            generation: 0,
+            connected: 3,
+            viewports: 0,
+            running: 0,
+            publications: [0; 4],
+        }]
+    }
+    fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
+        use ViewAction::*;
+        for token in 0..4 {
+            out.extend([Open(token), Export(token), Eof(token), Complete(token)]);
+        }
+        out.push(Handover);
+    }
+    fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
+        use ViewAction::*;
+        let mut n = *s;
+        match a {
+            Handover if s.generation == 0 && s.viewports == 0 && s.running == 0 => {
+                n.generation = 1;
+                n.connected = 3;
+            }
+            Open(t) | Export(t) | Eof(t) | Complete(t) if t / 2 == s.generation => {
+                let bit = 1 << (t % 2);
+                match a {
+                    Open(_) if s.connected & bit != 0 => n.viewports |= bit,
+                    Eof(_) => {
+                        n.connected &= !bit;
+                        n.viewports &= !bit;
+                    }
+                    Export(_) if s.connected & bit != 0 && s.publications[usize::from(t)] == 0 => {
+                        n.running |= bit;
+                    }
+                    Complete(_) if s.running & bit != 0 => {
+                        n.running &= !bit;
+                        n.publications[usize::from(t)] =
+                            (s.publications[usize::from(t)] + 1).min(2);
+                    }
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+        (n != *s).then_some(n)
+    }
+    fn properties(&self) -> Vec<Property<Self>> {
+        vec![
+            Property::<Self>::always("S4 busy handover rejected", |m, s| {
+                (s.viewports == 0 && s.running == 0)
+                    || m.next_state(s, ViewAction::Handover).is_none()
+            }),
+            Property::<Self>::always("S4 draining EOF and completion reaches idle", |m, s| {
+                let mut n = *s;
+                for token in 2 * s.generation..2 * s.generation + 2 {
+                    for a in [ViewAction::Eof(token), ViewAction::Complete(token)] {
+                        n = m.next_state(&n, a).unwrap_or(n);
+                    }
+                }
+                n.viewports == 0 && n.running == 0 && n.connected == 0
+            }),
+            Property::<Self>::always("S4 at most one publication per request", |_, s| {
+                s.publications.iter().all(|&n| n <= 1)
+            }),
+            Property::<Self>::sometimes("S4 export remains active after EOF", |_, s| {
+                s.running & !s.connected != 0
+            }),
+            Property::<Self>::sometimes(
+                "S4 both clients publish across both generations",
+                |_, s| s.publications == [1; 4],
+            ),
+        ]
+    }
+}
+#[test]
+fn s4_viewport_export_handover_model() {
+    run("S4", ViewModel);
+}
+
+// Protocol model of the intended crash-watcher design: a boot-qualified crash identity is
+// reserved durably together with its pins. Detection and queue delivery are volatile; on
+// restart durable pending work is replayed.
+//
+// This is a design premise, not a refinement of `arbd`. Today the pins and the save job are
+// durable (`save_jobs/<job>.json`, catalog row, `interrupted_crash_autosave_is_requeued_once_on_startup`),
+// but no crash identity (boot id + boottime + process + exception) is stored with them. Repeat
+// suppression is the in-memory `CrashAutoSaveGate` cooldown, which restarts empty with the
+// daemon. So `Pin`'s `saved` check and "at most once per boot" describe what a persisted
+// identity would give; if the device re-delivers an `am_crash` record after a daemon restart,
+// production can still save it twice. Listed as TCB-16 in docs/proofs/tcb-axioms.md.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct WatchState {
+    boot: u8,
+    detected: u8,
+    pinned: u8,
+    queued: u8,
+    saved: u8,
+    commits: [u8; 2],
+}
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum WatchAction {
+    Detect,
+    Pin(u8),
+    Queue(u8),
+    Commit(u8),
+    Restart,
+    Reboot,
+}
+struct WatchModel;
+impl Model for WatchModel {
+    type State = WatchState;
+    type Action = WatchAction;
+    fn init_states(&self) -> Vec<Self::State> {
+        vec![WatchState {
+            boot: 0,
+            detected: 0,
+            pinned: 0,
+            queued: 0,
+            saved: 0,
+            commits: [0; 2],
+        }]
+    }
+    fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
+        use WatchAction::*;
+        out.extend([Detect, Restart, Reboot]);
+        for id in 0..2 {
+            out.extend([Pin(id), Queue(id), Commit(id)]);
+        }
+    }
+    fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
+        use WatchAction::*;
+        let mut n = *s;
+        match a {
+            Detect => n.detected |= 1 << s.boot,
+            Pin(id) if s.detected & (1 << id) != 0 => {
+                n.detected &= !(1 << id);
+                if s.saved & (1 << id) == 0 {
+                    n.pinned |= 1 << id;
+                }
+            }
+            Queue(id) if s.pinned & (1 << id) != 0 => n.queued |= 1 << id,
+            Commit(id) if s.queued & (1 << id) != 0 => {
+                n.saved |= 1 << id;
+                n.commits[usize::from(id)] = (s.commits[usize::from(id)] + 1).min(2);
+                n.queued &= !(1 << id);
+                n.pinned &= !(1 << id);
+            }
+            Restart => {
+                n.detected = 0;
+                n.queued = 0;
+            }
+            Reboot => n.boot = 1,
+            _ => return None,
+        }
+        (n != *s).then_some(n)
+    }
+    fn properties(&self) -> Vec<Property<Self>> {
+        vec![
+            Property::<Self>::always("S5 crash commits at most once per boot", |_, s| {
+                s.commits.iter().all(|&n| n <= 1)
+            }),
+            Property::<Self>::always("S5 pending pins always replay after restart", |m, s| {
+                let mut n = m.next_state(s, WatchAction::Restart).unwrap_or(*s);
+                for id in 0..2 {
+                    if s.pinned & (1 << id) != 0 {
+                        let Some(done) = m
+                            .next_state(&n, WatchAction::Queue(id))
+                            .and_then(|q| m.next_state(&q, WatchAction::Commit(id)))
+                        else {
+                            return false;
+                        };
+                        n = done;
+                        if n.commits[usize::from(id)] != 1 {
+                            return false;
+                        }
+                    }
+                }
+                true
+            }),
+            Property::<Self>::sometimes(
+                "S5 same crash signature in separate boots saved twice",
+                |_, s| s.commits == [1; 2],
+            ),
+        ]
+    }
+}
+#[test]
+fn s5_crash_watcher_model() {
+    run("S5", WatchModel);
 }

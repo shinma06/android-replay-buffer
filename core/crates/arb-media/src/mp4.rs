@@ -212,6 +212,24 @@ impl Mp4VideoTrack {
         u64::try_from(self.frames.len()).unwrap_or(u64::MAX)
     }
 
+    /// Hashes the indexed file handle, including container metadata and padding.
+    pub(crate) fn content_digest(&self) -> Result<[u8; 32], MediaError> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut buf = vec![0; 64 * 1024];
+        let mut offset = 0;
+        while offset < self.file_len {
+            let remaining = self.file_len - offset;
+            let len = buf
+                .len()
+                .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+            read_exact_at(&self.file, &mut buf[..len], offset)?;
+            hash.update(&buf[..len]);
+            offset += u64::try_from(len).unwrap_or(remaining);
+        }
+        Ok(hash.finalize().into())
+    }
+
     /// Returns indexed metadata for `frame_index`.
     ///
     /// # Errors

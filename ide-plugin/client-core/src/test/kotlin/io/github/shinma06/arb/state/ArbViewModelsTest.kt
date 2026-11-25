@@ -177,6 +177,18 @@ class ArbViewModelsTest {
             listOf(CaptureBannerKind.CONNECTION_LOST, CaptureBannerKind.STREAM_GAP, CaptureBannerKind.STATIC_HOLD),
             stateDisconnected.banners.map { it.kind },
         )
+
+        val failedPurgeStatus = pressureStatus.copy(
+            capture = pressureStatus.capture.copy(storagePressureStopped = false),
+            recovery = RecoverySummaryView(
+                failedPurgingBundles = 1L,
+                failedPurgingBundleIds = listOf("bundle-corrupt"),
+            ),
+        )
+        val stateFailedPurge = CaptureBarReducer.fromStatus(CaptureBarState(), failedPurgeStatus)
+        assertEquals(listOf(CaptureBannerKind.CONFIG_WARNING), stateFailedPurge.banners.map { it.kind })
+        assertTrue(stateFailedPurge.banners.single().title.contains("1 件"))
+        assertTrue(stateFailedPurge.banners.single().detail.contains("bundle-corrupt"))
     }
 
     @Test
