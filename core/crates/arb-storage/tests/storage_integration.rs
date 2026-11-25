@@ -2546,6 +2546,54 @@ fn identity_mismatch_keeps_bundle_trashed_and_restorable() {
 }
 
 #[test]
+fn purging_row_failing_identity_returns_to_trashed_and_verified_claim_ignores_public_path() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("bundles");
+    let db = tmp.path().join("db");
+    let now = "2026-11-22T12:00:00Z";
+    let catalog = Catalog::open(&db, &root).unwrap();
+    register_v2_bundle(&catalog, "foreign", &root.join("foreign"), "j1", b"x");
+    register_v2_bundle(&catalog, "half", &root.join("half"), "j2", b"y");
+    for id in ["foreign", "half"] {
+        catalog.trash_bundle(id, now).unwrap();
+    }
+    drop(catalog);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE bundles SET state = 'purging'", [])
+        .unwrap();
+    let token = "c".repeat(32);
+    conn.execute("INSERT INTO purge_claims VALUES ('half', ?1)", [&token])
+        .unwrap();
+    drop(conn);
+    fs::write(root.join("foreign/manifest.json"), b"{").unwrap();
+    // A verified half-deleted claim, while a link now occupies the public path.
+    let claim = root.join(format!(".purged-{token}"));
+    fs::rename(root.join("half"), &claim).unwrap();
+    fs::remove_file(claim.join("manifest.json")).unwrap();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"keep").unwrap();
+    symlink_dir(&outside, root.join("half")).unwrap();
+
+    let reopened = Catalog::open(&db, &root).unwrap();
+    let report = reopened.recover_on_startup(now).unwrap();
+    assert_eq!(report.completed_purging_bundle_ids, ["half"]);
+    assert_eq!(report.failed.len(), 1);
+    assert!(!claim.exists());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+    let foreign = reopened.bundle("foreign").unwrap().unwrap();
+    assert_eq!(
+        foreign.state,
+        arb_core::state::BundleLifecycleState::Trashed
+    );
+    reopened.restore_bundle("foreign").unwrap();
+}
+
+#[test]
 fn gc_rejects_corrupt_or_wrong_owner_manifest_and_links() {
     #[cfg(unix)]
     use std::os::unix::fs::symlink as symlink_dir;

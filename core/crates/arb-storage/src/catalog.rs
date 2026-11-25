@@ -989,10 +989,17 @@ impl Catalog {
             return Ok(false);
         }
         if fs::symlink_metadata(&bundle.path).is_ok_and(|m| m.is_symlink()) {
-            return Err(StorageError::InvalidBundle {
-                path: bundle.path.clone(),
-                reason: "bundle identity mismatch: path is a symlink".into(),
-            });
+            // A link planted inside the managed root is a failure to report; a link on an
+            // unmanaged row is just unmanaged, as before.
+            let root = canonical_or_lexical(&self.managed_bundles_root);
+            let parent = bundle.path.parent().map(canonical_or_lexical);
+            if parent.is_some_and(|p| p.starts_with(&root)) {
+                return Err(StorageError::InvalidBundle {
+                    path: bundle.path.clone(),
+                    reason: "bundle identity mismatch: path is a symlink".into(),
+                });
+            }
+            return Ok(false);
         }
         Ok(is_strictly_inside_managed_root(
             &bundle.path,
@@ -1070,6 +1077,9 @@ impl Catalog {
     }
 
     /// Physically removes a `Purging` bundle directory, then deletes its catalog rows.
+    ///
+    /// A bundle that fails the identity check is never touched and goes back to `Trashed`, so
+    /// a row cannot stay `Purging` forever with no way to restore or forget it.
     fn finish_purge(&self, bundle: &BundleEntry) -> Result<PurgeGate, StorageError> {
         let mut conn = self.lock_conn()?;
         // Persist the private rename target before touching disk so recovery can find it
@@ -1080,6 +1090,24 @@ impl Catalog {
             params![bundle.bundle_id],
         )
         .map_err(|e| StorageError::sqlite("reserve_purge_claim", e))?;
+        let result = self.finish_purge_tx(&mut conn, bundle);
+        if let Err(StorageError::InvalidBundle { reason, .. }) = &result
+            && reason.starts_with("bundle identity mismatch")
+        {
+            conn.execute(
+                "UPDATE bundles SET state = 'trashed' WHERE bundle_id = ?1 AND state = 'purging'",
+                params![bundle.bundle_id],
+            )
+            .map_err(|e| StorageError::sqlite("restore_trashed_after_mismatch", e))?;
+        }
+        result
+    }
+
+    fn finish_purge_tx(
+        &self,
+        conn: &mut rusqlite::Connection,
+        bundle: &BundleEntry,
+    ) -> Result<PurgeGate, StorageError> {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|source| StorageError::sqlite("begin_gc_delete_tx", source))?;
@@ -1088,9 +1116,6 @@ impl Catalog {
         };
         if current.state != BundleLifecycleState::Purging || current.path != bundle.path {
             return Ok(PurgeGate::Gone);
-        }
-        if !self.is_purgeable_location(&current)? {
-            return Ok(PurgeGate::Unmanaged);
         }
         if count_active_leases(&tx, &current.bundle_id)? > 0 {
             return Ok(PurgeGate::Leased);
@@ -1110,6 +1135,12 @@ impl Catalog {
                 path: current.path,
                 reason: "invalid purge claim".into(),
             });
+        }
+        // A claim that already passed the identity check is ours to finish even if something
+        // else now occupies the public path.
+        let verified = current.path.with_file_name(format!(".purged-{token}"));
+        if fs::symlink_metadata(&verified).is_err() && !self.is_purgeable_location(&current)? {
+            return Ok(PurgeGate::Unmanaged);
         }
         purge_claimed_directory(&current, &token)?;
         delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
