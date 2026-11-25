@@ -60,11 +60,18 @@ internal class StudioViewportSession(
             }
         }
         onRecovery()
-        try {
-            val viewport = open(checkNotNull(sourceBundleId))
-            return read(checkNotNull(current), call, viewport.viewportId)
+        val viewport = try {
+            open(checkNotNull(sourceBundleId))
         } catch (e: Exception) {
             throw IllegalStateException("映像接続を復元できませんでした（${e.message}）", e)
+        }
+        return try {
+            read(checkNotNull(current), call, viewport.viewportId)
+        } catch (e: Exception) {
+            if (current == null) {
+                throw IllegalStateException("映像接続を復元できませんでした（${e.message}）", e)
+            }
+            throw e
         }
     }
 
@@ -75,8 +82,8 @@ internal class StudioViewportSession(
             if (e is IOException || (e is ArbdRpcException && e.code == VIEWPORT_NOT_FOUND)) {
                 // Socket EOF also reclaims a viewport whose reply was lost.
                 current = null
-                generation.rpc.close()
-                generation.reader.close()
+                runCatching { generation.rpc.close() }
+                runCatching { generation.reader.close() }
             }
             throw e
         }
@@ -99,8 +106,8 @@ internal class StudioViewportSession(
         val generation = current ?: return
         current = null
         runCatching { generation.rpc.mediaCloseViewport(generation.viewport.viewportId) }
-        generation.rpc.close()
-        generation.reader.close()
+        runCatching { generation.rpc.close() }
+        runCatching { generation.reader.close() }
     }
 
     private companion object {

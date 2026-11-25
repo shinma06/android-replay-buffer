@@ -292,7 +292,9 @@ impl Model for S6 {
                     } else if frame(n.t) > s.target {
                         n.seek(frame(n.t));
                     }
-                    if s.t + dt < self.end() && s.target == frame(n.t) && n.queued != s.queued {
+                    let holding = (s.t + dt < self.end() && s.target == frame(n.t))
+                        || (self.selection == Selection::SingleLoop && s.target == 0);
+                    if holding && n.queued != s.queued {
                         n.violation = Violation::HoldSeek;
                     }
                 }
@@ -393,7 +395,9 @@ impl Model for S6 {
                 | ViewportNotFoundDisconnect
                 | ReopenFailed
                 | Reopen
-        ) && (n.t != s.t || (s.stale && (s.playing != n.playing || s.error != n.error)))
+        ) && (n.t != s.t
+            || (s.stale
+                && (s.playing != n.playing || s.error != n.error || s.displayed != n.displayed)))
         {
             n.violation = Violation::Rewind;
         }

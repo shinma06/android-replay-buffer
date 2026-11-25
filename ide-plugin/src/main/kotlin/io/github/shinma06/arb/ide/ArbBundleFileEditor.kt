@@ -474,15 +474,12 @@ class ArbBundleFileEditor internal constructor(
 
                 // Render initial frame right away before decoupled timeline/log pagination starts!
                 if (activeCtrl != null && !disposed) {
-                    runCatching { activeCtrl.seekToFrame(initialPlayhead) }
-                        .onFailure { t ->
-                            logger.warn("ARB initial seek_frame failed", t)
-                            if (!disposed) {
-                                publishEdt {
-                                    studioController.showError("フレームシークに失敗しました: ${t.message}")
-                                }
-                            }
-                        }
+                    try {
+                        activeCtrl.seekToFrame(initialPlayhead)
+                    } catch (e: Exception) {
+                        // PlaybackController.onPlaybackError already surfaced the reason on the Studio.
+                        logger.warn("ARB initial seek_frame failed", e)
+                    }
                 }
 
                 // Phase 2 (M2): Decoupled background loading of filmstrip, events, and paged logs.
@@ -797,12 +794,7 @@ class ArbBundleFileEditor internal constructor(
         val ctrl = currentPlaybackController() ?: return
         submitWork {
             runCatching { ctrl.seekToFrame(frameIndex) }
-                .onFailure { error ->
-                    logger.warn("ARB seek_frame failed", error)
-                    publishEdt {
-                        if (!disposed) studioController.showError("フレーム #$frameIndex のシークに失敗しました（${error.message}）")
-                    }
-                }
+                .onFailure { logger.debug("ARB seek_frame failed", it) }
         }
     }
 

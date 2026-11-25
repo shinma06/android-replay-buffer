@@ -277,6 +277,16 @@ class ArbT7cStudioVfrAndLifecycleTest {
                     }
                 }
                 assertEquals(2, attempts.get())
+                // After a replacement viewport opens cleanly, a non-disconnect RPC error must
+                // propagate directly while keeping the live replacement viewport open.
+                var reopenedId: String? = null
+                assertFailsWith<ArbdRpcException> {
+                    first.request { _, id ->
+                        reopenedId = id
+                        throw ArbdRpcException(-32602, "decode failed")
+                    }
+                }
+                assertEquals(reopenedId, first.request { _, id -> id }.response)
             }
         }
         assertTrue(sockets.all { it.closed.get() })

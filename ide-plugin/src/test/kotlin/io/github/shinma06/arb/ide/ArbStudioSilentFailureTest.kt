@@ -244,6 +244,29 @@ class ArbStudioSilentFailureTest {
         }
     }
 
+    @Test
+    fun failedManualSeekSurfacesSinglePlaybackErrorWithoutDuplicateErrorBanner(@TempDir tmp: Path) {
+        val daemon = Daemon(tmp)
+        val editor = openStudioEditor(daemon)
+        try {
+            editor.awaitReady()
+            editor.awaitAuxSettled()
+            val ctrl = editor.studioController
+            daemon.faults["media.seek_frame"] = Fault.BUSINESS_ERROR
+            ctrl.seekExactFrame(4)
+            editor.awaitQueuedWorkForTest()
+            assertNotNull(ctrl.playbackError, "seek failure must surface on playbackError")
+            assertNull(ctrl.errorMessage, "seek failure must not render a second duplicate errorMessage banner")
+
+            ctrl.seekTime(66_666_666L, settled = true)
+            editor.awaitQueuedWorkForTest()
+            assertNotNull(ctrl.playbackError)
+            assertNull(ctrl.errorMessage)
+        } finally {
+            editor.dispose()
+        }
+    }
+
     private fun RecordedRpc.isLimitProbe(): Boolean =
         method == "timeline.query_logs" && params.get("limit")?.asInt == 1
 }
