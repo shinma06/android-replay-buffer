@@ -474,6 +474,38 @@ class ArbT4StudioModelTest {
     }
 
     @Test
+    fun screenSpansCrossingTheRecordingEdgesAreClippedNotHidden() {
+        val s = 1_000_000_000L
+        val range = io.github.shinma06.arb.model.EpochFrameRange(0, "boot-0", 0L, 9L, 100 * s, 101 * s)
+        fun state(withRanges: Boolean) = TimelineViewerState(
+            bundleId = "b-clip",
+            path = "/tmp/b-clip",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l-clip",
+            summary = healthySummary().copy(
+                epochs = listOf(EpochSpan("boot-0", 100 * s, 101 * s)),
+                epochFrameRanges = if (withRanges) listOf(range) else emptyList(),
+            ),
+            frameCount = 10L,
+            axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(10, List(10) { it * s / 10 }, lastDurationNs = s / 10),
+        )
+        fun span(start: Long, end: Long) = ScreenSpan(start, end, packageName = "p", activityName = "p.A", shortName = "A")
+        for (withRanges in listOf(true, false)) {
+            val st = state(withRanges)
+            // Already in the foreground when capture started: starts at media 0.
+            assertEquals(0L, st.screenTime(span(99 * s, 100 * s + s / 2)))
+            assertEquals(s / 2, st.screenTime(span(99 * s, 100 * s + s / 2), end = true))
+            // Still in the foreground at the end: ends at the exclusive media end.
+            assertEquals(s / 2, st.screenTime(span(100 * s + s / 2, 105 * s)))
+            assertEquals(s, st.screenTime(span(100 * s + s / 2, 105 * s), end = true))
+            // Entirely outside the recording, and pre-roll point events, stay unmapped.
+            assertNull(st.screenTime(span(90 * s, 95 * s)))
+            assertNull(st.eventTime(99 * s, "boot-0"))
+        }
+    }
+
+    @Test
     fun multiEpochFrameRangesMapLogsTapsCrashesWithoutCrossEpochBleed() {
         val base = healthySummary()
         // Epoch 0: frames 0..50 spanning boottime 100s..110s

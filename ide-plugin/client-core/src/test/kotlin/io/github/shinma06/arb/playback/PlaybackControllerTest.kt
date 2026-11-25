@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -303,6 +304,35 @@ class PlaybackControllerTest {
             assertEquals(40L, it.state.outFrameIndex)
             assertEquals(PlaybackMode.PLAYING, it.state.mode)
             assertEquals(PlaybackSpeed.DOUBLE, it.state.speed)
+        }
+    }
+
+    @Test
+    fun failedViewportReopenDuringPlayingSeekDoesNotLeaveTheClockFrozen() {
+        val clock = ManualClock()
+        val seeker = object : FrameSeeker {
+            var failReopen = false
+            override fun seekExact(frameIndex: Long) = FrameSeekResult(frameIndex, frameIndex, false)
+            override fun seekExact(frameIndex: Long, onRecovery: () -> Unit): FrameSeekResult {
+                if (!failReopen) return seekExact(frameIndex)
+                onRecovery()
+                clock.advanceMs(5_000)
+                throw IllegalStateException("映像接続を復元できませんでした")
+            }
+            override fun scrubApprox(frameIndex: Long) = seekExact(frameIndex)
+        }
+        PlaybackController(50, seeker, uniformPtsNs(50, 100), clock = clock, autoRunLoop = false).use {
+            it.play()
+            seeker.failReopen = true
+            assertFailsWith<IllegalStateException> { it.seekToTime(1_000_000_000L) }
+            assertEquals(PlaybackMode.PLAYING, it.state.mode)
+            // Reopen time is excluded, and the clock runs again from the seek target.
+            assertEquals(1_000_000_000L, it.displayPositionNs())
+            clock.advanceMs(200)
+            assertEquals(1_200_000_000L, it.displayPositionNs())
+            seeker.failReopen = false
+            it.tick()
+            assertEquals(12L, it.state.currentFrameIndex)
         }
     }
 

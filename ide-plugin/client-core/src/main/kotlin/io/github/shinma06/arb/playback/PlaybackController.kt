@@ -931,11 +931,18 @@ class PlaybackController(
     private fun performExactSeek(frameIndex: Long, expectedGeneration: Long, retried: Boolean = false) {
         val result = synchronized(seekLock) {
             if (seekGeneration.get() != expectedGeneration) return
-            frameSeeker.seekExact(frameIndex) { freezeForRecovery(expectedGeneration) }
+            try {
+                frameSeeker.seekExact(frameIndex) { freezeForRecovery(expectedGeneration) }
+            } catch (error: Throwable) {
+                // A failed reopen must not leave PLAYING with a frozen clock; callers decide whether to retry or pause.
+                thawAfterFailedRecovery(expectedGeneration)
+                throw error
+            }
         }
         val postSnapshot = stateLock.withLock {
             if (closed || seekGeneration.get() != expectedGeneration) return
-            if ((result.recovered || retried) && currentState.mode == PlaybackMode.PLAYING) {
+            val frozen = recoveringGeneration == expectedGeneration
+            if ((result.recovered || retried || frozen) && currentState.mode == PlaybackMode.PLAYING) {
                 anchorMediaPtsNs = displayPositionNs()
                 recoveringGeneration = null
                 anchorWallNs = clock.nowNs()
@@ -989,7 +996,7 @@ class PlaybackController(
             stateLock.withLock {
                 if (closed) return
                 try {
-                    while (!closed && (currentState.mode != PlaybackMode.PLAYING || initialSeekGeneration == seekGeneration.get())) {
+                    while (!closed && (currentState.mode != PlaybackMode.PLAYING || clockFrozenLocked())) {
                         loopWakeup.await()
                     }
                     if (closed) return
@@ -1048,6 +1055,15 @@ class PlaybackController(
         if (seekGeneration.get() == generation && currentState.mode == PlaybackMode.PLAYING) {
             anchorMediaPtsNs = displayPositionNs()
             recoveringGeneration = generation
+        }
+    }
+
+    private fun thawAfterFailedRecovery(generation: Long) = stateLock.withLock {
+        if (recoveringGeneration == generation) {
+            recoveringGeneration = null
+            // The frozen anchor already holds the media time; restart the wall clock from now.
+            anchorWallNs = clock.nowNs()
+            signalLoopLocked()
         }
     }
 

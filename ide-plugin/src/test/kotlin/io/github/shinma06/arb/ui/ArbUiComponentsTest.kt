@@ -122,6 +122,13 @@ class ArbUiComponentsTest {
         assertEquals(500L, studio.playheadTimeNs)
         assertEquals(1L, studio.viewerState?.currentFrameIndex)
         assertEquals(264f, geo.playhead(studio.playheadTimeNs))
+        // An editor-side preset that moves the frame without a playback state change resyncs the time.
+        studio.updateState { it.copy(currentFrameIndex = 3) }
+        assertEquals(1001L, studio.playheadTimeNs)
+        // A paused playhead on the exclusive end (or any time inside the frame's hold) is kept.
+        studio.seekTime(2000)
+        studio.updateState { it.copy(inFrameIndex = 0) }
+        assertEquals(2000L, studio.playheadTimeNs)
     }
 
     @Test

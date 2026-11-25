@@ -759,7 +759,34 @@ data class TimelineViewerState(
     fun screenTime(span: ScreenSpan, end: Boolean = false): Long? {
         val hint = if (end) span.endFrameIndex else span.startFrameIndex
         val boot = (hint ?: span.startFrameIndex)?.let { epochRangeForFrame(it)?.bootId }
-        return eventTime(if (end) span.endNs else span.startNs, boot) ?: hint?.let(axis::start)
+        val at = if (end) span.endNs else span.startNs
+        return eventTime(at, boot) ?: clippedSpanTime(span, at, boot) ?: hint?.let(axis::start)
+    }
+
+    /**
+     * A screen span is an interval, not a point: an endpoint outside the recording (an activity
+     * already in the foreground when capture started, or still there at the end) is clipped to the
+     * media of the single epoch the span overlaps instead of hiding the whole span.
+     */
+    private fun clippedSpanTime(span: ScreenSpan, at: Long, boot: String?): Long? {
+        if (frameCount == 0L) return null
+        if (summary.epochFrameRanges.isNotEmpty()) {
+            val epoch = summary.epochFrameRanges
+                .filter { boot == null || it.bootId == boot }
+                .singleOrNull { span.startNs <= it.endBoottimeNs && span.endNs >= it.startBoottimeNs }
+                ?: return null
+            val start = axis.start(epoch.startFrameIndex)
+            val upper = axis.outTime(epoch.endFrameIndex)
+            return start + elapsedSince(at, epoch.startBoottimeNs).coerceAtMost((upper - start).coerceAtLeast(0L))
+        }
+        // Older daemons: clip into the overlapped boot epoch, then past the media end.
+        val epoch = summary.epochs
+            .filter { boot == null || it.bootId == boot }
+            .singleOrNull { span.startNs <= it.endBoottimeNs && span.endNs >= it.startBoottimeNs }
+            ?: return null
+        val clipped = at.coerceIn(epoch.startBoottimeNs, epoch.endBoottimeNs)
+        return eventTime(clipped, epoch.bootId)
+            ?: axis.endNs.takeIf { clipped > epoch.startBoottimeNs && epoch == summary.epochs.last() }
     }
 
     private fun epochRangeForFrame(frameIndex: Long): EpochFrameRange? =

@@ -776,9 +776,13 @@ class ArbBundleFileEditor internal constructor(
     private fun performTimeSeek(timeNs: Long, settled: Boolean) {
         val ctrl = currentPlaybackController() ?: return
         submitWork {
-            runCatching {
-                if (settled) ctrl.seekToTime(timeNs) else ctrl.scrubToTime(timeNs)
-            }.onFailure { error ->
+            if (!settled) {
+                // Same policy as performScrub: a dropped preview is superseded by the next drag event.
+                runCatching { ctrl.scrubToTime(timeNs) }.onFailure { logger.debug("ARB scrub failed", it) }
+                return@submitWork
+            }
+            runCatching { ctrl.seekToTime(timeNs) }.onFailure { error ->
+                logger.warn("ARB seek_frame failed", error)
                 publishEdt { if (!disposed) studioController.showPlaybackError(error.message ?: "シークに失敗しました") }
             }
         }
@@ -838,6 +842,7 @@ class ArbBundleFileEditor internal constructor(
 
     private fun applySelectAroundCrash() {
         val current = viewerState ?: return
+        if (current.frameCount <= 0L) return
         val time = current.crashes.firstOrNull()?.let(current::crashTime) ?: return
         val axis = current.axis
         val crash = axis.frameAt(time)

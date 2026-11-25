@@ -170,7 +170,9 @@ impl MediaEngine {
             let samples = track.frames();
             let last = &samples[samples.len() - 1];
             let span = last.pts_ns.saturating_sub(samples[0].pts_ns).max(0);
-            end_ns(&[span], tail, 1)
+            // Without a usable final duration, hold the last frame for the mean interval.
+            let intervals = i64::try_from(samples.len() - 1).unwrap_or(i64::MAX).max(1);
+            end_ns(&[span], tail, (span / intervals).max(1))
         } else {
             end_ns(&frame_pts_ns, tail, 1)
         };

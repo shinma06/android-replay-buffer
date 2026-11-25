@@ -733,7 +733,7 @@ private fun TransportBar(controller: ArbStudioController) {
             ArbSubtleAction(
                 label = controller.playbackState.speed.label,
                 enabled = controller.hasVideo,
-                tooltip = "再生速度を切替 (0.5x / 1x / 2x)",
+                tooltip = "再生速度を切替 (0.25x / 0.5x / 1x / 2x)",
                 compact = true,
                 onClick = { controller.cycleSpeed() },
             )
@@ -1442,7 +1442,8 @@ private fun MultiTrackTimelineCanvas(
                         if (y in markerTopPx..(markerTopPx + markerHeightPx)) {
                             val spanHit = s.screens.firstOrNull { span ->
                                 val x1 = g.screen(span) ?: return@firstOrNull false
-                                val x2 = g.screen(span, end = true) ?: x1
+                                // Keep short or clipped spans clickable (same 8px floor as before the time axis).
+                                val x2 = (g.screen(span, end = true) ?: x1).coerceAtLeast(x1 + 8f)
                                 x in x1..x2
                             }
                             if (spanHit != null && y <= markerTopPx + markerHeightPx * 0.55f) {
@@ -1633,7 +1634,7 @@ private fun MultiTrackTimelineCanvas(
                     // Activity screen spans
                     for ((idx, span) in s.screens.withIndex()) {
                         val x1 = g.screen(span) ?: continue
-                        val x2 = g.screen(span, end = true) ?: x1
+                        val x2 = (g.screen(span, end = true) ?: x1).coerceAtLeast(x1 + 6.dp.toPx())
                         drawRoundRect(
                             color = screenColors[idx % screenColors.size],
                             topLeft = Offset(x1, markerTopPx + 1f),
@@ -1647,7 +1648,7 @@ private fun MultiTrackTimelineCanvas(
                         val startBt = disc.startBoottimeNs ?: continue
                         val endBt = disc.endBoottimeNs ?: startBt
                         val x1 = g.event(startBt, disc.bootId) ?: continue
-                        val x2 = g.event(endBt, disc.bootId) ?: x1
+                        val x2 = (g.event(endBt, disc.bootId) ?: x1).coerceAtLeast(x1 + 5.dp.toPx())
                         val bw = (x2 - x1).coerceAtLeast(0f)
                         drawRect(amber.copy(alpha = 0.22f), Offset(x1, markerTopPx), Size(bw, markerHeightPx))
                         val step = 5.dp.toPx()
@@ -1668,7 +1669,8 @@ private fun MultiTrackTimelineCanvas(
                     val swipeBarHeight = 2.5.dp.toPx()
                     for (tap in s.mainTaps) {
                         val tx = g.tap(tap) ?: continue
-                        val ex = g.swipeEnd(tap)
+                        // Minimum visible span width (6dp) so a very fast swipe still reads as a bar.
+                        val ex = g.swipeEnd(tap)?.coerceAtLeast(tx + 6.dp.toPx())
                         if (ex != null) {
                             drawRoundRect(
                                 color = cyan,

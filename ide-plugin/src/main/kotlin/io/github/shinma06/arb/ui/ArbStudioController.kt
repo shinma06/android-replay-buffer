@@ -367,7 +367,7 @@ class ArbStudioController(
      * the UI thread; a `null` [bitmap] keeps the previous frame.
      */
     fun renderFrame(next: TimelineViewerState, bitmap: ImageBitmap?, width: Int, height: Int) {
-        if (viewerState == null) playheadTimeNs = next.axis.start(next.currentFrameIndex)
+        syncPlayheadToFrame(viewerState, next)
         viewerState = next
         errorMessage = null
         if (width > 0 && height > 0) {
@@ -377,6 +377,19 @@ class ArbStudioController(
         }
         approximatePreviewVisible = next.showApproximatePreviewBadge || playbackState.isApproximate
         rebuildSyncedRows(next)
+    }
+
+    /**
+     * Keeps [playheadTimeNs] on the displayed frame when an editor-side change (a range preset,
+     * or a degraded open without a playback controller) moves `currentFrameIndex`. A time inside
+     * the frame's hold, including its right boundary, is kept. While playing the presentation
+     * clock owns the time, so a late frame or state update never pulls the playhead back.
+     */
+    private fun syncPlayheadToFrame(previous: TimelineViewerState?, next: TimelineViewerState) {
+        val axis = next.axis
+        val hold = axis.start(next.currentFrameIndex)..axis.outTime(next.currentFrameIndex)
+        val stale = previous == null || previous.axis !== axis || (!isPlaying && playheadTimeNs !in hold)
+        if (stale) playheadTimeNs = displayPositionNs()?.takeIf { it in hold } ?: hold.first
     }
 
     /** Merges a newly published SHM frame into controller-owned state (preserving UI edits). */
