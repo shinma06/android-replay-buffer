@@ -1240,19 +1240,7 @@ impl CapturePipeline {
                 self.static_hold_seen += 1;
             }
             CaptureEvent::Discontinuity(disc) => {
-                if disc.kind == DiscontinuityKind::StreamGap
-                    && disc.stream == Some(StreamKind::Audio)
-                    && self.audio_state == AudioCaptureState::Available
-                {
-                    self.audio_state = AudioCaptureState::Unavailable;
-                    self.audio_cause = Some(AudioCause::Unknown);
-                    self.audio_reason.clone_from(&disc.detail);
-                }
-                self.discontinuities_seen += 1;
-                self.push_live_discontinuity(disc.clone());
-                if disc.kind == DiscontinuityKind::ConnectionLost {
-                    self.connected = false;
-                }
+                self.record_live_discontinuity(disc);
                 should_flush = true;
             }
             CaptureEvent::ConnectionRestored { .. } => {
@@ -1266,6 +1254,22 @@ impl CapturePipeline {
             _ => {}
         }
         should_flush
+    }
+
+    fn record_live_discontinuity(&mut self, disc: &DiscontinuityEvent) {
+        if disc.kind == DiscontinuityKind::StreamGap
+            && disc.stream == Some(StreamKind::Audio)
+            && self.audio_state == AudioCaptureState::Available
+        {
+            self.audio_state = AudioCaptureState::Unavailable;
+            self.audio_cause = Some(AudioCause::Unknown);
+            self.audio_reason.clone_from(&disc.detail);
+        }
+        self.discontinuities_seen += 1;
+        self.push_live_discontinuity(disc.clone());
+        if disc.kind == DiscontinuityKind::ConnectionLost {
+            self.connected = false;
+        }
     }
 
     fn notify_detected_crash(&mut self, detected: Option<(i64, String, i64, ParsedAmCrash)>) {
