@@ -32,7 +32,7 @@ import io.github.shinma06.arb.playback.PlaybackSpeed
 import io.github.shinma06.arb.playback.SystemPlaybackClock
 import io.github.shinma06.arb.playback.WavFilePcmSource
 import io.github.shinma06.arb.shm.ShmFrameMeta
-import io.github.shinma06.arb.shm.ShmFrameRingReader
+import io.github.shinma06.arb.shm.ShmFrame
 import io.github.shinma06.arb.state.ExportCompletionInfo
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
@@ -65,9 +65,8 @@ import kotlin.math.roundToLong
  *   4 MiB RPC frame-size limits.
  * - Wires real per-frame VFR timestamps (`framePtsNs` from `media.open_viewport`) into
  *   [PlaybackController] so play, seek, and loop wrap stay aligned with audio and logs (H8).
- * - Guards `disposed` + `ownedViewportId` / `ownedLeaseController` / `ownedShmReader` /
- *   `ownedPlaybackController` atomically under [lifecycleLock] so closing the tab mid-`open_viewport`
- *   immediately closes the returned viewport off-EDT without leaking or killing shared IPC (M1).
+ * - Owns a per-editor viewport connection. Disposal releases the viewport, mapping and lease
+ *   even when a background open or reconnect is still in flight.
  */
 class ArbBundleFileEditor internal constructor(
     private val project: Project?,
@@ -128,7 +127,10 @@ class ArbBundleFileEditor internal constructor(
     }
     private val trimCloseState = TrimCloseState()
 
+    private val mediaSession = StudioViewportSession(daemonService::openMediaClient, { disposed })
+
     internal val studioController: ArbStudioController = ArbStudioController(
+        displayPositionNs = { currentPlaybackController()?.displayPositionNs() },
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
         onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
@@ -253,8 +255,6 @@ class ArbBundleFileEditor internal constructor(
     // All teardown-owned handles below are guarded by [lifecycleLock] so dispose() and async
     // open/register never race or double-close (M1).
     private var ownedLeaseController: BundleLeaseController? = null
-    private var ownedViewportId: String? = null
-    private var ownedShmReader: ShmFrameRingReader? = null
     private var ownedPlaybackController: PlaybackController? = null
 
     @Volatile
@@ -302,10 +302,6 @@ class ArbBundleFileEditor internal constructor(
         ownedPlaybackController
     }
 
-    private fun currentShmReader(): ShmFrameRingReader? = synchronized(lifecycleLock) {
-        ownedShmReader
-    }
-
     private fun loadBundleAsync() {
         submitWork {
             try {
@@ -349,41 +345,15 @@ class ArbBundleFileEditor internal constructor(
                 // displays immediately even when log bundles are huge or slow.
                 var viewportId: String? = null
                 var frameCount = opened.summary.frameCount.toLong()
+                var lastFrameDurationNs: Long? = null
                 var framePtsNs: List<Long> = emptyList()
 
                 if (opened.summary.videoPath != null && frameCount > 0L) {
-                    val vp = daemonService.withClient { it.mediaOpenViewport(opened.bundleId) }
-                    // M1: atomically check disposed vs register ownedViewportId. If disposed
-                    // raced while media.open_viewport was in flight, close it immediately off-EDT!
-                    val viewportRegistered = synchronized(lifecycleLock) {
-                        if (disposed) {
-                            false
-                        } else {
-                            ownedViewportId = vp.viewportId
-                            true
-                        }
-                    }
-                    if (!viewportRegistered) {
-                        runCatching { daemonService.withClient { it.mediaCloseViewport(vp.viewportId) } }
-                        return@submitWork
-                    }
+                    val vp = mediaSession.open(opened.bundleId)
                     viewportId = vp.viewportId
                     frameCount = vp.frameCount
                     framePtsNs = vp.framePtsNs
-
-                    val reader = ShmFrameRingReader.open(Path.of(vp.shmPath))
-                    val readerRegistered = synchronized(lifecycleLock) {
-                        if (disposed) {
-                            false
-                        } else {
-                            ownedShmReader = reader
-                            true
-                        }
-                    }
-                    if (!readerRegistered) {
-                        runCatching { reader.close() }
-                        return@submitWork
-                    }
+                    lastFrameDurationNs = vp.lastFrameDurationNs
                 }
 
                 val initialIn = existingSession?.inFrameIndex ?: 0L
@@ -411,17 +381,18 @@ class ArbBundleFileEditor internal constructor(
 
                 var activeCtrl: PlaybackController? = null
                 if (viewportId != null && frameCount > 0L) {
-                    val openedVpId = viewportId
                     val seeker = object : FrameSeeker {
                         override fun seekExact(frameIndex: Long): FrameSeekResult {
-                            val resp = daemonService.withClient { it.mediaSeekFrame(openedVpId, frameIndex) }
-                            readShmAndRender()
-                            return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate)
+                            val (resp, frame, replacementId) = mediaSession.request { rpc, id -> rpc.mediaSeekFrame(id, frameIndex) }
+                            if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
+                            readShmAndRender(frame)
+                            return FrameSeekResult(frameIndex, resp.frameIndex, resp.isApproximate, recovered = replacementId != null)
                         }
 
                         override fun scrubApprox(frameIndex: Long): FrameSeekResult {
-                            val resp = daemonService.withClient { it.mediaScrub(openedVpId, frameIndex) }
-                            readShmAndRender()
+                            val (resp, frame, replacementId) = mediaSession.request { rpc, id -> rpc.mediaScrub(id, frameIndex) }
+                            if (replacementId != null) updateViewerState { it.copy(viewportId = replacementId) }
+                            readShmAndRender(frame)
                             return FrameSeekResult(resp.requestedFrameIndex, resp.displayedFrameIndex, resp.isApproximate)
                         }
                     }
@@ -431,6 +402,7 @@ class ArbBundleFileEditor internal constructor(
                         totalFrames = frameCount,
                         frameSeeker = seeker,
                         framePtsNs = framePtsNs,
+                        lastFrameDurationNs = lastFrameDurationNs,
                         fallbackFps = initialState.estimatedFps,
                         audioPlayer = null,
                         clock = playbackClock,
@@ -439,13 +411,16 @@ class ArbBundleFileEditor internal constructor(
                         initialOutFrameIndex = initialOut,
                         initialAvOffsetMs = fallbackAvOffsetMs,
                         autoRunLoop = autoRunPlaybackLoop,
-                        onPlaybackError = { err -> logger.debug("ARB playback error", err) },
+                        onPlaybackError = { err ->
+                            logger.warn("ARB playback error", err)
+                            publishEdt { if (!disposed) studioController.showPlaybackError(err.message ?: "映像の再生に失敗しました") }
+                        },
                     )
-                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs)
-                    ctrl.addStateListener { pb ->
+                    initialState = initialState.copy(relativeFramePtsNs = ctrl.relativeFramePtsNs, lastFrameDurationNs = lastFrameDurationNs)
+                    ctrl.addStateListener { _ ->
                         publishEdt {
                             if (!disposed) {
-                                studioController.renderPlaybackState(pb)
+                                studioController.renderPlaybackState(ctrl.state)
                             }
                         }
                     }
@@ -679,52 +654,23 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun performScrub(frameIndex: Long) {
-        val ctrl = currentPlaybackController()
-        if (ctrl != null) {
-            submitWork {
-                runCatching { ctrl.scrubTo(frameIndex) }
-                    .onFailure { logger.debug("ARB scrub failed", it) }
-            }
-            return
-        }
-        val vpId = viewerState?.viewportId ?: return
+        val ctrl = currentPlaybackController() ?: return
         submitWork {
-            runCatching {
-                daemonService.withClient { it.mediaScrub(vpId, frameIndex) }
-                readShmAndRender()
-            }.onFailure { logger.debug("ARB scrub failed", it) }
+            runCatching { ctrl.scrubTo(frameIndex) }
+                .onFailure { logger.debug("ARB scrub failed", it) }
         }
     }
 
     private fun performSeekExact(frameIndex: Long) {
-        val ctrl = currentPlaybackController()
-        if (ctrl != null) {
-            submitWork {
-                runCatching { ctrl.seekToFrame(frameIndex) }
-                    .onFailure { t ->
-                        logger.warn("ARB seek_frame failed", t)
-                        publishEdt {
-                            if (!disposed) {
-                                studioController.showError("フレームシークに失敗しました: ${t.message}")
-                            }
-                        }
-                    }
-            }
-            return
-        }
-        val vpId = viewerState?.viewportId ?: return
+        val ctrl = currentPlaybackController() ?: return
         submitWork {
-            try {
-                daemonService.withClient { it.mediaSeekFrame(vpId, frameIndex) }
-                readShmAndRender()
-            } catch (t: Throwable) {
-                logger.warn("ARB seek_frame failed", t)
-                publishEdt {
-                    if (!disposed) {
-                        studioController.showError("フレームシークに失敗しました: ${t.message}")
+            runCatching { ctrl.seekToFrame(frameIndex) }
+                .onFailure { error ->
+                    logger.warn("ARB seek_frame failed", error)
+                    publishEdt {
+                        if (!disposed) studioController.showError("フレーム #$frameIndex のシークに失敗しました（${error.message}）")
                     }
                 }
-            }
         }
     }
 
@@ -782,9 +728,8 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
-    private fun readShmAndRender() {
-        val reader = currentShmReader() ?: return
-        val frame = reader.readLatest() ?: return
+    private fun readShmAndRender(frame: ShmFrame?) {
+        if (frame == null) return
         if (viewerState == null) return
         val image = frame.toBufferedImage()
         // Full-frame pixel copy happens here on the worker, never on the EDT, and only the newest
@@ -998,18 +943,12 @@ class ArbBundleFileEditor internal constructor(
 
     override fun dispose() {
         val ctrl: PlaybackController?
-        val reader: ShmFrameRingReader?
-        val vpId: String?
         val lease: BundleLeaseController?
         synchronized(lifecycleLock) {
             disposed = true
             ctrl = ownedPlaybackController
             ownedPlaybackController = null
             attachedAudioPlayer = null
-            reader = ownedShmReader
-            ownedShmReader = null
-            vpId = ownedViewportId
-            ownedViewportId = null
             lease = ownedLeaseController
             ownedLeaseController = null
         }
@@ -1020,15 +959,10 @@ class ArbBundleFileEditor internal constructor(
         timelineWorker.shutdown()
         audioDecodeWorker.shutdown()
 
-        if (ctrl != null || reader != null || vpId != null || lease != null) {
-            runOffEdt {
-                runCatching { ctrl?.close() }
-                runCatching { reader?.close() }
-                vpId?.let { id ->
-                    runCatching { daemonService.withClient { it.mediaCloseViewport(id) } }
-                }
-                runCatching { lease?.close() }
-            }
+        runOffEdt {
+            runCatching { ctrl?.close() }
+            mediaSession.close()
+            runCatching { lease?.close() }
         }
     }
 

@@ -521,7 +521,8 @@ impl DaemonState {
                 .as_deref()
                 .is_some_and(|owner| params.get("owner").and_then(Value::as_str) == Some(owner));
             let idle = (!self.parent_bound || owner_matches)
-                && self.crash_jobs.load(Ordering::Acquire) == 0;
+                && self.crash_jobs.load(Ordering::Acquire) == 0
+                && self.media.active_viewport_count() == 0;
             if idle {
                 self.trigger_shutdown();
             }

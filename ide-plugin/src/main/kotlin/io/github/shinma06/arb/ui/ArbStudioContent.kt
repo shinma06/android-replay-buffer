@@ -183,7 +183,7 @@ fun ArbStudioContent(controller: ArbStudioController) {
         }
 
         // Conditional Error Strip
-        (controller.timelineWarnings + listOfNotNull(controller.errorMessage)).forEach { err ->
+        (controller.timelineWarnings + listOfNotNull(controller.errorMessage, controller.playbackError)).forEach { err ->
             ArbSoftBanner(
                 background = ArbJewelPalette.recRedSoft(),
                 accent = ArbJewelPalette.recRed(),
@@ -698,13 +698,25 @@ private fun TransportBar(controller: ArbStudioController) {
             )
         }
 
-        Text(
-            text = controller.timecodeText,
-            style = ArbJewelPalette.tabularMonoStyle(sizeSp = 11f, bold = true),
-            maxLines = 1,
-            softWrap = false,
-        )
+        PlaybackTimecode(controller)
     }
+}
+
+@Composable
+private fun PlaybackTimecode(controller: ArbStudioController) {
+    var playingTime by remember(controller) { mutableStateOf(controller.timecodeText) }
+    LaunchedEffect(controller, controller.isPlaying) {
+        while (controller.isPlaying) {
+            playingTime = controller.timecodeText
+            kotlinx.coroutines.delay(50L)
+        }
+    }
+    Text(
+        text = if (controller.isPlaying) playingTime else controller.timecodeText,
+        style = ArbJewelPalette.tabularMonoStyle(sizeSp = 11f, bold = true),
+        maxLines = 1,
+        softWrap = false,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

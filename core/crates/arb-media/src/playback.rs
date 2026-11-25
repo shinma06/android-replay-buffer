@@ -527,6 +527,23 @@ pub struct GopLruCache {
     evictions: u64,
     bypassed_decodes: u64,
     uncached: Option<DecodedFrame>,
+    cursor: Option<ForwardWindow>,
+}
+
+#[derive(Debug)]
+struct ForwardWindow {
+    decoder: Box<dyn crate::codec::SequentialDecoder>,
+    gop: u64,
+    next: u64,
+    format: PixelFormat,
+    frames: VecDeque<DecodedFrame>,
+}
+
+impl ForwardWindow {
+    fn cached(&self, index: u64) -> Option<&DecodedFrame> {
+        let offset = index.checked_sub(self.frames.front()?.frame_index)?;
+        self.frames.get(usize::try_from(offset).ok()?)
+    }
 }
 
 /// Decoded byte size of one `width x height` frame in `format` (4:2:0 chroma rounded up).
@@ -556,11 +573,11 @@ impl GopLruCache {
             evictions: 0,
             bypassed_decodes: 0,
             uncached: None,
+            cursor: None,
         }
     }
 
-    /// Number of misses served by a single-frame decode **without caching** because the GOP
-    /// would not fit in `max_bytes` (sparse-IDR legacy files, R2 S10).
+    /// Number of decoder starts for GOPs that did not fit in the full-GOP cache.
     pub const fn bypassed_decodes(&self) -> u64 {
         self.bypassed_decodes
     }
@@ -574,6 +591,12 @@ impl GopLruCache {
         required_format: Option<PixelFormat>,
     ) -> Option<&DecodedFrame> {
         let info = track.frame(frame_index).ok()?;
+        if let Some(window) = &self.cursor
+            && window.gop == info.gop_id
+            && required_format.is_none_or(|fmt| fmt == window.format)
+        {
+            return window.cached(frame_index);
+        }
         let gop = self.entries.get(&info.gop_id)?;
         if let Some(req) = required_format
             && gop.format != req
@@ -594,8 +617,7 @@ impl GopLruCache {
     /// or [`MediaError::Codec`] / [`MediaError::Io`] if decoding fails.
     ///
     /// Memory is bounded **before** decoding: when `frame_bytes x gop_len` would exceed
-    /// `max_bytes`, only the requested frame is decoded and it is returned without being cached
-    /// (reported as [`CacheLookup::Miss`]; see [`Self::bypassed_decodes`]).
+    /// `max_bytes`, advance a streaming decoder and retain only a bounded window of recent frames.
     pub fn fetch_frame(
         &mut self,
         track: &Mp4VideoTrack,
@@ -624,8 +646,16 @@ impl GopLruCache {
         let estimate = estimated_frame_bytes(track.width(), track.height(), output_format)
             .saturating_mul(gop_len);
         if estimate > self.max_bytes {
-            let frame = backend.decode_frame(track, frame_index, output_format)?;
-            return Ok(self.serve_uncached(frame));
+            return self.fetch_forward(
+                track,
+                backend,
+                frame_index,
+                output_format,
+                (gop_id, gop_start, gop_end),
+            );
+        }
+        if self.cursor.is_some() {
+            self.clear();
         }
 
         let decoded_gop = backend.decode_gop(track, gop_id, output_format)?;
@@ -703,6 +733,75 @@ impl GopLruCache {
         self.lru_order.clear();
         self.cached_bytes = 0;
         self.uncached = None;
+        self.cursor = None;
+    }
+
+    fn fetch_forward(
+        &mut self,
+        track: &Mp4VideoTrack,
+        backend: &dyn VideoCodecBackend,
+        target: u64,
+        format: PixelFormat,
+        (gop, start, end): (u64, u64, u64),
+    ) -> Result<(&DecodedFrame, CacheLookup), MediaError> {
+        self.uncached = None;
+        let mut window = match self.cursor.take() {
+            Some(window)
+                if window.gop == gop
+                    && window.format == format
+                    && (target >= window.next || window.cached(target).is_some()) =>
+            {
+                window
+            }
+            _ => {
+                self.clear();
+                self.bypassed_decodes += 1;
+                ForwardWindow {
+                    decoder: backend.sequential_decoder(track, start, end)?,
+                    gop,
+                    format,
+                    next: start,
+                    frames: VecDeque::new(),
+                }
+            }
+        };
+        let lookup = if target < window.next {
+            self.cache_hits += 1;
+            CacheLookup::Hit
+        } else {
+            self.cache_misses += 1;
+            while window.next <= target {
+                let frame = match window.decoder.next(track, window.next, format) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        self.clear();
+                        return Err(error);
+                    }
+                };
+                window.next += 1;
+                while self.cached_bytes.saturating_add(frame.byte_len()) > self.max_bytes {
+                    let Some(old) = window.frames.pop_front() else {
+                        break;
+                    };
+                    self.cached_bytes -= old.byte_len();
+                }
+                if frame.byte_len() <= self.max_bytes {
+                    self.cached_bytes += frame.byte_len();
+                    window.frames.push_back(frame);
+                } else if frame.frame_index == target {
+                    self.cursor = Some(window);
+                    return Ok((&*self.uncached.insert(frame), CacheLookup::Miss));
+                }
+            }
+            CacheLookup::Miss
+        };
+        let window = self.cursor.insert(window);
+        Ok((
+            window
+                .cached(target)
+                .ok_or_else(|| MediaError::Codec(format!("missing sequential frame {target}")))?,
+            lookup,
+        ))
     }
 
     fn serve_uncached(&mut self, frame: DecodedFrame) -> (&DecodedFrame, CacheLookup) {
