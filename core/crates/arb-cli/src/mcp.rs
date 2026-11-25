@@ -328,7 +328,7 @@ impl McpServer {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                if all_missing && bundle_id.is_some() {
+                if all_missing && args.get("bundle_id").is_some() {
                     return Err(
                         "arb_forget_bundle: specify either `bundle_id` or `all_missing: true`, not both"
                             .to_owned(),

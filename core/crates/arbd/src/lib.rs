@@ -1294,7 +1294,7 @@ impl DaemonState {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        if parsed.all_missing && target_id.is_some() {
+        if parsed.all_missing && parsed.bundle_id.is_some() {
             return Err(DaemonError::InvalidParams(
                 "specify either `bundle_id` or `all_missing: true`, not both".to_owned(),
             ));

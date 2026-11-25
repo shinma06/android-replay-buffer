@@ -153,6 +153,20 @@ class ArbCatalogReconcileAndEmptyTrashTest {
             SwingUtilities.invokeAndWait {}
             assertFalse(controller.showEmptyTrashConfirmation)
 
+            val previousBundles = bundlesJson
+            controller.requestEmptyTrash()
+            SwingUtilities.invokeAndWait {}
+            bundlesJson = """{"bundles":[]}"""
+            controller.refreshNow()
+            waitUntil { controller.trashCount == 0 }
+            bundlesJson = previousBundles
+            controller.refreshNow()
+            waitUntil { controller.trashCount == 3 }
+            assertFalse(controller.showEmptyTrashConfirmation)
+            controller.confirmEmptyTrash()
+            SwingUtilities.invokeAndWait {}
+            assertFalse(transport.calls.any { it.method == "bundle.gc" })
+
             // Re-open and confirm -> calls bundle.gc(ignore_grace = true), updates list, emits warning with breakdown
             controller.requestEmptyTrash()
             SwingUtilities.invokeAndWait {}
@@ -281,6 +295,15 @@ class ArbCatalogReconcileAndEmptyTrashTest {
                 .filter { it.method == "timeline.summary" }
                 .map { it.params.get("bundle_id_or_path").asString }
             assertEquals(listOf("b-present"), summaryTargets)
+
+            bundlesJson = bundlesJson.replace(""""disk_state":"present"""", """"disk_state":"storage_unavailable"""")
+            controller.refreshNow()
+            waitUntil { controller.displayedBundles.single { it.bundleId == "b-present" }.isStorageUnavailable }
+            assertEquals(1L, controller.displayedBundles.single { it.bundleId == "b-present" }.durationSecs)
+            for (method in listOf("timeline.summary", "timeline.crashes")) {
+                assertEquals(listOf("b-present"), transport.calls.filter { it.method == method }
+                    .map { it.params.get("bundle_id_or_path").asString })
+            }
 
             assertEquals(1, controller.missingBundleCount)
             val missingItem = controller.displayedBundles.single { it.bundleId == "b-missing" }

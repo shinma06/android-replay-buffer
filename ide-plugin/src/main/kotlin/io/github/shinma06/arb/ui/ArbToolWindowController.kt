@@ -860,10 +860,7 @@ class ArbToolWindowController(
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
 
-            val presentBundleIds = bundles
-                .filter { it.diskState == BundleDiskState.PRESENT }
-                .mapTo(mutableSetOf()) { it.bundleId }
-            metaCache.keys.retainAll(presentBundleIds)
+            metaCache.keys.retainAll(bundles.mapTo(mutableSetOf()) { it.bundleId })
 
             var budget = META_BUDGET_PER_POLL
             for (entry in bundles) {
