@@ -105,6 +105,31 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
                     message: "first row target startup".to_owned(),
                 }
             }
+            8 => {
+                expected_target_seqs.push(seq);
+                LogRowSpec {
+                    seq,
+                    boot_id: "boot-1",
+                    bt_ns,
+                    level: "I",
+                    tag: "30007",
+                    pid: 1000,
+                    uid: Some(1000),
+                    package_name: Some("system_server"),
+                    message: format!("[0,123,9,{TARGET_PKG}/.Home]"),
+                }
+            }
+            9 => LogRowSpec {
+                seq,
+                boot_id: "boot-unseen",
+                bt_ns,
+                level: "I",
+                tag: "Worker",
+                pid: TARGET_MAIN_PID,
+                uid: None,
+                package_name: None,
+                message: "unknown owner in a different boot".into(),
+            },
             10 => LogRowSpec {
                 seq,
                 boot_id: "boot-1",
@@ -138,6 +163,20 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
                 package_name: Some("system_server"),
                 message: format!("Start proc {REUSED_PID}:{TARGET_PKG}/u0a200 for activity"),
             },
+            50_001 => {
+                expected_target_seqs.push(seq);
+                LogRowSpec {
+                    seq,
+                    boot_id: "boot-1",
+                    bt_ns,
+                    level: "I",
+                    tag: "wm_on_resume_called",
+                    pid: REUSED_PID,
+                    uid: None,
+                    package_name: None,
+                    message: "[0,com.vendor.LibraryActivity,RESUME_ACTIVITY]".into(),
+                }
+            }
             s if s == japanese_row_seq => {
                 expected_target_seqs.push(seq);
                 LogRowSpec {

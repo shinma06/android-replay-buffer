@@ -333,7 +333,7 @@ fn run_scale_case(initial_chunks: usize) -> ScaleSample {
     );
 
     let bench_start = Instant::now();
-    for i in 0..500_i64 {
+    for i in 0..i64::try_from(initial_chunks).expect("scale fits i64") {
         let ev = ring
             .enforce_budget(0, BASE_CONT_NS + i)
             .expect("zero-byte budget check");
@@ -373,8 +373,9 @@ fn a05_ring_append_status_save_scales_without_quadratic_scans() {
 
     for sample in [&s1k, &s4k, &s8k] {
         assert_eq!(
-            sample.pin_reloads_during_ops, 0,
-            "scale {}: hot appends and status checks must perform 0 full save_jobs/ disk reloads",
+            sample.pin_reloads_during_ops,
+            sample.chunks_evicted_during_ops + 2,
+            "scale {}: hot appends and status checks must reload only before destructive checks and after journal mutations",
             sample.initial_chunks
         );
         assert_eq!(
@@ -396,10 +397,10 @@ fn a05_ring_append_status_save_scales_without_quadratic_scans() {
         s8k.candidates_scanned_during_ops, s4k.candidates_scanned_during_ops,
         "scan count must be independent of total ring size (4k vs 8k)"
     );
-    let max_allowed_8k_us = s4k.in_memory_budget_and_status_us.saturating_mul(4) + 50_000;
+    let max_allowed_8k_us = s1k.in_memory_budget_and_status_us.saturating_mul(32) + 2_000;
     assert!(
         s8k.in_memory_budget_and_status_us <= max_allowed_8k_us,
-        "8k in-memory budget+status ({} us) grew too fast vs 4k ({} us)",
+        "8k in-memory budget+status ({} us) grew too fast vs 1k ({} us)",
         s8k.in_memory_budget_and_status_us,
         s4k.in_memory_budget_and_status_us
     );
@@ -508,5 +509,49 @@ fn a05_incremental_planner_matches_reference_eviction_planner_and_cloned_pin_jou
     assert_eq!(
         actual_evicted, evict_chunk_ids,
         "incremental eviction must match RingEvictionPlanner bit-for-bit"
+    );
+}
+
+#[test]
+fn external_journal_edits_survive_local_pin_and_eviction() {
+    let tmp = TempDir::new().unwrap();
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: 3,
+        max_ring_duration_ns: 100,
+        min_free_disk_bytes: 0,
+    };
+    let mut ring =
+        RingStore::open_with_disk_provider(tmp.path(), policy, FakeDisk::new(GIB)).unwrap();
+    for (i, id) in ["a", "b", "c"].iter().enumerate() {
+        ring.write_closed_chunk(
+            *id,
+            RingChunkKind::Video,
+            i64::try_from(i).unwrap(),
+            1,
+            &[1],
+        )
+        .unwrap();
+    }
+    let first = ring
+        .pin_chunks("local", tmp.path(), vec!["b".into()], "now")
+        .unwrap();
+    let mut foreign = first.clone();
+    foreign.job_id = "external".into();
+    foreign.pinned_chunk_ids = vec!["a".into()];
+    let external = ring.pin_journal().journal_path("external").unwrap();
+    fs::write(&external, serde_json::to_vec(&foreign).unwrap()).unwrap();
+    ring.pin_journal().pin(&first).unwrap();
+    assert_eq!(ring.stats().unwrap().pinned_chunk_count, 2);
+    foreign.pinned_chunk_ids.push("c".into());
+    fs::write(external, serde_json::to_vec(&foreign).unwrap()).unwrap();
+    assert_eq!(ring.stats().unwrap().pinned_chunk_count, 3);
+    assert!(matches!(
+        ring.enforce_budget(1, 10),
+        Err(StorageError::RingFullPinned { .. })
+    ));
+    assert_eq!(
+        ring.purge_unpinned_chunks(&foreign.pinned_chunk_ids)
+            .unwrap(),
+        Vec::<String>::new()
     );
 }

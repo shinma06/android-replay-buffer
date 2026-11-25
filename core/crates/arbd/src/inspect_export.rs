@@ -4,16 +4,14 @@
 //! - `timeline.overview`: one-shot structured AI triage bundle summary
 //! - `media.inspect_frames`: contact sheet / single frame / tap-crop PNG renderer
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
-use arb_core::analytics::{
-    LogPackageResolver, SYSTEM_UID, parse_am_crash_text_for_event_tag, parse_screen_transition_line,
-};
+use arb_core::analytics::LogPackageTimeline;
 use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket, StreamStatus, TapRecord};
 use arb_core::time::TimeAlignment;
 use arb_media::MediaError;
@@ -612,195 +610,25 @@ pub struct FilteredLogPage {
 struct FileStamp {
     path: PathBuf,
     size: u64,
-    mtime: Option<SystemTime>,
+    mtime: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BundleLogCacheKey {
-    bundle_id: String,
-    format_tag: u8,
-    created_at_utc: Option<String>,
-    manifest_fingerprint: String,
-    file_stamps: Vec<FileStamp>,
-}
-
-type PidTimelineMap = BTreeMap<(Option<String>, i32), Vec<(u64, String)>>;
-
-#[derive(Debug)]
-struct CachedPackageResolver {
-    base: LogPackageResolver,
-    /// Chronological `(seq, package_name)` transitions per `(boot_id, pid)` to handle
-    /// same-boot PID reuse accurately without misattributing earlier process logs.
-    pid_timelines: PidTimelineMap,
-}
-
-impl CachedPackageResolver {
-    fn from_logs(all_logs: &[LogRecord]) -> Self {
-        let empty = BTreeSet::new();
-        let base = LogPackageResolver::from_logs(all_logs, &empty);
-        let mut pid_timelines: PidTimelineMap = BTreeMap::new();
-
-        for log in all_logs {
-            let boot = log_boot_id(log).map(str::to_owned);
-            if let (Some(pid), Some(pkg)) = (log.pid, log.package_name.as_deref()) {
-                let trimmed = pkg.trim();
-                if !trimmed.is_empty() && !matches!(trimmed, "android" | "system_server") {
-                    record_pid_epoch(&mut pid_timelines, boot.clone(), pid, log.seq, trimmed);
-                }
-            }
-            if is_system_uid(log.uid)
-                && matches!(
-                    log.tag.as_deref().map(str::trim),
-                    Some("ActivityManager" | "ActivityTaskManager")
-                )
-                && let Some((pid, pkg)) = parse_start_proc_line_local(&log.message)
-            {
-                record_pid_epoch(&mut pid_timelines, boot.clone(), pid, log.seq, &pkg);
-            }
-            if is_system_uid(log.uid)
-                && let Some(crash) =
-                    parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
-                && !crash.package_name.is_empty()
-            {
-                record_pid_epoch(
-                    &mut pid_timelines,
-                    boot,
-                    crash.pid,
-                    log.seq,
-                    &crash.package_name,
-                );
-            }
-        }
-
-        Self {
-            base,
-            pid_timelines,
-        }
-    }
-
-    fn matches_package(&self, log: &LogRecord, target_package: &str) -> bool {
-        let target = target_package.trim();
-        if target.is_empty() {
-            return false;
-        }
-        if let Some(explicit) = log.package_name.as_deref() {
-            if explicit == target {
-                return true;
-            }
-            if !matches!(explicit, "android" | "system_server") {
-                return false;
-            }
-        }
-        if let Some(pid) = log.pid {
-            let boot_key = log_boot_id(log).map(str::to_owned);
-            if let Some(epochs) = self.pid_timelines.get(&(boot_key, pid))
-                && epochs.len() > 1
-            {
-                let idx = epochs.partition_point(|(s, _)| *s <= log.seq);
-                let active_pkg = &epochs[idx.saturating_sub(1)].1;
-                if package_matches_or_subpackage(active_pkg, target) {
-                    return true;
-                }
-                // PID was reused in this boot and belonged to a different app at `log.seq`:
-                // do not fall back to `base`, which only retains the final owner of the PID.
-                return matches_non_pid_package_signals(log, target);
-            }
-            if let Some(resolved) = self.base.package_for_pid(log_boot_id(log), pid)
-                && package_matches_or_subpackage(resolved, target)
-            {
-                return true;
-            }
-        }
-        matches_non_pid_package_signals(log, target)
-    }
-}
-
-fn record_pid_epoch(
-    timelines: &mut PidTimelineMap,
-    boot_id: Option<String>,
-    pid: i32,
-    seq: u64,
-    pkg: &str,
-) {
-    let trimmed = pkg.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let entry = timelines.entry((boot_id, pid)).or_default();
-    if entry.last().is_some_and(|(_, prev)| prev == trimmed) {
-        return;
-    }
-    entry.push((seq, trimmed.to_owned()));
-}
-
-fn package_matches_or_subpackage(candidate: &str, target: &str) -> bool {
-    candidate == target
-        || candidate
-            .strip_prefix(target)
-            .is_some_and(|rest| rest.starts_with('.'))
-}
-
-fn is_system_uid(uid: Option<u32>) -> bool {
-    uid.is_none_or(|u| u == SYSTEM_UID)
-}
-
-fn parse_start_proc_line_local(message: &str) -> Option<(i32, String)> {
-    let rest = message.trim().strip_prefix("Start proc ")?;
-    let token = rest.split_whitespace().next()?;
-    let (pid_str, proc_and_uid) = token.split_once(':')?;
-    let pid = pid_str.parse::<i32>().ok()?;
-    let process_name = proc_and_uid.split('/').next()?;
-    let pkg = process_name
-        .split(':')
-        .next()
-        .unwrap_or(process_name)
-        .trim();
-    (!pkg.is_empty()).then(|| (pid, pkg.to_owned()))
-}
-
-fn is_authentic_screen_record(log: &LogRecord) -> bool {
-    let Some(tag) = log.tag.as_deref().map(str::trim) else {
-        return false;
-    };
-    if tag.eq_ignore_ascii_case("wm_on_resume_called")
-        || tag.eq_ignore_ascii_case("am_on_resume_called")
-    {
-        return true;
-    }
-    is_system_uid(log.uid)
-        && (tag.eq_ignore_ascii_case("am_resume_activity")
-            || tag.eq_ignore_ascii_case("wm_resumed_activity"))
-}
-
-fn matches_non_pid_package_signals(log: &LogRecord, target: &str) -> bool {
-    if is_system_uid(log.uid)
-        && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
-        && crash.package_name == target
-    {
-        return true;
-    }
-    if is_authentic_screen_record(log)
-        && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
-        && (comp.package_name == target
-            || package_matches_or_subpackage(&comp.activity_name, target))
-    {
-        return true;
-    }
-    if let Some(tag) = log.tag.as_deref().map(str::trim)
-        && package_matches_or_subpackage(tag, target)
-    {
-        return true;
-    }
-    false
+enum BundleLogCacheKey {
+    LegacySnapshot(String),
+    Timeline {
+        digest: String,
+        files: [FileStamp; 2],
+    },
 }
 
 #[derive(Default)]
 struct PidResolverLruCache {
-    entries: VecDeque<(BundleLogCacheKey, Arc<CachedPackageResolver>)>,
+    entries: VecDeque<(BundleLogCacheKey, Arc<LogPackageTimeline>)>,
 }
 
 impl PidResolverLruCache {
-    fn get(&mut self, key: &BundleLogCacheKey) -> Option<Arc<CachedPackageResolver>> {
+    fn get(&mut self, key: &BundleLogCacheKey) -> Option<Arc<LogPackageTimeline>> {
         let pos = self.entries.iter().position(|(k, _)| k == key)?;
         let item = self.entries.remove(pos)?;
         let value = Arc::clone(&item.1);
@@ -808,7 +636,7 @@ impl PidResolverLruCache {
         Some(value)
     }
 
-    fn insert(&mut self, key: BundleLogCacheKey, value: Arc<CachedPackageResolver>) {
+    fn insert(&mut self, key: BundleLogCacheKey, value: Arc<LogPackageTimeline>) {
         if let Some(pos) = self.entries.iter().position(|(k, _)| k == &key) {
             let _ = self.entries.remove(pos);
         }
@@ -824,95 +652,39 @@ fn pid_resolver_cache() -> &'static Mutex<PidResolverLruCache> {
     CACHE.get_or_init(|| Mutex::new(PidResolverLruCache::default()))
 }
 
-fn collect_bundle_file_stamps(
-    reader: &dyn BundleReader,
-    bundle_id_or_path: &str,
-) -> Vec<FileStamp> {
-    let candidate_dir = {
-        let raw = Path::new(bundle_id_or_path);
-        if raw.is_dir() {
-            Some(raw.to_path_buf())
-        } else {
-            reader
-                .video_path()
-                .or_else(|| reader.audio_path())
-                .and_then(|p| p.parent().map(Path::to_path_buf))
-        }
+fn build_bundle_cache_key(reader: &dyn BundleReader) -> Option<BundleLogCacheKey> {
+    if let Some(digest) = reader.legacy_log_digest() {
+        return Some(BundleLogCacheKey::LegacySnapshot(digest.to_owned()));
+    }
+    let dir = fs::canonicalize(reader.timeline_bundle_dir()?).ok()?;
+    let stamp = |name: &str| {
+        let path = dir.join(name);
+        let meta = fs::metadata(&path).ok()?;
+        Some(FileStamp {
+            path,
+            size: meta.len(),
+            mtime: meta.modified().ok()?,
+        })
     };
-    let Some(dir) = candidate_dir else {
-        return Vec::new();
-    };
-    let canonical = fs::canonicalize(&dir).unwrap_or(dir);
-    let probe_files = [
-        "timeline.sqlite",
-        "logs.jsonl",
-        "logcat-device.jsonl",
-        "logcat-app.jsonl",
-        "manifest.json",
-        "replay.json",
-        "session.json",
-    ];
-    let mut stamps = Vec::new();
-    for rel in probe_files {
-        let path = canonical.join(rel);
-        if let Ok(meta) = fs::metadata(&path) {
-            stamps.push(FileStamp {
-                path,
-                size: meta.len(),
-                mtime: meta.modified().ok(),
-            });
-        }
-    }
-    stamps
-}
-
-fn build_bundle_cache_key(
-    reader: &dyn BundleReader,
-    bundle_id_or_path: &str,
-) -> Option<BundleLogCacheKey> {
-    let summary = reader.manifest_summary();
-    let file_stamps = collect_bundle_file_stamps(reader, bundle_id_or_path);
-    let mut fp_parts = Vec::new();
-    if let Some(m) = &summary.manifest_v2 {
-        for f in &m.files {
-            fp_parts.push(format!("{}:{}:{}", f.path, f.bytes, f.sha256));
-        }
-    }
-    if let Some(leg) = &summary.legacy_metadata {
-        fp_parts.push(format!("legacy:{}:{:?}", leg.save_id, leg.counts));
-        for (k, v) in &leg.files_sha256 {
-            fp_parts.push(format!("{k}:{v}"));
-        }
-    }
-    if fp_parts.is_empty() && file_stamps.is_empty() {
-        // Synthetic in-memory reader with neither manifest digests nor on-disk files:
-        // skip cross-call caching so distinct test fixtures sharing an ID cannot collide.
-        return None;
-    }
-    fp_parts.push(format!(
-        "unanch:{}:{}",
-        summary.unanchored_summary.included_count, summary.unanchored_summary.truncated_count
-    ));
-    let format_tag = match summary.format {
-        arb_storage::bundle_io::BundleFormat::V2 => 2,
-        arb_storage::bundle_io::BundleFormat::LegacySchema4 => 4,
-        arb_storage::bundle_io::BundleFormat::LegacySchema3 => 3,
-        _ => 0,
-    };
-    Some(BundleLogCacheKey {
-        bundle_id: summary.bundle_id.clone(),
-        format_tag,
-        created_at_utc: summary.created_at_utc.clone(),
-        manifest_fingerprint: sha256_hex(fp_parts.join("|").as_bytes()),
-        file_stamps,
+    let digest = reader
+        .manifest_summary()
+        .manifest_v2
+        .as_ref()?
+        .files
+        .iter()
+        .find(|f| f.path == "timeline.sqlite")?
+        .sha256
+        .clone();
+    Some(BundleLogCacheKey::Timeline {
+        digest,
+        files: [stamp("timeline.sqlite")?, stamp("manifest.json")?],
     })
 }
 
 fn load_or_build_package_resolver(
     reader: &dyn BundleReader,
-    bundle_id_or_path: &str,
-) -> Result<(Arc<CachedPackageResolver>, bool), DaemonError> {
-    let cache_key = build_bundle_cache_key(reader, bundle_id_or_path);
+) -> Result<(Arc<LogPackageTimeline>, bool), DaemonError> {
+    let cache_key = build_bundle_cache_key(reader);
     if let Some(ref key) = cache_key
         && let Ok(mut guard) = pid_resolver_cache().lock()
         && let Some(hit) = guard.get(key)
@@ -920,8 +692,9 @@ fn load_or_build_package_resolver(
         return Ok((hit, true));
     }
     let all_logs = reader.query_logs(None, TimeRange::all(), None)?;
-    let resolver = Arc::new(CachedPackageResolver::from_logs(&all_logs));
+    let resolver = Arc::new(LogPackageTimeline::from_logs(&all_logs));
     if let Some(key) = cache_key
+        && build_bundle_cache_key(reader).as_ref() == Some(&key)
         && let Ok(mut guard) = pid_resolver_cache().lock()
     {
         guard.insert(key, Arc::clone(&resolver));
@@ -930,7 +703,7 @@ fn load_or_build_package_resolver(
 }
 
 struct CompiledLogFilter<'a> {
-    package: Option<(&'a str, Arc<CachedPackageResolver>)>,
+    package: Option<(&'a str, Arc<LogPackageTimeline>)>,
     level: Option<String>,
     tag_lower: Option<String>,
     keyword_lower: Option<String>,
@@ -1076,7 +849,7 @@ pub fn query_logs_filtered_page(
     };
 
     let (package, resolver_cache_hit) = if let Some(target_pkg) = package_filter {
-        let (resolver, hit) = load_or_build_package_resolver(reader, &params.bundle_id_or_path)?;
+        let (resolver, hit) = load_or_build_package_resolver(reader)?;
         (Some((target_pkg, resolver)), hit)
     } else {
         (None, false)

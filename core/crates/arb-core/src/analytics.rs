@@ -1214,25 +1214,127 @@ impl LogPackageResolver {
         {
             return true;
         }
-        if is_system_server_uid(log.uid)
-            && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
-            && crash.package_name == target
-        {
-            return true;
+        matches_non_pid_package_signals(log, target)
+    }
+}
+
+fn matches_non_pid_package_signals(log: &LogRecord, target: &str) -> bool {
+    if is_system_server_uid(log.uid)
+        && let Some(crash) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+        && crash.package_name == target
+    {
+        return true;
+    }
+    if is_authentic_screen_transition_record(log)
+        && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+        && (comp.package_name == target || comp.activity_name.starts_with(&format!("{target}.")))
+    {
+        return true;
+    }
+    if let Some(tag) = log.tag.as_deref().map(str::trim)
+        && (tag == target || tag.starts_with(&format!("{target}.")))
+    {
+        return true;
+    }
+    false
+}
+
+type PidOwners = BTreeMap<i32, Vec<(u64, String)>>;
+
+/// Sequence-ordered package observations used by paginated log queries.
+#[derive(Debug, Default)]
+pub struct LogPackageTimeline {
+    epochs: BTreeMap<Option<String>, PidOwners>,
+}
+
+impl LogPackageTimeline {
+    /// Builds ownership transitions for each PID independently in each boot.
+    #[must_use]
+    pub fn from_logs(logs: &[LogRecord]) -> Self {
+        let mut timeline = Self::default();
+        for (idx, log) in logs.iter().enumerate() {
+            let mut observe = |pid, pkg: &str, inferred: bool| {
+                let pkg = pkg.trim();
+                if pkg.is_empty() {
+                    return;
+                }
+                let epochs = timeline
+                    .epochs
+                    .entry(log_boot_id_hint(log).map(str::to_owned))
+                    .or_default()
+                    .entry(pid)
+                    .or_default();
+                if inferred && !epochs.is_empty() {
+                    return;
+                }
+                if epochs.last().is_none_or(|(_, previous)| previous != pkg) {
+                    epochs.push((log.seq, pkg.to_owned()));
+                }
+            };
+            if let (Some(pid), Some(pkg)) = (log.pid, log.package_name.as_deref()) {
+                observe(pid, pkg, false);
+            } else if is_app_resume_event_tag(log.tag.as_deref())
+                && let Some(pid) = log.pid
+                && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
+            {
+                observe(pid, &comp.package_name, true);
+            }
+            if is_system_server_uid(log.uid) {
+                if let Some(crash) =
+                    parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message)
+                {
+                    observe(crash.pid, &crash.package_name, false);
+                }
+                if matches!(
+                    log.tag.as_deref().map(str::trim),
+                    Some("ActivityManager" | "ActivityTaskManager")
+                ) && let Some((pid, pkg)) = parse_start_proc_line(&log.message)
+                {
+                    observe(pid, &pkg, false);
+                }
+            }
+            if log.tag.as_deref().map(str::trim) == Some("AndroidRuntime")
+                && let Some(crash) = parse_fatal_exception_at(logs, idx)
+                && let Some(pid) = crash.pid.or(log.pid)
+                && crash.package_name != "unknown"
+            {
+                observe(pid, &crash.package_name, false);
+            }
         }
-        if is_authentic_screen_transition_record(log)
-            && let Some(comp) = parse_screen_transition_line(log.tag.as_deref(), &log.message)
-            && (comp.package_name == target
-                || comp.activity_name.starts_with(&format!("{target}.")))
-        {
-            return true;
+        timeline
+    }
+
+    /// Applies the PID owner at the row's sequence and the usual non-PID signals.
+    #[must_use]
+    pub fn matches_package(&self, log: &LogRecord, target: &str) -> bool {
+        if let Some(pkg) = log.package_name.as_deref() {
+            if pkg == target {
+                return true;
+            }
+            if !matches!(pkg, "android" | "system_server") {
+                return false;
+            }
         }
-        if let Some(tag) = log.tag.as_deref().map(str::trim)
-            && (tag == target || tag.starts_with(&format!("{target}.")))
+        if let Some(pid) = log.pid
+            && let Some(epochs) = self
+                .epochs
+                .get(&log_boot_id_hint(log).map(str::to_owned))
+                .and_then(|pids| pids.get(&pid))
         {
-            return true;
+            let end = epochs.partition_point(|(seq, _)| *seq <= log.seq);
+            let owner = epochs[..end]
+                .last()
+                .or_else(|| (epochs.len() == 1).then(|| &epochs[0]));
+            if owner.is_some_and(|(_, pkg)| {
+                pkg == target
+                    || pkg
+                        .strip_prefix(target)
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            }) {
+                return true;
+            }
         }
-        false
+        matches_non_pid_package_signals(log, target)
     }
 }
 

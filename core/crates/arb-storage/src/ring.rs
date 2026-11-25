@@ -182,58 +182,16 @@ pub struct PinJournalRecord {
 
 #[derive(Debug, Default)]
 struct PinJournalCache {
-    jobs: BTreeMap<String, BTreeSet<String>>,
-    pinned_refcounts: BTreeMap<String, usize>,
+    pinned: BTreeSet<String>,
+    files: Vec<(PathBuf, SystemTime, u64)>,
     generation: u64,
     dir_mtime: Option<SystemTime>,
     disk_reloads: u64,
 }
 
 impl PinJournalCache {
-    fn apply_pin(&mut self, job_id: &str, chunk_ids: &[String]) {
-        self.apply_unpin(job_id);
-        let dedup: BTreeSet<String> = chunk_ids.iter().cloned().collect();
-        for id in &dedup {
-            *self.pinned_refcounts.entry(id.clone()).or_insert(0) += 1;
-        }
-        self.jobs.insert(job_id.to_owned(), dedup);
-        self.generation = self.generation.saturating_add(1);
-    }
-
-    fn apply_unpin(&mut self, job_id: &str) -> bool {
-        let Some(prev) = self.jobs.remove(job_id) else {
-            return false;
-        };
-        for id in prev {
-            if let Some(count) = self.pinned_refcounts.get_mut(&id) {
-                if *count <= 1 {
-                    self.pinned_refcounts.remove(&id);
-                } else {
-                    *count -= 1;
-                }
-            }
-        }
-        self.generation = self.generation.saturating_add(1);
-        true
-    }
-
-    fn replace_from_records(
-        &mut self,
-        records: &[PinJournalRecord],
-        dir_mtime: Option<SystemTime>,
-    ) {
-        self.jobs.clear();
-        self.pinned_refcounts.clear();
-        for record in records {
-            let dedup: BTreeSet<String> = record.pinned_chunk_ids.iter().cloned().collect();
-            for id in &dedup {
-                *self.pinned_refcounts.entry(id.clone()).or_insert(0) += 1;
-            }
-            self.jobs.insert(record.job_id.clone(), dedup);
-        }
-        self.dir_mtime = dir_mtime;
-        self.disk_reloads = self.disk_reloads.saturating_add(1);
-        self.generation = self.generation.saturating_add(1);
+    fn snapshot(&self, known_generation: u64) -> Option<(u64, BTreeSet<String>)> {
+        (self.generation != known_generation).then(|| (self.generation, self.pinned.clone()))
     }
 }
 
@@ -260,8 +218,12 @@ fn shared_pin_cache(jobs_dir: &Path) -> Arc<Mutex<PinJournalCache>> {
     cache
 }
 
-fn list_pin_records_from_disk(jobs_dir: &Path) -> Result<Vec<PinJournalRecord>, StorageError> {
-    let mut records = Vec::new();
+fn list_pin_records_from_disk(
+    jobs_dir: &Path,
+    cache: &mut PinJournalCache,
+) -> Result<Vec<PinJournalRecord>, StorageError> {
+    let mut records: Vec<PinJournalRecord> = Vec::new();
+    let dir_mtime = read_dir_mtime(jobs_dir);
     let entries = fs::read_dir(jobs_dir)
         .map_err(|source| StorageError::io("read_save_jobs_dir", jobs_dir, source))?;
 
@@ -284,13 +246,31 @@ fn list_pin_records_from_disk(jobs_dir: &Path) -> Result<Vec<PinJournalRecord>, 
     }
     paths.sort();
 
+    let mut files = Vec::new();
     for path in paths {
+        let meta = fs::metadata(&path)
+            .map_err(|source| StorageError::io("stat_pin_journal", &path, source))?;
+        let modified = meta
+            .modified()
+            .map_err(|source| StorageError::io("stat_pin_journal", &path, source))?;
+        files.push((path.clone(), modified, meta.len()));
         let bytes = fs::read(&path)
             .map_err(|source| StorageError::io("read_pin_journal", &path, source))?;
         let record: PinJournalRecord = serde_json::from_slice(&bytes)
             .map_err(|source| StorageError::json("deserialize_pin_journal", source))?;
         records.push(record);
     }
+    let pinned = records
+        .iter()
+        .flat_map(|r| r.pinned_chunk_ids.iter().cloned())
+        .collect();
+    if cache.disk_reloads == 0 || cache.pinned != pinned {
+        cache.pinned = pinned;
+        cache.generation += 1;
+    }
+    cache.files = files;
+    cache.dir_mtime = dir_mtime;
+    cache.disk_reloads += 1;
     Ok(records)
 }
 
@@ -322,42 +302,38 @@ impl PinJournal {
     }
 
     fn reload_cache_from_disk(&self) -> Result<Vec<PinJournalRecord>, StorageError> {
-        let records = list_pin_records_from_disk(&self.jobs_dir)?;
-        let dir_mtime = read_dir_mtime(&self.jobs_dir);
-        let mut cache = self.cache.lock().map_err(|_| StorageError::CorruptData {
-            reason: "pin journal cache mutex poisoned".to_owned(),
-        })?;
-        cache.replace_from_records(&records, dir_mtime);
-        Ok(records)
+        let mut cache = self.lock_cache()?;
+        list_pin_records_from_disk(&self.jobs_dir, &mut cache)
     }
 
-    fn sync_cache_locked<'a>(
-        &self,
-        cache: &'a mut PinJournalCache,
-    ) -> Result<&'a PinJournalCache, StorageError> {
-        let current_mtime = read_dir_mtime(&self.jobs_dir);
-        if cache.disk_reloads == 0 || current_mtime.is_none() || current_mtime != cache.dir_mtime {
-            let records = list_pin_records_from_disk(&self.jobs_dir)?;
-            cache.replace_from_records(&records, current_mtime);
+    fn lock_cache(&self) -> Result<std::sync::MutexGuard<'_, PinJournalCache>, StorageError> {
+        self.cache.lock().map_err(|_| StorageError::CorruptData {
+            reason: "pin journal cache mutex poisoned".into(),
+        })
+    }
+
+    fn sync_cache_locked(&self, cache: &mut PinJournalCache) -> Result<(), StorageError> {
+        let stamp = read_dir_mtime(&self.jobs_dir);
+        if stamp.is_none()
+            || stamp != cache.dir_mtime
+            || cache.files.iter().any(|(path, time, len)| {
+                fs::metadata(path).map_or(true, |m| {
+                    m.len() != *len || m.modified().ok() != Some(*time)
+                })
+            })
+        {
+            list_pin_records_from_disk(&self.jobs_dir, cache)?;
         }
-        Ok(cache)
+        Ok(())
     }
 
-    /// Returns `Ok(None)` when the pin set has not changed since `known_generation`,
-    /// avoiding both disk scans and set allocations on the hot append path.
     fn sync_if_generation_changed(
         &self,
-        known_generation: u64,
+        generation: u64,
     ) -> Result<Option<(u64, BTreeSet<String>)>, StorageError> {
-        let mut cache = self.cache.lock().map_err(|_| StorageError::CorruptData {
-            reason: "pin journal cache mutex poisoned".to_owned(),
-        })?;
-        let cache = self.sync_cache_locked(&mut cache)?;
-        if cache.generation == known_generation {
-            return Ok(None);
-        }
-        let pinned: BTreeSet<String> = cache.pinned_refcounts.keys().cloned().collect();
-        Ok(Some((cache.generation, pinned)))
+        let mut cache = self.lock_cache()?;
+        self.sync_cache_locked(&mut cache)?;
+        Ok(cache.snapshot(generation))
     }
 
     fn disk_reload_count(&self) -> u64 {
@@ -388,6 +364,16 @@ impl PinJournal {
     /// Returns [`StorageError::InvalidArgument`] if `job_id` is invalid, or
     /// [`StorageError::Io`] / [`StorageError::Os`] / [`StorageError::Json`] on failure.
     pub fn pin(&self, record: &PinJournalRecord) -> Result<PathBuf, StorageError> {
+        let mut cache = self.lock_cache()?;
+        self.pin_locked(record, &mut cache)
+    }
+
+    fn pin_locked(
+        &self,
+        record: &PinJournalRecord,
+        cache: &mut PinJournalCache,
+    ) -> Result<PathBuf, StorageError> {
+        cache.dir_mtime = None;
         let final_path = self.journal_path(&record.job_id)?;
         let temp_path = self.jobs_dir.join(format!(".{}.json.tmp", record.job_id));
         let payload = serde_json::to_vec_pretty(record)
@@ -408,12 +394,6 @@ impl PinJournal {
             .map_err(|source| StorageError::io("commit_pin_journal", &final_path, source))?;
         fsync_dir(&self.jobs_dir)?;
 
-        let dir_mtime = read_dir_mtime(&self.jobs_dir);
-        let mut cache = self.cache.lock().map_err(|_| StorageError::CorruptData {
-            reason: "pin journal cache mutex poisoned".to_owned(),
-        })?;
-        cache.apply_pin(&record.job_id, &record.pinned_chunk_ids);
-        cache.dir_mtime = dir_mtime;
         Ok(final_path)
     }
 
@@ -436,9 +416,10 @@ impl PinJournal {
                 reason: "destination path must not be empty".to_owned(),
             });
         }
+        let mut cache = self.lock_cache()?;
         let mut record = self.load(job_id)?;
         record.destination_path = new_dest.to_path_buf();
-        self.pin(&record)?;
+        self.pin_locked(&record, &mut cache)?;
         Ok(record)
     }
 
@@ -451,26 +432,14 @@ impl PinJournal {
     /// Returns [`StorageError::InvalidArgument`] for invalid `job_id`, or I/O / OS errors.
     pub fn unpin(&self, job_id: &str) -> Result<bool, StorageError> {
         let path = self.journal_path(job_id)?;
+        let mut cache = self.lock_cache()?;
+        cache.dir_mtime = None;
         match fs::remove_file(&path) {
             Ok(()) => {
                 fsync_dir(&self.jobs_dir)?;
-                let dir_mtime = read_dir_mtime(&self.jobs_dir);
-                let mut cache = self.cache.lock().map_err(|_| StorageError::CorruptData {
-                    reason: "pin journal cache mutex poisoned".to_owned(),
-                })?;
-                cache.apply_unpin(job_id);
-                cache.dir_mtime = dir_mtime;
                 Ok(true)
             }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                let dir_mtime = read_dir_mtime(&self.jobs_dir);
-                if let Ok(mut cache) = self.cache.lock()
-                    && cache.apply_unpin(job_id)
-                {
-                    cache.dir_mtime = dir_mtime;
-                }
-                Ok(false)
-            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(source) => Err(StorageError::io("remove_pin_journal", &path, source)),
         }
     }
@@ -515,11 +484,9 @@ impl PinJournal {
     ///
     /// Returns [`StorageError::Io`] or [`StorageError::Json`] if journal files cannot be read.
     pub fn pinned_chunk_ids(&self) -> Result<BTreeSet<String>, StorageError> {
-        let mut cache = self.cache.lock().map_err(|_| StorageError::CorruptData {
-            reason: "pin journal cache mutex poisoned".to_owned(),
-        })?;
-        let cache = self.sync_cache_locked(&mut cache)?;
-        Ok(cache.pinned_refcounts.keys().cloned().collect())
+        let mut cache = self.lock_cache()?;
+        self.sync_cache_locked(&mut cache)?;
+        Ok(cache.pinned.clone())
     }
 }
 
@@ -833,7 +800,12 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             sha256: Some(digest),
             capture,
         };
-        write_chunk_meta(&self.ring_dir, &descriptor)?;
+        if let Err(err) = write_chunk_meta(&self.ring_dir, &descriptor) {
+            if remove_file_if_exists("rollback_new_chunk", &file_path).is_err() {
+                self.insert_tracked_chunk(descriptor);
+            }
+            return Err(err);
+        }
 
         self.insert_tracked_chunk(descriptor.clone());
         Ok((descriptor, evicted))
@@ -936,7 +908,10 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         if chunk_ids.is_empty() {
             return Ok(Vec::new());
         }
-        self.sync_pin_state()?;
+        let journal = self.pin_journal.clone();
+        let mut pins = journal.lock_cache()?;
+        list_pin_records_from_disk(&journal.jobs_dir, &mut pins)?;
+        self.sync_pin_state(&pins);
         let mut purged = Vec::new();
         for chunk_id in chunk_ids {
             if self.pinned_chunks.contains(chunk_id) {
@@ -949,11 +924,8 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             if !is_closed {
                 continue;
             }
-            if let Some(chunk) = self.chunks.get(chunk_id) {
-                remove_chunk_files(&self.ring_dir, chunk)?;
-                self.remove_tracked_chunk(chunk_id);
-                purged.push(chunk_id.clone());
-            }
+            self.delete_tracked_chunk(chunk_id)?;
+            purged.push(chunk_id.clone());
         }
         Ok(purged)
     }
@@ -1005,6 +977,16 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         self.chunks.insert(descriptor.chunk_id.clone(), descriptor);
     }
 
+    fn delete_tracked_chunk(&mut self, chunk_id: &str) -> Result<(), StorageError> {
+        let path = self.ring_dir.join(&self.chunks[chunk_id].file_name);
+        remove_file_if_exists("evict_ring_chunk", &path)?;
+        self.remove_tracked_chunk(chunk_id);
+        remove_file_if_exists(
+            "evict_chunk_meta",
+            &chunk_meta_path(&self.ring_dir, chunk_id),
+        )
+    }
+
     fn remove_tracked_chunk(&mut self, chunk_id: &str) {
         let Some(removed) = self.chunks.remove(chunk_id) else {
             return;
@@ -1022,14 +1004,10 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         }
     }
 
-    fn sync_pin_state(&mut self) -> Result<(), StorageError> {
-        let Some((new_gen, new_pinned)) = self
-            .pin_journal
-            .sync_if_generation_changed(self.synced_pin_generation)?
-        else {
-            return Ok(());
+    fn sync_pin_state(&mut self, cache: &PinJournalCache) {
+        let Some((new_gen, new_pinned)) = cache.snapshot(self.synced_pin_generation) else {
+            return;
         };
-
         for unpinned_id in self.pinned_chunks.difference(&new_pinned) {
             if let Some(desc) = self.chunks.get(unpinned_id) {
                 self.pinned_tracked_count = self.pinned_tracked_count.saturating_sub(1);
@@ -1052,7 +1030,6 @@ impl<D: DiskSpaceProvider> RingStore<D> {
 
         self.pinned_chunks = new_pinned;
         self.synced_pin_generation = new_gen;
-        Ok(())
     }
 
     fn enforce_budget_inner(
@@ -1062,7 +1039,17 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     ) -> Result<Vec<String>, StorageError> {
         self.budget_checks = self.budget_checks.saturating_add(1);
         let disk = self.disk_provider.disk_space(&self.ring_dir)?;
-        self.sync_pin_state()?;
+        let journal = self.pin_journal.clone();
+        let mut pins = journal.lock_cache()?;
+        if self.total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes)
+            || self.total_duration_ns > u128::from(self.policy.max_ring_duration_ns)
+        {
+            // A destructive decision must also see in-place edits with preserved timestamps.
+            list_pin_records_from_disk(&journal.jobs_dir, &mut pins)?;
+        } else {
+            journal.sync_cache_locked(&mut pins)?;
+        }
+        self.sync_pin_state(&pins);
 
         let pinned_bytes = u64::try_from(self.pinned_bytes).unwrap_or(u64::MAX);
         let host_free_bytes = disk.available_bytes;
@@ -1146,23 +1133,10 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         self.pressure_active = false;
         let mut evicted = Vec::with_capacity(evict_chunk_ids.len());
         for chunk_id in evict_chunk_ids {
-            // Defense-in-depth: never evict a pinned or open chunk.
-            if self.pinned_chunks.contains(&chunk_id) {
-                continue;
-            }
-            let is_closed = self
-                .chunks
-                .get(&chunk_id)
-                .is_some_and(|c| c.status == RingChunkStatus::Closed);
-            if !is_closed {
-                continue;
-            }
-            if let Some(chunk) = self.chunks.get(&chunk_id) {
-                remove_chunk_files(&self.ring_dir, chunk)?;
-                self.remove_tracked_chunk(&chunk_id);
-                self.chunks_evicted = self.chunks_evicted.saturating_add(1);
-                evicted.push(chunk_id);
-            }
+            // The journal lock covers planning and deletion.
+            self.delete_tracked_chunk(&chunk_id)?;
+            self.chunks_evicted += 1;
+            evicted.push(chunk_id);
         }
         Ok(evicted)
     }
@@ -1358,18 +1332,6 @@ fn write_chunk_meta(ring_dir: &Path, descriptor: &RingChunkDescriptor) -> Result
     arb_os::fs::replace_file(&temp_path, &final_path)
         .map_err(|source| StorageError::io("commit_chunk_meta", &final_path, source))?;
     fsync_dir(ring_dir)?;
-    Ok(())
-}
-
-fn remove_chunk_files(
-    ring_dir: &Path,
-    descriptor: &RingChunkDescriptor,
-) -> Result<(), StorageError> {
-    remove_file_if_exists(
-        "evict_chunk_meta",
-        &chunk_meta_path(ring_dir, &descriptor.chunk_id),
-    )?;
-    remove_file_if_exists("evict_ring_chunk", &ring_dir.join(&descriptor.file_name))?;
     Ok(())
 }
 
