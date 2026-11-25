@@ -23,6 +23,7 @@ object ProtocolJson {
         .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
         .disableHtmlEscaping()
         .registerWireEnum(IdeDefaultSaveAction::class.java, IdeDefaultSaveAction::wire, IdeDefaultSaveAction::fromWire)
+        .registerWireEnum(AudioCaptureMode::class.java, AudioCaptureMode::wire, AudioCaptureMode::fromWire)
         .registerWireEnum(CaptureMode::class.java, CaptureMode::wire, CaptureMode::fromWire)
         .registerWireEnum(AudioCaptureState::class.java, AudioCaptureState::wire, AudioCaptureState::fromWire)
         .registerWireEnum(AudioCause::class.java, AudioCause::wire, AudioCause::fromWire)
@@ -355,6 +356,7 @@ object ProtocolJson {
         src.minFreeDiskBytes?.let { addProperty("min_free_disk_bytes", it) }
         src.videoMaxSize?.let { addProperty("video_max_size", it) }
         src.videoMaxFps?.let { addProperty("video_max_fps", it) }
+        src.audioCaptureMode?.let { addProperty("audio_capture_mode", it.wire) }
         src.audioEnabled?.let { addProperty("audio_enabled", it) }
         src.captureMode?.let { addProperty("capture_mode", it.wire) }
         when (val serial = src.deviceSerial) {

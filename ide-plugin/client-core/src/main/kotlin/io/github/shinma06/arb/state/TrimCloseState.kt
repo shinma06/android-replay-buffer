@@ -2,6 +2,7 @@ package io.github.shinma06.arb.state
 
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.AudioCaptureMode
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.OutputDirPatch
@@ -95,6 +96,7 @@ data class ArbSettingsDraft(
     val videoMaxSize: Int = ArbConfig.DEFAULT_VIDEO_MAX_SIZE,
     val videoMaxFps: Int = ArbConfig.DEFAULT_VIDEO_MAX_FPS,
     val audioEnabled: Boolean = true,
+    val audioCaptureMode: AudioCaptureMode = AudioCaptureMode.PLAYBACK_DUP,
     val crashAutosaveEnabled: Boolean = true,
     val crashAutosaveCooldownSecs: Int = ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
     val outputDirOverride: String = "",
@@ -158,6 +160,7 @@ data class ArbSettingsDraft(
             minFreeDiskBytes != baseline.minFreeDiskBytes ||
             videoMaxSize != baseline.videoMaxSize ||
             videoMaxFps != baseline.videoMaxFps ||
+            audioCaptureMode != baseline.audioCaptureMode ||
             audioEnabled != baseline.audioEnabled ||
             captureMode != baseline.captureMode ||
             normalizedDeviceSerial() != baseline.deviceSerial ||
@@ -177,6 +180,7 @@ data class ArbSettingsDraft(
             minFreeDiskBytes = if (minFreeDiskBytes == base.minFreeDiskBytes) next.minFreeDiskBytes else minFreeDiskBytes,
             videoMaxSize = if (videoMaxSize == base.videoMaxSize) next.videoMaxSize else videoMaxSize,
             videoMaxFps = if (videoMaxFps == base.videoMaxFps) next.videoMaxFps else videoMaxFps,
+            audioCaptureMode = if (audioCaptureMode == base.audioCaptureMode) next.audioCaptureMode else audioCaptureMode,
             audioEnabled = if (audioEnabled == base.audioEnabled) next.audioEnabled else audioEnabled,
             captureMode = if (captureMode == base.captureMode) next.captureMode else captureMode,
             crashAutosaveEnabled = if (crashAutosaveEnabled == base.crashAutosaveEnabled) next.crashAutosaveEnabled else crashAutosaveEnabled,
@@ -211,6 +215,7 @@ data class ArbSettingsDraft(
             minFreeDiskBytes = minFreeDiskBytes.takeIf { it != baseline.minFreeDiskBytes },
             videoMaxSize = videoMaxSize.takeIf { it != baseline.videoMaxSize },
             videoMaxFps = videoMaxFps.takeIf { it != baseline.videoMaxFps },
+            audioCaptureMode = audioCaptureMode.takeIf { it != baseline.audioCaptureMode },
             audioEnabled = audioEnabled.takeIf { it != baseline.audioEnabled },
             captureMode = captureMode.takeIf { it != baseline.captureMode },
             deviceSerial = serialPatch,
@@ -229,6 +234,7 @@ data class ArbSettingsDraft(
             minFreeDiskBytes = config.minFreeDiskBytes,
             videoMaxSize = config.videoMaxSize,
             videoMaxFps = config.videoMaxFps,
+            audioCaptureMode = config.audioCaptureMode,
             audioEnabled = config.audioEnabled,
             crashAutosaveEnabled = config.crashAutosaveEnabled,
             crashAutosaveCooldownSecs = config.crashAutosaveCooldownSecs,
