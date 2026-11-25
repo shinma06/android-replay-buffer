@@ -454,6 +454,26 @@ impl MutableYuvFrame<'_> {
     }
 }
 
+/// Stateful decoder for consecutive display-order frames of one non-reordered GOP.
+pub trait SequentialDecoder: Send {
+    /// Produces the next frame using the existing decoder reference pictures.
+    ///
+    /// # Errors
+    /// Returns an error for an unreadable sample or missing decoder output.
+    fn next(
+        &mut self,
+        track: &Mp4VideoTrack,
+        index: u64,
+        format: PixelFormat,
+    ) -> Result<DecodedFrame, MediaError>;
+}
+
+impl std::fmt::Debug for dyn SequentialDecoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SequentialDecoder")
+    }
+}
+
 /// GPL-free H.264 video decode and head-GOP re-encode backend abstraction.
 pub trait VideoCodecBackend: Debug + Send + Sync {
     /// Returns a stable human-readable identifier for this codec backend.
@@ -471,6 +491,17 @@ pub trait VideoCodecBackend: Debug + Send + Sync {
         frame_index: u64,
         output_format: PixelFormat,
     ) -> Result<DecodedFrame, MediaError>;
+
+    /// Creates a forward decoder starting at the IDR of an inclusive GOP range.
+    ///
+    /// # Errors
+    /// Returns a codec error if initialization fails.
+    fn sequential_decoder(
+        &self,
+        track: &Mp4VideoTrack,
+        start: u64,
+        end: u64,
+    ) -> Result<Box<dyn SequentialDecoder>, MediaError>;
 
     /// Decodes every frame belonging to `gop_id` in order into `output_format`.
     ///

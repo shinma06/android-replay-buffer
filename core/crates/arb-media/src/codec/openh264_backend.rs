@@ -333,7 +333,80 @@ fn decode_keyframe_thumb_chunk(
     Ok(local)
 }
 
+struct OpenGopDecoder {
+    decoder: Decoder,
+    start: u64,
+    next_input: u64,
+    end: u64,
+    raw: Vec<u8>,
+    annexb: Vec<u8>,
+    tail: std::collections::VecDeque<(u32, u32, Vec<u8>)>,
+}
+
+impl super::SequentialDecoder for OpenGopDecoder {
+    fn next(
+        &mut self,
+        track: &Mp4VideoTrack,
+        index: u64,
+        format: PixelFormat,
+    ) -> Result<DecodedFrame, MediaError> {
+        while self.next_input <= self.end {
+            let input = self.next_input;
+            track.read_sample_into(input, &mut self.raw)?;
+            let mode = if input == self.start {
+                ParamSetMode::PrependIfMissing
+            } else {
+                ParamSetMode::Omit
+            };
+            avcc_sample_to_annexb(&self.raw, track.avcc(), mode, &mut self.annexb);
+            self.next_input += 1;
+            if let Some(yuv) = self
+                .decoder
+                .decode_with_options(
+                    &self.annexb,
+                    DecodeOptions::new().flush_after_decode(Flush::NoFlush),
+                )
+                .map_err(|e| MediaError::Codec(format!("openh264 decode frame {input}: {e}")))?
+            {
+                let (w, h, data) = pack_decoded_yuv420p(&yuv)?;
+                return convert_from_yuv420p(index, w, h, data, format);
+            }
+        }
+        if self.tail.is_empty() {
+            for yuv in self
+                .decoder
+                .flush_remaining()
+                .map_err(|e| MediaError::Codec(format!("openh264 flush: {e}")))?
+            {
+                self.tail.push_back(pack_decoded_yuv420p(&yuv)?);
+            }
+        }
+        let (w, h, data) = self
+            .tail
+            .pop_front()
+            .ok_or_else(|| MediaError::Codec(format!("missing GOP frame {index}")))?;
+        convert_from_yuv420p(index, w, h, data, format)
+    }
+}
+
 impl VideoCodecBackend for OpenH264Backend {
+    fn sequential_decoder(
+        &self,
+        _: &Mp4VideoTrack,
+        start: u64,
+        end: u64,
+    ) -> Result<Box<dyn super::SequentialDecoder>, MediaError> {
+        Ok(Box::new(OpenGopDecoder {
+            decoder: make_decoder(Flush::NoFlush)?,
+            start,
+            next_input: start,
+            end,
+            raw: Vec::new(),
+            annexb: Vec::new(),
+            tail: std::collections::VecDeque::new(),
+        }))
+    }
+
     fn name(&self) -> &'static str {
         "openh264"
     }
