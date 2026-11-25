@@ -323,6 +323,47 @@ class ArbToolWindowRobustnessTest {
     }
 
     @Test
+    fun pollFinishingWhileRetryIsQueuedKeepsTheJobBusy() {
+        val pollEntered = CountDownLatch(1)
+        val finishPoll = CountDownLatch(1)
+        val retryEntered = CountDownLatch(1)
+        val finishRetry = CountDownLatch(1)
+        val f = fixture(pollingHandler { method, _ ->
+            when (method) {
+                "bundle.list" -> {
+                    pollEntered.countDown()
+                    check(finishPoll.await(10, TimeUnit.SECONDS))
+                    bundleListJson(emptyList())
+                }
+                "save.retry" -> {
+                    retryEntered.countDown()
+                    check(finishRetry.await(10, TimeUnit.SECONDS))
+                    rpcError("retry rejected")
+                }
+                else -> null
+            }
+        })
+        try {
+            f.controller.refreshNow()
+            assertTrue(pollEntered.await(10, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait { f.controller.retryFailedJob("j1") }
+            finishPoll.countDown()
+            assertTrue(retryEntered.await(10, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait {
+                assertEquals("j1", f.controller.recoveryState.busyJobId)
+                f.controller.retryFailedJob("j1")
+            }
+            finishRetry.countDown()
+            awaitTrue { f.drainEdt(); f.controller.recoveryState.busyJobId == null }
+            assertEquals(1, f.transport.count("save.retry"))
+        } finally {
+            finishPoll.countDown()
+            finishRetry.countDown()
+            f.controller.dispose()
+        }
+    }
+
+    @Test
     fun captureModeAndRestartGuardsAreSingleFlight() {
         val gate = CountDownLatch(1)
         val f = fixture(

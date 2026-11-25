@@ -31,6 +31,8 @@ class PlaybackStateMachineTest {
         }
     }
 
+    private class DecoderRejected(frame: Long) : IllegalStateException("decoder rejected #$frame")
+
     /** Synchronous exact seeker; can be told to fail specific frames with a non-retryable error. */
     private class ScriptedSeeker : FrameSeeker {
         val exactCalls = CopyOnWriteArrayList<Long>()
@@ -38,7 +40,7 @@ class PlaybackStateMachineTest {
 
         override fun seekExact(frameIndex: Long): FrameSeekResult {
             exactCalls.add(frameIndex)
-            if (frameIndex in failFrames) throw IllegalStateException("decoder rejected #$frameIndex")
+            if (frameIndex in failFrames) throw DecoderRejected(frameIndex)
             return FrameSeekResult(frameIndex, frameIndex, isApproximate = false)
         }
 
@@ -134,7 +136,7 @@ class PlaybackStateMachineTest {
                         Op.ToggleLoop -> ctrl.toggleLoop()
                         is Op.Speed -> ctrl.setSpeed(op.speed)
                     }
-                } catch (e: IllegalStateException) {
+                } catch (_: DecoderRejected) {
                     // A synchronous user-initiated seek surfaces the decoder error to its caller.
                     threw = true
                 }
@@ -149,7 +151,11 @@ class PlaybackStateMachineTest {
                 assertTrue(after.currentFrameIndex in 0 until total, "current in range ${ctx()}")
                 assertTrue(after.outFrameIndex < total && after.inFrameIndex >= 0, "selection in range ${ctx()}")
 
-                val explained = threw || errors.size > errorsBefore
+                val reported = errors.drop(errorsBefore)
+                for (error in reported) {
+                    assertTrue(generateSequence(error) { it.cause }.any { it is DecoderRejected }, "unexpected playback error: $error ${ctx()}")
+                }
+                val explained = threw || reported.isNotEmpty()
                 if (op is Op.Tick) {
                     if (before.mode == PlaybackMode.PLAYING) {
                         if (after.mode == PlaybackMode.PLAYING) {
@@ -286,7 +292,6 @@ class PlaybackStateMachineTest {
         assertEquals(afterClose, snapshots.size, "a closed controller publishes nothing")
         assertEquals(PlaybackMode.PAUSED, ctrl.state.mode)
         assertTrue(ctrl.isClosed)
-        assertTrue(snapshots.none { it.mode == PlaybackMode.PLAYING && snapshots.indexOf(it) >= afterClose })
     }
 
     @Test

@@ -3,7 +3,6 @@ package io.github.shinma06.arb.ui
 import io.github.shinma06.arb.ide.ArbBundleFileEditor
 import io.github.shinma06.arb.testsupport.Fault
 import io.github.shinma06.arb.testsupport.StudioDaemon
-import io.github.shinma06.arb.testsupport.awaitAuxSettled
 import io.github.shinma06.arb.testsupport.awaitTrue
 import io.github.shinma06.arb.testsupport.crashesJson
 import io.github.shinma06.arb.testsupport.openStudioEditor
@@ -137,7 +136,7 @@ class ArbStudioControllerOrderingTest {
         val edt = ManualEdt()
         val daemon = StudioDaemon(Files.createDirectory(tmp.resolve("a")), frameCount = 400)
         daemon.crashes.set(crashesJson(3))
-        val (editor, _) = readyEditor(Files.createDirectory(tmp.resolve("b")).also { }, edt, daemon)
+        val (editor, _) = readyEditor(Files.createDirectory(tmp.resolve("b")), edt, daemon)
         try {
             val ctrl = editor.studioController
             val playback = assertNotNull(editor.playbackControllerForTest())
@@ -160,7 +159,7 @@ class ArbStudioControllerOrderingTest {
             assertEquals(1L, ctrl.viewerState!!.inFrameIndex, "the user's later IN must survive")
             assertEquals(playback.state.inFrameIndex, ctrl.viewerState!!.inFrameIndex)
             assertEquals(playback.state.outFrameIndex, ctrl.viewerState!!.outFrameIndex, "UI and playback agree on OUT")
-            assertTrue(userRangeOut >= 0)
+            assertEquals(userRangeOut, ctrl.viewerState!!.outFrameIndex)
         } finally {
             editor.dispose()
         }
@@ -186,7 +185,7 @@ class ArbStudioControllerOrderingTest {
             gate.countDown()
             // A's late completion must publish nothing on the (now dead) controller.
             awaitTrue({ "A lease not closed" }) { daemonA.transport.count("bundle.close") == 1 }
-            Thread.sleep(50)
+            a.awaitQueuedWorkForTest()
             edtA.drain()
             assertEquals(aStateBefore?.exportCompletion, a.studioController.viewerState?.exportCompletion)
             assertNull(a.studioController.viewerState?.exportCompletion)
@@ -215,6 +214,4 @@ class ArbStudioControllerOrderingTest {
         assertEquals(4, box.take())
     }
 
-    @Suppress("unused")
-    private fun unusedAwait(editor: ArbBundleFileEditor) = editor.awaitAuxSettled()
 }

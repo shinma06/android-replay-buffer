@@ -16,6 +16,7 @@ import java.nio.file.Path
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -68,7 +69,7 @@ class ArbStudioSilentFailureTest {
                     // Retry still fails -> remains Failed and still isolated.
                     ctrl.retryAuxStream(target)
                     awaitTrue({ "retry did not run" }) { daemon.transport.count(methodOf(target)) >= 2 }
-                    editor.awaitAuxSettled()
+                    editor.awaitQueuedWorkForTest()
                     assertTrue(ctrl.viewerState!!.streamState(target) is StreamLoadState.Failed)
 
                     // Heal the daemon and retry: exactly the failed stream recovers.
@@ -76,8 +77,7 @@ class ArbStudioSilentFailureTest {
                     ctrl.retryAuxStream(target)
                     awaitTrue({ "stream never recovered" }) { ctrl.viewerState!!.streamState(target) == StreamLoadState.Loaded }
                     assertTrue(ctrl.failedAuxStreams.isEmpty())
-                    assertEquals(target == AuxStream.CRASHES || ctrl.viewerState!!.crashes.isNotEmpty(), ctrl.viewerState!!.crashes.isNotEmpty())
-                    if (target == AuxStream.CRASHES) assertEquals(1, ctrl.viewerState!!.crashes.size)
+                    assertEquals(1, ctrl.viewerState!!.crashes.size)
                     playback.seekToFrame(6)
                     assertEquals(6L, playback.state.currentFrameIndex)
                 } finally {
@@ -96,7 +96,7 @@ class ArbStudioSilentFailureTest {
             editor.awaitAuxSettled()
             val before = daemon.transport.count("timeline.crashes")
             editor.studioController.retryAuxStream(AuxStream.CRASHES)
-            Thread.sleep(50)
+            editor.awaitQueuedWorkForTest()
             assertEquals(before, daemon.transport.count("timeline.crashes"), "no reload for a stream that loaded fine")
         } finally {
             editor.dispose()
@@ -126,6 +126,7 @@ class ArbStudioSilentFailureTest {
                 // A later change while still failing keeps the failure and only the newest range pending.
                 ctrl.applyOutFrame(7, settled = true)
                 awaitTrue({ "second attempt not made" }) { daemon.transport.count("edit.update_session") >= 2 }
+                editor.awaitQueuedWorkForTest()
                 assertNotNull(ctrl.editSaveFailure)
 
                 // Recovery via the explicit "再保存" action persists the newest range and clears the marker.
@@ -138,7 +139,7 @@ class ArbStudioSilentFailureTest {
                 // With nothing pending, "再保存" is a no-op.
                 val n = daemon.transport.count("edit.update_session")
                 ctrl.retryEditSave()
-                Thread.sleep(30)
+                editor.awaitQueuedWorkForTest()
                 assertEquals(n, daemon.transport.count("edit.update_session"))
             } finally {
                 editor.dispose()
@@ -157,10 +158,12 @@ class ArbStudioSilentFailureTest {
         awaitTrue({ "failure not surfaced" }) { first.studioController.editSaveFailure != null }
         assertNull(daemon.storedSession.get())
 
+        assertFalse(first.flushBeforeClose())
         // The daemon is back by the time the tab closes: close must flush the unsaved range once more.
         daemon.faults.remove("edit.update_session")
+        assertTrue(first.flushBeforeClose())
+        assertNotNull(daemon.storedSession.get())
         first.dispose()
-        awaitTrue({ "close did not flush the unsaved range" }) { daemon.storedSession.get() != null }
         assertEquals(3L, daemon.storedRanges.last().first)
 
         val reopened = openStudioEditor(daemon)

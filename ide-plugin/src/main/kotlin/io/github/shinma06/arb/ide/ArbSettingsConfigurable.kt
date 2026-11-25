@@ -314,7 +314,7 @@ class ArbSettingsConfigurable internal constructor(
     private var baselineScreenshotInherit: Boolean = true
     private var baselineCustomScreenshotDir: String = ""
     private var baselineTrayEnabled: Boolean = false
-    private var daemonOnline: Boolean = false
+    private var hasDaemonBaseline: Boolean = false
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
@@ -375,7 +375,6 @@ class ArbSettingsConfigurable internal constructor(
                     localBinarySavedForRestart = true
                 } else {
                     val why = wrote.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
-                    daemonOnline = false
                     currentForm.setDaemonStatus(
                         online = false,
                         detailMessage = "arbd バイナリパスを保存できませんでした（$why）。再起動は行っていません。",
@@ -389,7 +388,6 @@ class ArbSettingsConfigurable internal constructor(
         if (restarted.isSuccess) {
             reset()
         } else {
-            daemonOnline = false
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
             currentForm.setDaemonStatus(
                 online = false,
@@ -407,7 +405,7 @@ class ArbSettingsConfigurable internal constructor(
         val localBinaryChanged = draft.normalizedCustomArbdPath() != baselineCustomBinary
         val localScreenshotChanged = inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir
         val localTrayChanged = currentForm.trayEnabled != baselineTrayEnabled
-        val daemonChanged = daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)
+        val daemonChanged = hasDaemonBaseline && draft.isDaemonModifiedAgainst(baselineConfig)
         return localBinaryChanged || localScreenshotChanged || localTrayChanged || daemonChanged
     }
 
@@ -436,20 +434,22 @@ class ArbSettingsConfigurable internal constructor(
         val saved = mutableListOf<String>()
         val failed = mutableListOf<String>()
 
-        if (daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)) {
+        if (hasDaemonBaseline && draft.isDaemonModifiedAgainst(baselineConfig)) {
             val validationError = draft.validateDaemonFields()
             if (validationError != null) {
                 throw ConfigurationException(validationError)
             }
             try {
                 baselineConfig = blockingRunner.run { daemonConfigWriter(baselineConfig, draft) }
+                currentForm.setDaemonStatus(online = true)
                 saved += DAEMON_SETTINGS_LABEL
             } catch (t: Throwable) {
                 // The daemon is the first writer: nothing local was written yet, and the baselines
                 // are untouched, so the form keeps the unsaved values and stays "modified".
                 val diagnostic = classifyDaemonError(t)
-                if (diagnostic.kind == DaemonDiagnosticKind.OFFLINE) {
-                    daemonOnline = false
+                if (generateSequence(t) { it.cause }.none { it is ArbdRpcException } ||
+                    diagnostic.kind == DaemonDiagnosticKind.STALE_OR_MISMATCHED
+                ) {
                     currentForm.setDaemonStatus(online = false, detailMessage = diagnostic.message, showRestart = true)
                 }
                 throw ConfigurationException(
@@ -513,11 +513,11 @@ class ArbSettingsConfigurable internal constructor(
 
         val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
         if (loaded.isSuccess) {
-            daemonOnline = true
+            hasDaemonBaseline = true
             baselineConfig = loaded.getOrThrow()
             currentForm.setDaemonStatus(online = true)
         } else {
-            daemonOnline = false
+            hasDaemonBaseline = false
             baselineConfig = ArbConfig()
             val diagnostic = classifyDaemonError(loaded.exceptionOrNull())
             currentForm.setDaemonStatus(

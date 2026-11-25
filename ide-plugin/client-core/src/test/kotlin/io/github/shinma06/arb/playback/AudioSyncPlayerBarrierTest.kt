@@ -29,7 +29,8 @@ class AudioSyncPlayerBarrierTest {
         private val remainingBlocks = AtomicInteger(blockWrites)
         val writeCalls = AtomicInteger()
         val closed = AtomicBoolean(false)
-        val closedAtWriteCount = AtomicInteger(-1)
+        val closeCalls = AtomicInteger()
+        @Volatile var writer: Thread? = null
 
         override fun open(format: PcmFormat): Boolean = true
         override fun start() = Unit
@@ -37,6 +38,7 @@ class AudioSyncPlayerBarrierTest {
         override fun flush() = Unit
 
         override fun write(pcm: ByteArray, offset: Int, length: Int): Int {
+            writer = Thread.currentThread()
             writeCalls.incrementAndGet()
             if (remainingBlocks.getAndDecrement() > 0) {
                 entered.countDown()
@@ -47,7 +49,7 @@ class AudioSyncPlayerBarrierTest {
 
         override fun close() {
             closed.set(true)
-            closedAtWriteCount.set(writeCalls.get())
+            closeCalls.incrementAndGet()
         }
     }
 
@@ -101,13 +103,9 @@ class AudioSyncPlayerBarrierTest {
         assertTrue(elapsedMs < 6_000, "close must be bounded even if the device write hangs: ${elapsedMs}ms")
         assertTrue(sink.closed.get())
         sink.gate.countDown()
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (System.nanoTime() < deadline &&
-            Thread.getAllStackTraces().keys.any { it.isAlive && it.name == "arb-audio-sync-pump" }
-        ) {
-            Thread.sleep(5)
-        }
-        assertTrue(Thread.getAllStackTraces().keys.none { it.isAlive && it.name == "arb-audio-sync-pump" }, "no leaked pump")
+        val pump = requireNotNull(sink.writer)
+        pump.join(5_000)
+        assertFalse(pump.isAlive, "no leaked pump")
         assertEquals(1, sink.writeCalls.get(), "exactly the one in-flight write, nothing after close")
     }
 
@@ -171,7 +169,7 @@ class AudioSyncPlayerBarrierTest {
             closer.join(5_000)
             assertFalse(attacher.isAlive || closer.isAlive)
             assertTrue(controller.isClosed)
-            assertTrue(sink.closed.get(), "whichever order won, the attached player must end up closed")
+            assertEquals(1, sink.closeCalls.get(), "whichever order won, the attached player must be closed exactly once")
             val writes = sink.writeCalls.get()
             player.pumpNextSlice()
             assertEquals(writes, sink.writeCalls.get(), "no write after the controller closed")

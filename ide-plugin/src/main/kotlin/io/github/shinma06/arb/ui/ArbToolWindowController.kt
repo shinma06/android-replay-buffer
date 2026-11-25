@@ -117,9 +117,6 @@ class ArbToolWindowController(
     private var rawCaptureEnabled = false
 
     @Volatile
-    private var rawRecoveryState = FailedSaveRecoveryState()
-
-    @Volatile
     private var rawCatalogState = BundleCatalogState()
 
     @Volatile
@@ -139,7 +136,7 @@ class ArbToolWindowController(
     private val screenshotInFlight = AtomicBoolean(false)
     private val captureModeInFlight = AtomicBoolean(false)
     private val restartInFlight = AtomicBoolean(false)
-    private val recoveryLock = Any()
+    private val recoveryInFlight = AtomicBoolean(false)
 
     var captureState: CaptureBarState by mutableStateOf(CaptureBarState())
         private set
@@ -758,35 +755,22 @@ class ArbToolWindowController(
      * failure) clears it and a failure is reported instead of vanishing.
      */
     private fun runRecoveryAction(jobId: String, operation: String, call: () -> Pair<String, SaveJobView>) {
-        val claimed = synchronized(recoveryLock) {
-            if (rawRecoveryState.busyJobId != null) {
-                false
-            } else {
-                updateRecovery(FailedSaveRecoveryReducer.markBusy(rawRecoveryState, jobId))
-                true
-            }
-        }
-        if (!claimed) return
-        val queued = runAsync(onDropped = { releaseRecoveryBusy(jobId, null) }) {
+        runGuarded(recoveryInFlight, { busy ->
+            recoveryState = recoveryState.copy(busyJobId = if (busy) jobId else null)
+        }) {
             try {
                 val (message, job) = call()
-                updateRecovery(FailedSaveRecoveryReducer.applyJobUpdated(rawRecoveryState, job, message))
+                publishOnEdt {
+                    recoveryState = FailedSaveRecoveryReducer.applyJobUpdated(recoveryState, job, message)
+                }
                 refreshAll()
             } catch (t: Throwable) {
                 logger.warn("ARB $operation failed", t)
-                releaseRecoveryBusy(jobId, "$operation に失敗しました: ${t.message ?: "詳細不明"}")
+                publishOnEdt {
+                    recoveryState = recoveryState.copy(lastMessage = "$operation に失敗しました: ${t.message ?: "詳細不明"}")
+                }
                 onNotifyActionFailed(operation, t.message)
                 handleDaemonFailure(t)
-            }
-        }
-        if (!queued) releaseRecoveryBusy(jobId, null)
-    }
-
-    private fun releaseRecoveryBusy(jobId: String, message: String?) {
-        synchronized(recoveryLock) {
-            val cur = rawRecoveryState
-            if (cur.busyJobId == jobId) {
-                updateRecovery(cur.copy(busyJobId = null, lastMessage = message ?: cur.lastMessage))
             }
         }
     }
@@ -812,7 +796,6 @@ class ArbToolWindowController(
             rawCaptureState = capture
             rawCaptureEnabled = captureEnabled
         }
-        rawRecoveryState = recovery
         rawCatalogState = catalog
         activeFilterBacking = catalog.activeFilter
         captureState = capture
@@ -899,8 +882,10 @@ class ArbToolWindowController(
         if (!inFlight.compareAndSet(false, true)) return
         publishOnEdt { setBusy(true) }
         val release = {
-            inFlight.set(false)
-            publishOnEdt { setBusy(false) }
+            publishOnEdt {
+                setBusy(false)
+                inFlight.set(false)
+            }
         }
         runAsync(onDropped = release) {
             try {
@@ -979,7 +964,6 @@ class ArbToolWindowController(
                 ).also { rawCaptureState = it }
             }
             daemonService.updateCachedToolbarSnapshot(nextCapture.toToolbarSnapshot(captureEnabled = armed))
-            val nextRecovery = FailedSaveRecoveryReducer.withJobs(rawRecoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
                 activeFilter = activeFilterBacking,
@@ -988,13 +972,12 @@ class ArbToolWindowController(
                 durationsByBundleId = durations,
                 kindsByBundleId = kinds,
             )
-            rawRecoveryState = nextRecovery
             rawCatalogState = nextCatalog
 
             publishOnEdt {
                 captureState = nextCapture
                 captureEnabled = armed
-                recoveryState = nextRecovery
+                recoveryState = recoveryState.copy(jobs = jobs)
                 catalogState = nextCatalog.copy(activeFilter = activeFilter)
                 if (trashCount == 0) confirmEmptyTrashVisible = false
                 staleDaemonMessage = staleWarning
@@ -1074,11 +1057,6 @@ class ArbToolWindowController(
                 staleDaemonMessage = stale
             }
         }
-    }
-
-    private fun updateRecovery(next: FailedSaveRecoveryState) {
-        rawRecoveryState = next
-        publishOnEdt { recoveryState = next }
     }
 
     private fun publishOnEdt(block: () -> Unit) {

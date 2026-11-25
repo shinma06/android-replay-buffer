@@ -101,11 +101,6 @@ class ArbSettingsPartialApplyTest {
 
         // The daemon comes back; a plain re-Apply persists everything exactly once.
         world.daemonUp = true
-        configurable.reset() // the user reopens / resets: real persisted values are shown, not the failed ones
-        assertEquals(ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toString(), form.saveWindowText.text.toString())
-        form.saveWindowText.setTextAndPlaceCursorAtEnd("600")
-        form.trayEnabled = true
-        form.customArbdPathText.setTextAndPlaceCursorAtEnd(binary)
         configurable.apply()
         assertEquals(600, world.daemon.saveWindowSecs)
         assertTrue(world.tray)

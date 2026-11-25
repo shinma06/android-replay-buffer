@@ -53,6 +53,7 @@ import java.nio.file.Path
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
@@ -285,6 +286,16 @@ class ArbBundleFileEditor internal constructor(
 
     internal fun playbackControllerForTest(): PlaybackController? = synchronized(lifecycleLock) {
         ownedPlaybackController
+    }
+
+    internal fun awaitQueuedWorkForTest() {
+        for (executor in listOf(worker, timelineWorker)) {
+            if (executor.isShutdown) {
+                check(executor.awaitTermination(10, TimeUnit.SECONDS))
+            } else {
+                executor.submit {}.get(10, TimeUnit.SECONDS)
+            }
+        }
     }
 
     internal fun audioPlayerForTest(): AudioSyncPlayer? = attachedAudioPlayer
@@ -1051,6 +1062,11 @@ class ArbBundleFileEditor internal constructor(
             pendingEdit = PendingEdit(current.bundleId, inFrame, outFrame, playhead)
         }
         flushEditSessionAsync()
+    }
+
+    internal fun flushBeforeClose(): Boolean {
+        if (synchronized(editPersistLock) { pendingEdit == null }) return true
+        return ProgressDaemonCallRunner(project).run { flushEditSession(closing = false) }
     }
 
     /** Re-sends the newest unsaved range (also the target of the "再保存" action). */
