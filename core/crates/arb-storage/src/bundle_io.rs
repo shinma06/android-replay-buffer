@@ -271,6 +271,16 @@ pub struct BundleManifestSummary {
 
 /// Unified read-only bundle reader interface implemented for v2 and legacy bundles.
 pub trait BundleReader: fmt::Debug + Send + Sync {
+    /// Digest of the log input captured by an immutable in-memory legacy reader.
+    fn legacy_log_digest(&self) -> Option<&str> {
+        None
+    }
+
+    /// Directory backing a live SQLite timeline, when available for cache validation.
+    fn timeline_bundle_dir(&self) -> Option<&Path> {
+        None
+    }
+
     /// Returns the unified manifest summary for this bundle.
     fn manifest_summary(&self) -> &BundleManifestSummary;
 
@@ -899,6 +909,10 @@ impl V2BundleReader {
 }
 
 impl BundleReader for V2BundleReader {
+    fn timeline_bundle_dir(&self) -> Option<&Path> {
+        Some(&self.root_dir)
+    }
+
     fn manifest_summary(&self) -> &BundleManifestSummary {
         &self.summary
     }
@@ -1215,6 +1229,7 @@ pub struct LegacyBundleReader {
     frames: Vec<FrameRecord>,
     discontinuities: Vec<DiscontinuityEvent>,
     logs: Vec<LogRecord>,
+    log_digest: String,
     app_logs: Vec<LogRecord>,
     taps: Vec<TapRecord>,
 }
@@ -1253,12 +1268,12 @@ impl LegacyBundleReader {
 
         let origin_ns = metadata.timebase.device_boottime_origin_ns();
         let frames = load_legacy_frames(&root_dir, &metadata, origin_ns)?;
-        let device_logs = load_legacy_logs(
+        let (device_logs, device_digest) = load_legacy_logs(
             &root_dir,
             metadata.files.logcat_device.as_deref(),
             origin_ns,
         )?;
-        let app_logs =
+        let (app_logs, app_digest) =
             load_legacy_logs(&root_dir, metadata.files.logcat_app.as_deref(), origin_ns)?;
         let has_device_log_file = metadata
             .files
@@ -1266,10 +1281,10 @@ impl LegacyBundleReader {
             .as_deref()
             .and_then(|rel| legacy_file_path(&root_dir, rel).ok())
             .is_some_and(|path| path.is_file());
-        let logs = if !device_logs.is_empty() || has_device_log_file {
-            device_logs
+        let (logs, log_digest) = if !device_logs.is_empty() || has_device_log_file {
+            (device_logs, device_digest)
         } else {
-            app_logs.clone()
+            (app_logs.clone(), app_digest)
         };
         let taps = load_legacy_taps(&root_dir, metadata.files.touches.as_deref(), origin_ns)?;
         let discontinuities = derive_legacy_discontinuities(&metadata);
@@ -1284,6 +1299,7 @@ impl LegacyBundleReader {
             frames,
             discontinuities,
             logs,
+            log_digest,
             app_logs,
             taps,
         })
@@ -1335,6 +1351,10 @@ impl LegacyBundleReader {
 }
 
 impl BundleReader for LegacyBundleReader {
+    fn legacy_log_digest(&self) -> Option<&str> {
+        Some(&self.log_digest)
+    }
+
     fn manifest_summary(&self) -> &BundleManifestSummary {
         &self.summary
     }
@@ -1355,10 +1375,8 @@ impl BundleReader for LegacyBundleReader {
         limit: Option<usize>,
     ) -> Result<Vec<LogRecord>, StorageError> {
         let mut results = Vec::new();
-        for record in &self.logs {
-            if after_seq.is_some_and(|seq| record.seq <= seq) {
-                continue;
-            }
+        let start = after_seq.map_or(0, |seq| self.logs.partition_point(|row| row.seq <= seq));
+        for record in &self.logs[start..] {
             if let Some(wanted) = bucket
                 && record.bucket != wanted
             {
@@ -2747,14 +2765,16 @@ fn load_legacy_logs(
     root_dir: &Path,
     rel_file: Option<&str>,
     origin_ns: Option<i64>,
-) -> Result<Vec<LogRecord>, StorageError> {
+) -> Result<(Vec<LogRecord>, String), StorageError> {
     let Some(file_name) = rel_file else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), String::new()));
     };
     let path = legacy_file_path(root_dir, file_name)?;
     let text = match fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), String::new()));
+        }
         Err(source) => return Err(StorageError::io("read_legacy_logs", &path, source)),
     };
 
@@ -2787,7 +2807,7 @@ fn load_legacy_logs(
             message: row.message,
         });
     }
-    Ok(records)
+    Ok((records, crate::sha256_hex(text.as_bytes())))
 }
 
 fn load_legacy_taps(

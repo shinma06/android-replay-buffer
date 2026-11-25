@@ -932,6 +932,7 @@ impl CapturePipeline {
         self.display_height = None;
         self.uid_packages.clear();
         self.session_first_event_cont_ns = None;
+        self.ring.set_span_floor(None);
         self.session_generation
     }
 
@@ -1020,12 +1021,7 @@ impl CapturePipeline {
     ///
     /// Returns [`DaemonError::Storage`] if pin journals cannot be read.
     pub fn ring_stats(&self) -> Result<(usize, u64, usize), DaemonError> {
-        let chunks = self.ring.chunks();
-        let total_bytes = chunks
-            .iter()
-            .fold(0_u64, |acc, c| acc.saturating_add(c.bytes));
-        let pinned_count = self.ring.pinned_chunk_ids()?.len();
-        Ok((chunks.len(), total_bytes, pinned_count))
+        Ok(self.ring.usage_counts()?)
     }
 
     /// Computes the honest elapsed duration currently retained in the Zone-1 ring buffer (in
@@ -1033,22 +1029,8 @@ impl CapturePipeline {
     /// the configured ring duration cap.
     #[must_use]
     pub fn buffered_secs(&self) -> u64 {
-        let chunks = self.ring.chunks();
         let session_floor = self.session_first_event_cont_ns;
-        let mut oldest: Option<i64> = None;
-        let mut newest: Option<i64> = None;
-
-        for chunk in &chunks {
-            if let Some(floor) = session_floor
-                && chunk.created_cont_ns < floor
-            {
-                continue;
-            }
-            let start = chunk.created_cont_ns;
-            let end = start.saturating_add(i64::try_from(chunk.duration_ns).unwrap_or(i64::MAX));
-            oldest = Some(oldest.map_or(start, |prev| prev.min(start)));
-            newest = Some(newest.map_or(end, |prev| prev.max(end)));
-        }
+        let (mut oldest, mut newest) = self.ring.retained_span().unzip();
 
         for event in &self.pending_events {
             if let Some(ts) = capture_event_pc_cont_ns(event) {
@@ -1126,6 +1108,7 @@ impl CapturePipeline {
         if let Some(ts) = event_pc_ns {
             if self.session_first_event_cont_ns.is_none() {
                 self.session_first_event_cont_ns = Some(ts);
+                self.ring.set_span_floor(Some(ts));
             }
             self.latest_pc_cont_ns = Some(self.latest_pc_cont_ns.map_or(ts, |prev| prev.max(ts)));
         }
@@ -3699,7 +3682,7 @@ mod tests {
     use arb_media::codec::{DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat};
     use arb_os::OsError;
     use arb_os::fs::DiskSpaceInfo;
-    use arb_storage::ring::DiskSpaceProvider;
+    use arb_storage::ring::{DiskSpaceProvider, RingChunkKind};
     use tempfile::TempDir;
 
     use super::{
@@ -4762,6 +4745,47 @@ mod tests {
             replayed_markers,
             vec![0xAA, 0xBB],
             "video frames must replay in exact FIFO capture order"
+        );
+    }
+
+    #[test]
+    fn status_reads_incremental_usage_and_session_span_at_scale() {
+        let tmp = TempDir::new().unwrap();
+        let mut pipeline = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .unwrap();
+        for i in 0..1000 {
+            pipeline
+                .ring
+                .write_closed_chunk(
+                    format!("c{i}"),
+                    RingChunkKind::Video,
+                    i * 1_000_000,
+                    if i == 0 { 5_000_000_000 } else { 1 },
+                    &[1],
+                )
+                .unwrap();
+        }
+        let before = pipeline.ring.work_counters();
+        for _ in 0..1000 {
+            assert_eq!(
+                pipeline.ring_stats().unwrap(),
+                (1000, 1000, 0),
+                "all chunks remain present"
+            );
+            assert_eq!(
+                pipeline.buffered_secs(),
+                5,
+                "the oldest long chunk ends last"
+            );
+        }
+        assert_eq!(
+            pipeline.ring.work_counters(),
+            before,
+            "status must not request full snapshots or replay journals"
         );
     }
 
