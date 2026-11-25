@@ -379,6 +379,11 @@ class PddUiFeedbackContractTest {
             assertEquals(ide.str("selected_serial"), bar.selectedSerial, "$id: selected serial")
             ide.str("hint_contains")?.let { token ->
                 assertTrue(token in snapshot.disabledDeviceHint.orEmpty(), "$id: hint must identify $token")
+                if (bar.selectedSerial == null) {
+                    val first = ArbToolWindowController.buildDeviceDropdownEntries(bar).first()
+                    assertEquals(null, first.serial, "$id: no device selected")
+                    assertTrue(token in first.label, "$id: dropdown explains the empty selection")
+                }
             }
             if (!snapshot.hasOnlineDevice) assertNotNull(snapshot.disabledDeviceHint, "$id: disabled start explains why")
             assertEquals(

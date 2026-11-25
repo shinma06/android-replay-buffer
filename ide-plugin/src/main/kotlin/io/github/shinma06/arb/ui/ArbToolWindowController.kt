@@ -341,14 +341,7 @@ class ArbToolWindowController(
         get() = if (isCaptureOn) ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL else ArbFormatters.SECONDARY_START_CAPTURE_LABEL
 
     val deviceTooltip: String
-        get() = when (val info = captureState.selectedDevice) {
-            null -> NO_DEVICES_PLACEHOLDER
-            else -> when (info.state) {
-                AdbDeviceState.Unauthorized -> "端末で「USB デバッグを許可」をタップしてください (${info.serial})"
-                AdbDeviceState.Offline -> "端末がオフラインです (${info.serial})"
-                else -> "録画・スクリーンショット対象端末 (${info.serial})"
-            }
-        }
+        get() = disabledDeviceHint() ?: "録画・スクリーンショット対象端末 (${captureState.selectedSerial})"
 
     val startStopTooltip: String
         get() = when (captureToggleState) {
@@ -1126,8 +1119,8 @@ class ArbToolWindowController(
                     entries += DeviceDropdownEntry("$pinnedMissing — $WAITING_FOR_PINNED_SUFFIX", pinnedMissing)
                 selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection && state.selectedSerial == null ->
                     entries += DeviceDropdownEntry(MULTIPLE_DEVICES_PROMPT, null)
-                devices.isEmpty() ->
-                    entries += DeviceDropdownEntry(NO_DEVICES_PLACEHOLDER, null)
+                state.selectedSerial == null || devices.isEmpty() ->
+                    entries += DeviceDropdownEntry(state.deviceStateHint() ?: MULTIPLE_DEVICES_PROMPT, null)
             }
             devices.mapIndexedTo(entries) { index, device ->
                 val serial = device.serial.takeIf(DeviceSelectionPolicy::isValidAdbSerial)
@@ -1243,6 +1236,7 @@ private fun CaptureBarState.deviceStateHint(): String? {
         state == null -> "録画に使う端末をオンラインにして選択してください。"
         state == AdbDeviceState.Unauthorized -> "端末が未承認です。USB デバッグを許可してください。"
         state == AdbDeviceState.Offline -> "端末がオフラインです。接続を確認してください。"
+        state == AdbDeviceState.Device && !isSelectedDeviceOnline -> "選択した端末の serial が無効です。"
         state == AdbDeviceState.Device -> null
         else -> "端末が録画できる状態ではありません（${state.wireName}）。"
     }
