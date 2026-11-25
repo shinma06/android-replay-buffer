@@ -101,6 +101,8 @@ data class RecoverySummaryView(
     val reapedLeases: Long = 0,
     val recoveredJobs: Long = 0,
     val completedPurgingBundles: Long = 0,
+    val failedPurgingBundles: Long = 0,
+    val failedPurgingBundleIds: List<String> = emptyList(),
     val releasedPinJournals: Long = 0,
     val repinnedJobs: Long = 0,
 )

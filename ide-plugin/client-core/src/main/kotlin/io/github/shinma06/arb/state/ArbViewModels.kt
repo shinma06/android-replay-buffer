@@ -216,6 +216,17 @@ object CaptureBarReducer {
                     ),
                 )
             }
+            if (status.recovery.failedPurgingBundles > 0L) {
+                val ids = status.recovery.failedPurgingBundleIds
+                val idText = if (ids.isEmpty()) "" else "（対象: ${ids.joinToString(", ")}）"
+                add(
+                    CaptureBanner(
+                        kind = CaptureBannerKind.CONFIG_WARNING,
+                        title = "起動時のゴミ箱削除に失敗（${status.recovery.failedPurgingBundles} 件）",
+                        detail = "照合不一致または削除不能だったためゴミ箱へ保持しています$idText。内容を確認して復元または手動で整理してください。",
+                    ),
+                )
+            }
             if (!status.capture.lastVideoError.isNullOrBlank()) {
                 add(
                     CaptureBanner(

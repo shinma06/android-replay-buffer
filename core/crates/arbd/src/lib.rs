@@ -646,6 +646,13 @@ impl DaemonState {
                 reaped_leases: self.recovery.reaped_lease_ids.len(),
                 recovered_jobs: self.recovery.recovered_job_ids.len(),
                 completed_purging_bundles: self.recovery.completed_purging_bundle_ids.len(),
+                failed_purging_bundles: self.recovery.failed.len(),
+                failed_purging_bundle_ids: self
+                    .recovery
+                    .failed
+                    .iter()
+                    .map(|f| f.bundle_id.clone())
+                    .collect(),
                 released_pin_journals: self.pin_reconcile.released_job_ids.len(),
                 repinned_jobs: self.pin_reconcile.repinned_job_ids.len(),
             },
@@ -1161,18 +1168,29 @@ impl DaemonState {
             let reg_id = if self.catalog.bundle(&candidate_id)?.is_some() {
                 crate::time_util::next_id("ext")
             } else {
-                candidate_id
+                candidate_id.clone()
             };
-            let _ = self.catalog.register_bundle(&NewBundleEntry {
+            let new_entry = NewBundleEntry {
                 bundle_id: reg_id.clone(),
                 path: path.clone(),
                 format_version,
-                parent_bundle_id: None,
+                parent_bundle_id: match &summary.provenance {
+                    arb_core::bundle::Provenance::Trimmed {
+                        parent_bundle_id, ..
+                    } => Some(parent_bundle_id.clone()),
+                    _ => None,
+                },
                 created_at_utc: summary
                     .created_at_utc
                     .clone()
                     .unwrap_or_else(|| now_utc.clone()),
-            })?;
+            };
+            let _ = if format_version == CatalogFormatVersion::V2 && reg_id != candidate_id {
+                self.catalog
+                    .register_bundle_with_manifest_id(&new_entry, &candidate_id)?
+            } else {
+                self.catalog.register_bundle(&new_entry)?
+            };
             reg_id
         };
 
