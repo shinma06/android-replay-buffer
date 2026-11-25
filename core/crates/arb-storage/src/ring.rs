@@ -10,6 +10,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::SystemTime;
 
@@ -145,6 +146,14 @@ pub struct RingChunkDescriptor {
 }
 
 impl RingChunkDescriptor {
+    fn end_key(&self) -> (i64, String) {
+        (
+            self.created_cont_ns
+                .saturating_add(i64::try_from(self.duration_ns).unwrap_or(i64::MAX)),
+            self.chunk_id.clone(),
+        )
+    }
+
     /// Reads a closed chunk and verifies its recorded size and digest.
     ///
     /// # Errors
@@ -511,6 +520,8 @@ pub struct RingStoreStats {
 /// Cumulative algorithmic work counters exposed by [`RingStore`] for scale verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RingWorkCounters {
+    /// Number of complete descriptor snapshots requested by callers.
+    pub descriptor_snapshots: u64,
     /// Number of budget/eviction evaluations performed.
     pub budget_checks: u64,
     /// Total evictable-chunk candidates inspected across all budget evaluations.
@@ -530,6 +541,9 @@ pub struct RingStore<D: DiskSpaceProvider = OsDiskSpaceProvider> {
     disk_provider: D,
     chunks: BTreeMap<String, RingChunkDescriptor>,
     ordered_chunks: BTreeSet<(i64, String)>,
+    span_floor: i64,
+    span_ends: BTreeSet<(i64, String)>,
+    descriptor_snapshots: AtomicU64,
     evictable_order: BTreeSet<(i64, String)>,
     total_bytes: u128,
     total_duration_ns: u128,
@@ -586,6 +600,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             .unwrap_or_else(|| (0, BTreeSet::new()));
 
         let mut ordered_chunks = BTreeSet::new();
+        let mut span_ends = BTreeSet::new();
         let mut evictable_order = BTreeSet::new();
         let mut total_bytes: u128 = 0;
         let mut total_duration_ns: u128 = 0;
@@ -595,6 +610,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         for desc in chunks.values() {
             let order_key = (desc.created_cont_ns, desc.chunk_id.clone());
             ordered_chunks.insert(order_key.clone());
+            span_ends.insert(desc.end_key());
             total_bytes = total_bytes.saturating_add(u128::from(desc.bytes));
             total_duration_ns = total_duration_ns.saturating_add(u128::from(desc.duration_ns));
             if pinned_chunks.contains(&desc.chunk_id) {
@@ -612,6 +628,9 @@ impl<D: DiskSpaceProvider> RingStore<D> {
             disk_provider,
             chunks,
             ordered_chunks,
+            span_ends,
+            span_floor: i64::MIN,
+            descriptor_snapshots: AtomicU64::new(0),
             evictable_order,
             total_bytes,
             total_duration_ns,
@@ -648,6 +667,45 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     /// Updates the live [`RingBudgetPolicy`] used for subsequent ring writes and evictions.
     pub const fn set_policy(&mut self, policy: RingBudgetPolicy) {
         self.policy = policy;
+    }
+
+    /// Sets the earliest creation time included in the capture-session span.
+    pub fn set_span_floor(&mut self, floor: Option<i64>) {
+        let floor = floor.unwrap_or(i64::MIN);
+        if self.span_floor != floor {
+            self.span_floor = floor;
+            self.span_ends = self
+                .ordered_chunks
+                .range((floor, String::new())..)
+                .map(|(_, id)| self.chunks[id].end_key())
+                .collect();
+        }
+    }
+
+    /// Earliest start and latest end among chunks retained in the current session.
+    #[must_use]
+    pub fn retained_span(&self) -> Option<(i64, i64)> {
+        let oldest = self
+            .ordered_chunks
+            .range((self.span_floor, String::new())..)
+            .next()?
+            .0;
+        Some((oldest, self.span_ends.last()?.0))
+    }
+
+    /// Returns tracked chunk count, payload bytes, and the count of all journaled pin IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable pin state cannot be synchronized.
+    pub fn usage_counts(&self) -> Result<(usize, u64, usize), StorageError> {
+        let mut pins = self.pin_journal.lock_cache()?;
+        self.pin_journal.sync_cache_locked(&mut pins)?;
+        Ok((
+            self.chunks.len(),
+            u64::try_from(self.total_bytes).unwrap_or(u64::MAX),
+            pins.pinned.len(),
+        ))
     }
 
     /// Returns O(1) incremental ring usage and retention span statistics without cloning
@@ -689,6 +747,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     #[must_use]
     pub fn work_counters(&self) -> RingWorkCounters {
         RingWorkCounters {
+            descriptor_snapshots: self.descriptor_snapshots.load(Ordering::Relaxed),
             budget_checks: self.budget_checks,
             eviction_candidates_scanned: self.eviction_candidates_scanned,
             chunks_evicted: self.chunks_evicted,
@@ -941,6 +1000,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     /// ordered by creation timestamp then `chunk_id`.
     #[must_use]
     pub fn chunks(&self) -> Vec<RingChunkDescriptor> {
+        self.descriptor_snapshots.fetch_add(1, Ordering::Relaxed);
         self.ordered_chunks
             .iter()
             .filter_map(|(_, id)| self.chunks.get(id).cloned())
@@ -959,6 +1019,9 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     fn insert_tracked_chunk(&mut self, descriptor: RingChunkDescriptor) {
         let order_key = (descriptor.created_cont_ns, descriptor.chunk_id.clone());
         self.ordered_chunks.insert(order_key.clone());
+        if descriptor.created_cont_ns >= self.span_floor {
+            self.span_ends.insert(descriptor.end_key());
+        }
         self.total_bytes = self
             .total_bytes
             .saturating_add(u128::from(descriptor.bytes));
@@ -990,6 +1053,9 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         let Some(removed) = self.chunks.remove(chunk_id) else {
             return;
         };
+        if removed.created_cont_ns >= self.span_floor {
+            self.span_ends.remove(&removed.end_key());
+        }
         let order_key = (removed.created_cont_ns, removed.chunk_id);
         self.ordered_chunks.remove(&order_key);
         self.evictable_order.remove(&order_key);

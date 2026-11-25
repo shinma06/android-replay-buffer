@@ -11,7 +11,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use arb_core::state::{
     PinStatus, RingBudgetPolicy, RingChunkMeta, RingChunkStatus, RingEvictionPlanner,
@@ -104,7 +103,6 @@ struct ScaleSample {
     candidates_scanned_during_ops: u64,
     chunks_evicted_during_ops: u64,
     pin_reloads_during_ops: u64,
-    in_memory_budget_and_status_us: u128,
 }
 
 fn assert_time_span_and_pressure_pins(
@@ -340,7 +338,7 @@ fn run_scale_case(initial_chunks: usize) -> ScaleSample {
         policy,
     );
 
-    let bench_start = Instant::now();
+    let hot_start = ring.work_counters();
     for i in 0..i64::try_from(initial_chunks).expect("scale fits i64") {
         let ev = ring
             .enforce_budget(0, BASE_CONT_NS + i)
@@ -357,8 +355,21 @@ fn run_scale_case(initial_chunks: usize) -> ScaleSample {
             st.chunk_count
         );
     }
-    let in_memory_budget_and_status_us = bench_start.elapsed().as_micros();
+
     let after = ring.work_counters();
+
+    assert_eq!(
+        after.descriptor_snapshots, hot_start.descriptor_snapshots,
+        "budget and status must not copy all descriptors"
+    );
+    assert_eq!(
+        after.eviction_candidates_scanned, hot_start.eviction_candidates_scanned,
+        "zero pressure needs no candidate scan"
+    );
+    assert_eq!(
+        after.pin_journal_disk_reloads, hot_start.pin_journal_disk_reloads,
+        "unchanged pins need no replay"
+    );
 
     assert_time_span_and_pressure_pins(&mut ring, &disk, &seeded, &pinned_indices);
 
@@ -369,7 +380,6 @@ fn run_scale_case(initial_chunks: usize) -> ScaleSample {
             - before.eviction_candidates_scanned,
         chunks_evicted_during_ops: after.chunks_evicted - before.chunks_evicted,
         pin_reloads_during_ops: after.pin_journal_disk_reloads - before.pin_journal_disk_reloads,
-        in_memory_budget_and_status_us,
     }
 }
 
@@ -403,13 +413,6 @@ fn a05_ring_append_status_save_scales_without_quadratic_scans() {
     assert_eq!(
         s8k.candidates_scanned_during_ops, s4k.candidates_scanned_during_ops,
         "scan count must be independent of total ring size (4k vs 8k)"
-    );
-    let max_allowed_8k_us = s1k.in_memory_budget_and_status_us.saturating_mul(32) + 2_000;
-    assert!(
-        s8k.in_memory_budget_and_status_us <= max_allowed_8k_us,
-        "8k in-memory budget+status ({} us) grew too fast vs 1k ({} us)",
-        s8k.in_memory_budget_and_status_us,
-        s1k.in_memory_budget_and_status_us
     );
 }
 
