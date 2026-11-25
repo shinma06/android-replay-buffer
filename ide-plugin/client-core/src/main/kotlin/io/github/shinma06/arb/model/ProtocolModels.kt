@@ -464,6 +464,18 @@ enum class LeaseHolderKind(val wire: String) {
     }
 }
 
+enum class BundleDiskState(val wire: String) {
+    PRESENT("present"),
+    MISSING("missing"),
+    STORAGE_UNAVAILABLE("storage_unavailable");
+
+    companion object {
+        fun fromWire(value: String): BundleDiskState =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown BundleDiskState: $value")
+    }
+}
+
 data class BundleEntryView(
     val bundleId: String,
     val path: String,
@@ -473,6 +485,7 @@ data class BundleEntryView(
     val parentBundleId: String? = null,
     val createdAtUtc: String,
     val activeLeases: Int,
+    val diskState: BundleDiskState = BundleDiskState.PRESENT,
 )
 
 data class BundleListResponse(
@@ -510,6 +523,16 @@ data class BundleGcResponse(
     val skippedUnmanagedOrLegacyBundleIds: List<String>,
     val skippedInGraceBundleIds: List<String>,
     val failed: List<BundleGcFailure> = emptyList(),
+    val reapedLeaseIds: List<String> = emptyList(),
+)
+
+data class BundleForgetResponse(
+    val forgottenBundleIds: List<String>,
+    val skippedPresentBundleIds: List<String>,
+    val skippedStorageUnavailableBundleIds: List<String>,
+    val skippedLeasedBundleIds: List<String>,
+    val skippedActiveJobBundleIds: List<String>,
+    val reapedLeaseIds: List<String> = emptyList(),
 )
 
 // ---------------- Timeline & Provenance ----------------

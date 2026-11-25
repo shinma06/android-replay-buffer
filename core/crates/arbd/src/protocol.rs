@@ -16,7 +16,7 @@ use arb_core::time::DiscontinuityEvent;
 use arb_media::mux_av::AvMuxReport;
 use arb_media::trim::{PngExportReport, TrimReport};
 use arb_storage::bundle_io::BundleFormat;
-use arb_storage::catalog::{CatalogFormatVersion, LeaseHolderKind};
+use arb_storage::catalog::{BundleDiskState, CatalogFormatVersion, LeaseHolderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -516,6 +516,9 @@ pub struct BundleEntryView {
     pub created_at_utc: String,
     /// Count of active leases currently referencing this bundle.
     pub active_leases: usize,
+    /// Observed on-disk availability of `path` (`present`, `missing`, or `storage_unavailable`).
+    #[serde(default)]
+    pub disk_state: BundleDiskState,
 }
 
 /// Request parameters for `bundle.list`.
@@ -580,6 +583,41 @@ pub struct BundleIdParams {
 pub struct BundleGcParams {
     /// Optional UTC cutoff timestamp (defaults to current UTC time).
     pub now_utc: Option<String>,
+    /// When `true` (explicit user "Empty Trash" action), bypasses `gc_grace_secs` while still
+    /// enforcing active-lease, active-job, managed-root, and legacy protections.
+    #[serde(default)]
+    pub ignore_grace: bool,
+}
+
+/// Request parameters for `bundle.forget`.
+///
+/// Specify either `bundle_id` (forget a single missing entry) or `all_missing: true` (forget all
+/// catalog entries currently missing on disk). Never modifies or deletes files on disk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BundleForgetParams {
+    /// Specific catalog bundle identifier to remove if missing on disk.
+    pub bundle_id: Option<String>,
+    /// When `true`, removes every catalog entry whose directory is missing on disk.
+    #[serde(default)]
+    pub all_missing: bool,
+}
+
+/// Response payload for `bundle.forget`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleForgetResponse {
+    /// Missing bundle IDs removed from the catalog (zero disk writes).
+    pub forgotten_bundle_ids: Vec<String>,
+    /// Requested bundle IDs skipped because their directories still exist on disk.
+    pub skipped_present_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because their parent storage is currently unavailable.
+    pub skipped_storage_unavailable_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because active leases were present.
+    pub skipped_leased_bundle_ids: Vec<String>,
+    /// Bundle IDs skipped because active save jobs targeted their path.
+    pub skipped_active_job_bundle_ids: Vec<String>,
+    /// Expired or dead-PID leases reaped before evaluating forget eligibility.
+    #[serde(default)]
+    pub reaped_lease_ids: Vec<String>,
 }
 
 /// One bundle whose purge failed during `bundle.gc`.

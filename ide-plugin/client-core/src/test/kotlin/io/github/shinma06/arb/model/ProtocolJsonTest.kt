@@ -277,4 +277,34 @@ class ProtocolJsonTest {
         val legacy = gson.fromJson("""{$statusBase}""", SystemStatusResponse::class.java)
         assertEquals(false, legacy.captureEnabled)
     }
+
+    @Test
+    fun bundleEntryViewParsesDiskStateAndDefaultsMissingFieldToPresent() {
+        val base =
+            """"bundle_id":"b-1","path":"/tmp/b-1","format_version":"v2","state":"active","created_at_utc":"2026-11-25T00:00:00Z","active_leases":0"""
+        assertEquals(
+            BundleDiskState.PRESENT,
+            gson.fromJson("""{$base,"disk_state":"present"}""", BundleEntryView::class.java).diskState,
+        )
+        assertEquals(
+            BundleDiskState.MISSING,
+            gson.fromJson("""{$base,"disk_state":"missing"}""", BundleEntryView::class.java).diskState,
+        )
+        assertEquals(
+            BundleDiskState.STORAGE_UNAVAILABLE,
+            gson.fromJson("""{$base,"disk_state":"storage_unavailable"}""", BundleEntryView::class.java).diskState,
+        )
+        // Older arbd omitting `disk_state` must cleanly default to non-null PRESENT.
+        val legacyEntry = gson.fromJson("""{$base}""", BundleEntryView::class.java)
+        val diskState: BundleDiskState? = legacyEntry.diskState
+        assertEquals(BundleDiskState.PRESENT, diskState)
+
+        val forget = gson.fromJson(
+            """{"forgotten_bundle_ids":["b-1"],"skipped_present_bundle_ids":[],"skipped_storage_unavailable_bundle_ids":["b-2"],"skipped_leased_bundle_ids":[],"skipped_active_job_bundle_ids":[]}""",
+            BundleForgetResponse::class.java,
+        )
+        assertEquals(listOf("b-1"), forget.forgottenBundleIds)
+        assertEquals(listOf("b-2"), forget.skippedStorageUnavailableBundleIds)
+        assertEquals(emptyList(), forget.reapedLeaseIds)
+    }
 }

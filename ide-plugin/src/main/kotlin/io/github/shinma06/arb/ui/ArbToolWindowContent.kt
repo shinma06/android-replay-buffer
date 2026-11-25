@@ -332,11 +332,36 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
             }
             if (controller.showGcAction) {
                 ArbSubtleAction(
-                    label = "ゴミ箱を空にする",
+                    label = if (controller.gcBusy) "削除中..." else "ゴミ箱を空にする",
                     iconKey = AllIconsKeys.Actions.GC,
-                    tooltip = "猶予期間経過済みのゴミ箱バンドルを整理 (GC)",
+                    enabled = controller.emptyTrashEnabled,
+                    tooltip = "ゴミ箱内のバンドルを完全に削除（使用中・旧形式・外部保存先は保護）",
                     compact = true,
-                    onClick = { controller.runGc() },
+                    onClick = { controller.requestEmptyTrash() },
+                )
+            }
+        }
+
+        // Inline Compose/Jewel confirmation bar for Empty Trash (KON-3: zero Swing dialogs)
+        if (controller.showEmptyTrashConfirmation) {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                EmptyTrashConfirmBanner(
+                    trashCount = controller.trashCount,
+                    busy = controller.gcBusy,
+                    onConfirm = { controller.confirmEmptyTrash() },
+                    onCancel = { controller.cancelEmptyTrash() },
+                )
+            }
+        }
+
+        // Inline bulk-cleanup banner when manually deleted/moved bundles exist in catalog
+        if (controller.missingBundleCount > 0) {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                MissingBundlesBanner(
+                    missingCount = controller.missingBundleCount,
+                    enabled = capture.daemonConnected && !controller.forgetBusy,
+                    busy = controller.forgetBusy,
+                    onPruneAll = { controller.forgetAllMissingBundles() },
                 )
             }
         }
@@ -371,10 +396,12 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                     items(items, key = { it.bundleId }) { item ->
                         LibraryBundleRow(
                             item = item,
+                            forgetBusy = controller.forgetBusy,
                             onOpen = { controller.openBundle(item) },
                             onReveal = { controller.revealInFinder(item.path) },
                             onTrash = { controller.trashBundle(item.bundleId) },
                             onRestore = { controller.restoreBundle(item.bundleId) },
+                            onForget = { controller.forgetBundle(item.bundleId) },
                         )
                     }
                 }
@@ -618,24 +645,107 @@ private fun FailedSaveJobBanner(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EmptyTrashConfirmBanner(
+    trashCount: Int,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    ArbSoftBanner(
+        background = ArbJewelPalette.recRedSoft(),
+        accent = ArbJewelPalette.recRed(),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "ゴミ箱の $trashCount 件を完全に削除しますか？この操作は取り消せません。",
+                style = ArbJewelPalette.bodyStyle(sizeSp = 11f, bold = true, color = ArbJewelPalette.primaryText()),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                ArbSubtleAction(
+                    label = if (busy) "削除中..." else "完全に削除",
+                    iconKey = AllIconsKeys.Actions.GC,
+                    enabled = !busy,
+                    compact = true,
+                    tint = ArbJewelPalette.recRed(),
+                    onClick = onConfirm,
+                )
+                ArbSubtleAction(
+                    label = "キャンセル",
+                    enabled = !busy,
+                    compact = true,
+                    onClick = onCancel,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MissingBundlesBanner(
+    missingCount: Int,
+    enabled: Boolean,
+    busy: Boolean,
+    onPruneAll: () -> Unit,
+) {
+    ArbSoftBanner(
+        background = ArbJewelPalette.warningAmberSoft(),
+        accent = ArbJewelPalette.warningAmber(),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "フォルダが見つからないバンドルが $missingCount 件あります（手動削除・移動済み）",
+                style = ArbJewelPalette.bodyStyle(sizeSp = 11f, color = ArbJewelPalette.primaryText()),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                ArbSubtleAction(
+                    label = if (busy) "整理中..." else "一覧から一括整理",
+                    iconKey = AllIconsKeys.Actions.GC,
+                    enabled = enabled,
+                    compact = true,
+                    tint = ArbJewelPalette.warningAmber(),
+                    tooltip = "ディスクに存在しないバンドルをカタログ一覧から取り除きます（ファイル削除は行いません）",
+                    onClick = onPruneAll,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryBundleRow(
     item: BundleCatalogItem,
+    forgetBusy: Boolean,
     onOpen: () -> Unit,
     onReveal: () -> Unit,
     onTrash: () -> Unit,
     onRestore: () -> Unit,
+    onForget: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val shape = RoundedCornerShape(6.dp)
     val rowBg = if (hovered) ArbJewelPalette.subtleHoverFill() else Color.Transparent
     val iconKey = when {
+        item.isMissingOnDisk || item.isStorageUnavailable -> AllIconsKeys.General.Warning
         item.hasCrash -> AllIconsKeys.General.Error
         item.bundleKind == BundleKind.LOGS_ONLY -> AllIconsKeys.FileTypes.Text
         item.isTrimmed -> AllIconsKeys.Actions.Edit
         else -> AllIconsKeys.Actions.Execute
+    }
+    val titleColor = when {
+        item.isMissingOnDisk -> ArbJewelPalette.dimmedText()
+        item.isStorageUnavailable -> ArbJewelPalette.mutedText()
+        else -> ArbJewelPalette.primaryText()
     }
 
     Row(
@@ -666,7 +776,7 @@ private fun LibraryBundleRow(
         ) {
             Text(
                 text = item.displayTitle,
-                style = ArbJewelPalette.bodyStyle(sizeSp = 12f, bold = false, color = ArbJewelPalette.primaryText()),
+                style = ArbJewelPalette.bodyStyle(sizeSp = 12f, bold = false, color = titleColor),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -685,7 +795,10 @@ private fun LibraryBundleRow(
                     val (bg, fg) = when (tag) {
                         "クラッシュ" -> ArbJewelPalette.recRedSoft() to ArbJewelPalette.recRed()
                         "トリム済み" -> ArbJewelPalette.accentSoft() to ArbJewelPalette.accent()
-                        LEGACY_READ_ONLY_BADGE_TEXT -> ArbJewelPalette.warningAmberSoft() to ArbJewelPalette.warningAmber()
+                        BundleCatalogItem.MISSING_ON_DISK_BADGE_TEXT,
+                        BundleCatalogItem.STORAGE_UNAVAILABLE_BADGE_TEXT,
+                        LEGACY_READ_ONLY_BADGE_TEXT,
+                        -> ArbJewelPalette.warningAmberSoft() to ArbJewelPalette.warningAmber()
                         else -> ArbJewelPalette.subtleTrackFill() to ArbJewelPalette.mutedText()
                     }
                     ArbSemanticPill(label = tag, background = bg, foreground = fg)
@@ -694,18 +807,30 @@ private fun LibraryBundleRow(
         }
 
         // Subtle inline hover actions (borderless icons — no noisy buttons at rest!)
-        if (hovered) {
+        if (item.canForget) {
+            ArbSubtleAction(
+                label = "一覧から削除",
+                iconKey = AllIconsKeys.Actions.Cancel,
+                enabled = !forgetBusy,
+                compact = true,
+                tint = ArbJewelPalette.warningAmber(),
+                tooltip = "見つからないバンドルをカタログ一覧から取り除く（ディスク操作なし）",
+                onClick = onForget,
+            )
+        } else if (hovered) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                IconActionButton(
-                    key = AllIconsKeys.Nodes.Folder,
-                    contentDescription = "フォルダを表示",
-                    onClick = onReveal,
-                    modifier = Modifier.size(22.dp),
-                ) {
-                    Text("フォルダを表示")
+                if (item.canOpen) {
+                    IconActionButton(
+                        key = AllIconsKeys.Nodes.Folder,
+                        contentDescription = "フォルダを表示",
+                        onClick = onReveal,
+                        modifier = Modifier.size(22.dp),
+                    ) {
+                        Text("フォルダを表示")
+                    }
                 }
                 if (item.canTrash) {
                     IconActionButton(

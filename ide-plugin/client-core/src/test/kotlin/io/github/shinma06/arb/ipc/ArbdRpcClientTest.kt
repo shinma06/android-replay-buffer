@@ -231,4 +231,44 @@ class ArbdRpcClientTest {
             client.close()
         }
     }
+
+    @Test
+    fun `bundleGc ignoreGrace and bundleForget serialize exact wire payloads`() {
+        val gcJson =
+            """{"purged_bundle_ids":["b-1"],"skipped_leased_bundle_ids":[],"skipped_active_job_bundle_ids":[],"skipped_unmanaged_or_legacy_bundle_ids":[],"skipped_in_grace_bundle_ids":[]}"""
+        val forgetJson =
+            """{"forgotten_bundle_ids":["b-missing"],"skipped_present_bundle_ids":[],"skipped_storage_unavailable_bundle_ids":["b-unavail"],"skipped_leased_bundle_ids":[],"skipped_active_job_bundle_ids":[]}"""
+        val transport = FakeTransport(
+            listOf(
+                okResponse(1, gcJson),
+                okResponse(2, gcJson),
+                okResponse(3, forgetJson),
+                okResponse(4, forgetJson),
+            ),
+        )
+        val client = ArbdRpcClient(transport)
+        try {
+            client.bundleGc()
+            val p1 = JsonParser.parseString(transport.written[0]).asJsonObject.getAsJsonObject("params")
+            assertFalse(p1.has("ignore_grace"), "default bundleGc must omit ignore_grace for older daemon compat")
+
+            val gcImmediate = client.bundleGc(ignoreGrace = true)
+            assertEquals(listOf("b-1"), gcImmediate.purgedBundleIds)
+            val p2 = JsonParser.parseString(transport.written[1]).asJsonObject.getAsJsonObject("params")
+            assertEquals(true, p2.get("ignore_grace").asBoolean)
+
+            val f1 = client.bundleForget(bundleId = "b-missing")
+            assertEquals(listOf("b-missing"), f1.forgottenBundleIds)
+            val p3 = JsonParser.parseString(transport.written[2]).asJsonObject.getAsJsonObject("params")
+            assertEquals("b-missing", p3.get("bundle_id").asString)
+            assertFalse(p3.has("all_missing"))
+
+            val f2 = client.bundleForget(allMissing = true)
+            assertEquals(listOf("b-unavail"), f2.skippedStorageUnavailableBundleIds)
+            val p4 = JsonParser.parseString(transport.written[3]).asJsonObject.getAsJsonObject("params")
+            assertEquals(true, p4.get("all_missing").asBoolean)
+        } finally {
+            client.close()
+        }
+    }
 }

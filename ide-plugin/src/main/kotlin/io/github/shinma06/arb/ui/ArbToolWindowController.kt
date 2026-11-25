@@ -20,6 +20,9 @@ import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbConfigPatch
 import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.BundleDiskState
+import io.github.shinma06.arb.model.BundleForgetResponse
+import io.github.shinma06.arb.model.BundleGcResponse
 import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartParams
@@ -88,6 +91,11 @@ class ArbToolWindowController(
     private val screenshotDirResolver: () -> String? = {
         ArbScreenshotDestinationResolver.resolveOutputDir(project)
     },
+    private val onNotifyInfo: (String) -> Unit = { ArbNotifications.notifyInfo(project, it) },
+    private val onNotifyWarning: (String) -> Unit = { ArbNotifications.notifyWarning(project, it) },
+    private val onNotifyActionFailed: (String, String?) -> Unit = { op, detail ->
+        ArbNotifications.notifyActionFailed(project, op, detail)
+    },
 ) : Disposable {
     private val logger = Logger.getInstance(ArbToolWindowController::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
@@ -142,6 +150,15 @@ class ArbToolWindowController(
         private set
 
     var captureModeBusy: Boolean by mutableStateOf(false)
+        private set
+
+    var gcBusy: Boolean by mutableStateOf(false)
+        private set
+
+    var confirmEmptyTrashVisible: Boolean by mutableStateOf(false)
+        private set
+
+    var forgetBusy: Boolean by mutableStateOf(false)
         private set
 
     private val daemonStateListener = object : ArbDaemonStateListener {
@@ -324,6 +341,18 @@ class ArbToolWindowController(
 
     val showGcAction: Boolean
         get() = activeFilter == BundleFilter.TRASH
+
+    val trashCount: Int
+        get() = catalogState.countFor(BundleFilter.TRASH)
+
+    val missingBundleCount: Int
+        get() = catalogState.missingCount
+
+    val emptyTrashEnabled: Boolean
+        get() = captureState.daemonConnected && trashCount > 0 && !gcBusy
+
+    val showEmptyTrashConfirmation: Boolean
+        get() = activeFilter == BundleFilter.TRASH && confirmEmptyTrashVisible && emptyTrashEnabled
 
     private fun disabledDeviceHint(): String? {
         deviceSelectionNotice?.let { return it }
@@ -534,11 +563,26 @@ class ArbToolWindowController(
         publishOnEdt {
             activeFilter = filter
             catalogState = rawCatalogState.copy(activeFilter = filter)
+            if (filter != BundleFilter.TRASH) {
+                confirmEmptyTrashVisible = false
+            }
         }
     }
 
     fun openBundle(item: BundleCatalogItem) {
-        onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly)
+        when {
+            item.isMissingOnDisk -> {
+                val msg = "フォルダが見つかりません (${item.bundleId})。手動削除または移動された可能性があります。一覧から削除できます。"
+                publishOnEdt { catalogNote = msg }
+                onNotifyWarning(msg)
+            }
+            item.isStorageUnavailable -> {
+                val msg = "保存先にアクセスできません (${item.bundleId})。外付けドライブの接続やアクセス権限を確認してください。"
+                publishOnEdt { catalogNote = msg }
+                onNotifyWarning(msg)
+            }
+            item.canOpen -> onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly)
+        }
     }
 
     fun revealInFinder(path: String) {
@@ -560,11 +604,102 @@ class ArbToolWindowController(
         }
     }
 
-    fun runGc() {
+    fun requestEmptyTrash() {
+        if (!showGcAction || !emptyTrashEnabled) return
+        publishOnEdt { confirmEmptyTrashVisible = true }
+    }
+
+    fun cancelEmptyTrash() {
+        publishOnEdt { confirmEmptyTrashVisible = false }
+    }
+
+    fun confirmEmptyTrash() {
+        publishOnEdt {
+            if (!showEmptyTrashConfirmation) return@publishOnEdt
+            confirmEmptyTrashVisible = false
+            gcBusy = true
+            executeEmptyTrash()
+        }
+    }
+
+    private fun executeEmptyTrash() {
         runAsync {
-            val gc = daemonService.withClient { it.bundleGc() }
-            val note = "GC 完了: 削除=${gc.purgedBundleIds.size}, Lease 保護=${gc.skippedLeasedBundleIds.size}, Legacy 保護=${gc.skippedUnmanagedOrLegacyBundleIds.size}"
-            refreshAll(note = note)
+            try {
+                val gc = daemonService.withClient { it.bundleGc(ignoreGrace = true) }
+                val note = formatGcSummary(gc)
+                val (isWarning, notificationText) = formatGcNotification(gc)
+                if (isWarning) {
+                    onNotifyWarning(notificationText)
+                } else {
+                    onNotifyInfo(notificationText)
+                }
+                refreshAll(note = note)
+            } catch (t: Throwable) {
+                logger.warn("ARB bundle.gc(ignore_grace=true) failed", t)
+                val msg = "ゴミ箱を空にできませんでした: ${t.message ?: "詳細不明"}"
+                publishOnEdt { catalogNote = msg }
+                onNotifyActionFailed("ゴミ箱を空にする", t.message)
+                handleDaemonFailure(t)
+            } finally {
+                publishOnEdt { gcBusy = false }
+            }
+        }
+    }
+
+    fun forgetBundle(bundleId: String) {
+        if (forgetBusy) return
+        publishOnEdt { forgetBusy = true }
+        runAsync {
+            try {
+                val res = daemonService.withClient { it.bundleForget(bundleId = bundleId) }
+                val note = formatForgetSummary(res)
+                val hasSkipped = res.skippedPresentBundleIds.isNotEmpty() ||
+                    res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
+                    res.skippedLeasedBundleIds.isNotEmpty() ||
+                    res.skippedActiveJobBundleIds.isNotEmpty()
+                if (hasSkipped) {
+                    onNotifyWarning(note)
+                } else {
+                    onNotifyInfo(note)
+                }
+                refreshAll(note = note)
+            } catch (t: Throwable) {
+                logger.warn("ARB bundle.forget($bundleId) failed", t)
+                val msg = "一覧から削除できませんでした: ${t.message ?: "詳細不明"}"
+                publishOnEdt { catalogNote = msg }
+                onNotifyActionFailed("一覧からの削除", t.message)
+                handleDaemonFailure(t)
+            } finally {
+                publishOnEdt { forgetBusy = false }
+            }
+        }
+    }
+
+    fun forgetAllMissingBundles() {
+        if (forgetBusy) return
+        publishOnEdt { forgetBusy = true }
+        runAsync {
+            try {
+                val res = daemonService.withClient { it.bundleForget(allMissing = true) }
+                val note = formatForgetSummary(res)
+                val hasSkipped = res.skippedStorageUnavailableBundleIds.isNotEmpty() ||
+                    res.skippedLeasedBundleIds.isNotEmpty() ||
+                    res.skippedActiveJobBundleIds.isNotEmpty()
+                if (hasSkipped) {
+                    onNotifyWarning(note)
+                } else {
+                    onNotifyInfo(note)
+                }
+                refreshAll(note = note)
+            } catch (t: Throwable) {
+                logger.warn("ARB bundle.forget(all_missing=true) failed", t)
+                val msg = "見つからないバンドルの一括整理に失敗しました: ${t.message ?: "詳細不明"}"
+                publishOnEdt { catalogNote = msg }
+                onNotifyActionFailed("見つからないバンドルの一括整理", t.message)
+                handleDaemonFailure(t)
+            } finally {
+                publishOnEdt { forgetBusy = false }
+            }
         }
     }
 
@@ -725,8 +860,11 @@ class ArbToolWindowController(
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
 
+            metaCache.keys.retainAll(bundles.mapTo(mutableSetOf()) { it.bundleId })
+
             var budget = META_BUDGET_PER_POLL
             for (entry in bundles) {
+                if (entry.diskState != BundleDiskState.PRESENT) continue
                 if (metaCache.containsKey(entry.bundleId)) continue
                 if (budget-- <= 0) break
                 val summary = runCatching {
@@ -782,7 +920,8 @@ class ArbToolWindowController(
                 captureState = nextCapture
                 captureEnabled = armed
                 recoveryState = nextRecovery
-                catalogState = nextCatalog
+                catalogState = nextCatalog.copy(activeFilter = activeFilter)
+                if (trashCount == 0) confirmEmptyTrashVisible = false
                 staleDaemonMessage = staleWarning
                 if (note != null) {
                     catalogNote = note
@@ -813,6 +952,7 @@ class ArbToolWindowController(
         )
         publishOnEdt {
             captureState = next
+            confirmEmptyTrashVisible = false
             if (stale != null) {
                 staleDaemonMessage = stale
             }
@@ -892,6 +1032,81 @@ class ArbToolWindowController(
             AdbDeviceState.Recovery -> "${device.serial} (recovery)"
             AdbDeviceState.Bootloader -> "${device.serial} (bootloader)"
             is AdbDeviceState.Unknown -> "${device.serial} (${st.value})"
+        }
+
+        /** Formats a concise 1-line summary of all non-zero `bundle.gc` outcome buckets. */
+        fun formatGcSummary(gc: BundleGcResponse): String {
+            val parts = buildList {
+                if (gc.purgedBundleIds.isNotEmpty()) add("削除=${gc.purgedBundleIds.size}")
+                if (gc.skippedLeasedBundleIds.isNotEmpty()) add("使用中(Lease)保護=${gc.skippedLeasedBundleIds.size}")
+                if (gc.skippedInGraceBundleIds.isNotEmpty()) add("猶予中=${gc.skippedInGraceBundleIds.size}")
+                if (gc.skippedUnmanagedOrLegacyBundleIds.isNotEmpty()) {
+                    add("外部保存先/旧形式保護=${gc.skippedUnmanagedOrLegacyBundleIds.size}")
+                }
+                if (gc.skippedActiveJobBundleIds.isNotEmpty()) {
+                    add("保存ジョブ保護=${gc.skippedActiveJobBundleIds.size}")
+                }
+                if (gc.failed.isNotEmpty()) add("失敗=${gc.failed.size}")
+            }
+            return if (parts.isEmpty()) {
+                "ゴミ箱に削除対象はありませんでした"
+            } else {
+                "ゴミ箱整理完了: ${parts.joinToString(", ")}"
+            }
+        }
+
+        /**
+         * Returns `(isWarning, message)` for the IDE balloon notification after emptying trash.
+         * Explains clearly why any trashed items remain protected or failed.
+         */
+        fun formatGcNotification(gc: BundleGcResponse): Pair<Boolean, String> {
+            val summary = formatGcSummary(gc)
+            val hasSkipsOrFailures = gc.skippedLeasedBundleIds.isNotEmpty() ||
+                gc.skippedInGraceBundleIds.isNotEmpty() ||
+                gc.skippedUnmanagedOrLegacyBundleIds.isNotEmpty() ||
+                gc.skippedActiveJobBundleIds.isNotEmpty() ||
+                gc.failed.isNotEmpty()
+            if (!hasSkipsOrFailures) {
+                return false to summary
+            }
+            val hints = buildList {
+                if (gc.skippedLeasedBundleIds.isNotEmpty()) {
+                    add("ビューワで開いているバンドルはタブを閉じてから削除してください")
+                }
+                if (gc.skippedUnmanagedOrLegacyBundleIds.isNotEmpty()) {
+                    add("外部保存先・旧形式バンドルは安全のため自動削除していません")
+                }
+                if (gc.skippedInGraceBundleIds.isNotEmpty()) {
+                    add("猶予期間内の項目が残っています")
+                }
+                if (gc.skippedActiveJobBundleIds.isNotEmpty()) {
+                    add("保存処理中の項目は保護されています")
+                }
+                if (gc.failed.isNotEmpty()) {
+                    add("削除失敗: ${gc.failed.first().error}")
+                }
+            }
+            return true to "$summary（${hints.joinToString(" / ")}）"
+        }
+
+        /** Formats a concise summary of a non-destructive `bundle.forget` response. */
+        fun formatForgetSummary(res: BundleForgetResponse): String {
+            val parts = buildList {
+                if (res.forgottenBundleIds.isNotEmpty()) add("一覧から削除=${res.forgottenBundleIds.size}")
+                if (res.skippedPresentBundleIds.isNotEmpty()) add("実在のためスキップ=${res.skippedPresentBundleIds.size}")
+                if (res.skippedStorageUnavailableBundleIds.isNotEmpty()) {
+                    add("保存先未接続のため保護=${res.skippedStorageUnavailableBundleIds.size}")
+                }
+                if (res.skippedLeasedBundleIds.isNotEmpty()) add("使用中(Lease)保護=${res.skippedLeasedBundleIds.size}")
+                if (res.skippedActiveJobBundleIds.isNotEmpty()) {
+                    add("保存ジョブ保護=${res.skippedActiveJobBundleIds.size}")
+                }
+            }
+            return if (parts.isEmpty()) {
+                "一覧から整理する対象はありませんでした"
+            } else {
+                "一覧整理完了: ${parts.joinToString(", ")}"
+            }
         }
     }
 }

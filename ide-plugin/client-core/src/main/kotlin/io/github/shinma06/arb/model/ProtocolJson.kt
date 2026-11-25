@@ -31,6 +31,7 @@ object ProtocolJson {
         .registerWireEnum(SaveJobState::class.java, SaveJobState::wire, SaveJobState::fromWire)
         .registerWireEnum(CatalogFormatVersion::class.java, CatalogFormatVersion::wire, CatalogFormatVersion::fromWire)
         .registerWireEnum(BundleLifecycleState::class.java, BundleLifecycleState::wire, BundleLifecycleState::fromWire)
+        .registerWireEnum(BundleDiskState::class.java, BundleDiskState::wire, BundleDiskState::fromWire)
         .registerWireEnum(BundleFormat::class.java, BundleFormat::wire, BundleFormat::fromWire)
         .registerWireEnum(LeaseHolderKind::class.java, LeaseHolderKind::wire, LeaseHolderKind::fromWire)
         .registerWireEnum(QueryBucket::class.java, QueryBucket::wire, QueryBucket::fromWire)
@@ -48,6 +49,9 @@ object ProtocolJson {
         .registerTypeHierarchyAdapter(Provenance::class.java, ProvenanceAdapter)
         .registerTypeHierarchyAdapter(TimeAlignment::class.java, TimeAlignmentAdapter)
         .registerTypeAdapter(TapRecord::class.java, TapRecordAdapter)
+        .registerTypeAdapter(BundleEntryView::class.java, BundleEntryViewAdapter)
+        .registerTypeAdapter(BundleGcResponse::class.java, BundleGcResponseAdapter)
+        .registerTypeAdapter(BundleForgetResponse::class.java, BundleForgetResponseAdapter)
         .registerTypeAdapter(MediaOpenViewportResponse::class.java, MediaOpenViewportResponseAdapter)
         .create()
 
@@ -238,6 +242,75 @@ object ProtocolJson {
             )
         }
     }
+
+    // Older daemons omit `disk_state`; deserialize explicitly so `diskState` defaults to PRESENT.
+    private object BundleEntryViewAdapter : JsonDeserializer<BundleEntryView> {
+        override fun deserialize(
+            json: JsonElement,
+            typeOfT: Type,
+            context: JsonDeserializationContext,
+        ): BundleEntryView {
+            val obj = json.asJsonObject
+            return BundleEntryView(
+                bundleId = obj.requireString("bundle_id"),
+                path = obj.requireString("path"),
+                formatVersion = CatalogFormatVersion.fromWire(obj.requireString("format_version")),
+                state = BundleLifecycleState.fromWire(obj.requireString("state")),
+                trashedAtUtc = obj.optString("trashed_at_utc"),
+                parentBundleId = obj.optString("parent_bundle_id"),
+                createdAtUtc = obj.requireString("created_at_utc"),
+                activeLeases = obj.requireLong("active_leases").toInt(),
+                diskState = obj.optString("disk_state")?.let(BundleDiskState::fromWire) ?: BundleDiskState.PRESENT,
+            )
+        }
+    }
+
+    private object BundleGcResponseAdapter : JsonDeserializer<BundleGcResponse> {
+        override fun deserialize(
+            json: JsonElement,
+            typeOfT: Type,
+            context: JsonDeserializationContext,
+        ): BundleGcResponse {
+            val obj = json.asJsonObject
+            val failed = obj.get("failed")?.takeUnless { it.isJsonNull }?.asJsonArray?.map { el ->
+                val item = el.asJsonObject
+                BundleGcFailure(
+                    bundleId = item.requireString("bundle_id"),
+                    error = item.requireString("error"),
+                )
+            } ?: emptyList()
+            return BundleGcResponse(
+                purgedBundleIds = obj.optStringList("purged_bundle_ids"),
+                skippedLeasedBundleIds = obj.optStringList("skipped_leased_bundle_ids"),
+                skippedActiveJobBundleIds = obj.optStringList("skipped_active_job_bundle_ids"),
+                skippedUnmanagedOrLegacyBundleIds = obj.optStringList("skipped_unmanaged_or_legacy_bundle_ids"),
+                skippedInGraceBundleIds = obj.optStringList("skipped_in_grace_bundle_ids"),
+                failed = failed,
+                reapedLeaseIds = obj.optStringList("reaped_lease_ids"),
+            )
+        }
+    }
+
+    private object BundleForgetResponseAdapter : JsonDeserializer<BundleForgetResponse> {
+        override fun deserialize(
+            json: JsonElement,
+            typeOfT: Type,
+            context: JsonDeserializationContext,
+        ): BundleForgetResponse {
+            val obj = json.asJsonObject
+            return BundleForgetResponse(
+                forgottenBundleIds = obj.optStringList("forgotten_bundle_ids"),
+                skippedPresentBundleIds = obj.optStringList("skipped_present_bundle_ids"),
+                skippedStorageUnavailableBundleIds = obj.optStringList("skipped_storage_unavailable_bundle_ids"),
+                skippedLeasedBundleIds = obj.optStringList("skipped_leased_bundle_ids"),
+                skippedActiveJobBundleIds = obj.optStringList("skipped_active_job_bundle_ids"),
+                reapedLeaseIds = obj.optStringList("reaped_lease_ids"),
+            )
+        }
+    }
+
+    private fun JsonObject.optStringList(key: String): List<String> =
+        get(key)?.takeUnless { it.isJsonNull }?.asJsonArray?.map { it.asString } ?: emptyList()
 
     // `MediaOpenViewportResponse` has required fields, so Gson would bypass the Kotlin default and
     // leave `framePtsNs` null for older daemons that omit `frame_pts_ns` (H8): parse explicitly.
