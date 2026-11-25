@@ -1118,8 +1118,8 @@ fn k4_ring_eviction_plan_realistic_sizes_n4() {
     check_plan(4, true);
 }
 
-/// Same one-chunk safety half over full-`u64` sizes. Kept `kani-extended`: it took 24 s locally
-/// but 68 s on the CI Linux runner, over the 60 s bound of the required set. Splitting it per
+/// Same one-chunk safety half over full-`u64` sizes. Kept `kani-extended` conservatively: it took
+/// 24 s locally but 68 s on the CI Linux runner (docs/proofs/tcb-axioms.md §3.1). Splitting it per
 /// `(status, pin)` or per evictable/protected chunk, or switching to MiniSat or Kissat, did not
 /// bring a single harness below 17 s locally (one SAT call dominates).
 #[cfg_attr(
