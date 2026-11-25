@@ -1389,6 +1389,7 @@ mod tests {
                 write_frame_line(r2.get_mut(), &resp.to_string(), DEFAULT_MAX_IPC_LINE_BYTES)
                     .unwrap();
             }
+            r2.get_mut().drain().unwrap();
         });
 
         let mut closed_client = super::RpcClient::connect_endpoint(&endpoint).unwrap();

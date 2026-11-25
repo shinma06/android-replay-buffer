@@ -957,6 +957,7 @@ mod tests {
                 DEFAULT_MAX_IPC_LINE_BYTES,
             )
             .unwrap();
+            reader.get_mut().drain().unwrap();
         });
         let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
         let huge = "x".repeat(DEFAULT_MAX_IPC_LINE_BYTES + 1);
@@ -994,6 +995,7 @@ mod tests {
                 DEFAULT_MAX_IPC_LINE_BYTES,
             )
             .unwrap();
+            reader.get_mut().drain().unwrap();
         });
         let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
         assert!(matches!(
