@@ -453,6 +453,45 @@ impl RingEvictionPlanner {
         incoming_bytes: u64,
         host_free_bytes: u64,
     ) -> RingWriteDecision {
+        let mut order = vec![0; chunks.len()];
+        match self.plan_indices(chunks, incoming_bytes, host_free_bytes, &mut order) {
+            RingPlan::Allow { evict_count } => RingWriteDecision::Allow {
+                evict_chunk_ids: order[..evict_count]
+                    .iter()
+                    .map(|&i| chunks[i].chunk_id.clone())
+                    .collect(),
+            },
+            RingPlan::StopStoragePressure { pinned_bytes } => {
+                RingWriteDecision::StopStoragePressure {
+                    host_free_bytes,
+                    min_free_disk_bytes: self.policy.min_free_disk_bytes,
+                    pinned_bytes,
+                }
+            }
+            RingPlan::ChunkTooLarge => RingWriteDecision::ChunkTooLarge,
+            RingPlan::StopRingFullPinned {
+                remaining_bytes,
+                pinned_bytes,
+            } => RingWriteDecision::StopRingFullPinned {
+                remaining_bytes,
+                incoming_bytes,
+                max_ring_bytes: self.policy.max_ring_bytes,
+                pinned_bytes,
+            },
+        }
+    }
+
+    /// Index-level core of [`Self::plan`]. Writes the indices of the evictable chunks into
+    /// `order` (length at least `chunks.len()`) sorted oldest first by
+    /// `(created_cont_ns, chunk_id)`; on [`RingPlan::Allow`] the evicted chunks are
+    /// `order[..evict_count]`, in eviction order.
+    pub(crate) fn plan_indices(
+        &self,
+        chunks: &[RingChunkMeta],
+        incoming_bytes: u64,
+        host_free_bytes: u64,
+        order: &mut [usize],
+    ) -> RingPlan {
         let pinned_bytes: u64 = chunks
             .iter()
             .filter(|c| c.pin == PinStatus::Pinned)
@@ -461,51 +500,77 @@ impl RingEvictionPlanner {
         if host_free_bytes < self.policy.min_free_disk_bytes
             || host_free_bytes.saturating_sub(incoming_bytes) < self.policy.min_free_disk_bytes
         {
-            return RingWriteDecision::StopStoragePressure {
-                host_free_bytes,
-                min_free_disk_bytes: self.policy.min_free_disk_bytes,
-                pinned_bytes,
-            };
+            return RingPlan::StopStoragePressure { pinned_bytes };
         }
 
         let mut total_bytes: u128 = chunks.iter().map(|c| u128::from(c.bytes)).sum();
         let mut total_duration_ns: u128 = chunks.iter().map(|c| u128::from(c.duration_ns)).sum();
         if incoming_bytes > self.policy.max_ring_bytes {
-            return RingWriteDecision::ChunkTooLarge;
+            return RingPlan::ChunkTooLarge;
         }
 
-        let mut evictable: Vec<&RingChunkMeta> =
-            chunks.iter().filter(|c| c.is_evictable()).collect();
-        evictable.sort_by(|a, b| {
-            a.created_cont_ns
-                .cmp(&b.created_cont_ns)
-                .then_with(|| a.chunk_id.cmp(&b.chunk_id))
+        let mut evictable_count = 0;
+        for (i, c) in chunks.iter().enumerate() {
+            if c.is_evictable() {
+                order[evictable_count] = i;
+                evictable_count += 1;
+            }
+        }
+        let evictable = &mut order[..evictable_count];
+        evictable.sort_by(|&a, &b| {
+            chunks[a]
+                .created_cont_ns
+                .cmp(&chunks[b].created_cont_ns)
+                .then_with(|| chunks[a].chunk_id.cmp(&chunks[b].chunk_id))
         });
 
-        let mut evict_chunk_ids = Vec::new();
-        for candidate in evictable {
+        let mut evict_count = 0;
+        for &candidate in &*evictable {
             let over_bytes =
                 total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes);
             let over_duration = total_duration_ns > u128::from(self.policy.max_ring_duration_ns);
             if !over_bytes && !over_duration {
                 break;
             }
-            evict_chunk_ids.push(candidate.chunk_id.clone());
-            total_bytes -= u128::from(candidate.bytes);
-            total_duration_ns -= u128::from(candidate.duration_ns);
+            evict_count += 1;
+            total_bytes -= u128::from(chunks[candidate].bytes);
+            total_duration_ns -= u128::from(chunks[candidate].duration_ns);
         }
 
         if total_bytes + u128::from(incoming_bytes) > u128::from(self.policy.max_ring_bytes) {
-            return RingWriteDecision::StopRingFullPinned {
+            return RingPlan::StopRingFullPinned {
                 remaining_bytes: u64::try_from(total_bytes).unwrap_or(u64::MAX),
-                incoming_bytes,
-                max_ring_bytes: self.policy.max_ring_bytes,
                 pinned_bytes,
             };
         }
 
-        RingWriteDecision::Allow { evict_chunk_ids }
+        RingPlan::Allow { evict_count }
     }
+}
+
+/// Scalar outcome of [`RingEvictionPlanner::plan_indices`]; [`RingEvictionPlanner::plan`]
+/// maps it to a [`RingWriteDecision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RingPlan {
+    /// Write allowed after evicting the first `evict_count` entries of the order buffer.
+    Allow {
+        /// Number of evicted chunks.
+        evict_count: usize,
+    },
+    /// Host free space is below the floor.
+    StopStoragePressure {
+        /// Total bytes held by pinned chunks.
+        pinned_bytes: u64,
+    },
+    /// The incoming chunk exceeds the whole ring budget.
+    ChunkTooLarge,
+    /// Ring quota stays full with only pinned or open chunks left.
+    StopRingFullPinned {
+        /// Remaining ring bytes after every eviction.
+        remaining_bytes: u64,
+        /// Total bytes held by pinned chunks.
+        pinned_bytes: u64,
+    },
 }
 
 #[cfg(test)]
