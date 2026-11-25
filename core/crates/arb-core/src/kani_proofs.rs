@@ -1118,9 +1118,16 @@ fn k4_ring_eviction_plan_realistic_sizes_n4() {
     check_plan(4, true);
 }
 
-#[kani::proof]
-#[kani::unwind(6)]
-#[kani::stub(alloc::slice::stable_sort, stable_sort_stub)]
+/// Same one-chunk safety half over full-`u64` sizes. Kept `kani-extended`: it took 24 s locally
+/// but 68 s on the CI Linux runner, over the 60 s bound of the required set. Splitting it per
+/// `(status, pin)` or per evictable/protected chunk, or switching to MiniSat or Kissat, did not
+/// bring a single harness below 17 s locally (one SAT call dominates).
+#[cfg_attr(
+    feature = "kani-extended",
+    kani::proof,
+    kani::unwind(6),
+    kani::stub(alloc::slice::stable_sort, stable_sort_stub)
+)]
 fn k4_ring_eviction_plan_extreme_u64_n1() {
     check_plan_safety(&k4_case(1, false));
 }
