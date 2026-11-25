@@ -836,3 +836,75 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
 
     server.shutdown();
 }
+
+#[test]
+fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
+    use arb_adb::mock::FaultScenario;
+    use arb_os::rpc::RpcClient;
+    use arbd::capture::FaultInjection;
+    use std::sync::atomic::Ordering;
+
+    let tmp = TempDir::new().unwrap();
+    let paths = ArbPaths {
+        data_dir: tmp.path().join("data"),
+        cache_dir: tmp.path().join("cache"),
+        runtime_dir: tmp.path().join("run"),
+    };
+    let faults = Arc::new(FaultInjection::default());
+    let server = DaemonServer::start(
+        DaemonConfig::new(paths.clone()).with_fault_injection(Arc::clone(&faults)),
+    )
+    .unwrap();
+    server
+        .ingest_device_source_with_mode(
+            &mut FaultScenario::NormalFhd30.build(),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    let mut rpc = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_arb-cli"))
+        .arg("--data-dir")
+        .arg(&paths.data_dir)
+        .arg("--cache-dir")
+        .arg(&paths.cache_dir)
+        .arg("--runtime-dir")
+        .arg(&paths.runtime_dir)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    for name in ["arb_save", "arb_save_logs"] {
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}});
+        faults.fail_complete_job_once.store(true, Ordering::Release);
+        let failed = send_mcp_request(&mut stdin, &mut stdout, &request);
+        assert_eq!(failed["result"]["isError"], true, "{name}: {failed}");
+        let body: Value =
+            serde_json::from_str(failed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(body["bundle_id"].is_null());
+        let job = &body["job"];
+        assert_eq!(job["state"], "failed_retryable");
+        assert!(
+            job["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("injected complete_job failure")
+        );
+        assert!(job["pinned_chunk_ids"][0].is_string(), "{job}");
+        // Recovery is exposed by the daemon/CLI; MCP offers only the two save entry points.
+        let recovered = rpc
+            .call("save.retry", json!({"job_id":job["job_id"]}))
+            .unwrap();
+        assert_eq!(recovered["job"]["job_id"], job["job_id"]);
+        assert_eq!(recovered["job"]["state"], "completed");
+        assert!(recovered["bundle_id"].is_string());
+        let success = send_mcp_request(&mut stdin, &mut stdout, &request);
+        assert_eq!(success["result"]["isError"], false, "{success}");
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    drop(rpc);
+    drop(server);
+}

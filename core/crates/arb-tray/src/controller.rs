@@ -776,6 +776,26 @@ fn parse_save_job(raw: &Value) -> Option<SaveJobSummary> {
     })
 }
 
+fn parse_jobs(jobs_response: &Value) -> (Vec<SaveJobSummary>, Vec<String>) {
+    let mut jobs = Vec::new();
+    let mut section_errors = Vec::new();
+    if let Some(entries) = jobs_response.get("jobs").and_then(Value::as_array) {
+        for raw in entries {
+            if let Some(job) = parse_save_job(raw) {
+                jobs.push(job);
+            } else {
+                let id = raw["job_id"].as_str().unwrap_or("ID 不明");
+                let state = raw["state"].as_str().unwrap_or("状態なし");
+                let reason = raw["last_error"].as_str().unwrap_or("詳細なし");
+                section_errors.push(format!(
+                    "保存ジョブ {id} の状態を読めません（{state}、{reason}）"
+                ));
+            }
+        }
+    }
+    (jobs, section_errors)
+}
+
 fn parse_bundle(raw: &Value) -> Option<RecentBundleSummary> {
     let bundle_id = raw.get("bundle_id")?.as_str()?.to_owned();
     let path = raw
@@ -935,12 +955,7 @@ fn build_view_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let jobs: Vec<SaveJobSummary> = jobs_response
-        .get("jobs")
-        .and_then(Value::as_array)
-        .map_or_else(Vec::new, |arr| {
-            arr.iter().filter_map(parse_save_job).collect()
-        });
+    let (jobs, section_errors) = parse_jobs(jobs_response);
 
     let bundles: Vec<RecentBundleSummary> = bundles_response
         .get("bundles")
@@ -977,7 +992,7 @@ fn build_view_state(
         jobs,
         bundles,
         capture_enabled,
-        section_errors: Vec::new(),
+        section_errors,
     }
 }
 
@@ -1059,7 +1074,7 @@ impl TrayController {
             &jobs.unwrap_or_default(),
             &bundles.unwrap_or_default(),
         );
-        state.section_errors = section_errors;
+        state.section_errors.extend(section_errors);
         Ok(state)
     }
 
@@ -1955,5 +1970,86 @@ mod tests {
                 "capture_enabled label must be emoji-free"
             );
         }
+    }
+    #[test]
+    fn unknown_job_state_is_visible_without_retry_or_discard_actions() {
+        let jobs = json!({"jobs":[{"job_id":"job-new", "state":"future_state","last_error":"storage unavailable"}]});
+        let view = build_view_state(&json!({}), &json!({}), &json!({}), &jobs, &json!({}));
+        let menu = build_menu(&view);
+        assert!(menu.iter().any(|item| item.label.contains("job-new")
+            && item.label.contains("future_state")
+            && item.label.contains("storage unavailable")));
+        assert!(view.failed_jobs().next().is_none());
+    }
+    #[test]
+    fn timed_out_menu_action_reconnects_on_the_next_refresh_without_replay() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stalled = std::io::BufReader::new(listener.accept().unwrap());
+            stalled
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .unwrap();
+            let req = read_frame_line(&mut stalled, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&req).unwrap()["method"],
+                "save.retry"
+            );
+            assert!(
+                read_frame_line(&mut stalled, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+            drop(stalled);
+            let mut fresh = std::io::BufReader::new(listener.accept().unwrap());
+            for method in [
+                "system.hello",
+                "system.status",
+                "config.get",
+                "device.list",
+                "save.list_jobs",
+                "bundle.list",
+            ] {
+                let line = read_frame_line(&mut fresh, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(req["method"], method);
+                let response =
+                    json!({"jsonrpc":"2.0","id":req["id"],"result":{"protocol_version":1}});
+                write_frame_line(
+                    fresh.get_mut(),
+                    &response.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                )
+                .unwrap();
+            }
+            fresh.get_mut().drain().unwrap();
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        client.set_default_timeout(Duration::from_millis(250));
+        client.set_long_timeout(Duration::from_millis(250));
+        let mut tray = TrayController::new(paths, AutoStartMode::Disabled, Duration::from_secs(1));
+        tray.client = Some(client);
+        let err = tray
+            .dispatch(&TrayMenuEvent::RetryJob {
+                job_id: "old-job".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, RpcClientError::Timeout));
+        assert!(tray.poll_once().0.daemon_online);
+        server.join().unwrap();
     }
 }

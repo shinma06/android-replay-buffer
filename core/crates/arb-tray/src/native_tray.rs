@@ -400,9 +400,9 @@ trait TrayBackend {
     /// Updates labels / enabled states of existing live items.
     fn apply_in_place(&mut self, updates: &[InPlaceUpdate]);
     /// Replaces the items *inside* the existing root menu (never `set_menu`).
-    fn replace_menu_items(&mut self, items: &[ModelMenuItem]);
-    fn set_icon(&mut self, icon: &IconImage);
-    fn set_tooltip(&mut self, tooltip: &str);
+    fn replace_menu_items(&mut self, items: &[ModelMenuItem]) -> Result<(), String>;
+    fn set_icon(&mut self, icon: &IconImage) -> Result<(), String>;
+    fn set_tooltip(&mut self, tooltip: &str) -> Result<(), String>;
     /// `true` while the user has the tray menu open (macOS menu tracking).
     fn menu_is_tracking(&self) -> bool;
 }
@@ -421,9 +421,15 @@ impl TrayBackend for HeadlessBackend {
         Ok(())
     }
     fn apply_in_place(&mut self, _updates: &[InPlaceUpdate]) {}
-    fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) {}
-    fn set_icon(&mut self, _icon: &IconImage) {}
-    fn set_tooltip(&mut self, _tooltip: &str) {}
+    fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_icon(&mut self, _icon: &IconImage) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_tooltip(&mut self, _tooltip: &str) -> Result<(), String> {
+        Ok(())
+    }
     fn menu_is_tracking(&self) -> bool {
         false
     }
@@ -438,10 +444,9 @@ enum NativeNode {
 
 /// Builds real `muda` items for `items`, returning the boxed items to append and the live node
 /// handles (`muda` items are reference-counted, so both refer to the same native item).
-fn build_native_items(
-    items: &[ModelMenuItem],
-    next_id: &mut u64,
-) -> (Vec<Box<dyn IsMenuItem>>, Vec<NativeNode>) {
+type NativeItems = (Vec<Box<dyn IsMenuItem>>, Vec<NativeNode>);
+
+fn build_native_items(items: &[ModelMenuItem], next_id: &mut u64) -> Result<NativeItems, String> {
     let mut boxed: Vec<Box<dyn IsMenuItem>> = Vec::with_capacity(items.len());
     let mut nodes = Vec::with_capacity(items.len());
     for item in items {
@@ -458,15 +463,15 @@ fn build_native_items(
             boxed.push(Box::new(native.clone()));
             nodes.push(NativeNode::Item(native));
         } else {
-            let (children, child_nodes) = build_native_items(&item.children, next_id);
+            let (children, child_nodes) = build_native_items(&item.children, next_id)?;
             let child_refs: Vec<&dyn IsMenuItem> = children.iter().map(AsRef::as_ref).collect();
             let submenu = Submenu::with_items(&item.label, item.enabled, &child_refs)
-                .expect("submenu construction from freshly built in-process items cannot fail");
+                .map_err(|err| format!("サブメニューの構築に失敗: {err}"))?;
             boxed.push(Box::new(submenu.clone()));
             nodes.push(NativeNode::Submenu(submenu, child_nodes));
         }
     }
-    (boxed, nodes)
+    Ok((boxed, nodes))
 }
 
 fn node_at<'a>(nodes: &'a [NativeNode], path: &[usize]) -> Option<&'a NativeNode> {
@@ -498,14 +503,15 @@ impl NativeBackend {
         }
     }
 
-    fn populate_root(&mut self, items: &[ModelMenuItem]) {
+    fn populate_root(&mut self, items: &[ModelMenuItem]) -> Result<(), String> {
         let mut next_id = 0_u64;
-        let (boxed, nodes) = build_native_items(items, &mut next_id);
+        let (boxed, nodes) = build_native_items(items, &mut next_id)?;
         let refs: Vec<&dyn IsMenuItem> = boxed.iter().map(AsRef::as_ref).collect();
-        if let Err(err) = self.root.append_items(&refs) {
-            eprintln!("[arb-tray] failed to append tray menu items: {err}");
-        }
+        self.root
+            .append_items(&refs)
+            .map_err(|err| format!("メニュー項目の追加に失敗: {err}"))?;
         self.nodes = nodes;
+        Ok(())
     }
 
     /// Linux `ksni` serves a D-Bus snapshot that is only re-read when the tray is updated, so
@@ -533,7 +539,7 @@ impl TrayBackend for NativeBackend {
         icon: &IconImage,
         tooltip: &str,
     ) -> Result<(), String> {
-        self.populate_root(items);
+        self.populate_root(items)?;
         let builder = TrayIconBuilder::new()
             .with_menu(Box::new(self.root.clone()))
             .with_tooltip(tooltip);
@@ -576,14 +582,22 @@ impl TrayBackend for NativeBackend {
         self.refresh_snapshot();
     }
 
-    fn replace_menu_items(&mut self, items: &[ModelMenuItem]) {
+    fn replace_menu_items(&mut self, items: &[ModelMenuItem]) -> Result<(), String> {
         while self.root.remove_at(0).is_some() {}
-        self.populate_root(items);
+        let populated = self.populate_root(items);
+        if populated.is_err() {
+            // A half-built menu would show entries whose clicks are no longer routed.
+            while self.root.remove_at(0).is_some() {}
+            self.nodes.clear();
+        }
+        // Publish whatever the root now holds even after a failed rebuild, so Linux does not keep
+        // showing the removed items.
         self.refresh_snapshot();
+        populated
     }
 
-    fn set_icon(&mut self, icon: &IconImage) {
-        let Some(tray) = &self.tray_icon else { return };
+    fn set_icon(&mut self, icon: &IconImage) -> Result<(), String> {
+        let tray = self.tray_icon.as_ref().ok_or("トレイの初期化が必要です")?;
         #[cfg(target_os = "macos")]
         let result = if icon.template {
             tray.set_icon_templated(Some(to_tray_icon(icon)))
@@ -592,17 +606,13 @@ impl TrayBackend for NativeBackend {
         };
         #[cfg(not(target_os = "macos"))]
         let result = tray.set_icon(Some(to_tray_icon(icon)));
-        if let Err(err) = result {
-            eprintln!("[arb-tray] failed to update tray icon: {err}");
-        }
+        result.map_err(|err| format!("アイコンの更新に失敗: {err}"))
     }
 
-    fn set_tooltip(&mut self, tooltip: &str) {
-        if let Some(tray) = &self.tray_icon
-            && let Err(err) = tray.set_tooltip(Some(tooltip))
-        {
-            eprintln!("[arb-tray] failed to update tray tooltip: {err}");
-        }
+    fn set_tooltip(&mut self, tooltip: &str) -> Result<(), String> {
+        let tray = self.tray_icon.as_ref().ok_or("トレイの初期化が必要です")?;
+        tray.set_tooltip(Some(tooltip))
+            .map_err(|err| format!("ツールチップの更新に失敗: {err}"))
     }
 
     fn menu_is_tracking(&self) -> bool {
@@ -815,6 +825,8 @@ struct TrayUi<B: TrayBackend> {
     /// Latest state whose (deferred) parts are not yet fully shown.
     pending: Option<TrayViewState>,
     event_map: HashMap<MenuId, TrayMenuEvent>,
+    /// Last render failure that was logged, so a persistent failure is logged once, not per poll.
+    last_render_error: Option<String>,
 }
 
 impl<B: TrayBackend> TrayUi<B> {
@@ -828,6 +840,7 @@ impl<B: TrayBackend> TrayUi<B> {
             shown_tooltip: None,
             pending: None,
             event_map: HashMap::new(),
+            last_render_error: None,
         }
     }
 
@@ -838,6 +851,7 @@ impl<B: TrayBackend> TrayUi<B> {
     /// Returns `Err` when the very first tray build fails (e.g. no tray host or GUI session
     /// exists — S6) so the caller can print a clean diagnostic and exit non-zero.
     fn render(&mut self, state: &TrayViewState) -> Result<(), String> {
+        self.pending = None;
         let mut model = build_menu(state);
         if self.parent_bound {
             model.retain(|item| item.event != Some(TrayMenuEvent::StopDaemonAndQuit));
@@ -857,6 +871,7 @@ impl<B: TrayBackend> TrayUi<B> {
 
         let tracking = self.backend.menu_is_tracking();
         let mut deferred = false;
+        let mut failures = Vec::new();
         match plan_menu_update(&self.shown_menu, &model) {
             MenuPlan::Unchanged => {}
             MenuPlan::InPlace(updates) => {
@@ -866,29 +881,46 @@ impl<B: TrayBackend> TrayUi<B> {
             }
             MenuPlan::Rebuild if tracking => deferred = true,
             MenuPlan::Rebuild => {
-                self.backend.replace_menu_items(&model);
-                self.event_map = event_map_for(&model);
-                self.shown_menu = model;
+                // A partial native rebuild invalidates the previous click targets.
+                self.shown_menu.clear();
+                self.event_map.clear();
+                match self.backend.replace_menu_items(&model) {
+                    Ok(()) => {
+                        self.event_map = event_map_for(&model);
+                        self.shown_menu = model;
+                    }
+                    Err(err) => failures.push(err),
+                }
             }
         }
+        // Apply the menu, icon and tooltip independently so one persistent native failure cannot
+        // freeze the others; report every failure together.
         if self.shown_badge != Some(state.badge) {
             if tracking {
                 deferred = true;
             } else {
-                self.backend.set_icon(&render_badge_icon(state.badge));
-                self.shown_badge = Some(state.badge);
+                match self.backend.set_icon(&render_badge_icon(state.badge)) {
+                    Ok(()) => self.shown_badge = Some(state.badge),
+                    Err(err) => failures.push(err),
+                }
             }
         }
         if self.shown_tooltip.as_deref() != Some(tooltip.as_str()) {
             if tracking {
                 deferred = true;
             } else {
-                self.backend.set_tooltip(&tooltip);
-                self.shown_tooltip = Some(tooltip);
+                match self.backend.set_tooltip(&tooltip) {
+                    Ok(()) => self.shown_tooltip = Some(tooltip),
+                    Err(err) => failures.push(err),
+                }
             }
         }
         self.pending = deferred.then(|| state.clone());
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 
     /// Flushes changes deferred while the menu was open, once tracking has finished.
@@ -897,10 +929,31 @@ impl<B: TrayBackend> TrayUi<B> {
             && !self.backend.menu_is_tracking()
             && let Some(state) = self.pending.take()
         {
-            // `render` only fails on the first build, which has already succeeded.
-            let _ = self.render(&state);
+            let _ = self.render_and_log(&state);
         }
     }
+
+    /// Renders `state`; a failure is logged once per distinct message until a render succeeds.
+    fn render_and_log(&mut self, state: &TrayViewState) -> Result<(), String> {
+        let result = self.render(state);
+        match &result {
+            Ok(()) => self.last_render_error = None,
+            // The very first build failure is reported by the caller as a plain diagnostic.
+            Err(err) if self.created && self.last_render_error.as_deref() != Some(err.as_str()) => {
+                log_render_failure(err);
+                self.last_render_error = Some(err.clone());
+            }
+            Err(_) => {}
+        }
+        result
+    }
+}
+
+fn log_render_failure(error: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({"component":"arb-tray","event":"render_failed","error":error})
+    );
 }
 
 /// Applies one worker [`TrayUpdate`] to the UI. Returns `Some(exit_code)` when the tray
@@ -911,7 +964,9 @@ fn apply_update<B: TrayBackend>(ui: &mut TrayUi<B>, update: TrayUpdate) -> Optio
             for alert in &alerts {
                 eprintln!("[arb-tray] {}", alert.message());
             }
-            if let Err(err) = ui.render(&state) {
+            if let Err(err) = ui.render_and_log(&state)
+                && !ui.created
+            {
                 eprintln!("[arb-tray] {err}");
                 return Some(1);
             }
@@ -1431,6 +1486,8 @@ mod tests {
         in_place: Vec<InPlaceUpdate>,
         in_place_calls: usize,
         menu_rebuilds: usize,
+        fail_rebuild_once: bool,
+        fail_icon: bool,
         icon_sets: usize,
         tooltip_sets: usize,
         tracking: bool,
@@ -1450,14 +1507,23 @@ mod tests {
             self.in_place_calls += 1;
             self.in_place.extend_from_slice(updates);
         }
-        fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) {
+        fn replace_menu_items(&mut self, _items: &[ModelMenuItem]) -> Result<(), String> {
             self.menu_rebuilds += 1;
+            if std::mem::take(&mut self.fail_rebuild_once) {
+                return Err("injected rebuild failure".into());
+            }
+            Ok(())
         }
-        fn set_icon(&mut self, _icon: &IconImage) {
+        fn set_icon(&mut self, _icon: &IconImage) -> Result<(), String> {
             self.icon_sets += 1;
+            if self.fail_icon {
+                return Err("injected icon failure".into());
+            }
+            Ok(())
         }
-        fn set_tooltip(&mut self, _tooltip: &str) {
+        fn set_tooltip(&mut self, _tooltip: &str) -> Result<(), String> {
             self.tooltip_sets += 1;
+            Ok(())
         }
         fn menu_is_tracking(&self) -> bool {
             self.tracking
@@ -1602,5 +1668,110 @@ mod tests {
             MenuPlan::Rebuild,
             "added bundle is structural"
         );
+    }
+    #[test]
+    fn failed_deferred_menu_update_resynchronizes_on_refresh() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        let mut old = capturing_state(10);
+        old.jobs.push(failed_job("old-job"));
+        ui.render(&old).unwrap();
+        ui.backend.tracking = true;
+        let mut next = old.clone();
+        next.jobs = vec![failed_job("new-job")];
+        ui.render(&next).unwrap();
+        ui.backend.tracking = false;
+        ui.backend.fail_rebuild_once = true;
+        ui.tick();
+        let retry = event_menu_id(&TrayMenuEvent::RetryJob {
+            job_id: "new-job".into(),
+        });
+        assert!(!ui.event_map.contains_key(&retry));
+        assert!(
+            apply_update(
+                &mut ui,
+                TrayUpdate::Refreshed {
+                    state: next,
+                    alerts: vec![]
+                }
+            )
+            .is_none()
+        );
+        assert_eq!(
+            ui.event_map.get(&retry),
+            Some(&TrayMenuEvent::RetryJob {
+                job_id: "new-job".into()
+            })
+        );
+        let (commands, received) = mpsc::channel();
+        let old_click = event_menu_id(&TrayMenuEvent::RetryJob {
+            job_id: "old-job".into(),
+        });
+        assert!(!route_menu_click(&ui, &commands, &old_click));
+        assert!(
+            received.try_recv().is_err(),
+            "stale click must not target the replacement job"
+        );
+        assert!(!route_menu_click(&ui, &commands, &retry));
+        assert!(
+            matches!(received.try_recv(), Ok(TrayCommand::Dispatch(TrayMenuEvent::RetryJob {job_id})) if job_id == "new-job")
+        );
+    }
+
+    #[test]
+    fn icon_failure_does_not_block_the_tooltip_update() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).unwrap();
+        let tooltip_sets = ui.backend.tooltip_sets;
+        ui.backend.fail_icon = true;
+        let mut next = capturing_state(20);
+        next.badge = TrayBadge::Idle;
+        assert_ne!(next.status_line(), capturing_state(10).status_line());
+        let err = ui.render(&next).unwrap_err();
+        assert!(err.contains("injected icon failure"), "{err}");
+        assert_eq!(ui.backend.tooltip_sets, tooltip_sets + 1);
+        assert_eq!(
+            ui.shown_tooltip.as_deref(),
+            Some(next.status_line().as_str())
+        );
+        assert_ne!(ui.shown_badge, Some(next.badge));
+        ui.backend.fail_icon = false;
+        ui.render(&next).unwrap();
+        assert_eq!(ui.shown_badge, Some(next.badge));
+    }
+
+    #[test]
+    fn menu_rebuild_failure_does_not_freeze_icon_and_tooltip() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        let mut old = capturing_state(10);
+        old.jobs.push(failed_job("old-job"));
+        ui.render(&old).unwrap();
+        let icon_sets = ui.backend.icon_sets;
+        let tooltip_sets = ui.backend.tooltip_sets;
+        let mut next = capturing_state(20);
+        next.badge = TrayBadge::Idle;
+        next.jobs = vec![failed_job("new-job")];
+        ui.backend.fail_rebuild_once = true;
+        let err = ui.render(&next).unwrap_err();
+        assert!(err.contains("injected rebuild failure"), "{err}");
+        assert_eq!(ui.backend.icon_sets, icon_sets + 1);
+        assert_eq!(ui.backend.tooltip_sets, tooltip_sets + 1);
+        assert!(ui.shown_menu.is_empty() && ui.event_map.is_empty());
+    }
+
+    #[test]
+    fn persistent_render_failure_is_logged_once_until_it_recovers() {
+        let mut ui = TrayUi::new(FakeBackend::default());
+        ui.render(&capturing_state(10)).unwrap();
+        ui.backend.fail_icon = true;
+        let mut next = capturing_state(10);
+        next.badge = TrayBadge::Idle;
+        assert!(ui.render_and_log(&next).is_err());
+        let first = ui.last_render_error.clone();
+        assert!(first.is_some());
+        assert!(ui.render_and_log(&next).is_err());
+        assert_eq!(ui.last_render_error, first);
+        ui.backend.fail_icon = false;
+        ui.render_and_log(&next).unwrap();
+        assert_eq!(ui.last_render_error, None);
     }
 }
