@@ -1125,7 +1125,7 @@ fn scan_logs(
                     continue;
                 }
                 if params.tail && matched.len() == limit {
-                    matched.pop_front();
+                    has_more |= matched.pop_front().is_some();
                 }
                 if matched.len() < limit {
                     matched.push_back(log);
@@ -1137,12 +1137,12 @@ fn scan_logs(
                 }
             }
         }
-        if (has_more && !count_all) || batch_len < batch_size {
+        if (has_more && !count_all && !params.tail) || batch_len < batch_size {
             break;
         }
     }
 
-    let next_after_seq = matched.back().map(|r| r.seq);
+    let next_after_seq = matched.back().map(|r| r.seq).filter(|_| !params.tail);
     Ok(FilteredLogPage {
         logs: matched.into(),
         has_more,

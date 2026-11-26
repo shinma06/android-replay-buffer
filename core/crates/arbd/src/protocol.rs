@@ -759,7 +759,8 @@ pub enum QueryBucket {
 /// Request parameters for `timeline.query_logs` and `timeline.query_taps`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
-    /// Keep the latest matching rows, ordered chronologically.
+    /// Keep the latest matching rows, ordered chronologically. `has_more` reports dropped older
+    /// matches and no forward cursor is returned.
     #[serde(default)]
     pub tail: bool,
     /// Decimal exclusive log sequence; valid with the same filters and immutable bundle.
