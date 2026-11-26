@@ -75,13 +75,31 @@ class ArbStudioControllerOrderingTest {
             assertEquals(start, ctrl.viewerState?.inTimeNs)
             assertEquals(end, ctrl.viewerState?.outTimeNs)
             assertEquals(start, reopened.playbackControllerForTest()?.state?.inTimeNs)
-            for ((format, method) in listOf(StudioExportFormat.SHARE_MP4 to "export.share_mp4", StudioExportFormat.WORM_BUNDLE_ONLY to "export.trim")) {
+            assertEquals(StudioExportFormat.SHARE_MP4, ctrl.selectedExportFormat)
+            ctrl.toggleBurnTapsOnExport(true)
+            for ((index, format) in StudioExportFormat.entries.withIndex()) {
+                val previousCompletion = ctrl.viewerState?.exportCompletion
+                val catalogChangesBefore = daemon.catalogChanges.get()
                 ctrl.selectExportFormat(format)
                 ctrl.triggerExport()
-                awaitTrue { edt.drain(); daemon.transport.count(method) == 1 && !ctrl.isExporting }
-                val params = daemon.transport.calls.single { it.method == method }.params
-                assertEquals(start, params["in_time_ns"].asLong)
-                assertEquals(end, params["out_time_ns"].asLong)
+                awaitTrue {
+                    edt.drain()
+                    !ctrl.isExporting && ctrl.viewerState?.exportCompletion !== previousCompletion
+                }
+                val call = daemon.transport.calls.filter { it.method.startsWith("export.") }[index]
+                assertEquals("export.trim", call.method)
+                val share = format == StudioExportFormat.SHARE_MP4
+                assertEquals(share, call.params["include_share_mp4"].asBoolean)
+                assertEquals(share, call.params["burn_taps"].asBoolean)
+                assertEquals(start, call.params["in_time_ns"].asLong)
+                assertEquals(end, call.params["out_time_ns"].asLong)
+                val result = assertNotNull(ctrl.viewerState?.exportCompletion)
+                assertEquals(catalogChangesBefore + 1, daemon.catalogChanges.get())
+                assertTrue(result.isTrimBundle)
+                assertEquals("trimmed", result.bundleId)
+                assertEquals("/tmp/trimmed", result.outputPath)
+                assertEquals(if (share) "/tmp/trimmed/share-taps.mp4" else null, result.shareMp4Path)
+                assertEquals(share, result.burnTapsApplied)
             }
         } finally {
             reopened.dispose()
@@ -102,16 +120,16 @@ class ArbStudioControllerOrderingTest {
             ctrl.triggerExport() // same turn: the second request must not reach the daemon
             assertTrue(ctrl.isExporting)
             assertFalse(ctrl.isExportButtonEnabled)
-            awaitTrue({ "export never reached the daemon" }) { daemon.transport.count("export.share_mp4") >= 1 }
+            awaitTrue({ "export never reached the daemon" }) { daemon.transport.count("export.trim") >= 1 }
             gate.countDown()
             awaitTrue({ "export never finished" }) { edt.drain(); !ctrl.isExporting && ctrl.viewerState?.exportCompletion != null }
-            assertEquals(1, daemon.transport.count("export.share_mp4"), "exactly one export")
+            assertEquals(1, daemon.transport.count("export.trim"), "exactly one export")
             assertNotNull(ctrl.viewerState?.exportCompletion)
 
             // A later, deliberate export is accepted again.
             daemon.exportGate = null
             ctrl.triggerExport()
-            awaitTrue({ "second export never ran" }) { edt.drain(); daemon.transport.count("export.share_mp4") == 2 && !ctrl.isExporting }
+            awaitTrue({ "second export never ran" }) { edt.drain(); daemon.transport.count("export.trim") == 2 && !ctrl.isExporting }
         } finally {
             editor.dispose()
         }
@@ -122,16 +140,16 @@ class ArbStudioControllerOrderingTest {
         val edt = ManualEdt()
         val (editor, daemon) = readyEditor(Files.createDirectory(tmp.resolve("a")), edt)
         try {
-            daemon.faults["export.share_mp4"] = Fault.BUSINESS_ERROR
+            daemon.faults["export.trim"] = Fault.BUSINESS_ERROR
             val ctrl = editor.studioController
             ctrl.triggerExport()
             ctrl.triggerExport()
             awaitTrue({ "failed export never settled" }) { edt.drain(); !ctrl.isExporting && ctrl.errorMessage != null }
-            assertEquals(1, daemon.transport.count("export.share_mp4"))
+            assertEquals(1, daemon.transport.count("export.trim"))
             assertTrue(ctrl.errorMessage.orEmpty().contains("書き出しに失敗"))
-            daemon.faults.remove("export.share_mp4")
+            daemon.faults.remove("export.trim")
             ctrl.triggerExport()
-            awaitTrue({ "retry after failure not sent" }) { edt.drain(); daemon.transport.count("export.share_mp4") == 2 }
+            awaitTrue({ "retry after failure not sent" }) { edt.drain(); daemon.transport.count("export.trim") == 2 }
         } finally {
             editor.dispose()
         }
@@ -233,7 +251,7 @@ class ArbStudioControllerOrderingTest {
             val gate = CountDownLatch(1)
             daemonA.exportGate = gate
             a.studioController.triggerExport()
-            awaitTrue({ "A export not sent" }) { daemonA.transport.count("export.share_mp4") == 1 }
+            awaitTrue({ "A export not sent" }) { daemonA.transport.count("export.trim") == 1 }
             val aStateBefore = a.studioController.viewerState
             a.dispose() // the user closes tab A while its export is in flight
             gate.countDown()
@@ -245,9 +263,9 @@ class ArbStudioControllerOrderingTest {
             assertNull(a.studioController.viewerState?.exportCompletion)
             // B is a different tab with its own state and export guard.
             assertFalse(b.studioController.isExporting)
-            assertEquals(0, daemonB.transport.count("export.share_mp4"))
+            assertEquals(0, daemonB.transport.count("export.trim"))
             b.studioController.triggerExport()
-            awaitTrue({ "B export not completed" }) { edtB.drain(); daemonB.transport.count("export.share_mp4") == 1 && !b.studioController.isExporting && b.studioController.viewerState?.exportCompletion != null }
+            awaitTrue({ "B export not completed" }) { edtB.drain(); daemonB.transport.count("export.trim") == 1 && !b.studioController.isExporting && b.studioController.viewerState?.exportCompletion != null }
             assertNotNull(b.studioController.viewerState?.exportCompletion)
             assertEquals(1, daemonA.transport.count("bundle.close"), "the lease of the closed tab is released exactly once")
         } finally {

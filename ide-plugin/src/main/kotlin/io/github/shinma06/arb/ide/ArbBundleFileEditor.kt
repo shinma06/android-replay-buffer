@@ -16,7 +16,6 @@ import io.github.shinma06.arb.ipc.BundleLeaseController
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
-import io.github.shinma06.arb.model.ExportShareMp4Params
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.LeaseHolderKind
 import io.github.shinma06.arb.model.LogRecord
@@ -928,49 +927,48 @@ class ArbBundleFileEditor internal constructor(
 
         submitWork {
             try {
-                val completion = daemonService.withClient { rpc ->
-                    if (includeShareMp4) {
-                        val res = rpc.exportShareMp4(
-                            ExportShareMp4Params(
-                                bundleIdOrPath = current.bundleId,
-                                inFrameIndex = range.inFrameIndex,
-                                outFrameIndex = range.outFrameIndex,
-                                inTimeNs = range.inTimeNs,
-                                outTimeNs = range.outTimeNs,
-                                burnTaps = burnTapsEnabled,
-                                trashOriginal = shouldTrashOriginal,
-                                holderPid = ProcessHandle.current().pid(),
-                            ),
-                        )
-                        ExportCompletionInfo(
-                            summaryText = "共有 MP4 を書き出しました（${res.videoFrameCount} フレーム）" + res.warning?.let { " · $it" }.orEmpty(),
-                            outputPath = res.shareMp4Path,
-                            shareMp4Path = res.shareMp4Path,
-                            originalTrashedBundleId = current.bundleId.takeIf { res.originalTrashed },
-                        )
-                    } else {
-                        val res = rpc.exportTrim(
-                            ExportTrimParams(
-                                bundleIdOrPath = current.bundleId,
-                                inFrameIndex = range.inFrameIndex,
-                                outFrameIndex = range.outFrameIndex,
-                                inTimeNs = range.inTimeNs,
-                                outTimeNs = range.outTimeNs,
-                                trashOriginal = shouldTrashOriginal,
-                                holderPid = ProcessHandle.current().pid(),
-                            ),
-                        )
-                        ExportCompletionInfo(
-                            summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)" + res.warning?.let { " · $it" }.orEmpty(),
-                            outputPath = res.bundlePath,
-                            bundleId = res.bundleId,
-                            isTrimBundle = true,
-                            originalTrashedBundleId = current.bundleId.takeIf { res.originalTrashed },
-                        )
-                    }
+                val res = daemonService.withClient {
+                    it.exportTrim(
+                        ExportTrimParams(
+                            bundleIdOrPath = current.bundleId,
+                            inFrameIndex = range.inFrameIndex,
+                            outFrameIndex = range.outFrameIndex,
+                            inTimeNs = range.inTimeNs,
+                            outTimeNs = range.outTimeNs,
+                            burnTaps = burnTapsEnabled,
+                            includeShareMp4 = includeShareMp4,
+                            trashOriginal = shouldTrashOriginal,
+                            holderPid = ProcessHandle.current().pid(),
+                        ),
+                    )
                 }
                 trimCloseState.markExported(range.inTimeNs, range.outTimeNs)
-                if (completion.isTrimBundle || completion.originalTrashedBundleId != null) daemonService.notifyCatalogChanged()
+                daemonService.notifyCatalogChanged()
+
+                val shareName = res.shareMp4Path
+                    ?.let { p -> runCatching { Path.of(p).fileName?.toString() }.getOrNull() }
+                val shareNote = when {
+                    shareName != null && res.burnTapsApplied -> " · $shareName (タップ焼き込み)"
+                    shareName != null -> " · $shareName"
+                    else -> ""
+                }
+                val trashedBundleId = if (res.originalTrashed) current.bundleId else null
+                val trashedNote = if (res.originalTrashed) {
+                    " · 元バンドルをゴミ箱へ移動しました（復元可）"
+                } else {
+                    ""
+                }
+                val warningNote = res.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
+                val summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)$shareNote$trashedNote$warningNote"
+                val completion = ExportCompletionInfo(
+                    summaryText = summaryText,
+                    outputPath = res.bundlePath,
+                    bundleId = res.bundleId,
+                    isTrimBundle = true,
+                    shareMp4Path = res.shareMp4Path,
+                    originalTrashedBundleId = trashedBundleId,
+                    burnTapsApplied = res.burnTapsApplied,
+                )
                 publishEdt {
                     if (!disposed) studioController.setExporting(false)
                 }

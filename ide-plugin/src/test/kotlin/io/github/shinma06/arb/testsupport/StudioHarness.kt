@@ -3,6 +3,7 @@ package io.github.shinma06.arb.testsupport
 import com.google.gson.JsonObject
 import io.github.shinma06.arb.ide.ArbBundleFileEditor
 import io.github.shinma06.arb.ide.ArbBundleVirtualFile
+import io.github.shinma06.arb.ide.ArbDaemonStateListener
 import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.ide.SourceJumpResolver
 import io.github.shinma06.arb.ipc.ArbdRpcClient
@@ -26,6 +27,7 @@ class VirtualClock : PlaybackClock {
 
 /** A scripted daemon serving one video bundle with per-method fault injection and an edit-session store. */
 class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 0) {
+    val catalogChanges = AtomicLong()
     val faults = java.util.concurrent.ConcurrentHashMap<String, Fault>()
     @Volatile var loseEditResponse = false
     val storedSession = AtomicReference<String?>(null)
@@ -47,10 +49,6 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
         }
         return when (method) {
             "system.hello" -> """{"protocol_version":1,"standalone_share_trim":true,"realtime_trim":true}"""
-            "export.share_mp4" -> {
-                exportGate?.await(10, java.util.concurrent.TimeUnit.SECONDS)
-                """{"share_mp4_path":"/tmp/share.mp4","video_frame_count":10}"""
-            }
             "bundle.open" -> bundleOpenResultJson("bundle", frameCount, 10_000_000_000L, 10_000_000_000L + frameCount * 33_333_333L)
             "edit.get_session" -> """{"session":${storedSession.get() ?: "null"}}"""
             "edit.update_session" -> {
@@ -66,7 +64,14 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
             }
             "export.trim" -> {
                 exportGate?.await(10, java.util.concurrent.TimeUnit.SECONDS)
-                """{"bundle_id":"trimmed","bundle_path":"/tmp/trimmed","trim_report":{"in_frame_index":0,"out_frame_index":9,"output_frame_count":10,"head_decoded_frames":0,"reencoded_frames":0,"stream_copied_frames":10,"backend_name":"x","edts_box_count":0,"elst_box_count":0},"unanchored_summary":{"included_count":0,"truncated_count":0},"main_log_count":0,"unanchored_log_count":0,"main_tap_count":0,"unanchored_tap_count":0}"""
+                val share = if (params["include_share_mp4"]?.asBoolean == true) {
+                    val burn = params["burn_taps"].asBoolean
+                    val name = if (burn) "share-taps.mp4" else "share.mp4"
+                    """"share_mp4_path":"/tmp/trimmed/$name","burn_taps_applied":$burn,"""
+                } else {
+                    ""
+                }
+                """{${share}"bundle_id":"trimmed","bundle_path":"/tmp/trimmed","trim_report":{"in_frame_index":0,"out_frame_index":9,"output_frame_count":10,"head_decoded_frames":0,"reencoded_frames":0,"stream_copied_frames":10,"backend_name":"x","edts_box_count":0,"elst_box_count":0},"unanchored_summary":{"included_count":0,"truncated_count":0},"main_log_count":0,"unanchored_log_count":0,"main_tap_count":0,"unanchored_tap_count":0}"""
             }
             "media.open_viewport" ->
                 """{"viewport_id":"vp","bundle_id":"bundle","shm_path":"$shm","width":2,"height":2,"stride":8,"pixel_format":"rgba8","slot_capacity":64,"frame_count":$frameCount,"keyframe_count":2}"""
@@ -116,6 +121,11 @@ fun openStudioEditor(
         override fun openMediaClient() = daemon.transport.newConnection()
         override fun <T> withClient(block: (ArbdRpcClient) -> T): T = block(rpc)
     }
+    service.addStateListener(object : ArbDaemonStateListener {
+        override fun onCatalogChanged() {
+            daemon.catalogChanges.incrementAndGet()
+        }
+    })
     return ArbBundleFileEditor(
         project = null,
         backingFile = ArbBundleVirtualFile("bundle", "bundle"),

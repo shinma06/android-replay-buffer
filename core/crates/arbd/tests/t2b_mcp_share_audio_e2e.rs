@@ -1562,6 +1562,22 @@ fn realtime_trim_round_trip_and_four_streams_inside_one_held_picture() {
             assert_eq!(r["in_time_ns"], START);
             assert_eq!(r["out_time_ns"], END);
             let share = Path::new(r["share_mp4_path"].as_str().unwrap());
+            if method == "export.trim" {
+                let dir = Path::new(r["bundle_path"].as_str().unwrap());
+                let filename = if burn { "share-taps.mp4" } else { "share.mp4" };
+                assert_eq!(share, dir.join(filename));
+                assert_eq!(r["burn_taps_applied"], burn);
+                assert!(dir.join("manifest.json").is_file());
+                let catalog = rpc.call("bundle.list", &json!({}));
+                let entry = catalog["bundles"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["bundle_id"] == r["bundle_id"])
+                    .unwrap();
+                assert_eq!(entry["parent_bundle_id"], "still");
+                assert_eq!(entry["path"], r["bundle_path"]);
+            }
             let atoms = inspect_mp4_atoms(share).unwrap();
             assert_eq!((atoms.edts_count, atoms.elst_count), (0, 0));
             let video = Mp4VideoTrack::open(share).unwrap();

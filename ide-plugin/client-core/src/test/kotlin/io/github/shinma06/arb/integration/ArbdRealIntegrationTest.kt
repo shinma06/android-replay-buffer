@@ -414,7 +414,13 @@ class ArbdRealIntegrationTest {
                 assertEquals(12_345_678L, exact.inTimeNs)
                 assertEquals(29_876_543L, exact.outTimeNs)
                 assertEquals(exact, rpc.editGetSession("studio-exact"))
-                val subframe = rpc.exportTrim(ExportTrimParams(v2Open.bundleId, inTimeNs = exact.inTimeNs, outTimeNs = exact.outTimeNs))
+                val subframe = rpc.exportTrim(
+                    ExportTrimParams(v2Open.bundleId, inTimeNs = exact.inTimeNs, outTimeNs = exact.outTimeNs, includeShareMp4 = true),
+                )
+                val share = Paths.get(assertNotNull(subframe.shareMp4Path))
+                assertEquals(Paths.get(subframe.bundlePath).resolve("share.mp4"), share)
+                assertTrue(Files.isRegularFile(share))
+                assertEquals(v2Open.bundleId, rpc.bundleList().bundles.single { it.bundleId == subframe.bundleId }.parentBundleId)
                 assertEquals(exact.inTimeNs, subframe.inTimeNs)
                 assertEquals(exact.outTimeNs, subframe.outTimeNs)
                 assertEquals(0, subframe.trimReport.elstBoxCount)
