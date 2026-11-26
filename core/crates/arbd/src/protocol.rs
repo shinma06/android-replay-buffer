@@ -312,6 +312,11 @@ pub struct DeviceListResponse {
 /// Request parameters for `capture.start`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaptureStartParams {
+    /// Wait for a confirmed device connection.
+    #[serde(default)]
+    pub wait_connected: bool,
+    /// Connection deadline including ADB discovery, limited to 30 seconds.
+    pub wait_timeout_ms: Option<u64>,
     /// Optional ADB device serial (auto-selects sole online device if omitted).
     pub serial: Option<String>,
     /// Optional continuous capture mode (`video_and_logs` or `logs_only`; defaults to config).
@@ -340,6 +345,18 @@ pub struct CaptureStartParams {
 /// Response payload for `capture.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStartResponse {
+    /// Confirmed transport state for a waiting caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected: Option<bool>,
+    /// Whether discovery or connection exceeded the requested wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_timed_out: Option<bool>,
+    /// Audio status of this capture generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_state: Option<AudioCaptureState>,
+    /// Audio cause, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_cause: Option<AudioCause>,
     /// Target device serial.
     pub serial: String,
     /// `true` once live capture has been started.
@@ -461,6 +478,12 @@ pub struct SaveJobView {
 /// Response payload for `save.trigger`, `save.retry`, and `save.retarget`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveOutcomeResponse {
+    /// Evidence present in a committed recording, including a pending catalog retry.
+    #[serde(flatten)]
+    pub evidence: SaveEvidence,
+    /// Requested lookback, also available when the write failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_duration_secs: Option<u64>,
     /// Save job snapshot after execution.
     pub job: SaveJobView,
     /// Materialized bundle ID when `job.state == SaveJobState::Completed`.
@@ -475,6 +498,38 @@ pub struct SaveOutcomeResponse {
     /// failed (`CommittedParentSyncFailed`): the bundle is published and cataloged anyway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+}
+
+/// Optional evidence measurements from the published bundle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveEvidence {
+    /// Encoded MP4 duration in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_video_duration_ms: Option<u64>,
+    /// Anchored main log span in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_log_duration_ms: Option<u64>,
+    /// Indexed video frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frame_count: Option<u64>,
+    /// Total saved log rows including quarantine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_count: Option<usize>,
+    /// Quarantined log rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanchored_log_count: Option<usize>,
+    /// Quarantined records omitted by selection limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_unanchored_count: Option<u64>,
+    /// Saved timeline discontinuities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discontinuity_count: Option<usize>,
+    /// Requested evidence stream falls short by more than one second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_shortfall: Option<bool>,
+    /// Warnings about evidence completeness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 /// Response payload for `save.list_jobs`.
@@ -505,6 +560,12 @@ pub struct SaveRetargetParams {
 /// Serialized catalog bundle entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleEntryView {
+    /// Summary read from the immutable payload, if available.
+    #[serde(flatten)]
+    pub summary: CatalogSummary,
+    /// UTC creation time (alias for `created_at_utc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_utc: Option<String>,
     /// Globally unique bundle identifier.
     pub bundle_id: String,
     /// On-disk bundle directory path.
@@ -525,6 +586,8 @@ pub struct BundleEntryView {
     #[serde(default)]
     pub disk_state: BundleDiskState,
 }
+
+pub use arb_storage::catalog::CatalogSummary;
 
 /// Request parameters for `bundle.list`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -586,6 +649,9 @@ pub struct BundleIdParams {
 /// Request parameters for `bundle.gc`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BundleGcParams {
+    /// Inspect eligibility without changing files or catalog.
+    #[serde(default)]
+    pub dry_run: bool,
     /// Optional UTC cutoff timestamp (defaults to current UTC time).
     pub now_utc: Option<String>,
     /// When `true` (explicit user "Empty Trash" action), bypasses `gc_grace_secs` while still
@@ -637,6 +703,15 @@ pub struct BundleGcFailure {
 /// Response payload for `bundle.gc`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleGcResponse {
+    /// True for a read-only plan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+    /// Candidate IDs and bytes for a preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<arb_storage::catalog::GcPreview>,
+    /// Per-bucket counts in a preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts: Option<std::collections::BTreeMap<String, usize>>,
     /// Managed trashed bundle IDs physically deleted.
     pub purged_bundle_ids: Vec<String>,
     /// Trashed bundles preserved due to active leases.
@@ -681,6 +756,11 @@ pub enum QueryBucket {
 /// Request parameters for `timeline.query_logs` and `timeline.query_taps`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
+    /// Decimal exclusive log sequence; valid with the same filters and immutable bundle.
+    pub cursor: Option<String>,
+    /// Match the entire keyword/tag token (Unicode alphanumerics and underscore delimit words).
+    #[serde(default)]
+    pub whole_word: bool,
     /// Exclusive log sequence cursor for continuing an immutable bundle query.
     pub after_seq: Option<u64>,
     /// Catalog `bundle_id` or filesystem path.
@@ -701,7 +781,7 @@ pub struct TimelineQueryParams {
     /// Optional case-insensitive substring filter on `LogRecord::tag` (`timeline.query_logs`).
     #[serde(default)]
     pub tag: Option<String>,
-    /// Optional log priority filter (`V`, `D`, `I`, `W`, `E`, `F`, `A`; `timeline.query_logs`).
+    /// Optional log priority filter (`V`, `D`, `I`, `W`, `E`, `F` or their full names; `timeline.query_logs`).
     #[serde(default)]
     pub level: Option<String>,
     /// Optional case-insensitive substring filter on `LogRecord::message` or `tag`.
@@ -788,7 +868,29 @@ pub struct TimelineSummaryResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineLogsResponse {
     /// Matching log records.
-    pub logs: Vec<LogRecord>,
+    pub logs: Vec<QueryLogRow>,
+    /// Count matching the filters across all pages.
+    pub total_matched: usize,
+    /// Number of rows in this page.
+    pub returned_count: usize,
+    /// More matching rows follow.
+    pub has_more: bool,
+    /// Exclusive continuation sequence, only supplied for non-final pages.
+    pub next_cursor: Option<String>,
+}
+
+/// A stored row and its derived presentation coordinates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryLogRow {
+    /// Original log record.
+    #[serde(flatten)]
+    pub record: LogRecord,
+    /// Logcat UTC header timestamp.
+    pub timestamp_utc: Option<String>,
+    /// Elapsed time from this epoch's first frame or log timeline start.
+    pub offset_ms: Option<i64>,
+    /// Display frame at this instant on the same boot.
+    pub frame_index: Option<u64>,
 }
 
 /// Response payload for `timeline.query_taps`.

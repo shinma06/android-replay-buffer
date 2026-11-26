@@ -51,7 +51,7 @@ use arb_storage::StorageError;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
 use arb_storage::catalog::{
     BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
-    PinReconcileReport, RecoveryReport, probe_bundle_disk_state,
+    PinReconcileReport, RecoveryReport,
 };
 use arb_storage::config::ConfigStore;
 use arb_storage::ring::{DiskSpaceProvider, PinJournal};
@@ -82,8 +82,8 @@ use crate::protocol::{
     SaveJobIdParams, SaveListJobsResponse, SaveLogsParams, SaveMode, SaveOutcomeResponse,
     SaveRetargetParams, SaveScreenshotParams, SaveScreenshotResponse, SaveTriggerParams,
     SystemHelloResponse, SystemStatusResponse, TimelineCrashesResponse,
-    TimelineDiscontinuitiesResponse, TimelineLogsResponse, TimelineOverviewParams,
-    TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
+    TimelineDiscontinuitiesResponse, TimelineOverviewParams, TimelineQueryParams,
+    TimelineScreensResponse, TimelineTapsResponse,
 };
 use crate::screenshot::{ScreenshotOverwrite, SharedScreenshotProvider, write_screenshot_atomic};
 use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
@@ -481,6 +481,13 @@ impl DaemonState {
         bundle_id_or_path: &str,
     ) -> Result<(PathBuf, Option<BundleEntry>), DaemonError> {
         if let Some(entry) = self.catalog.bundle(bundle_id_or_path)? {
+            if self.catalog.bundle_disk_state(&entry.path)
+                == arb_storage::catalog::BundleDiskState::Missing
+            {
+                return Err(DaemonError::NotFound(format!(
+                    "bundle `{bundle_id_or_path}` is missing"
+                )));
+            }
             return Ok((entry.path.clone(), Some(entry)));
         }
         let path = PathBuf::from(bundle_id_or_path);
@@ -511,8 +518,18 @@ impl DaemonState {
         )))
     }
 
-    fn dispatch(&self, method: &str, params: Value) -> Result<Value, DaemonError> {
+    fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, DaemonError> {
+        if !params.is_null() && !params.is_object() {
+            return Err(DaemonError::InvalidParams(
+                "params must be an object".into(),
+            ));
+        }
         if method == "system.shutdown_for_handover" {
+            #[derive(serde::Deserialize, Default)]
+            struct HandoverParams {
+                owner: Option<String>,
+            }
+            let request: HandoverParams = parse_optional_params(params)?;
             let Ok(_idle) = self.handover_gate.try_write() else {
                 return Ok(json!({ "ok": false }));
             };
@@ -520,7 +537,7 @@ impl DaemonState {
             let owner_matches = self
                 .handover_owner
                 .as_deref()
-                .is_some_and(|owner| params.get("owner").and_then(Value::as_str) == Some(owner));
+                .is_some_and(|owner| request.owner.as_deref() == Some(owner));
             let idle = (!self.parent_bound || owner_matches)
                 && self.crash_jobs.load(Ordering::Acquire) == 0
                 && self.media.active_viewport_count() == 0;
@@ -582,7 +599,7 @@ impl DaemonState {
             "bundle.forget" => self.handle_bundle_forget(params),
             "timeline.summary" => self.handle_timeline_summary(params),
             "timeline.overview" => self.handle_timeline_overview(params),
-            "timeline.query_logs" => self.handle_timeline_query_logs(params),
+            "timeline.query_logs" | "bundle.query_logs" => self.handle_timeline_query_logs(params),
             "timeline.query_taps" => self.handle_timeline_query_taps(params),
             "timeline.discontinuities" => self.handle_timeline_discontinuities(params),
             "timeline.crashes" => self.handle_timeline_crashes(params),
@@ -721,7 +738,7 @@ impl DaemonState {
         Ok(serde_json::to_value(DeviceListResponse { devices })?)
     }
 
-    fn handle_capture_start(&self, params: Value) -> Result<Value, DaemonError> {
+    fn handle_capture_start(self: &Arc<Self>, params: Value) -> Result<Value, DaemonError> {
         let request: CaptureStartParams = parse_optional_params(params)?;
         let (reservation, parsed) = {
             let _guard = self.lock(&self.config_update_lock, "config update")?;
@@ -742,7 +759,70 @@ impl DaemonState {
             live.reservation = Some(Arc::clone(&ticket));
             (ticket, parsed)
         };
-        self.attach_reserved(&reservation, &parsed)
+        if !parsed.wait_connected {
+            return self
+                .attach_reserved(&reservation, &parsed)
+                .map(|(value, _)| value);
+        }
+        let timeout = Duration::from_millis(parsed.wait_timeout_ms.unwrap_or(5000).min(30_000));
+        let deadline = Instant::now() + timeout;
+        let (tx, rx) = mpsc::channel();
+        let state = Arc::clone(self);
+        let serial = parsed.serial.clone().unwrap_or_default();
+        let mode = parsed.capture_mode;
+        thread::Builder::new()
+            .name("arbd-connect-wait".into())
+            .spawn(move || {
+                let _ = tx.send(state.attach_reserved(&reservation, &parsed));
+            })?;
+        let (result, generation) = match rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(r) => r?,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Ok(
+                    json!({"serial": serial, "capture_mode":mode, "started":false,"connected":false,
+                "wait_timed_out":true,"audio_state":"unknown","audio_cause":null}),
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DaemonError::Internal("capture start worker exited".into()));
+            }
+        };
+        self.wait_for_connection(result, generation, deadline)
+    }
+
+    fn wait_for_connection(
+        &self,
+        mut result: Value,
+        generation: Option<u64>,
+        deadline: Instant,
+    ) -> Result<Value, DaemonError> {
+        loop {
+            let cap = self.lock_capture()?;
+            let current = generation == Some(cap.session_generation());
+            let status = cap.status_view();
+            let connected = current && status.connected;
+            let pending = current && !connected && cap.is_active() && !self.is_shutting_down();
+            drop(cap);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if !pending || remaining.is_zero() {
+                result["connected"] = json!(connected);
+                result["wait_timed_out"] = json!(pending);
+                result["audio_state"] = if current {
+                    json!(status.audio_state)
+                } else {
+                    json!("unknown")
+                };
+                result["audio_cause"] = if current {
+                    json!(status.audio_cause)
+                } else {
+                    Value::Null
+                };
+                return Ok(result);
+            }
+            thread::sleep(remaining.min(Duration::from_millis(DRAIN_POLL_INTERVAL_MS)));
+        }
     }
 
     fn persist_capture_enabled(&self, intent: CaptureIntent) -> Result<(), DaemonError> {
@@ -811,7 +891,7 @@ impl DaemonState {
         &self,
         ticket: &Arc<()>,
         parsed: &CaptureStartParams,
-    ) -> Result<Value, DaemonError> {
+    ) -> Result<(Value, Option<u64>), DaemonError> {
         let discovery = AdbClient::discover()
             .map_err(DaemonError::from)
             .and_then(|adb| {
@@ -833,15 +913,24 @@ impl DaemonState {
         if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
             let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
             live.handle = Some(handle);
-            return Ok(serde_json::to_value(CaptureStartResponse {
-                serial,
-                started: true,
-                capture_mode,
-            })?);
+            let generation = self.lock_capture()?.session_generation();
+            return Ok((
+                serde_json::to_value(CaptureStartResponse {
+                    connected: None,
+                    wait_timed_out: None,
+                    audio_state: None,
+                    audio_cause: None,
+                    serial,
+                    started: true,
+                    capture_mode,
+                })?,
+                Some(generation),
+            ));
         }
-        Ok(
+        Ok((
             json!({"serial":parsed.serial.as_deref().unwrap_or_default(),"started":false,"capture_mode":capture_mode,"selection":selection}),
-        )
+            None,
+        ))
     }
 
     fn auto_attach(&self) -> Result<(), DaemonError> {
@@ -1134,8 +1223,23 @@ impl DaemonState {
                 .catalog
                 .active_leases_for_bundle(&entry.bundle_id)?
                 .len();
-            let disk_state = probe_bundle_disk_state(&entry.path);
+            let disk_state = self.catalog.bundle_disk_state(&entry.path);
             views.push(BundleEntryView {
+                created_utc: Some(entry.created_at_utc.clone()),
+                summary: match self.catalog.bundle_summary(&entry.bundle_id)? {
+                    Some(summary) => summary,
+                    None if disk_state == arb_storage::catalog::BundleDiskState::Present => {
+                        let measured = open_bundle(&entry.path)
+                            .ok()
+                            .and_then(|r| inspect_export::catalog_summary(r.as_ref()).ok());
+                        if let Some(summary) = &measured {
+                            self.catalog
+                                .record_bundle_summary(&entry.bundle_id, summary)?;
+                        }
+                        measured.unwrap_or_default()
+                    }
+                    None => protocol::CatalogSummary::default(),
+                },
                 bundle_id: entry.bundle_id,
                 path: entry.path,
                 format_version: entry.format_version,
@@ -1152,6 +1256,17 @@ impl DaemonState {
 
     fn handle_bundle_open(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: BundleOpenParams = parse_params(params)?;
+        let holder_kind = parsed.holder_kind.unwrap_or(LeaseHolderKind::Cli);
+        // R3 S6: a lease must belong to a live client process; defaulting to the always-alive
+        // daemon PID made a crashed client's lease unreapable.
+        let holder_pid = parsed.holder_pid.ok_or_else(|| {
+            DaemonError::InvalidParams("missing required field 'holder_pid'".to_owned())
+        })?;
+        if !is_pid_alive(holder_pid) {
+            return Err(DaemonError::InvalidParams(format!(
+                "holder_pid {holder_pid} is not a running process"
+            )));
+        }
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let reader = open_bundle(&path)?;
         let summary = build_timeline_summary(reader.as_ref(), &path)?;
@@ -1195,18 +1310,10 @@ impl DaemonState {
             reg_id
         };
 
-        let holder_kind = parsed.holder_kind.unwrap_or(LeaseHolderKind::Cli);
-        // R3 S6: a lease must belong to a live client process; defaulting to the always-alive
-        // daemon PID made a crashed client's lease unreapable.
-        let holder_pid = parsed.holder_pid.ok_or_else(|| {
-            DaemonError::InvalidParams(
-                "holder_pid is required: pass the client's own process ID so its lease is reaped if it crashes".to_owned(),
-            )
-        })?;
-        if !is_pid_alive(holder_pid) {
-            return Err(DaemonError::InvalidParams(format!(
-                "holder_pid {holder_pid} is not a running process"
-            )));
+        if self.catalog.bundle_summary(&bundle_id)?.is_none()
+            && let Ok(measured) = inspect_export::catalog_summary(reader.as_ref())
+        {
+            self.catalog.record_bundle_summary(&bundle_id, &measured)?;
         }
         let lease_id = self
             .catalog
@@ -1243,8 +1350,10 @@ impl DaemonState {
             .catalog
             .active_leases_for_bundle(&entry.bundle_id)?
             .len();
-        let disk_state = probe_bundle_disk_state(&entry.path);
+        let disk_state = self.catalog.bundle_disk_state(&entry.path);
         Ok(serde_json::to_value(BundleEntryView {
+            created_utc: Some(entry.created_at_utc.clone()),
+            summary: protocol::CatalogSummary::default(),
             bundle_id: entry.bundle_id,
             path: entry.path,
             format_version: entry.format_version,
@@ -1264,8 +1373,10 @@ impl DaemonState {
             .catalog
             .active_leases_for_bundle(&entry.bundle_id)?
             .len();
-        let disk_state = probe_bundle_disk_state(&entry.path);
+        let disk_state = self.catalog.bundle_disk_state(&entry.path);
         Ok(serde_json::to_value(BundleEntryView {
+            created_utc: Some(entry.created_at_utc.clone()),
+            summary: protocol::CatalogSummary::default(),
             bundle_id: entry.bundle_id,
             path: entry.path,
             format_version: entry.format_version,
@@ -1287,8 +1398,36 @@ impl DaemonState {
         } else {
             self.lock(&self.user_config, "user config")?.gc_grace_secs
         };
-        let report = self.catalog.gc_as_of(cutoff, grace, &now_utc)?;
+        let report = self.catalog.collect_garbage(
+            cutoff,
+            grace,
+            &now_utc,
+            if parsed.dry_run {
+                arb_storage::catalog::GcMode::Preview
+            } else {
+                arb_storage::catalog::GcMode::Execute
+            },
+        )?;
+        let counts = report.preview.as_ref().map(|p| {
+            [
+                ("candidate", p.candidate_bundle_ids.len()),
+                ("missing", p.missing_bundle_ids.len()),
+                ("legacy", p.legacy_bundle_ids.len()),
+                ("unmanaged", p.unmanaged_bundle_ids.len()),
+                ("expired_leases", p.expired_lease_ids.len()),
+                ("leased", report.skipped_leased_bundle_ids.len()),
+                ("active_job", report.skipped_active_job_bundle_ids.len()),
+                ("in_grace", report.skipped_in_grace_bundle_ids.len()),
+                ("failed", report.failed.len()),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect()
+        });
         Ok(serde_json::to_value(BundleGcResponse {
+            dry_run: parsed.dry_run,
+            preview: report.preview,
+            counts,
             purged_bundle_ids: report.purged_bundle_ids,
             skipped_leased_bundle_ids: report.skipped_leased_bundle_ids,
             skipped_active_job_bundle_ids: report.skipped_active_job_bundle_ids,
@@ -1356,7 +1495,20 @@ impl DaemonState {
     }
 
     fn handle_timeline_query_logs(&self, params: Value) -> Result<Value, DaemonError> {
-        let parsed: TimelineQueryParams = parse_params(params)?;
+        let mut parsed: TimelineQueryParams = parse_params(params)?;
+        if parsed.limit == Some(0) {
+            return Err(DaemonError::InvalidParams("limit must be positive".into()));
+        }
+        if let Some(cursor) = &parsed.cursor {
+            if parsed.after_seq.is_some() {
+                return Err(DaemonError::InvalidParams(
+                    "cursor and after_seq cannot be combined".into(),
+                ));
+            }
+            parsed.after_seq = Some(cursor.parse().map_err(|_| {
+                DaemonError::InvalidParams("cursor must be a decimal sequence".into())
+            })?);
+        }
         let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let reader = open_bundle(&path)?;
         let bucket = match parsed.bucket.unwrap_or(QueryBucket::All) {
@@ -1364,13 +1516,13 @@ impl DaemonState {
             QueryBucket::Unanchored => Some(RecordBucket::Unanchored),
             QueryBucket::All => None,
         };
-        let logs = inspect_export::query_logs_filtered(
+        let response = inspect_export::query_log_response(
             reader.as_ref(),
             bucket,
             &parsed,
             effective_query_limit(parsed.limit),
         )?;
-        Ok(serde_json::to_value(TimelineLogsResponse { logs })?)
+        Ok(serde_json::to_value(response)?)
     }
 
     fn handle_timeline_query_taps(&self, params: Value) -> Result<Value, DaemonError> {
@@ -1652,7 +1804,11 @@ impl DaemonState {
 
     /// Runs one request, converting a panic into a `-32603` error and a graceful shutdown
     /// instead of a silently dropped connection and a zombie daemon (R3 S15).
-    fn dispatch_guarded(&self, method: &str, params: Value) -> Result<Value, (i32, String)> {
+    fn dispatch_guarded(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, (i32, String)> {
         match catch_unwind(AssertUnwindSafe(|| self.dispatch(method, params))) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(err)) => Err((err.rpc_code(), err.to_string())),
@@ -2385,14 +2541,47 @@ fn effective_query_limit(requested: Option<usize>) -> usize {
 }
 
 fn parse_params<T: DeserializeOwned>(value: Value) -> Result<T, DaemonError> {
-    serde_json::from_value(value).map_err(|err| DaemonError::InvalidParams(err.to_string()))
+    let value = if value.is_null() { json!({}) } else { value };
+    serde_path_to_error::deserialize(&value).map_err(|err| {
+        let detail = err.inner().to_string();
+        let path = err.path().to_string();
+        let message = if let Some(field) = detail
+            .strip_prefix("missing field `")
+            .and_then(|s| s.strip_suffix('`'))
+        {
+            format!("missing required field '{field}'")
+        } else if detail.starts_with("invalid type: null") {
+            format!("missing required field '{path}'")
+        } else if let Some((actual, expected)) = detail
+            .strip_prefix("invalid type: ")
+            .and_then(|s| s.split_once(", expected "))
+        {
+            let got = match actual.split_ascii_whitespace().next().unwrap_or(actual) {
+                "integer" | "floating" => "number",
+                "map" => "object",
+                "sequence" => "array",
+                "boolean" => "boolean",
+                "string" => "string",
+                other => other,
+            };
+            let expected = match expected {
+                "a string" | "path string" | "a path string" => "string",
+                "a boolean" => "boolean",
+                other => other,
+            };
+            format!("invalid type for '{path}': expected {expected}, got {got}")
+        } else {
+            format!("{path}: {detail}")
+        };
+        DaemonError::InvalidParams(message)
+    })
 }
 
 fn parse_optional_params<T: DeserializeOwned + Default>(value: Value) -> Result<T, DaemonError> {
     if value.is_null() {
         return Ok(T::default());
     }
-    serde_json::from_value(value).map_err(|err| DaemonError::InvalidParams(err.to_string()))
+    parse_params(value)
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -2431,6 +2620,48 @@ mod supervisor_hardening_tests {
             cache_dir: tmp.path().join("c"),
             runtime_dir: tmp.path().join("r"),
         }
+    }
+
+    #[test]
+    fn start_wait_distinguishes_connection_timeout_and_replaced_generation() {
+        let tmp = tempfile::tempdir().expect("temp");
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).expect("daemon");
+        let generation = server
+            .state
+            .lock_capture()
+            .expect("capture")
+            .begin_session("mock");
+        let wait = |g| {
+            server
+                .state
+                .wait_for_connection(json!({"serial":"mock"}), Some(g), Instant::now())
+                .expect("wait")
+        };
+        let before = wait(generation);
+        assert_eq!(before["connected"], false, "connection is pending");
+        assert_eq!(before["wait_timed_out"], true, "deadline reached");
+        let mut source = arb_adb::mock::MockDeviceSource::from_scenario(
+            arb_adb::mock::FaultScenario::NormalFhd30,
+        );
+        while let Some(event) = source.next_event().expect("mock event") {
+            let mut cap = server.state.lock_capture().expect("capture");
+            cap.ingest_event(event).expect("event");
+            if cap.is_connected() {
+                break;
+            }
+        }
+        assert_eq!(wait(generation)["connected"], true, "confirmed");
+        assert_eq!(
+            wait(generation)["wait_timed_out"],
+            false,
+            "connected at deadline"
+        );
+        assert_eq!(
+            wait(generation + 1)["connected"],
+            false,
+            "unrelated generation"
+        );
+        server.shutdown();
     }
 
     #[test]

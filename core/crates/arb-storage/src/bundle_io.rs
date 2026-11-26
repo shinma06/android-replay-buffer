@@ -269,6 +269,17 @@ pub struct BundleManifestSummary {
     pub legacy_metadata: Option<LegacyBundleMetadata>,
 }
 
+/// Counts and anchored time bounds for a saved log timeline.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LogStatistics {
+    /// Total rows, including quarantine.
+    pub count: usize,
+    /// Quarantined rows.
+    pub unanchored: usize,
+    /// Longest anchored span within a single boot, in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// Unified read-only bundle reader interface implemented for v2 and legacy bundles.
 pub trait BundleReader: fmt::Debug + Send + Sync {
     /// Digest of the log input captured by an immutable in-memory legacy reader.
@@ -297,6 +308,35 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
     ///
     /// Returns [`StorageError`] if reading or decoding discontinuity rows fails.
     fn discontinuities(&self) -> Result<Vec<DiscontinuityEvent>, StorageError>;
+
+    /// Counts rows and measures the longest confirmed log span within a boot.
+    ///
+    /// # Errors
+    /// Returns an error when the timeline cannot be read.
+    fn log_statistics(&self) -> Result<LogStatistics, StorageError> {
+        let logs = self.query_logs(None, TimeRange::all(), None)?;
+        let mut spans = std::collections::BTreeMap::new();
+        let mut stats = LogStatistics {
+            count: logs.len(),
+            ..LogStatistics::default()
+        };
+        for log in &logs {
+            if log.bucket == RecordBucket::Unanchored {
+                stats.unanchored += 1;
+            } else if let TimeAlignment::Anchored {
+                boot_id,
+                boottime_ns,
+                ..
+            } = &log.alignment
+            {
+                let span = spans.entry(boot_id).or_insert((*boottime_ns, *boottime_ns));
+                span.0 = span.0.min(*boottime_ns);
+                span.1 = span.1.max(*boottime_ns);
+                stats.duration_ms = stats.duration_ms.max(span.1.abs_diff(span.0) / 1_000_000);
+            }
+        }
+        Ok(stats)
+    }
 
     /// Queries logcat rows filtered by optional `bucket`, [`TimeRange`], and optional row `limit`.
     ///
@@ -909,6 +949,39 @@ impl V2BundleReader {
 }
 
 impl BundleReader for V2BundleReader {
+    fn log_statistics(&self) -> Result<LogStatistics, StorageError> {
+        let conn = self.open_timeline_ro()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT boot_id, COUNT(*), COUNT(CASE WHEN bucket='unanchored' THEN 1 END),
+            MIN(CASE WHEN bucket='main' AND certainty='anchored' THEN aligned_boottime_ns END),
+            MAX(CASE WHEN bucket='main' AND certainty='anchored' THEN aligned_boottime_ns END)
+            FROM logs GROUP BY boot_id",
+            )
+            .map_err(|e| StorageError::sqlite("prepare_log_statistics", e))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, usize>(1)?,
+                    r.get::<_, usize>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
+            })
+            .map_err(|e| StorageError::sqlite("log_statistics", e))?;
+        let mut stats = LogStatistics::default();
+        for row in rows {
+            let (count, unanchored, lo, hi) =
+                row.map_err(|e| StorageError::sqlite("log_statistics_row", e))?;
+            stats.count += count;
+            stats.unanchored += unanchored;
+            if let Some((lo, hi)) = lo.zip(hi) {
+                stats.duration_ms = stats.duration_ms.max(hi.abs_diff(lo) / 1_000_000);
+            }
+        }
+        Ok(stats)
+    }
+
     fn timeline_bundle_dir(&self) -> Option<&Path> {
         Some(&self.root_dir)
     }

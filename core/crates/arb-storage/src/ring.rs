@@ -98,6 +98,9 @@ pub struct CaptureChunkInfo {
     pub host_live: bool,
     /// Physical device that produced this chunk.
     pub device_serial: String,
+    /// Boot announced by Hello, including chunks before the first heartbeat.
+    #[serde(default)]
+    pub device_boot_id: Option<String>,
     /// First and last ingest stamps, independent of FIFO ordering.
     pub ingest_range: (i64, i64),
     /// The chunk contains video picture data.

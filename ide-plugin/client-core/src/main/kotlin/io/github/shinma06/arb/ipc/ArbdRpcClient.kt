@@ -256,11 +256,12 @@ class ArbdRpcClient(
     fun bundleRestore(bundleId: String): BundleEntryView =
         call("bundle.restore", jsonObj("bundle_id" to bundleId), BundleEntryView::class.java)
 
-    fun bundleGc(nowUtc: String? = null, ignoreGrace: Boolean = false): BundleGcResponse {
+    fun bundleGc(nowUtc: String? = null, ignoreGrace: Boolean = false, dryRun: Boolean = false): BundleGcResponse {
         val params = JsonObject()
         if (nowUtc != null) {
             params.addProperty("now_utc", nowUtc)
         }
+        if (dryRun) params.addProperty("dry_run", true)
         if (ignoreGrace) {
             params.addProperty("ignore_grace", true)
         }
@@ -294,15 +295,20 @@ class ArbdRpcClient(
         level: String? = null,
         keyword: String? = null,
         afterSeq: Long? = null,
+        cursor: String? = null,
+        wholeWord: Boolean = false,
     ): TimelineLogsResponse {
         val params = buildTimelineQueryParams(bundleIdOrPath, bucket, startNs, endNs, limit).apply {
+            if (cursor != null) addProperty("cursor", cursor)
+            if (wholeWord) addProperty("whole_word", true)
             if (afterSeq != null) addProperty("after_seq", afterSeq)
             if (!packageName.isNullOrBlank()) addProperty("package", packageName)
             if (!tag.isNullOrBlank()) addProperty("tag", tag)
-            if (!level.isNullOrBlank()) addProperty("level", level)
+            if (level != null) addProperty("level", level)
             if (!keyword.isNullOrBlank()) addProperty("keyword", keyword)
         }
-        return call("timeline.query_logs", params, TimelineLogsResponse::class.java)
+        val method = if (cursor != null || wholeWord) "bundle.query_logs" else "timeline.query_logs"
+        return call(method, params, TimelineLogsResponse::class.java)
     }
 
     fun timelineQueryTaps(

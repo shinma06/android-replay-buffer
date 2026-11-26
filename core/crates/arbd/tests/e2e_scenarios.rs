@@ -2943,3 +2943,285 @@ fn startup_purge_failure_and_reided_managed_bundle_gc_e2e() {
     );
     server.shutdown();
 }
+
+#[test]
+fn stopped_ring_survives_restart_and_a_device_switch_is_isolated() {
+    let tmp = TempDir::new().expect("temp");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let base = 300 * SEC_NS;
+    server
+        .ingest_device_source(&mut build_disconnect_phase_a("same", base))
+        .expect("first session");
+    client.call("capture.stop", &json!({}));
+    server
+        .ingest_device_source(&mut build_reconnect_phase_b("same", base))
+        .expect("restart");
+    let saved = client.call("save.logs", &json!({"duration_sec":60}));
+    assert_eq!(
+        saved["actual_log_duration_ms"], 6000,
+        "both sides of the stop must survive"
+    );
+    assert_eq!(saved["window_shortfall"], true, "sparse evidence");
+    assert_eq!(saved["requested_duration_secs"], 60, "lookback");
+    let page = client.call(
+        "bundle.query_logs",
+        &json!({"bundle_id":saved["bundle_id"],"limit":1}),
+    );
+    assert_eq!(page["total_matched"], 2, "both sessions");
+    assert_eq!(
+        page["logs"][0]["message"], "before-disconnect",
+        "old session saved"
+    );
+    assert_eq!(page["has_more"], true, "second page exists");
+    let tail = client.call(
+        "bundle.query_logs",
+        &json!({"bundle_id":saved["bundle_id"],"cursor":page["next_cursor"],"limit":1}),
+    );
+    assert_eq!(
+        tail["logs"][0]["message"], "after-reconnect",
+        "new session saved"
+    );
+    assert_eq!(tail["total_matched"], 2, "stable total");
+    assert!(
+        tail["logs"][0]["timestamp_utc"].is_string(),
+        "UTC timestamp"
+    );
+    assert!(tail["logs"][0]["frame_index"].is_null(), "log-only");
+    assert!(tail["next_cursor"].is_null(), "final page");
+    server
+        .ingest_device_source(&mut build_chunked_heartbeat_source("same", base, 0..3))
+        .expect("other serial");
+    let other = client.call("save.logs", &json!({"duration_sec":60}));
+    let rows = client.call(
+        "bundle.query_logs",
+        &json!({"bundle_id":other["bundle_id"]}),
+    );
+    assert!(
+        rows["logs"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .all(|r| r["tag"] == "Ring"),
+        "serials must never mix"
+    );
+    server.shutdown();
+}
+
+#[test]
+fn moved_managed_tree_forgets_only_catalog_rows() {
+    let tmp = TempDir::new().expect("temp");
+    let paths = isolated_paths(&tmp);
+    let managed = paths.data_dir.join("bundles");
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("daemon");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    server
+        .ingest_device_source(&mut build_disconnect_phase_a("boot", 300 * SEC_NS))
+        .expect("capture");
+    let parent = managed.join("collection");
+    fs::create_dir(&parent).expect("collection");
+    let saved = client.call("save.logs", &json!({"dest_dir":parent}));
+    let id = saved["bundle_id"].as_str().expect("id");
+    let path = PathBuf::from(saved["bundle_path"].as_str().expect("path"));
+    let contents = snapshot_directory(&path);
+    let dest = tmp.path().join("moved");
+    fs::rename(&parent, &dest).expect("move parent and bundle");
+    let list = client.call("bundle.list", &json!({}));
+    assert_eq!(
+        list["bundles"][0]["disk_state"], "missing",
+        "known accessible managed storage"
+    );
+    assert_eq!(
+        client.call("bundle.forget", &json!({"bundle_id":id}))["forgotten_bundle_ids"],
+        json!([id]),
+        "forgot moved row"
+    );
+    assert_eq!(
+        client.call("bundle.list", &json!({}))["bundles"],
+        json!([]),
+        "row removed"
+    );
+    assert_eq!(snapshot_directory(&dest.join(id)), contents, "moved bytes");
+    server.shutdown();
+}
+
+#[test]
+fn preview_gc_preserves_catalog_and_payload_then_matches_execution() {
+    let tmp = TempDir::new().expect("temp");
+    let paths = isolated_paths(&tmp);
+    let data = paths.data_dir.clone();
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("daemon");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    server
+        .ingest_device_source(&mut build_disconnect_phase_a("boot", 300 * SEC_NS))
+        .expect("capture");
+    let saved = client.call("save.logs", &json!({}));
+    let id = &saved["bundle_id"];
+    let path = PathBuf::from(saved["bundle_path"].as_str().expect("path"));
+    client.call("bundle.trash", &json!({"bundle_id":id}));
+    let before = client.call("bundle.list", &json!({}));
+    let files = snapshot_directory(&path);
+    let db = fs::read(data.join("catalog.sqlite")).expect("catalog");
+    let wal = fs::read(data.join("catalog.sqlite-wal")).expect("WAL");
+    let preview = client.call("bundle.gc", &json!({"dry_run":true,"ignore_grace":true}));
+    assert_eq!(preview["dry_run"], true, "preview");
+    assert_eq!(
+        preview["preview"]["candidate_bundle_ids"],
+        json!([id]),
+        "candidate"
+    );
+    assert!(
+        preview["preview"]["estimated_reclaim_bytes"]
+            .as_u64()
+            .expect("bytes")
+            > 0,
+        "reclaimable"
+    );
+    assert_eq!(
+        client.call("bundle.list", &json!({})),
+        before,
+        "unchanged catalog"
+    );
+    assert_eq!(snapshot_directory(&path), files, "unchanged recording");
+    assert_eq!(
+        fs::read(data.join("catalog.sqlite")).expect("catalog"),
+        db,
+        "catalog bytes"
+    );
+    assert_eq!(
+        fs::read(data.join("catalog.sqlite-wal")).expect("WAL"),
+        wal,
+        "no SQLite writes"
+    );
+    let actual = client.call("bundle.gc", &json!({"ignore_grace":true}));
+    assert_eq!(
+        actual["purged_bundle_ids"], preview["preview"]["candidate_bundle_ids"],
+        "candidate parity"
+    );
+    server.shutdown();
+}
+
+#[test]
+fn rpc_parameter_errors_match_shared_contract() {
+    let tmp = TempDir::new().expect("temp");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("daemon");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../docs/specs/ui-feedback-contract-table.json"
+    ))
+    .expect("table");
+    for row in table["rpc_parameter_rows"].as_array().expect("rows") {
+        let (code, message) =
+            client.call_err(row["method"].as_str().expect("method"), &row["params"]);
+        assert_eq!(json!(code), row["code"], "row {row}");
+        if let Some(want) = row["message"].as_str() {
+            assert_eq!(message, want, "row {row}");
+        }
+    }
+    server.shutdown();
+}
+
+#[test]
+fn long_preroll_and_sparse_vfr_measured_from_published_evidence() {
+    let tmp = TempDir::new().expect("temp");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("daemon");
+    let base = 300 * SEC_NS;
+    let mut builder =
+        push_initial_session_steps(FaultScenarioBuilder::new("vfr-device"), "vfr-boot", base);
+    let backend = OpenH264Backend::new();
+    let encoded = backend
+        .encode_yuv420p_sequence(
+            &[synthesize_barcode_yuv420p_frame(0)],
+            1,
+            FRAME_DURATION_NS,
+            EncodeParams {
+                bitrate_bps: 4_000_000,
+                max_fps: 30,
+            },
+        )
+        .expect("IDR");
+    let idr = &encoded.first().expect("frame").annex_b;
+    for sec in 0_u32..=153 {
+        let elapsed = i64::from(sec) * SEC_NS;
+        let dev = base + elapsed;
+        builder = builder.push(FaultStep::Heartbeat {
+            pc_cont_ns: 10 * MS_NS + elapsed,
+            payload: HeartbeatPayload {
+                boottime_ns: dev,
+                monotonic_ns: dev,
+                realtime_ns: BASE_WALL_NS + elapsed,
+                streams: all_streams_running(dev, sec),
+            },
+        });
+        if [0, 103, 153].contains(&sec) {
+            builder = builder.push(FaultStep::VideoFrame {
+                pc_cont_ns: 10 * MS_NS + elapsed,
+                packet: VideoPacket {
+                    kind: VideoPacketKind::Keyframe,
+                    pts_us: u64::try_from(dev / 1000).expect("PTS"),
+                    data: idr.clone(),
+                },
+            });
+        }
+        if let Some(msg) = match sec {
+            0 => Some("old"),
+            94 => Some("studio.screen.sharing"),
+            115 => Some("[STU]"),
+            152 => Some("STU_more"),
+            _ => None,
+        } {
+            builder = builder.push(FaultStep::LogRecord {
+                pc_cont_ns: 10 * MS_NS + elapsed,
+                flags: FrameFlags::NONE,
+                payload: make_text_log(dev, 1_730_000_000 + sec, 0, "Test", msg),
+            });
+        }
+    }
+    server
+        .ingest_device_source(&mut builder.build())
+        .expect("capture");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let full = client.call(
+        "save.trigger",
+        &json!({"duration_sec":90,"drain_timeout_ms":0}),
+    );
+    assert_eq!(
+        full["video_frame_count"], 2,
+        "old IDR is decoder context only"
+    );
+    assert!(
+        (50000..50100).contains(
+            &full["actual_video_duration_ms"]
+                .as_u64()
+                .expect("MP4 duration")
+        ),
+        "{full}"
+    );
+    assert_eq!(full["window_shortfall"], true, "short video");
+    let word = client.call(
+        "bundle.query_logs",
+        &json!({"bundle_id":full["bundle_id"],"keyword":"stu","level":"Info","whole_word":true}),
+    );
+    assert_eq!(word["total_matched"], 1, "exclude studio and STU_more");
+    assert_eq!(
+        word["logs"][0]["frame_index"], 0,
+        "earlier VFR frame is held until 153s"
+    );
+    assert_eq!(word["logs"][0]["offset_ms"], 12000, "relative to 103s");
+    for level in ["ERRX", "BOGUS", ""] {
+        let (code, _) = client.call_err(
+            "timeline.query_logs",
+            &json!({"bundle_id":full["bundle_id"],"level":level}),
+        );
+        assert_eq!(code, -32602, "level {level}");
+    }
+    let logs = client.call("save.logs", &json!({"window_secs":60,"drain_timeout_ms":0}));
+    assert_eq!(logs["actual_log_duration_ms"], 58000, "94–152s only");
+    assert_eq!(logs["log_count"], 3, "no aged rows");
+    let overview = client.call("timeline.overview", &json!({"bundle_id":logs["bundle_id"]}));
+    assert_eq!(
+        overview["duration_ms"], 58000,
+        "old anchors do not inflate the overview"
+    );
+    server.shutdown();
+}

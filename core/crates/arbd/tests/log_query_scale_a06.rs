@@ -369,6 +369,8 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
 
 fn query_params(bundle_dir: &Path, after_seq: Option<u64>, package: &str) -> TimelineQueryParams {
     TimelineQueryParams {
+        whole_word: false,
+        cursor: None,
         bundle_id_or_path: bundle_dir.to_string_lossy().into_owned(),
         bucket: None,
         start_ns: None,
