@@ -1000,6 +1000,30 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
             stderr = client.close()
         sec.check("MCP server wrote 0 bytes to stderr", len(stderr) == 0, f"{len(stderr)} bytes: {stderr[:200]!r}")
 
+        modern = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
+        try:
+            negotiation = modern.request("initialize", {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "verify_release_bundle", "version": "1"},
+            })
+            sec.check("2025-11-25 negotiated", negotiation["result"]["protocolVersion"] == "2025-11-25")
+            modern.notify("notifications/initialized")
+            frame = modern.call_tool("arb_inspect_frames", {
+                "mode": "single", "bundle_id": str(fixture), "frame_index": 32,
+            })["result"]
+            links = [block for block in frame["content"] if block["type"] == "resource_link"]
+            sec.check("default inspection returns metadata and a PNG link",
+                      frame["structuredContent"]["frames"][0]["frame_index"] == 32
+                      and len(links) == 1 and not any(block["type"] == "image" for block in frame["content"]))
+            if links:
+                contents = modern.request("resources/read", {"uri": links[0]["uri"]})["result"]["contents"]
+                sec.check("linked PNG reads on demand", len(contents) == 1
+                          and contents[0]["uri"] == links[0]["uri"] and contents[0]["mimeType"] == "image/png"
+                          and png_dimensions(base64.b64decode(contents[0]["blob"])) == (1920, 1080))
+        finally:
+            stderr = modern.close()
+        sec.check("2025-11-25 MCP server wrote 0 bytes to stderr", len(stderr) == 0)
+
 
 # --------------------------------------------------------------------------------------------
 # section 5: legacy read-only

@@ -124,7 +124,7 @@
           "include_image": {"description": "応答にスクリーンショットの PNG を含めます。", "type": "boolean", "default": true},
           "output_dir": {"description": "ファイル名を自動生成する出力ディレクトリ。", "type": "string"},
           "output_path": {"description": "出力ファイルのパス。", "type": "string"},
-          "overwrite": {"description": "同名のスクリーンショットを上書きします。", "type": "boolean", "default": false},
+          "overwrite": {"description": "既存ファイルを保護します。同名ファイルがある場合は別の出力先を指定します。", "type": "boolean", "const": false, "default": false},
           "serial": {"description": "対象の ADB シリアル。省略時は設定と接続中端末から選択します。", "type": "string"}
         },
         "type": "object",
@@ -349,7 +349,7 @@
           "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。省略時は burn_taps に従います。", "type": "boolean"},
           "out_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
           "output_path": {"description": "出力ファイルのパス。", "type": "string"},
-          "trash_original": {"description": "書き出し確定後に元バンドルをごみ箱に移します。", "type": "boolean", "default": false},
+          "trash_original": {"description": "元バンドルを保持します。移動には書き出し後に arb_trash_bundle を使います。", "type": "boolean", "const": false, "default": false},
           "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
         },
         "required": [],
@@ -728,21 +728,6 @@
       "additionalProperties": false
     },
     "CatalogFormatVersion": {"type": "string", "enum": ["v2", "legacy_ro"]},
-    "CatalogSummary": {
-      "type": "object",
-      "properties": {
-        "bundle_kind": {"type": "string"},
-        "duration_ms": {"type": "integer", "minimum": 0},
-        "frame_count": {"type": "integer", "minimum": 0},
-        "has_video": {"type": "boolean"},
-        "has_audio": {"type": "boolean"},
-        "log_count": {"type": "integer", "minimum": 0},
-        "crash_marker_count": {"type": "integer", "minimum": 0},
-        "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]}
-      },
-      "required": ["memo"],
-      "additionalProperties": false
-    },
     "ConfigResponse": {
       "type": "object",
       "properties": {"config": {"$ref": "#/$defs/ArbConfig"}, "config_path": {"type": "string"}},
@@ -1124,40 +1109,6 @@
       "additionalProperties": false
     },
     "LogCompleteness": {"type": "string", "enum": ["verified_no_overflow", "overflow_detected", "unverified"]},
-    "LogRecord": {
-      "type": "object",
-      "properties": {
-        "seq": {"type": "integer", "minimum": 0},
-        "boot_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "header_epoch_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-        "device_read_boottime_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-        "pc_ingest_cont_ns": {"type": "integer"},
-        "alignment": {"$ref": "#/$defs/TimeAlignment"},
-        "bucket": {"$ref": "#/$defs/RecordBucket"},
-        "level": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "pid": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-        "tid": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-        "uid": {"type": "integer", "minimum": 0},
-        "package_name": {"type": "string"},
-        "message": {"type": "string"}
-      },
-      "required": [
-        "seq",
-        "boot_id",
-        "header_epoch_ns",
-        "device_read_boottime_ns",
-        "pc_ingest_cont_ns",
-        "alignment",
-        "bucket",
-        "level",
-        "tag",
-        "pid",
-        "tid",
-        "message"
-      ],
-      "additionalProperties": false
-    },
     "LogcatStreamMeta": {
       "type": "object",
       "properties": {
@@ -1354,22 +1305,6 @@
         "rpc_code",
         "message"
       ],
-      "additionalProperties": false
-    },
-    "SaveEvidence": {
-      "type": "object",
-      "properties": {
-        "actual_video_duration_ms": {"type": "integer", "minimum": 0},
-        "actual_log_duration_ms": {"type": "integer", "minimum": 0},
-        "video_frame_count": {"type": "integer", "minimum": 0},
-        "log_count": {"type": "integer", "minimum": 0},
-        "unanchored_log_count": {"type": "integer", "minimum": 0},
-        "truncated_unanchored_count": {"type": "integer", "minimum": 0},
-        "discontinuity_count": {"type": "integer", "minimum": 0},
-        "window_shortfall": {"type": "boolean"},
-        "warnings": {"type": "array", "items": {"type": "string"}}
-      },
-      "required": [],
       "additionalProperties": false
     },
     "SaveJobState": {"type": "string", "enum": ["pinned", "draining", "materializing", "failed_retryable", "completed", "discarded"]},
@@ -1598,12 +1533,6 @@
         }
       ]
     },
-    "TimelineCrashesResponse": {
-      "type": "object",
-      "properties": {"crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}}},
-      "required": ["crashes"],
-      "additionalProperties": false
-    },
     "TimelineLogsResponse": {
       "type": "object",
       "properties": {
@@ -1664,12 +1593,6 @@
         "unanchored_truncated_count",
         "app_logs"
       ],
-      "additionalProperties": false
-    },
-    "TimelineScreensResponse": {
-      "type": "object",
-      "properties": {"screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}}},
-      "required": ["screens"],
       "additionalProperties": false
     },
     "TimelineSummaryResponse": {

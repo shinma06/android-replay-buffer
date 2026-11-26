@@ -78,11 +78,12 @@ satisfies:
 
 ## MCP stdio と CLI の調査契約
 
-`arb-cli mcp` は 2024-11-05、2025-03-26、2025-06-18、2025-11-25 をネゴシエートし、未知版には 2025-11-25 を提示する。公開名は `android-replay-buffer`。各行は独立した JSON-RPC メッセージで、応答・進捗・ログ通知は同じ stdout のロックを通る。[MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25)
+`arb-cli mcp` は 2024-11-05、2025-03-26、2025-06-18、2025-11-25 をネゴシエートし、未知版には 2025-11-25 を提示する。2025-06-18 以降で JSON-RPC バッチを受け取った場合は -32600 を返す。公開名は `android-replay-buffer`。各行は独立した JSON-RPC メッセージで、応答・進捗・ログ通知は同じ stdout のロックを通る。[MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25)
 
 - 20 ツールの入力、出力、注釈、実行形式の正本は [MCP ツール契約表](mcp-tools-table.json)。入力は同じ表で検証する。`structuredContent` と JSON テキストの値は等しい。エラーは `isError`、`error_code`、`rpc_code`、`message` を持つ。再試行可能な保存失敗では元のジョブ情報を保持する。
+- 2025-11-25 の書き出しは元バンドルを保持し、スクリーンショットは既存ファイルを保護する。`trash_original: true` / `overwrite: true` は入力エラーになる。元データの整理には `arb_trash_bundle` を使う。以前の3版は既存スクリプトの指定を受理し、この2ツールに `destructiveHint: true` を付ける。
 - `arb_save_and_inspect` は保存、概要、画面遷移、クラッシュ、最後の ERROR ログを共有 RPC で取得する。`memo` はその調査結果に添える。保存後の照会が失敗した場合は `save` に保存済みの結果を残す。保存結果の計測不能値は `null`。
-- `arb_query_logs` と `arb-cli logs <ID>` は既定 100 件。上限 100000 件、`cursor` と `after_seq` は排他。CLI は `--limit`、`--cursor`、`--whole-word` を使う。`gc --dry-run` と `capture start --wait-connected --wait-timeout-ms 5000` も同じ RPC を使う。
+- `arb_query_logs` と `arb-cli logs <ID>` は既定 100 件。上限 100000 件、`cursor` と `after_seq` は排他。CLI は `--limit`、`--cursor`、`--whole-word` を使う。`gc --dry-run` と `capture start --wait-connected --wait-timeout-ms 5000` も同じ RPC を使う。プレビューでは同じ IPC 接続の `system.hello.gc_dry_run` を確認し、未対応のデーモンには削除要求を送らない。
 - `arb://status`、`arb://bundles` と各バンドルの `manifest`、`screens`、`crashes`、`logs`、`frame/{frame_index}` を提供する。ログのリソースは最初の 100 件。フレームはメタデータだけを既定とし、PNG のデコードは `resources/read` または `include_images: true` の時点で行う。パスを直接指定した外部バンドルには、その stdio セッション内で使える参照 ID を割り当てる。旧世代にはリンクをテキストとして通知する。
 - プロンプトは `investigate_crash`、`triage_recent_bug`、`safe_cleanup_review`。バンドル ID はカタログから前方一致で最大 100 件を補完する。整理前にはプレビューと利用者確認を案内する。
 - `2025-11-25` の Tasks は任意。保存・複合調査・MP4/トリム・録画開始をバックグラウンド実行できる。MP4 とトリムの公開名は既存の `arb_export_trim` を使い、明示形式の呼び出し名 `arb_export_share_mp4` と `arb_trim_bundle` も受け付ける。`tasks/result` の待機中も同じ stdio で照会・キャンセルできる。キャンセル後は新しい RPC を送信しない。デーモンが既に受理した変更は完了し得る。保持はセッション内 64 件、既定 TTL は 60000 ms、最大 3600000 ms。TTL 到達後の終了済みタスクを回収し、EOF でセッションを破棄する。[MCP Tasks](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks)

@@ -1,10 +1,9 @@
 //! All-tool contract test against an isolated arbd with synthetic capture and ADB discovery.
-use super::{MockScreenshotProvider, build_minimal_valid_png, seed_bundle};
+use super::{build_minimal_valid_png, seed_bundle};
 use arb_adb::mock::FaultScenario;
 use arb_core::config::CaptureMode;
 use arb_os::paths::ArbPaths;
 use arb_os::rpc::RpcClient;
-use arbd::screenshot::SharedScreenshotProvider;
 use arbd::{DaemonConfig, DaemonServer};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +11,6 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Arc;
 use tempfile::TempDir;
 
 #[path = "../../src/mcp/schema.rs"]
@@ -166,6 +164,33 @@ fn registry(c: &mut Client) {
         );
         let tools = c.result("tools/list", json!({}));
         assert_eq!(tools["tools"].as_array().unwrap().len(), 20);
+        for (name, flag) in [
+            ("arb_export_trim", "trash_original"),
+            ("arb_screenshot", "overwrite"),
+        ] {
+            let tool = tools["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap();
+            let legacy = version < "2025-11-25";
+            assert_eq!(tool["annotations"]["destructiveHint"], legacy);
+            assert_eq!(
+                tool["inputSchema"]["properties"][flag]
+                    .get("const")
+                    .is_some(),
+                !legacy
+            );
+            if !legacy {
+                let mut args = json!({});
+                if name == "arb_export_trim" {
+                    args["bundle_id"] = json!("fixture");
+                }
+                args[flag] = json!(true);
+                assert_rejected(c, name, &args);
+            }
+        }
         assert_eq!(
             c.result("tools/call", json!({"name":"arb_status"}))["isError"],
             false
@@ -207,6 +232,16 @@ fn registry(c: &mut Client) {
         }
         schema::normalize_integers(input, &mut base);
         schema::validate(input, &base, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        if base.get("bundle_id").is_some() {
+            let mut absent = base.clone();
+            absent["bundle_id"] = json!("no-such-bundle-contract");
+            let result = c.result("tools/call", json!({"name":name,"arguments":absent}));
+            assert_eq!(result["isError"], true, "{name}");
+            let error = &result["structuredContent"];
+            assert_eq!(error["error_code"], "BUNDLE_NOT_FOUND", "{name}: {error}");
+            assert_eq!(error["rpc_code"], -32001, "{name}");
+            schema::validate(&def["outputSchema"], error, name).unwrap();
+        }
         for (k, field) in input["properties"].as_object().unwrap() {
             let mut args = base.clone();
             args[k] = if k == "bundle_id" {
@@ -275,11 +310,11 @@ fn resources_and_prompts(c: &mut Client, id: &str) {
         ("arb://bundles/%2e%2e/logs".into(), -32602),
         ("file:///etc/hosts".into(), -32602),
     ] {
-        assert_eq!(
-            c.request("resources/read", json!({"uri":uri}))["error"]["code"],
-            code,
-            "{uri}"
-        );
+        let response = c.request("resources/read", json!({"uri":uri}));
+        assert_eq!(response["error"]["code"], code, "{uri}");
+        if code == -32002 {
+            assert_eq!(response["error"]["data"]["uri"], uri);
+        }
     }
     let prompts = c.result("prompts/list", json!({}));
     assert_eq!(prompts["prompts"].as_array().unwrap().len(), 3);
@@ -344,12 +379,42 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         runtime_dir: root.path().join("r"),
         cache_dir: root.path().join("c"),
     };
-    let cfg = DaemonConfig::new(paths.clone()).with_screenshot_provider(
-        SharedScreenshotProvider::new(Arc::new(MockScreenshotProvider {
-            png_bytes: build_minimal_valid_png(10, 20),
-        })),
-    );
-    let server = DaemonServer::start(cfg).unwrap();
+    // Seed the on-disk ring, then exercise the same recovery path as a restarted daemon.
+    let seed = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    seed.ingest_device_source_with_mode(
+        &mut FaultScenario::NormalFhd30.build(),
+        CaptureMode::LogsOnly,
+    )
+    .unwrap();
+    seed.shutdown();
+    let arbd = Path::new(env!("CARGO_BIN_EXE_arb-cli"))
+        .with_file_name(format!("arbd{}", std::env::consts::EXE_SUFFIX));
+    // Workspace gates build the real binary. A standalone arb-cli crate test can run
+    // the production server from its development dependency in the same isolated process.
+    let mut process = None;
+    let _standalone = if arbd.is_file() {
+        let mut child = Command::new(arbd)
+            .arg("--data-dir")
+            .arg(&paths.data_dir)
+            .arg("--runtime-dir")
+            .arg(&paths.runtime_dir)
+            .arg("--cache-dir")
+            .arg(&paths.cache_dir)
+            .arg("--exit-on-stdin-eof")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert!(ready.starts_with("arbd ready"), "{ready}");
+        process = Some(child);
+        None
+    } else {
+        Some(DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap())
+    };
     let id = "bundle-contract";
     let path = seed_bundle(root.path(), &paths.data_dir.join("bundles"), id);
     let mut rpc = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
@@ -379,12 +444,6 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     );
     assert!(cap["connected"].is_boolean());
     c.tool("arb_capture_stop", json!({}));
-    server
-        .ingest_device_source_with_mode(
-            &mut FaultScenario::NormalFhd30.build(),
-            CaptureMode::LogsOnly,
-        )
-        .unwrap();
     for name in ["arb_save", "arb_save_logs"] {
         let r = c.result(
             "tools/call",
@@ -401,10 +460,18 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         );
         assert_eq!(c.check_tool(name, r)["requested_duration_secs"], 5);
     }
+    let adb_dir = std::path::PathBuf::from(std::env::var_os("FAKE_DEVICE_STATE").unwrap());
+    fs::write(
+        adb_dir.join("screencap.png"),
+        build_minimal_valid_png(10, 20),
+    )
+    .unwrap();
+    fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
     c.tool(
         "arb_screenshot",
-        json!({"output_path":root.path().join("shot.png")}),
+        json!({"serial":"contract-device","output_path":root.path().join("shot.png")}),
     );
+    fs::remove_file(adb_dir.join("devices")).unwrap();
     c.tool("arb_timeline_overview", target.clone());
     c.tool(
         "arb_query_logs",
@@ -450,7 +517,11 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     tasks(&mut c);
     assert_eq!(c.covered, c.schemas.keys().cloned().collect());
     drop(c);
-    server.shutdown();
+    drop(rpc);
+    if let Some(mut p) = process {
+        drop(p.stdin.take());
+        assert!(p.wait().unwrap().success());
+    }
 }
 
 fn tasks(c: &mut Client) {

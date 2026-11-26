@@ -179,7 +179,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-20）
+## 4. TCB 公理（TCB-01〜TCB-21）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -204,8 +204,8 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-17 | 端末側 `scrcpy-server` 5.0.1 の音声ソケットの意味: `codec_id = 0` は `AudioCaptureException`（`AudioPlaybackCapture` の隠し API リフレクションまたは `registerAudioPolicyStatic` の失敗。非致命で映像は続く）、`codec_id = 1` はそれ以外の例外（致命でサーバーごと終了）。API 33 以上で再生音キャプチャが成功するかは端末・OEM の `AudioPolicy` 実装と、同時に動く他のキャプチャ（Running Devices のミラーリングなど）に依存する | K11、G8 | `core/crates/arbd/src/live_adb.rs::tests::g8_5_runtime_audio_failures_on_api33_carry_cause_and_stderr`、`core/crates/arb-adb/tests/pdd_g8_audio_args_props.rs` | `codec_id` の意味は同梱の `scrcpy-server-v5.0.1` の dex（`AudioEncoder.encode` の catch 構造、`AudioPlaybackCapture.checkCompatibility` の `SDK_INT < 33`）を読んで確かめたもので、機械検証していない。物理 Android 13 端末・OEM ごとの成否は未検証（エミュレータ E2E は API 37 のみ。手順は [実機スモーク](../testing/work-device-smoke-checklist.md) の 9） |
 | TCB-18 | viewport の ns 値が Rust・JSON・JVM 間で同じフレームと終端を表し、Studio が単調時計から得た共通のメディア時刻を描画・操作に使う | K10、G3、Kotlin 決定論的時計 | `pdd_g3_media_props.rs` と `PlaybackControllerTest` が同じ 11 秒・61 枚のベクトルを読み、`ArbUiComponentsTest.vfrTimelineLayersAndGesturesUseOnePixelCoordinate` が各層の画素を検査 | Kani の有界証明は JVM・JBR・Compose の実装を含まない。旧 daemon・10 万枚超の CFR フォールバックは中間 PTS を推定する。10 万枚超で最終サンプル長が 0 の MP4 では、daemon は平均間隔を最終保持長として `timeline_duration_ns` を返すが、Studio は末尾長が不明なため epoch からの推定に戻り、両者の終端は一致しない。実画面の描画周期と入力遅延は Studio 受け入れで確認する |
 | TCB-19 | CLI/MCP の `save_outcome_failed` と IDE の `SaveOutcomeResponse.savedBundleId` が同じ wire 応答を保存成功と判定する | 共有契約表、KON-7 | `ui-feedback-contract-table.json` の save_rows を arb-cli、PddContractTablesTest、PddUiFeedbackContractTest で検査 | 表にある状態と ID の組合せを検証。実 IDE での通知描画は受け入れ対象 |
-| TCB-20 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 20 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
+| TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 20 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 
 端末選択では arbd の `select_live_target` と tray が `arb_core::device::selectable_online_serials` を直接使う。Rust 側の二重実装についての公理は不要になった。
 

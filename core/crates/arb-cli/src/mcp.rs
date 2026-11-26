@@ -129,6 +129,13 @@ impl McpServer {
 
         if let Some(batch) = msg.as_array() {
             // JSON-RPC batch (required by MCP 2025-03-26): answer each element, omit notifications.
+            if self.version.as_str() >= "2025-06-18" {
+                return Some(rpc_error(
+                    &Value::Null,
+                    JSONRPC_INVALID_REQUEST,
+                    "ネゴシエーションした MCP バージョンはバッチに対応していません",
+                ));
+            }
             if batch.is_empty() {
                 return Some(rpc_error(
                     &Value::Null,
@@ -218,7 +225,13 @@ impl McpServer {
             | "prompts/get"
             | "completion/complete" => Some(match self.resource_request(method, &params) {
                 Ok(v) => rpc_ok(&req_id, &v),
-                Err(e) => rpc_error(&req_id, e.rpc_code, e.message),
+                Err(e) => {
+                    let mut response = rpc_error(&req_id, e.rpc_code, e.message);
+                    if e.label == "RESOURCE_NOT_FOUND" {
+                        response["error"]["data"] = json!({"uri": params["uri"]});
+                    }
+                    response
+                }
             }),
             "logging/setLevel" => Some(self.session.set_level(&req_id, &params)),
             "tasks/get" | "tasks/list" | "tasks/cancel" | "tasks/result"
@@ -326,6 +339,8 @@ impl McpServer {
                     .map_err(Failure::from_rpc)?;
                 self.client = Some(connected);
             }
+            // The task may have been cancelled while connecting or negotiating system.hello.
+            self.activity.check(&self.session)?;
             let Some(client) = self.client.as_mut() else {
                 return Err(Failure::unavailable("arbd client unavailable"));
             };
@@ -438,7 +453,10 @@ impl McpServer {
     }
 
     fn tool_status(&mut self) -> Result<ToolOutput, Failure> {
-        let hello = self.call_daemon("system.hello", &json!({}))?;
+        let mut hello = self.call_daemon("system.hello", &json!({}))?;
+        if hello.get("gc_dry_run").is_none() {
+            hello["gc_dry_run"] = json!(false);
+        }
         let status = self.call_daemon("system.status", &json!({}))?;
         Ok(ToolOutput::new(json!({"hello":hello,"status":status})))
     }
@@ -448,7 +466,24 @@ impl McpServer {
         for key in ["companion_jar", "scrcpy_jar"] {
             absolutize_optional_path_field(&mut params, key)?;
         }
-        let resp = self.call_daemon("capture.start", &Value::Object(params))?;
+        let mut resp = self.call_daemon("capture.start", &Value::Object(params))?;
+        if resp.get("connected").is_none() {
+            let status = self.call_daemon("system.status", &json!({}))?;
+            let capture = &status["capture"];
+            let current = resp["started"] == true && capture["serial"] == resp["serial"];
+            resp["connected"] = json!(current && capture["connected"] == true);
+            resp["audio_state"] = if current {
+                capture["audio_state"].clone()
+            } else {
+                json!("unknown")
+            };
+            resp["audio_cause"] = if current {
+                capture["audio_cause"].clone()
+            } else {
+                Value::Null
+            };
+            resp["wait_timed_out"] = json!(false);
+        }
         Ok(ToolOutput::new(resp))
     }
 
@@ -1234,6 +1269,18 @@ mod tests {
             { "jsonrpc": "2.0", "method": "notifications/initialized" },
             { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
         ]);
+        for version in ["2025-11-25", "2025-06-18", "2025-03-26"] {
+            let init = srv.handle_message(&json!({
+                "jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":version}
+            })).unwrap();
+            assert_eq!(init["result"]["protocolVersion"], version);
+            if version != "2025-03-26" {
+                assert_eq!(
+                    srv.handle_line(&batch.to_string()).unwrap()["error"]["code"],
+                    -32600
+                );
+            }
+        }
         let resp = srv.handle_line(&batch.to_string()).expect("batch response");
         let arr = resp.as_array().expect("array response");
         assert_eq!(arr.len(), 2, "notification must not produce a response");
@@ -1242,6 +1289,132 @@ mod tests {
         let empty = srv.handle_line("[]").expect("empty batch error");
         assert_eq!(empty["error"]["code"], -32600);
     }
+    #[test]
+    fn previous_daemon_reports_safe_gc_capability_and_actual_capture_state() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(listener.accept().unwrap());
+            for (method, result) in [
+                (
+                    "system.hello",
+                    json!({"protocol_version":arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION}),
+                ),
+                ("system.status", json!({})),
+                (
+                    "capture.start",
+                    json!({"started":true,"serial":"fixture","capture_mode":"video_and_logs"}),
+                ),
+                (
+                    "system.status",
+                    json!({"capture":{"serial":"fixture","connected":true,"audio_state":"available"}}),
+                ),
+            ] {
+                let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(req["method"], method);
+                let reply = json!({"jsonrpc":"2.0","id":req["id"],"result":result});
+                write_frame_line(
+                    reader.get_mut(),
+                    &reply.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                )
+                .unwrap();
+            }
+            reader.get_mut().drain().unwrap();
+        });
+        let mut mcp = McpServer::new(paths);
+        mcp.client = Some(super::RpcClient::connect_endpoint(&endpoint).unwrap());
+        assert_eq!(
+            mcp.tool_status().unwrap().body["hello"]["gc_dry_run"],
+            false
+        );
+        let capture = mcp
+            .tool_capture_start(&serde_json::Map::new())
+            .unwrap()
+            .body;
+        assert_eq!(capture["connected"], true);
+        assert_eq!(capture["wait_timed_out"], false);
+        assert_eq!(capture["audio_state"], "available");
+        assert!(capture["audio_cause"].is_null());
+        let schema = super::contract::for_version("2025-11-25")
+            .iter()
+            .find(|t| t["name"] == "arb_capture_start")
+            .unwrap();
+        super::schema::validate(&schema["outputSchema"], &capture, "capture.start").unwrap();
+        drop(mcp);
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn cancelling_during_hello_prevents_the_first_mutation() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let listener = LocalIpcListener::bind(paths.ipc_endpoint()).unwrap();
+        let (began, hello) = mpsc::channel();
+        let (release, cancelled) = mpsc::channel();
+        let daemon = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "system.hello");
+            began.send(()).unwrap();
+            cancelled.recv_timeout(Duration::from_secs(5)).unwrap();
+            let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocol_version":arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION}});
+            write_frame_line(
+                reader.get_mut(),
+                &response.to_string(),
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .unwrap();
+            assert!(
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let mut mcp = McpServer::new(paths);
+        let created = mcp.handle_tools_call(
+            &json!(1),
+            &json!({"name":"arb_save","arguments":{},"task":{}}),
+        );
+        hello.recv_timeout(Duration::from_secs(5)).unwrap();
+        let task = &created["result"]["task"];
+        let result = mcp
+            .session
+            .request("tasks/cancel", &json!(2), &json!({"taskId":task["taskId"]}))
+            .unwrap();
+        assert_eq!(result["result"]["status"], "cancelled");
+        release.send(()).unwrap();
+        daemon.join().unwrap();
+    }
+
     #[test]
     fn mutation_timeout_is_reported_without_connecting_again() {
         use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line};

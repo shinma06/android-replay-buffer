@@ -35,8 +35,33 @@ pub(super) static TOOLS: LazyLock<Vec<Value>> = LazyLock::new(|| {
 });
 
 pub(super) fn for_version(version: &str) -> &'static [Value] {
-    static LEGACY: LazyLock<Vec<Value>> = LazyLock::new(|| {
+    static JUNE: LazyLock<Vec<Value>> = LazyLock::new(|| {
         let mut tools = TOOLS.clone();
+        for (name, flag, description) in [
+            (
+                "arb_screenshot",
+                "overwrite",
+                "同名のスクリーンショットを上書きします。",
+            ),
+            (
+                "arb_export_trim",
+                "trash_original",
+                "書き出し確定後に元バンドルをごみ箱に移します。",
+            ),
+        ] {
+            let tool = tools
+                .iter_mut()
+                .find(|t| t["name"] == name)
+                .expect("legacy tool");
+            let field = &mut tool["inputSchema"]["properties"][flag];
+            field.as_object_mut().expect("flag schema").remove("const");
+            field["description"] = json!(description);
+            tool["annotations"]["destructiveHint"] = json!(true);
+        }
+        tools
+    });
+    static LEGACY: LazyLock<Vec<Value>> = LazyLock::new(|| {
+        let mut tools = JUNE.clone();
         let query = tools
             .iter_mut()
             .find(|t| t["name"] == "arb_query_logs")
@@ -50,10 +75,10 @@ pub(super) fn for_version(version: &str) -> &'static [Value] {
         level["description"] = json!("Android のログレベル。旧クライアントの A も受け付けます。");
         tools
     });
-    if version < "2025-06-18" {
-        &LEGACY
-    } else {
-        &TOOLS
+    match version {
+        "2024-11-05" | "2025-03-26" => &LEGACY,
+        "2025-06-18" => &JUNE,
+        _ => &TOOLS,
     }
 }
 
