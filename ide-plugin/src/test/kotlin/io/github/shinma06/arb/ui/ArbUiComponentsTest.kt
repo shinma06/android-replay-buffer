@@ -59,77 +59,74 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-class ArbUiComponentsTest {
-    /**
-     * P2-06: the Studio header renders [ArbStudioController.headerSubtitle] verbatim. A bundle of
-     * the current format without device info used to show its wire name `v2` there.
-     */
-    private fun videoState() = TimelineViewerState(
-            bundleId = "b-approx",
-            path = "/tmp/b-approx",
-            format = BundleFormat.V2,
-            isLegacy = false,
-            leaseId = "l-1",
-            summary = TimelineSummaryResponse(
-                bundleId = "b-approx",
-                path = "/tmp/b-approx",
-                format = BundleFormat.V2,
-                isLegacy = false,
-                provenance = Provenance.Original,
-                streams = StreamsSummary(),
-                unanchoredSummary = UnanchoredSummary(0L, 0L),
-                epochs = emptyList(),
-                frameCount = 20,
-                keyframeCount = 2,
-                logMainCount = 0,
-                logUnanchoredCount = 0,
-                tapMainCount = 0,
-                tapUnanchoredCount = 0,
-                discontinuityCount = 0,
-            ),
-            frameCount = 20L,
-        )
+internal fun studioVideoState() = TimelineViewerState(
+    bundleId = "b-approx",
+    path = "/tmp/b-approx",
+    format = BundleFormat.V2,
+    isLegacy = false,
+    leaseId = "l-1",
+    summary = TimelineSummaryResponse(
+        bundleId = "b-approx",
+        path = "/tmp/b-approx",
+        format = BundleFormat.V2,
+        isLegacy = false,
+        provenance = Provenance.Original,
+        streams = StreamsSummary(),
+        unanchoredSummary = UnanchoredSummary(0L, 0L),
+        epochs = emptyList(),
+        frameCount = 20,
+        keyframeCount = 2,
+        logMainCount = 0,
+        logUnanchoredCount = 0,
+        tapMainCount = 0,
+        tapUnanchoredCount = 0,
+        discontinuityCount = 0,
+    ),
+    frameCount = 20L,
+)
 
+
+class ArbUiComponentsTest {
     @Test
     fun vfrTimelineLayersAndGesturesUseOnePixelCoordinate() {
-        val original = videoState()
-        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(4, listOf(0, 10, 1000, 1001), lastDurationNs = 999)
-        val state = original.copy(axis = axis, frameCount = 4, inFrameIndex = 2, outFrameIndex = 2,
-            summary = original.summary.copy(epochs = listOf(EpochSpan("b", 50, 2050))))
+        val original = studioVideoState()
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(4, listOf(0, 10_000_000, 1_000_000_000, 1_001_000_000), lastDurationNs = 999_000_000)
+        val state = original.copy(axis = axis, frameCount = 4, inTimeNs = axis.start(2), outTimeNs = axis.outTime(2),
+            summary = original.summary.copy(epochs = listOf(EpochSpan("b", 50_000_000, 2_050_000_000))))
         val geo = StudioTimelineGeometry(state, 14f, 1000f)
-        val out = StudioTimelineGeometry(state.copy(inFrameIndex = 0, outFrameIndex = 1), 14f, 1000f)
+        val out = StudioTimelineGeometry(state.copy(inTimeNs = 0, outTimeNs = axis.outTime(1)), 14f, 1000f)
         val tap = TapRecord(1, bootId = "b", pcIngestContNs = 0, action = "DOWN", bucket = RecordBucket.MAIN,
-            alignment = TimeAlignment.Anchored("b", 1050, 0, TimestampSemantics.INPUT_EVENT_TIME))
-        val swipe = tap.copy(gestureKind = io.github.shinma06.arb.model.GestureKind.SWIPE, endTOffsetNs = 100,
-            alignment = TimeAlignment.Anchored("b", 950, 0, TimestampSemantics.INPUT_EVENT_TIME))
-        val span = ScreenSpan(1050, 1050, packageName = "p", activityName = "A", shortName = "A")
-        val crash = CrashMarker(1050, 0, "p", "p", exceptionClass = "E", message = "", sourceLogSeq = 2)
+            alignment = TimeAlignment.Anchored("b", 1_050_000_000, 0, TimestampSemantics.INPUT_EVENT_TIME))
+        val swipe = tap.copy(gestureKind = io.github.shinma06.arb.model.GestureKind.SWIPE, endTOffsetNs = 100_000_000,
+            alignment = TimeAlignment.Anchored("b", 950_000_000, 0, TimestampSemantics.INPUT_EVENT_TIME))
+        val span = ScreenSpan(1_050_000_000, 1_050_000_000, packageName = "p", activityName = "A", shortName = "A")
+        val crash = CrashMarker(1_050_000_000, 0, "p", "p", exceptionClass = "E", message = "", sourceLogSeq = 2)
         val expected = 514f
-        for (pixel in listOf(geo.playhead(1000), geo.inX, out.outX, geo.frame(2), geo.screen(span), geo.screen(span, true),
-            geo.event(1050, "b"), geo.tap(tap), geo.swipeEnd(swipe), geo.crash(crash), geo.tick(1, 2))) {
+        for (pixel in listOf(geo.playhead(1_000_000_000), geo.inX, out.outX, geo.frame(2), geo.screen(span), geo.screen(span, true),
+            geo.event(1_050_000_000, "b"), geo.tap(tap), geo.swipeEnd(swipe), geo.crash(crash), geo.tick(1, 2))) {
             assertEquals(expected, pixel)
         }
         var last = -1L
         for (pixel in 0..1030) {
             val time = geo.timeAt(pixel.toFloat())
-            assertTrue(time >= last && time in 0..2000)
+            assertTrue(time >= last && time in 0..2_000_000_000)
             assertEquals(pixel.toFloat().coerceIn(14f, 1014f), geo.at(time))
             last = time
         }
         val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
         studio.renderState(state, null)
-        studio.seekTime(500)
-        studio.applyFramePublished(ShmFrameMeta(1L, 0, true, 40, 80, 160, ShmPixelFormat.RGBA8, 50), null)
-        assertEquals(500L, studio.playheadTimeNs)
+        studio.seekTime(500_000_000)
+        studio.applyFramePublished(ShmFrameMeta(1L, 0, true, 40, 80, 160, ShmPixelFormat.RGBA8, 50_000_000), null)
+        assertEquals(500_000_000L, studio.playheadTimeNs)
         assertEquals(1L, studio.viewerState?.currentFrameIndex)
         assertEquals(264f, geo.playhead(studio.playheadTimeNs))
         // An editor-side preset that moves the frame without a playback state change resyncs the time.
         studio.updateState { it.copy(currentFrameIndex = 3) }
-        assertEquals(1001L, studio.playheadTimeNs)
+        assertEquals(1_001_000_000L, studio.playheadTimeNs)
         // A paused playhead on the exclusive end (or any time inside the frame's hold) is kept.
-        studio.seekTime(2000)
-        studio.updateState { it.copy(inFrameIndex = 0) }
-        assertEquals(2000L, studio.playheadTimeNs)
+        studio.seekTime(2_000_000_000)
+        studio.updateState { it.copy(inTimeNs = 0) }
+        assertEquals(2_000_000_000L, studio.playheadTimeNs)
     }
 
     @Test
@@ -139,8 +136,8 @@ class ArbUiComponentsTest {
             val pts = (1..20).runningFold(0L) { time, _ -> time + random.nextLong(1, 5_000_000_000) }
             val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(pts.size.toLong(), pts)
             val endFrame = random.nextLong(axis.count)
-            val state = videoState().copy(axis = axis, frameCount = axis.count, outFrameIndex = endFrame,
-                inFrameIndex = random.nextLong(endFrame + 1))
+            val state = studioVideoState().copy(axis = axis, frameCount = axis.count, outTimeNs = axis.outTime(endFrame),
+                inTimeNs = axis.start(random.nextLong(endFrame + 1)).coerceAtMost(axis.outTime(endFrame) - 1_000_000L))
             val zoom = 1f + random.nextFloat() * 7
             val geo = StudioTimelineGeometry(state, 14f, 1000f, zoom, random.nextLong(-axis.endNs, axis.endNs))
             assertTrue(geo.inX <= geo.outX)
@@ -157,81 +154,84 @@ class ArbUiComponentsTest {
     }
 
     @Test
-    fun fiftyPixelsWithinAVfrHoldMoveEachHandleWithoutRepeatedPreviewOrRangeWrites() {
-        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(3, listOf(0, 100, 900), lastDurationNs = 100)
-        for (edge in TrimEdge.entries) {
-            val seeks = mutableListOf<Pair<Long, Boolean>>()
-            val writes = mutableListOf<Triple<Long, Long, Long>>()
-            var exported: Pair<Long, Long>? = null
-            val studio = ArbStudioController(onScrub = { error("unexpected frame scrub") },
-                onSeekExact = { error("unexpected frame seek") }, onTrimExport = { i, o -> exported = i to o },
-                onPngExport = { _, _ -> }, onRangeChanged = { i, o, f -> writes += Triple(i, o, f) },
-                onTimeSeek = { t, settled -> seeks += t to settled })
-            val state = videoState().copy(axis = axis, frameCount = 3, outFrameIndex = 2)
-            studio.renderState(state, null)
-            val geometry = StudioTimelineGeometry(state, 0f, 1000f)
+    fun trimPixelsStayAtReleaseWhileThePlayheadStaysStill() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(
+            4, listOf(0L, 12_000_000_000L, 22_000_000_000L, 28_000_000_000L), lastDurationNs = 4_000_000_000L,
+        )
+        for (edge in TrimEdge.entries) for (zoom in listOf(1f, 2f, 4f, 8f)) {
+            val decodes = mutableListOf<Long>()
+            val writes = mutableListOf<StudioTrimRange>()
+            val studio = ArbStudioController(onScrub = { error("unexpected scrub") }, onSeekExact = {},
+                onTrimExport = { _, _ -> }, onPngExport = { _, _ -> }, onTimeRangeChanged = { range, _ -> writes += range },
+                onTrimPreviewFrame = { frame, _ -> decodes += frame })
+            studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
+            studio.seekTime(14_000_000_000)
+            writes.clear()
+            fun geometry() = StudioTimelineGeometry(checkNotNull(studio.viewerState), 14f, 1024f, zoom, 13_000_000_000)
+            val g = geometry()
+            val playheadX = g.playhead(studio.playheadTimeNs)
+            val release = g.at(15_500_000_000)
             val rows = studio.syncedRows
-            for (x in 200..249) {
-                studio.dragTrim(edge, geometry.timeAt(x.toFloat()), false)
-                assertEquals(x.toFloat(), geometry.at(studio.playheadTimeNs))
-                assertEquals(edge, studio.dragEdge)
-                kotlin.test.assertSame(state, studio.viewerState)
+            for (offset in 0..24) {
+                val x = release - 24 + offset
+                studio.dragTrim(edge, g.timeAt(x), false)
+                assertEquals(x, if (edge == TrimEdge.IN) geometry().inX else geometry().outX, 0.5f)
+                assertEquals(14_000_000_000L, studio.playheadTimeNs)
+                assertEquals(playheadX, geometry().playhead(studio.playheadTimeNs))
                 kotlin.test.assertSame(rows, studio.syncedRows)
             }
+            assertEquals(listOf(1L), decodes)
             assertTrue(writes.isEmpty())
-            assertEquals(listOf(false), seeks.map { it.second })
-            studio.dragTrim(edge, 249, true)
-            assertEquals(100L to true, seeks.last())
-            assertEquals(2, seeks.size)
-            val expected = if (edge == TrimEdge.IN) Triple(1L, 2L, 1L) else Triple(0L, 1L, 1L)
-            assertEquals(listOf(expected), writes)
-            studio.triggerExport()
-            assertEquals(expected.first to expected.second, exported)
-            assertEquals(null, studio.dragTime)
+            studio.dragTrim(edge, g.timeAt(release), true)
+            assertEquals(release, if (edge == TrimEdge.IN) geometry().inX else geometry().outX, 0.5f)
+            assertEquals(14_000_000_000L, studio.playheadTimeNs)
+            assertEquals(playheadX, geometry().playhead(studio.playheadTimeNs))
+            assertEquals(null, studio.trimPreview)
+            assertEquals(1, writes.size)
         }
     }
 
     @Test
-    fun marksNudgesAndCrossedDragsKeepAnInclusiveFrameAndSeekItsPreview() {
-        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(4,
-            listOf(0, 10_000_000, 510_000_000, 520_000_000))
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
-        studio.renderState(videoState().copy(axis = axis, frameCount = 4, outFrameIndex = 3), null)
-        studio.seekTime(220_000_000)
-        assertFalse(studio.handleStudioKey(Key.I, textFieldHasFocus = true))
-        assertFalse(studio.handleStudioKey(Key.O, textFieldHasFocus = true))
-        assertEquals(0L, studio.viewerState?.inFrameIndex)
-        assertEquals(3L, studio.viewerState?.outFrameIndex)
-        assertTrue(studio.handleStudioKey(Key.I, textFieldHasFocus = false))
-        assertTrue(studio.handleStudioKey(Key.O, textFieldHasFocus = false))
-        fun check(i: Long, o: Long, preview: Long) {
-            val state = requireNotNull(studio.viewerState)
-            assertEquals(i..o, state.inFrameIndex..state.outFrameIndex)
-            assertEquals(preview, state.currentFrameIndex)
-            assertEquals(axis.start(preview), studio.playheadTimeNs)
+    fun keysDuringATrimGestureNeitherPublishNorCommitItAndEscapeCancels() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(
+            4, listOf(0L, 12_000_000_000L, 22_000_000_000L, 28_000_000_000L), lastDurationNs = 4_000_000_000L,
+        )
+        val writes = mutableListOf<StudioTrimRange>()
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
+            onTimeRangeChanged = { range, _ -> writes += range })
+        studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
+        studio.dragTrim(TrimEdge.IN, 15_500_000_000, false)
+        for (key in listOf(Key.DirectionRight, Key.DirectionLeft, Key.O, Key.I, Key.Spacebar)) {
+            assertTrue(studio.handleStudioKey(key, textFieldHasFocus = false))
+            assertEquals(15_500_000_000L, studio.trimPreview?.timeNs)
         }
-        check(1, 1, 1)
-        studio.dragTrim(TrimEdge.OUT, 0, false)
-        assertEquals(axis.outTime(1), studio.playheadTimeNs)
-        studio.dragTrim(TrimEdge.OUT, 0, true)
-        studio.dragTrim(TrimEdge.IN, axis.endNs, false)
-        assertEquals(axis.start(1), studio.playheadTimeNs)
-        studio.dragTrim(TrimEdge.IN, axis.endNs, true)
-        check(1, 1, 1)
-        studio.nudge(TrimEdge.IN, -1, false)
-        check(0, 1, 0)
-        studio.nudge(TrimEdge.OUT, 1, false)
-        check(0, 2, 2)
-        studio.nudge(TrimEdge.IN, 1, true)
-        check(1, 2, 1)
-        studio.nudge(TrimEdge.OUT, -1, true)
-        check(1, 1, 1)
+        assertTrue(writes.isEmpty())
+        assertEquals(0L, studio.playheadTimeNs)
+        assertTrue(studio.handleStudioKey(Key.Escape, textFieldHasFocus = false))
+        assertEquals(null, studio.trimPreview)
+        assertEquals(0L, studio.viewerState?.inTimeNs)
+        assertEquals(axis.endNs, studio.viewerState?.outTimeNs)
+        assertTrue(writes.isEmpty())
+        assertFalse(studio.handleStudioKey(Key.Escape, textFieldHasFocus = false))
+    }
+
+    @Test
+    fun hitTestingSeparatesRulerHandlesOverlapsAndBody() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 1_000_000_000)
+        val state = studioVideoState().copy(axis = axis, frameCount = 1, inTimeNs = 499_000_000, outTimeNs = 501_000_000)
+        val geometry = StudioTimelineGeometry(state, 0f, 1000f)
+        fun hit(x: Float, y: Float) = geometry.hit(x, y, 25f..60f, 12f)
+        assertEquals(StudioTimelineGeometry.Hit.IN, hit(498f, 25f))
+        assertEquals(StudioTimelineGeometry.Hit.OUT, hit(502f, 60f))
+        assertEquals(StudioTimelineGeometry.Hit.PLAYHEAD, hit(499f, 24f))
+        assertEquals(StudioTimelineGeometry.Hit.PLAYHEAD, hit(501f, 61f))
+        assertEquals(StudioTimelineGeometry.Hit.PLAYHEAD, hit(470f, 50f))
     }
 
     @Test
     fun zoomedTimelineNeitherDrawsNorHitsItemsPannedOutOfTheViewport() {
         val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(100, (0 until 100).map { it * 10_000_000L })
-        val state = videoState().copy(axis = axis, frameCount = 100, inFrameIndex = 50, outFrameIndex = 60)
+        val state = studioVideoState().copy(axis = axis, frameCount = 100, inTimeNs = axis.start(50), outTimeNs = axis.outTime(60))
         // 8x over 1s spans 125ms; IN (500ms) is panned 1ms off the left edge, i.e. 8px into the gutter.
         val geo = StudioTimelineGeometry(state, 14f, 1000f, zoom = 8f, viewportStartNs = 501_000_000)
         assertEquals(6f, geo.inX)
@@ -246,11 +246,68 @@ class ArbUiComponentsTest {
         assertFalse(geo.markerHittable(1016f))
         assertTrue(geo.markerHittable(500f))
         // 1x keeps the original gutter behaviour: everything is on-track and the gutters still hit.
-        val full = StudioTimelineGeometry(state.copy(inFrameIndex = 0, outFrameIndex = 99), 14f, 1000f)
+        val full = StudioTimelineGeometry(state.copy(inTimeNs = 0, outTimeNs = axis.endNs), 14f, 1000f)
         for (time in listOf(0L, 1L, 500_000_000L, axis.endNs)) assertTrue(full.visible(full.at(time)))
         assertEquals(TrimEdge.IN, full.trimEdgeAt(6f, 12f))
         assertEquals(0L, full.pinAt(8f, 10f, listOf(0L)))
         assertTrue(full.markerHittable(10f))
+    }
+
+    @Test
+    fun offCenterPressCommitsTheClampedPointerTimeEvenWithoutMovement() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
+        val state = studioVideoState().copy(axis = axis, frameCount = 1, inTimeNs = 1_000_000_000, outTimeNs = axis.endNs)
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        studio.renderState(state, null)
+        val geometry = StudioTimelineGeometry(state, 0f, 1000f)
+        val x = geometry.inX + 3f
+        assertEquals(StudioTimelineGeometry.Hit.IN, geometry.hit(x, 32f, 25f..60f, 12f))
+        studio.dragTrim(TrimEdge.IN, geometry.timeAt(x), false)
+        assertEquals(1_030_000_000L, studio.trimPreview?.timeNs)
+        studio.dragTrim(TrimEdge.IN, geometry.timeAt(x), true)
+        assertEquals(1_030_000_000L, studio.viewerState?.inTimeNs)
+        assertEquals(0L, studio.playheadTimeNs)
+    }
+
+    @Test
+    fun shortcutsAndNudgePreviewPreserveSingleFrameSubranges() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        studio.renderState(studioVideoState().copy(axis = axis, frameCount = 1, outTimeNs = axis.endNs), null)
+        studio.seekTime(2_500_000_000)
+        assertFalse(studio.handleStudioKey(Key.I, textFieldHasFocus = true))
+        assertFalse(studio.handleStudioKey(Key.O, textFieldHasFocus = true))
+        assertEquals(0L, studio.viewerState?.inTimeNs)
+        assertTrue(studio.handleStudioKey(Key.I, textFieldHasFocus = false))
+        val preview = studio.previewNudge(TrimEdge.IN, 1, true)
+        assertEquals(2_600_000_000L, preview?.timeNs)
+        studio.releaseNudge(preview)
+        assertEquals(null, studio.trimPreview)
+        studio.nudge(TrimEdge.IN, 1, true)
+        val state = checkNotNull(studio.viewerState)
+        assertEquals(2_600_000_000L, state.inTimeNs)
+        assertEquals(7_400L, state.selectedDurationMs)
+        assertTrue(state.exportCtaLabel.contains("7.4s"))
+        assertTrue(state.selectionSummaryText.contains("00:02.6"))
+        assertEquals(0L..0L, state.inFrameIndex..state.outFrameIndex)
+        assertEquals(2_500_000_000L, studio.playheadTimeNs)
+    }
+
+    @Test
+    fun emptyAndShortSingleFrameAxesKeepTheirFullRange() {
+        for (count in 0L..1L) {
+            val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(count, lastDurationNs = 750_000)
+            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+            studio.renderState(studioVideoState().copy(axis = axis, frameCount = count, outTimeNs = axis.endNs), null)
+            for (edge in TrimEdge.entries) {
+                studio.dragTrim(edge, Long.MAX_VALUE, false)
+                studio.dragTrim(edge, Long.MIN_VALUE, true)
+                studio.nudge(edge, 1, true)
+                assertEquals(0L, studio.viewerState?.inTimeNs)
+                assertEquals(axis.endNs, studio.viewerState?.outTimeNs)
+                assertEquals(null, studio.trimPreview)
+            }
+        }
     }
 
     @Test
@@ -261,7 +318,7 @@ class ArbUiComponentsTest {
         val ranges = mutableListOf<LongRange>()
         val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
             onRangeChanged = { i, o, _ -> ranges += i..o }, onTimeSeek = { t, settled -> seeks += t to settled })
-        studio.renderState(videoState().copy(axis = axis, frameCount = 4, outFrameIndex = 3), null)
+        studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
         studio.seekTime(220_000_000)
         studio.renderPlaybackState(io.github.shinma06.arb.playback.PlaybackState(
             mode = io.github.shinma06.arb.playback.PlaybackMode.PLAYING, currentFrameIndex = 1, totalFrames = 4, outFrameIndex = 3))
@@ -273,10 +330,11 @@ class ArbUiComponentsTest {
         assertEquals(emptyList(), seeks)
         assertEquals(listOf(1L..3L, 1L..1L), ranges)
         assertEquals(playhead, studio.playheadTimeNs)
-        // Paused marks still seek the inclusive frame so the preview shows what was marked.
+        // A paused mark also preserves the exact subframe time.
         studio.renderPlaybackState(io.github.shinma06.arb.playback.PlaybackState(currentFrameIndex = 1, totalFrames = 4))
         studio.markInAtPlayhead()
-        assertEquals(listOf(10_000_000L to true), seeks)
+        assertTrue(seeks.isEmpty())
+        assertEquals(playhead, studio.playheadTimeNs)
     }
 
     @Test
@@ -340,7 +398,7 @@ class ArbUiComponentsTest {
         assertFalse(studio.approximatePreviewVisible)
 
         val img = BufferedImage(40, 80, BufferedImage.TYPE_INT_ARGB)
-        val baseState = videoState()
+        val baseState = studioVideoState()
         studio.renderState(baseState, image = img)
         studio.applyFramePublished(
             ShmFrameMeta(1L, 10L, true, 40, 80, 160, ShmPixelFormat.RGBA8, 100L),
@@ -585,8 +643,8 @@ class ArbUiComponentsTest {
             summary = summary,
             frameCount = 100L,
             currentFrameIndex = 20L,
-            inFrameIndex = 10L,
-            outFrameIndex = 50L,
+            inTimeNs = 1_000_000_000L,
+            outTimeNs = 5_100_000_000L,
             screens = listOf(
                 ScreenSpan(base, base + 5_000_000_000L, 0L, 50L, "com.example.app", "com.example.app.LoginActivity", "LoginActivity"),
             ),
