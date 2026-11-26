@@ -14,7 +14,7 @@ Sections (each one is reported separately, a crash in one never hides the others
                         plugin.xml metadata, byte-identical host binaries)
   2  launchers          start-arb.sh / start-arb-tray.command / start-arb.ps1
   3  cold-start-ipc     arbd cold start, `status`, `config get` / `config set`, `bundles list`
-  4  mcp                `arb-cli mcp`: initialize, 19 tools, stderr 0 B, real-bundle overview + contact sheet
+  4  mcp                `arb-cli mcp`: initialize, 20 tools, stderr 0 B, real-bundle overview + contact sheet
   5  legacy-read-only   schema 3 / schema 4 bundles: every file SHA-256 identical before and after
   6  suite-b            devin_verify_player_matrix.py 17/17 for 1 s GOP and 5 s GOP FHD30 `[47..=647]`
                         mid-GOP trims + open / seek / trim timings
@@ -82,6 +82,7 @@ EXPECTED_MCP_TOOLS = (
     "arb_save",
     "arb_screenshot",
     "arb_save_logs",
+    "arb_save_and_inspect",
     "arb_list_bundles",
     "arb_trash_bundle",
     "arb_restore_bundle",
@@ -968,18 +969,18 @@ def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> No
 # --------------------------------------------------------------------------------------------
 
 def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Path, meta: dict[str, Any]) -> None:
-    with report.section("mcp", "MCP 19 ツールと実バンドル") as sec:
+    with report.section("mcp", "MCP 20 ツールと実バンドル") as sec:
         cfg_cli = (iso.cli("config", "get").data or {}).get("config", {})
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
             init = client.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
-            sec.check("initialize: serverInfo.name == arb-mcp", init["result"]["serverInfo"]["name"] == "arb-mcp", init["result"].get("serverInfo"))
+            sec.check("initialize: serverInfo.name == android-replay-buffer", init["result"]["serverInfo"]["name"] == "android-replay-buffer", init["result"].get("serverInfo"))
             client.notify("notifications/initialized")
             ping = client.request("ping")
             sec.check("notifications/initialized emitted no stray frame", ping.get("id") is not None and not client.stray_frames, client.stray_frames)
             tools = client.request("tools/list", {})["result"]["tools"]
             names = [t["name"] for t in tools]
-            sec.check("tools/list returns exactly the 19 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
+            sec.check("tools/list returns exactly the 20 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
             status = client.call_tool("arb_status", {})
             sec.check("arb_status isError=false", status["result"]["isError"] is False)
             cfg_mcp = tool_text(client.call_tool("arb_config_get", {}))
@@ -989,7 +990,7 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
             taps = overview.get("taps", [])
             sec.check("timeline_overview lists the 3 Taps and 1 Swipe with frame indices", [(t.get("gesture_kind"), t.get("frame_index")) for t in taps] == [(g["kind"], g["parent_frame"]) for g in meta["gestures"]], [(t.get("gesture_kind"), t.get("frame_index")) for t in taps])
             sec.check("timeline_overview exposes app_logs", any(a.get("package_name") == "com.example.gate" for a in overview.get("app_logs", [])))
-            sheet = client.call_tool("arb_inspect_frames", {"bundle_id": str(fixture), "mode": "contact_sheet", "max_tiles": 6})
+            sheet = client.call_tool("arb_inspect_frames", {"bundle_id": str(fixture), "mode": "contact_sheet", "include_images": True, "max_tiles": 6})
             images = [c for c in sheet["result"]["content"] if c.get("type") == "image"]
             dims = png_dimensions(base64.b64decode(images[0]["data"])) if images else None
             sec.check("inspect_frames contact_sheet returns an image/png", bool(images) and images[0].get("mimeType") == "image/png" and dims is not None and dims[0] >= 300 and dims[1] >= 100, dims)
@@ -998,6 +999,30 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
         finally:
             stderr = client.close()
         sec.check("MCP server wrote 0 bytes to stderr", len(stderr) == 0, f"{len(stderr)} bytes: {stderr[:200]!r}")
+
+        modern = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
+        try:
+            negotiation = modern.request("initialize", {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "verify_release_bundle", "version": "1"},
+            })
+            sec.check("2025-11-25 negotiated", negotiation["result"]["protocolVersion"] == "2025-11-25")
+            modern.notify("notifications/initialized")
+            frame = modern.call_tool("arb_inspect_frames", {
+                "mode": "single", "bundle_id": str(fixture), "frame_index": 32,
+            })["result"]
+            links = [block for block in frame["content"] if block["type"] == "resource_link"]
+            sec.check("default inspection returns metadata and a PNG link",
+                      frame["structuredContent"]["frames"][0]["frame_index"] == 32
+                      and len(links) == 1 and not any(block["type"] == "image" for block in frame["content"]))
+            if links:
+                contents = modern.request("resources/read", {"uri": links[0]["uri"]})["result"]["contents"]
+                sec.check("linked PNG reads on demand", len(contents) == 1
+                          and contents[0]["uri"] == links[0]["uri"] and contents[0]["mimeType"] == "image/png"
+                          and png_dimensions(base64.b64decode(contents[0]["blob"])) == (1920, 1080))
+        finally:
+            stderr = modern.close()
+        sec.check("2025-11-25 MCP server wrote 0 bytes to stderr", len(stderr) == 0)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1847,7 +1872,7 @@ def self_test() -> int:
     png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1020, 588) + b"\x08\x06\x00\x00\x00"
     require("png dims", png_dimensions(png) == (1020, 588) and png_dimensions(b"nope") is None)
     require("snapshot diff", diff_snapshots({"a": "1", "b": "2"}, {"a": "1", "b": "3", "c": "4"}) == ["modified: b", "added: c"])
-    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 19)
+    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 20)
     require("gesture probes", [p["label"] for p in gesture_probe_points({"gestures": [
         {"kind": "tap", "parent_frame": 20, "in_trim_range": False, "trim_frame": -27, "x": 1, "y": 1},
         {"kind": "tap", "parent_frame": 120, "in_trim_range": True, "trim_frame": 73, "x": 960.0, "y": 540.0},

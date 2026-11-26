@@ -26,6 +26,12 @@ fn main() {
         return;
     }
     let line = args.join(" ");
+    if args.ends_with(&["exec-out".into(), "screencap".into(), "-p".into()]) {
+        std::io::stdout()
+            .write_all(&fs::read(dir.join("screencap.png")).unwrap())
+            .unwrap();
+        return;
+    }
     if line.contains("forward --remove") || line.contains("shell rm -f") {
         writeln!(
             fs::OpenOptions::new()

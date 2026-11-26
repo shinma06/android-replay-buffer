@@ -369,6 +369,7 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
 
 fn query_params(bundle_dir: &Path, after_seq: Option<u64>, package: &str) -> TimelineQueryParams {
     TimelineQueryParams {
+        tail: false,
         whole_word: false,
         cursor: None,
         bundle_id_or_path: bundle_dir.to_string_lossy().into_owned(),
@@ -668,4 +669,33 @@ fn a06_pid_resolver_cache_invalidates_when_bundle_on_disk_changes() {
         vec![2],
         "new package must match pid 7777 after invalidation"
     );
+}
+
+#[test]
+fn a06_tail_query_reports_dropped_older_matches_without_forward_cursor() {
+    let tmp = TempDir::new().expect("tempdir");
+    let bundle_dir = tmp.path().join("tail-bundle");
+    write_small_log_bundle(&bundle_dir, "com.alpha.app", "tail");
+    let reader = open_bundle(&bundle_dir).expect("open tail bundle");
+    let mut params = query_params(&bundle_dir, None, "com.alpha.app");
+    params.package = None;
+    params.tail = true;
+    let page = query_logs_filtered_page(reader.as_ref(), Some(RecordBucket::Main), &params, 1)
+        .expect("tail query");
+    assert_eq!(page.logs.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![2]);
+    assert!(
+        page.has_more,
+        "tail query that dropped older matches must report has_more"
+    );
+    assert_eq!(
+        page.next_after_seq, None,
+        "tail pages already hold the newest rows, so no forward cursor exists"
+    );
+    let full = query_logs_filtered_page(reader.as_ref(), Some(RecordBucket::Main), &params, 5)
+        .expect("tail query without truncation");
+    assert_eq!(
+        full.logs.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(!full.has_more);
 }

@@ -2,7 +2,7 @@
 //!
 //! Exposes Android Replay Buffer live capture, WORM bundle inspection, contact-sheet /
 //! tap-crop AI visual framing, and strict integer-frame trimming (`share.mp4` / WORM bundle)
-//! over newline-delimited JSON-RPC 2.0 on stdin/stdout (`2025-03-26` & `2024-11-05` compatible).
+//! over newline-delimited JSON-RPC 2.0 on stdin/stdout (2024-11-05 through 2025-11-25).
 //!
 //! Strict stdio discipline: **ZERO** logs or non-JSON-RPC bytes are ever written to stdout;
 //! diagnostics go exclusively to stderr.
@@ -17,20 +17,21 @@ use serde_json::{Map, Value, json};
 use crate::rpc::{AutoStartMode, RpcClient, RpcClientError};
 use crate::{CliError, absolutize_bundle_target, absolutize_path};
 
-const MCP_PROTOCOL_LATEST: &str = "2025-03-26";
-const MCP_PROTOCOL_FALLBACK: &str = "2024-11-05";
+mod contract;
+mod resources;
+mod schema;
+mod tasks;
 
+use std::sync::Arc;
+use tasks::{Activity, Session};
+
+const MCP_PROTOCOL_LATEST: &str = "2025-11-25";
 const JSONRPC_PARSE_ERROR: i32 = -32_700;
 const JSONRPC_INVALID_REQUEST: i32 = -32_600;
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32_601;
 const JSONRPC_INVALID_PARAMS: i32 = -32_602;
 
-const SERVER_INSTRUCTIONS: &str = "Android Replay Buffer (ARB) MCP server. \
-Recommended AI triage & precision-trim workflow: \
-(1) Call `arb_list_bundles` or `arb_save` to locate/create a WORM bundle. \
-(2) Call `arb_timeline_overview` once to inspect screens, taps, crashes, gaps, and error logs. \
-(3) Call `arb_inspect_frames` with `mode=\"contact_sheet\"` (up to 16 labeled tiles) to narrow the range, then `mode=\"single\"` or `mode=\"tap_crop\"` for exact boundaries. \
-(4) Call `arb_export_trim` with exact integer `in_frame_index` and `out_frame_index` (`format=\"share_mp4\"` or `\"bundle\"`).";
+const SERVER_INSTRUCTIONS: &str = "不具合の記録には arb_save_and_inspect を使います。arb_query_logs は limit と cursor でページ送りし、whole_word で単語を絞れます。画像は必要な resource_link のみ resources/read で取得してください。整理の前には arb_gc_bundles の dry_run: true で候補を確認してください。";
 
 /// Runs the blocking stdio MCP JSON-RPC 2.0 loop until stdin reaches EOF.
 ///
@@ -39,29 +40,47 @@ Recommended AI triage & precision-trim workflow: \
 /// Returns [`CliError`] if writing to stdout fails irrecoverably.
 pub(crate) fn run_mcp_stdio(paths: &ArbPaths) -> Result<(), CliError> {
     let stdin = io::stdin();
-    let stdout = io::stdout();
     let reader = BufReader::new(stdin.lock());
-    let writer = BufWriter::new(stdout.lock());
     let mut server = McpServer::new(paths.clone());
-    server
-        .serve_io(reader, writer)
-        .map_err(|err| CliError::general(format!("mcp stdio I/O error: {err}")))
+    let session = Arc::clone(&server.session);
+    std::thread::scope(|scope| {
+        let (stop, wake) = std::sync::mpsc::channel::<()>();
+        scope.spawn(move || {
+            while wake.recv_timeout(std::time::Duration::from_secs(1))
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                session.reap();
+            }
+        });
+        let result = server.serve_io(reader);
+        drop(stop);
+        result
+    })
+    .map_err(|err| CliError::general(format!("mcp stdio I/O error: {err}")))
 }
 
 struct McpServer {
     paths: ArbPaths,
     client: Option<RpcClient>,
+    version: String,
+    session: Arc<Session>,
+    activity: Activity,
+    external_bundles: std::collections::BTreeMap<String, String>,
 }
 
 impl McpServer {
-    const fn new(paths: ArbPaths) -> Self {
+    fn new(paths: ArbPaths) -> Self {
         Self {
             paths,
             client: None,
+            version: MCP_PROTOCOL_LATEST.into(),
+            session: Arc::default(),
+            activity: Activity::default(),
+            external_bundles: std::collections::BTreeMap::new(),
         }
     }
 
-    fn serve_io<R: BufRead, W: Write>(&mut self, mut reader: R, mut writer: W) -> io::Result<()> {
+    fn serve_io<R: BufRead>(&mut self, mut reader: R) -> io::Result<()> {
         let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
@@ -89,13 +108,10 @@ impl McpServer {
                 },
             };
             if let Some(resp) = resp {
-                let encoded = serde_json::to_string(&resp)
-                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-                writer.write_all(encoded.as_bytes())?;
-                writer.write_all(b"\n")?;
-                writer.flush()?;
+                write_message(&resp)?;
             }
         }
+        self.session.shutdown();
         Ok(())
     }
 
@@ -113,6 +129,13 @@ impl McpServer {
 
         if let Some(batch) = msg.as_array() {
             // JSON-RPC batch (required by MCP 2025-03-26): answer each element, omit notifications.
+            if self.version.as_str() >= "2025-06-18" {
+                return Some(rpc_error(
+                    &Value::Null,
+                    JSONRPC_INVALID_REQUEST,
+                    "ネゴシエーションした MCP バージョンはバッチに対応していません",
+                ));
+            }
             if batch.is_empty() {
                 return Some(rpc_error(
                     &Value::Null,
@@ -178,11 +201,44 @@ impl McpServer {
         let req_id = id.unwrap_or(Value::Null);
 
         match method {
-            "initialize" => Some(rpc_ok(&req_id, &handle_initialize(&params))),
+            "initialize" => {
+                let init = handle_initialize(&params);
+                init["protocolVersion"]
+                    .as_str()?
+                    .clone_into(&mut self.version);
+                Some(rpc_ok(&req_id, &init))
+            }
             "ping" => Some(rpc_ok(&req_id, &json!({}))),
-            "tools/list" => Some(rpc_ok(&req_id, &json!({ "tools": tool_definitions() }))),
-            "resources/list" => Some(rpc_ok(&req_id, &json!({ "resources": [] }))),
-            "prompts/list" => Some(rpc_ok(&req_id, &json!({ "prompts": [] }))),
+            "tools/list" => {
+                let mut tools = contract::for_version(&self.version).to_vec();
+                if self.version != MCP_PROTOCOL_LATEST {
+                    for t in &mut tools {
+                        t.as_object_mut()?.remove("execution");
+                    }
+                }
+                Some(rpc_ok(&req_id, &json!({"tools":tools})))
+            }
+            "resources/list"
+            | "resources/templates/list"
+            | "resources/read"
+            | "prompts/list"
+            | "prompts/get"
+            | "completion/complete" => Some(match self.resource_request(method, &params) {
+                Ok(v) => rpc_ok(&req_id, &v),
+                Err(e) => {
+                    let mut response = rpc_error(&req_id, e.rpc_code, e.message);
+                    if e.label == "RESOURCE_NOT_FOUND" {
+                        response["error"]["data"] = json!({"uri": params["uri"]});
+                    }
+                    response
+                }
+            }),
+            "logging/setLevel" => Some(self.session.set_level(&req_id, &params)),
+            "tasks/get" | "tasks/list" | "tasks/cancel" | "tasks/result"
+                if self.version == MCP_PROTOCOL_LATEST =>
+            {
+                self.session.request(method, &req_id, &params)
+            }
             "tools/call" => Some(self.handle_tools_call(&req_id, &params)),
             other => Some(rpc_error(
                 &req_id,
@@ -200,56 +256,93 @@ impl McpServer {
                 "tools/call requires string `name`",
             );
         };
-        let args = params
+        let mut args = params
             .get("arguments")
             .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        let Some(args_obj) = args.as_object() else {
+            .unwrap_or_else(|| json!({}));
+        let canonical = match name {
+            "arb_export_share_mp4" | "arb_trim_bundle" => {
+                let format = if name == "arb_trim_bundle" {
+                    "bundle"
+                } else {
+                    "share_mp4"
+                };
+                if let Some(obj) = args.as_object_mut() {
+                    if obj.get("format").is_some_and(|v| v != format) {
+                        return rpc_ok(
+                            req_id,
+                            &Failure::invalid("format がツール名と一致しません").result(),
+                        );
+                    }
+                    obj.insert("format".into(), json!(format));
+                }
+                "arb_export_trim"
+            }
+            _ => name,
+        };
+        let Some(def) = contract::for_version(&self.version)
+            .iter()
+            .find(|t| t["name"] == canonical)
+        else {
             return rpc_error(
                 req_id,
                 JSONRPC_INVALID_PARAMS,
-                "tools/call `arguments` must be a JSON object",
+                format!("unknown tool {name}"),
             );
         };
-
-        if !is_known_tool(name) {
-            return rpc_error(
-                req_id,
-                JSONRPC_INVALID_PARAMS,
-                format!("unknown tool `{name}`"),
-            );
+        let token = params
+            .pointer("/_meta/progressToken")
+            .filter(|t| t.is_string() || t.is_number())
+            .cloned();
+        let long = def.get("execution").is_some();
+        let progress = long && (canonical != "arb_capture_start" || args["wait_connected"] == true);
+        let activity = Activity::new(canonical, token.filter(|_| progress));
+        if let Some(task) = params.get("task") {
+            if self.version != MCP_PROTOCOL_LATEST || !long {
+                return rpc_error(
+                    req_id,
+                    JSONRPC_METHOD_NOT_FOUND,
+                    "このツールの Task 実行には対応していません",
+                );
+            }
+            return self.start_task(req_id, task, args, activity);
         }
+        self.activity = activity;
+        let result = self.run_tool(def, args);
+        self.activity = Activity::default();
+        rpc_ok(req_id, &result)
+    }
 
-        match self.dispatch_tool(name, args_obj) {
-            Ok(content) => rpc_ok(
-                req_id,
-                &json!({
-                    "content": content,
-                    "isError": false,
-                }),
-            ),
-            Err(err_msg) => rpc_ok(
-                req_id,
-                &json!({
-                    "content": [{ "type": "text", "text": err_msg }],
-                    "isError": true,
-                }),
-            ),
+    fn run_tool(&mut self, def: &Value, mut args: Value) -> Value {
+        self.activity.notify(&self.session, "開始");
+        let name = def["name"].as_str().expect("tool name");
+        schema::normalize_integers(&def["inputSchema"], &mut args);
+        let output = schema::validate(&def["inputSchema"], &args, "arguments")
+            .map_err(Failure::invalid)
+            .and_then(|()| self.dispatch_tool(name, args.as_object().expect("validated object")));
+        self.activity.finish(&self.session, output.as_ref().err());
+        match output {
+            Ok(output) => output.result(&self.version),
+            Err(failure) => failure.result(),
         }
     }
 
-    fn call_daemon(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+    fn call_daemon(&mut self, method: &str, params: &Value) -> Result<Value, Failure> {
+        self.activity.check(&self.session)?;
+        self.activity.notify(&self.session, method);
         // A request that may already have reached the daemon is only replayed when the method is
         // read-only; mutating methods (save/export/trash/capture) are never retried automatically.
         let retry_safe = is_retry_safe_method(method);
         for attempt in 0..2 {
             if self.client.is_none() {
                 let connected = RpcClient::connect(&self.paths, AutoStartMode::Enabled)
-                    .map_err(|err| format!("failed to connect/auto-start arbd: {err}"))?;
+                    .map_err(Failure::from_rpc)?;
                 self.client = Some(connected);
             }
+            // The task may have been cancelled while connecting or negotiating system.hello.
+            self.activity.check(&self.session)?;
             let Some(client) = self.client.as_mut() else {
-                return Err("arbd client unavailable".to_owned());
+                return Err(Failure::unavailable("arbd client unavailable"));
             };
             match client.call(method, params.clone()) {
                 Ok(val) => return Ok(val),
@@ -268,126 +361,133 @@ impl McpServer {
                     // `Closed` means nothing was sent, so even a mutating call may reconnect once.
                     let nothing_sent = matches!(err, RpcClientError::Closed);
                     if !((nothing_sent || (retry_safe && interrupted)) && attempt == 0) {
-                        return Err(err.to_string());
+                        return Err(Failure::from_rpc(err));
                     }
                 }
-                Err(err) => return Err(err.to_string()),
+                Err(err) => {
+                    if matches!(&err, RpcClientError::Rpc { code: -32601, .. }) {
+                        self.client = None;
+                    }
+                    return Err(Failure::from_rpc(err));
+                }
             }
         }
-        Err("arbd IPC connection failed after retry".to_owned())
+        Err(Failure::unavailable(
+            "arbd IPC connection failed after retry",
+        ))
     }
 
     fn dispatch_tool(
         &mut self,
         name: &str,
         args: &Map<String, Value>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<ToolOutput, Failure> {
         match name {
             "arb_status" => self.tool_status(),
             "arb_devices" => {
                 let resp = self.call_daemon("device.list", &json!({}))?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "arb_capture_start" => self.tool_capture_start(args),
             "arb_capture_stop" => {
                 let resp = self.call_daemon("capture.stop", &json!({}))?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "arb_config_get" => {
                 let resp = self.call_daemon("config.get", &json!({}))?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "arb_config_update" => self.tool_config_update(args),
+            "arb_save_and_inspect" => self.save_and_inspect(args),
             "arb_save" => self.tool_save(args),
             "arb_screenshot" => self.tool_screenshot(args),
             "arb_save_logs" => self.tool_save_logs(args),
             "arb_list_bundles" => {
                 let state = args.get("state").cloned().unwrap_or(Value::Null);
-                let resp = self.call_daemon("bundle.list", &json!({ "state": state }))?;
-                Ok(vec![text_block(&resp)])
+                let mut resp = self.call_daemon("bundle.list", &json!({ "state": state }))?;
+                for row in resp["bundles"].as_array_mut().into_iter().flatten() {
+                    fill_missing(
+                        row,
+                        &[
+                            "bundle_kind",
+                            "duration_ms",
+                            "frame_count",
+                            "has_video",
+                            "has_audio",
+                            "log_count",
+                            "crash_marker_count",
+                            "memo",
+                            "created_utc",
+                            "disk_state",
+                        ],
+                    );
+                }
+                Ok(ToolOutput::new(resp))
             }
             "arb_trash_bundle" => {
                 let bundle_id = require_str(args, "bundle_id")?;
                 let resp = self.call_daemon("bundle.trash", &json!({ "bundle_id": bundle_id }))?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "arb_restore_bundle" => {
                 let bundle_id = require_str(args, "bundle_id")?;
                 let resp =
                     self.call_daemon("bundle.restore", &json!({ "bundle_id": bundle_id }))?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "arb_gc_bundles" => {
-                // Enforce the advertised schema before dispatching a destructive legacy call.
-                // Older daemons silently ignore unrecognized fields, including dry_run.
-                if let Some(field) = args.keys().find(|key| key.as_str() != "ignore_grace") {
-                    return Err(format!(
-                        "unsupported arb_gc_bundles parameter '{field}'; GC was not run"
-                    ));
-                }
-                let params = match args.get("ignore_grace") {
-                    None | Some(Value::Bool(false)) => json!({}),
-                    Some(Value::Bool(true)) => json!({ "ignore_grace": true }),
-                    _ => return Err("ignore_grace must be a boolean".to_owned()),
-                };
-                let resp = self.call_daemon("bundle.gc", &params)?;
-                Ok(vec![text_block(&resp)])
+                let resp = self.call_daemon("bundle.gc", &Value::Object(args.clone()))?;
+                Ok(ToolOutput::new(resp))
             }
             "arb_forget_bundle" => {
-                let all_missing = args
-                    .get("all_missing")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let bundle_id = args
-                    .get("bundle_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-                if all_missing && args.get("bundle_id").is_some() {
-                    return Err(
-                        "arb_forget_bundle: specify either `bundle_id` or `all_missing: true`, not both"
-                            .to_owned(),
-                    );
-                }
-                let params = if all_missing {
-                    json!({ "all_missing": true })
-                } else if let Some(id) = bundle_id {
-                    json!({ "bundle_id": id })
-                } else {
-                    return Err(
-                        "arb_forget_bundle requires `bundle_id` or `all_missing: true`".to_owned(),
-                    );
-                };
-                let resp = self.call_daemon("bundle.forget", &params)?;
-                Ok(vec![text_block(&resp)])
+                let resp = self.call_daemon("bundle.forget", &Value::Object(args.clone()))?;
+                Ok(ToolOutput::new(resp))
             }
             "arb_timeline_overview" => self.tool_timeline_overview(args),
             "arb_query_logs" => self.tool_query_logs(args),
             "arb_inspect_frames" => self.tool_inspect_frames(args),
             "arb_export_trim" => self.tool_export_trim(args),
             "arb_export_frame_png" => self.tool_export_frame_png(args),
-            other => Err(format!("unknown tool `{other}`")),
+            other => Err(Failure::invalid(format!("unknown tool `{other}`"))),
         }
     }
 
-    fn tool_status(&mut self) -> Result<Vec<Value>, String> {
-        let hello = self.call_daemon("system.hello", &json!({}))?;
+    fn tool_status(&mut self) -> Result<ToolOutput, Failure> {
+        let mut hello = self.call_daemon("system.hello", &json!({}))?;
+        if hello.get("gc_dry_run").is_none() {
+            hello["gc_dry_run"] = json!(false);
+        }
         let status = self.call_daemon("system.status", &json!({}))?;
-        Ok(vec![text_block(
-            &json!({ "hello": hello, "status": status }),
-        )])
+        Ok(ToolOutput::new(json!({"hello":hello,"status":status})))
     }
 
-    fn tool_capture_start(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_capture_start(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let mut params = args.clone();
         for key in ["companion_jar", "scrcpy_jar"] {
             absolutize_optional_path_field(&mut params, key)?;
         }
-        let resp = self.call_daemon("capture.start", &Value::Object(params))?;
-        Ok(vec![text_block(&resp)])
+        let mut resp = self.call_daemon("capture.start", &Value::Object(params))?;
+        if resp.get("connected").is_none() {
+            let status = self.call_daemon("system.status", &json!({}))?;
+            let capture = &status["capture"];
+            let current = resp["started"] == true && capture["serial"] == resp["serial"];
+            resp["connected"] = json!(current && capture["connected"] == true);
+            resp["audio_state"] = if current {
+                capture["audio_state"].clone()
+            } else {
+                json!("unknown")
+            };
+            resp["audio_cause"] = if current {
+                capture["audio_cause"].clone()
+            } else {
+                Value::Null
+            };
+            resp["wait_timed_out"] = json!(false);
+        }
+        Ok(ToolOutput::new(resp))
     }
 
-    fn tool_config_update(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_config_update(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let mut patch = args.clone();
         for key in ["output_dir_override", "screenshot_dir_override"] {
             if let Some(val) = patch.get(key).and_then(Value::as_str)
@@ -398,12 +498,16 @@ impl McpServer {
             }
         }
         let resp = self.call_daemon("config.update", &Value::Object(patch))?;
-        Ok(vec![text_block(&resp)])
+        Ok(ToolOutput::new(resp))
     }
 
-    fn tool_save(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_save(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let mut params = Map::new();
-        if let Some(v) = args.get("window_secs").or_else(|| args.get("duration_sec")) {
+        if let Some(v) = args
+            .get("duration_secs")
+            .or_else(|| args.get("window_secs"))
+            .or_else(|| args.get("duration_sec"))
+        {
             params.insert("duration_sec".to_owned(), v.clone());
         }
         if let Some(dest) = optional_abs_path(args, "dest_dir")? {
@@ -418,10 +522,10 @@ impl McpServer {
         {
             obj.insert("note".to_owned(), Value::String(note.to_owned()));
         }
-        save_content(&resp)
+        save_content(resp)
     }
 
-    fn tool_screenshot(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_screenshot(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let include_image = args
             .get("include_image")
             .and_then(Value::as_bool)
@@ -447,13 +551,19 @@ impl McpServer {
         {
             content.push(image_block(&base64_encode(&bytes)));
         }
-        content.push(text_block(&resp));
-        Ok(content)
+        Ok(ToolOutput {
+            body: resp,
+            blocks: content,
+        })
     }
 
-    fn tool_save_logs(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_save_logs(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let mut params = Map::new();
-        if let Some(v) = args.get("window_secs").or_else(|| args.get("duration_sec")) {
+        if let Some(v) = args
+            .get("duration_secs")
+            .or_else(|| args.get("window_secs"))
+            .or_else(|| args.get("duration_sec"))
+        {
             params.insert("window_secs".to_owned(), v.clone());
         }
         if let Some(dest) = optional_abs_path(args, "dest_dir")? {
@@ -463,10 +573,10 @@ impl McpServer {
             params.insert("drain_timeout_ms".to_owned(), drain.clone());
         }
         let resp = self.call_daemon("save.logs", &Value::Object(params))?;
-        save_content(&resp)
+        save_content(resp)
     }
 
-    fn tool_timeline_overview(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_timeline_overview(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let bundle_id = require_bundle_target(args)?;
         let mut params = Map::new();
         params.insert("bundle_id".to_owned(), Value::String(bundle_id));
@@ -474,10 +584,10 @@ impl McpServer {
             params.insert("max_error_logs".to_owned(), max_err.clone());
         }
         let resp = self.call_daemon("timeline.overview", &Value::Object(params))?;
-        Ok(vec![text_block(&resp)])
+        Ok(ToolOutput::new(resp))
     }
 
-    fn tool_query_logs(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_query_logs(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let bundle_id = require_bundle_target(args)?;
         let mut params = args.clone();
         params.insert("bundle_id_or_path".to_owned(), Value::String(bundle_id));
@@ -490,38 +600,92 @@ impl McpServer {
         {
             params.insert("level".into(), Value::String("F".into()));
         }
-        let resp = self.call_daemon("timeline.query_logs", &Value::Object(params))?;
-        Ok(vec![text_block(&resp)])
+        params.entry("limit").or_insert(json!(100));
+        let resp = self.call_daemon("bundle.query_logs", &Value::Object(params))?;
+        Ok(ToolOutput::new(resp))
     }
 
-    fn tool_inspect_frames(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_inspect_frames(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let bundle_id = require_bundle_target(args)?;
         let mut params = args.clone();
-        params.insert("bundle_id".to_owned(), Value::String(bundle_id));
+        params.insert("bundle_id".to_owned(), json!(bundle_id));
         params.remove("bundle_id_or_path");
+        let inline = params.remove("include_images") == Some(Value::Bool(true));
+        params.insert("metadata_only".into(), json!(!inline));
         let mut resp = self.call_daemon("media.inspect_frames", &Value::Object(params))?;
 
-        let inline_b64 = resp
-            .as_object_mut()
-            .and_then(|obj| obj.remove("png_base64"))
-            .and_then(|v| v.as_str().map(str::to_owned));
-
-        let b64 = if let Some(encoded) = inline_b64 {
-            encoded
+        let mut blocks = Vec::new();
+        if inline {
+            blocks.push(image_block(&take_png(&mut resp)?));
         } else {
-            let png_path = resp
-                .get("png_path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "media.inspect_frames omitted png_path".to_owned())?;
-            let bytes = fs::read(png_path)
-                .map_err(|err| format!("failed to read rendered PNG `{png_path}`: {err}"))?;
-            base64_encode(&bytes)
-        };
-
-        Ok(vec![image_block(&b64), text_block(&resp)])
+            if !resp["frames"].is_array() {
+                return Err(Failure::new(
+                    -32601,
+                    "DAEMON_UNAVAILABLE",
+                    "フレームの遅延取得には arbd の更新が必要です",
+                ));
+            }
+            let resource_id = self.frame_resource_id(&bundle_id, &resp["bundle_id"])?;
+            for index in resp["frame_indices_rendered"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                blocks.push(resources::bundle_link(
+                    &resource_id,
+                    &format!("frame/{index}"),
+                ));
+            }
+        }
+        Ok(ToolOutput { body: resp, blocks })
     }
 
-    fn tool_export_trim(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn save_and_inspect(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
+        let mut save_args = Map::new();
+        if let Some(v) = args.get("duration_secs") {
+            save_args.insert("window_secs".into(), v.clone());
+        }
+        let mut result = if args.get("logs_only") == Some(&Value::Bool(true)) {
+            self.tool_save_logs(&save_args)?
+        } else {
+            self.tool_save(&save_args)?
+        };
+        if let Err(mut error) = self.inspect_saved(args, &mut result) {
+            error.detail = Some(json!({"save":result.body}));
+            return Err(error);
+        }
+        Ok(result)
+    }
+
+    fn inspect_saved(
+        &mut self,
+        args: &Map<String, Value>,
+        result: &mut ToolOutput,
+    ) -> Result<(), Failure> {
+        let id = result.body["bundle_id"].clone();
+        let target = json!({"bundle_id_or_path":id});
+        let summary = self.call_daemon("timeline.summary", &target)?;
+        let screens = self.call_daemon("timeline.screens", &target)?;
+        let crashes = self.call_daemon("timeline.crashes", &target)?;
+        let error_logs=self.call_daemon("bundle.query_logs",&json!({"bundle_id_or_path":id,"level":"ERROR","tail":true,"limit":args.get("max_errors").cloned().unwrap_or(json!(20))}))?;
+        result.blocks.push(resources::bundle_link(&id, "crashes"));
+        if args.get("include_key_frame_links") != Some(&Value::Bool(false)) {
+            for frame in screens["screens"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["start_frame_index"].as_u64())
+            {
+                result
+                    .blocks
+                    .push(resources::bundle_link(&id, &format!("frame/{frame}")));
+            }
+        }
+        result.body = json!({"save":result.body,"summary":summary,"screens":screens["screens"],"crashes":crashes["crashes"],"error_logs":error_logs,"memo":args.get("memo")});
+        Ok(())
+    }
+
+    fn tool_export_trim(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let bundle_id = require_bundle_target(args)?;
         let format = args
             .get("format")
@@ -571,7 +735,7 @@ impl McpServer {
                         "holder_pid": std::process::id(),
                     }),
                 )?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
             "bundle" => {
                 let first = args
@@ -595,13 +759,13 @@ impl McpServer {
                         "holder_pid": std::process::id(),
                     }),
                 )?;
-                Ok(vec![text_block(&resp)])
+                Ok(ToolOutput::new(resp))
             }
-            other => Err(format!("未対応の出力形式: {other}")),
+            other => Err(Failure::invalid(format!("未対応の出力形式: {other}"))),
         }
     }
 
-    fn tool_export_frame_png(&mut self, args: &Map<String, Value>) -> Result<Vec<Value>, String> {
+    fn tool_export_frame_png(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let bundle_id = require_bundle_target(args)?;
         let frame_index = args
             .get("frame_index")
@@ -617,7 +781,7 @@ impl McpServer {
                 "output_path": out_abs,
             }),
         )?;
-        Ok(vec![text_block(&resp)])
+        Ok(ToolOutput::new(resp))
     }
 }
 
@@ -627,20 +791,16 @@ fn handle_initialize(params: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or(MCP_PROTOCOL_LATEST);
     let negotiated = match requested {
-        MCP_PROTOCOL_LATEST | MCP_PROTOCOL_FALLBACK => requested,
+        MCP_PROTOCOL_LATEST | "2025-06-18" | "2025-03-26" | "2024-11-05" => requested,
         _ => MCP_PROTOCOL_LATEST,
     };
+    let mut capabilities = json!({"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false},"prompts":{"listChanged":false},"logging":{},"completions":{}});
+    if negotiated == MCP_PROTOCOL_LATEST {
+        capabilities["tasks"] = json!({"list":{},"cancel":{},"requests":{"tools":{"call":{}}}});
+    }
     json!({
-        "protocolVersion": negotiated,
-        "capabilities": {
-            "tools": {
-                "listChanged": false
-            }
-        },
-        "serverInfo": {
-            "name": "arb-mcp",
-            "version": env!("CARGO_PKG_VERSION")
-        },
+        "protocolVersion":negotiated, "capabilities":capabilities,
+        "serverInfo":{"name":"android-replay-buffer","title":"Android Replay Buffer (ARB)","version":env!("CARGO_PKG_VERSION"),"description":"Android の画面・ログ・操作を保存して調査します。"},
         "instructions": SERVER_INSTRUCTIONS
     })
 }
@@ -657,6 +817,10 @@ fn is_retry_safe_method(method: &str) -> bool {
             | "timeline.summary"
             | "timeline.overview"
             | "timeline.query_logs"
+            | "bundle.query_logs"
+            | "bundle.manifest"
+            | "timeline.crashes"
+            | "timeline.screens"
             | "media.inspect_frames"
     )
 }
@@ -738,20 +902,149 @@ fn rpc_error(id: &Value, code: i32, message: impl Into<String>) -> Value {
     })
 }
 
-pub(super) fn save_content(response: &Value) -> Result<Vec<Value>, String> {
-    if super::save_outcome_failed(response) {
-        // MCP error content uses the same JSON body, including the job ID and durable pins.
-        return Err(response.to_string());
-    }
-    Ok(vec![text_block(response)])
+#[derive(Debug)]
+pub(super) struct ToolOutput {
+    pub(super) body: Value,
+    blocks: Vec<Value>,
 }
 
-fn text_block(value: &Value) -> Value {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    json!({
-        "type": "text",
-        "text": text,
+impl ToolOutput {
+    const fn new(body: Value) -> Self {
+        Self {
+            body,
+            blocks: Vec::new(),
+        }
+    }
+    fn result(self, version: &str) -> Value {
+        let (mut content, links): (Vec<Value>, Vec<Value>) =
+            self.blocks.into_iter().partition(|v| v["type"] == "image");
+        content.push(json!({"type":"text","text":self.body.to_string()}));
+        for block in links {
+            if version >= "2025-06-18" {
+                content.push(block);
+            } else {
+                content.push(json!({"type":"text","text":block["uri"]}));
+            }
+        }
+        json!({"isError":false,"structuredContent":self.body,"content":content})
+    }
+}
+
+fn fill_missing(body: &mut Value, names: &[&str]) {
+    if let Some(obj) = body.as_object_mut() {
+        for &key in names {
+            obj.entry(key).or_insert(Value::Null);
+        }
+    }
+}
+
+pub(super) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
+    fill_missing(
+        &mut response,
+        &[
+            "requested_duration_secs",
+            "actual_video_duration_ms",
+            "actual_log_duration_ms",
+            "video_frame_count",
+            "log_count",
+            "unanchored_log_count",
+            "truncated_unanchored_count",
+            "discontinuity_count",
+            "window_shortfall",
+            "warnings",
+        ],
+    );
+    if super::save_outcome_failed(&response) {
+        return Err(Failure {
+            rpc_code: -32006,
+            label: "FAILED_RETRYABLE",
+            message: "保存に失敗しました。ジョブの状態を確認してください。".into(),
+            detail: Some(response),
+        });
+    }
+    let blocks = ["manifest", "logs", "screens"]
+        .map(|r| resources::bundle_link(&response["bundle_id"], r))
+        .into();
+    Ok(ToolOutput {
+        body: response,
+        blocks,
     })
+}
+
+#[derive(Debug)]
+pub(super) struct Failure {
+    rpc_code: i32,
+    label: &'static str,
+    message: String,
+    detail: Option<Value>,
+}
+impl Failure {
+    fn new(code: i32, label: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            rpc_code: code,
+            label,
+            message: message.into(),
+            detail: None,
+        }
+    }
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::new(JSONRPC_INVALID_PARAMS, "INVALID_PARAMS", message)
+    }
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(-32000, "DAEMON_UNAVAILABLE", message)
+    }
+    pub(super) fn from_rpc(e: RpcClientError) -> Self {
+        match e {
+            RpcClientError::Rpc { code, message } => Self::new(
+                code,
+                match code {
+                    -32602 => "INVALID_PARAMS",
+                    -32001 => "BUNDLE_NOT_FOUND",
+                    -32002 => "CONFLICT",
+                    -32601 => "DAEMON_UNAVAILABLE",
+                    _ => "OPERATION_FAILED",
+                },
+                message,
+            ),
+            _ => Self::unavailable(e.to_string()),
+        }
+    }
+    pub(super) fn result(&self) -> Value {
+        let mut body = self.detail.clone().unwrap_or_else(|| json!({}));
+        body["error_code"] = json!(self.label);
+        body["rpc_code"] = json!(self.rpc_code);
+        body["message"] = json!(self.message);
+        json!({"isError":true,"content":[{"type":"text","text":body.to_string()}],"structuredContent":body})
+    }
+}
+impl From<String> for Failure {
+    fn from(s: String) -> Self {
+        Self::invalid(s)
+    }
+}
+impl From<&str> for Failure {
+    fn from(s: &str) -> Self {
+        Self::invalid(s)
+    }
+}
+
+fn take_png(resp: &mut Value) -> Result<String, Failure> {
+    if let Some(Value::String(data)) = resp.as_object_mut().and_then(|o| o.remove("png_base64")) {
+        return Ok(data);
+    }
+    let path = resp["png_path"]
+        .as_str()
+        .ok_or_else(|| Failure::new(-32603, "OPERATION_FAILED", "PNG のパスがありません"))?;
+    fs::read(path)
+        .map(|b| base64_encode(&b))
+        .map_err(|e| Failure::new(-32603, "OPERATION_FAILED", e.to_string()))
+}
+
+fn write_message(msg: &Value) -> io::Result<()> {
+    let mut out = BufWriter::new(io::stdout().lock());
+    serde_json::to_writer(&mut out, msg)?;
+    out.write_all(b"\n")?;
+    out.flush()
 }
 
 fn image_block(base64_png: &str) -> Value {
@@ -807,330 +1100,6 @@ fn absolutize_optional_path_field(
 /// Pure-Rust RFC 4648 standard Base64 encoder (zero dependencies).
 use arb_core::base64_encode;
 
-const KNOWN_TOOLS: &[&str] = &[
-    "arb_status",
-    "arb_devices",
-    "arb_capture_start",
-    "arb_capture_stop",
-    "arb_config_get",
-    "arb_config_update",
-    "arb_save",
-    "arb_screenshot",
-    "arb_save_logs",
-    "arb_list_bundles",
-    "arb_trash_bundle",
-    "arb_restore_bundle",
-    "arb_gc_bundles",
-    "arb_forget_bundle",
-    "arb_timeline_overview",
-    "arb_query_logs",
-    "arb_inspect_frames",
-    "arb_export_trim",
-    "arb_export_frame_png",
-];
-
-fn is_known_tool(name: &str) -> bool {
-    KNOWN_TOOLS.contains(&name)
-}
-
-fn tool_def(name: &str, description: &str, input_schema: &Value) -> Value {
-    json!({
-        "name": name,
-        "description": description,
-        "inputSchema": input_schema,
-    })
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "single declarative JSON Schema registry for all 19 MCP tools"
-)]
-fn tool_definitions() -> Vec<Value> {
-    vec![
-        tool_def(
-            "arb_status",
-            "Return arbd daemon hello metadata, active live capture telemetry, Zone-1 ring usage, storage pressure state, and crash auto-save status.",
-            &json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_devices",
-            "List connected Android devices and emulators visible via ADB.",
-            &json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_capture_start",
-            "Start live rolling screen/audio/logcat/input replay capture (or lightweight `logs_only` capture without scrcpy-server) on an Android device.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "serial": { "type": "string", "description": "Optional ADB device serial (auto-selects sole online device if omitted; never auto-selects when 2+ devices are online)." },
-                    "capture_mode": { "type": "string", "enum": ["video_and_logs", "logs_only"], "description": "Capture mode (`video_and_logs` or `logs_only`, defaults to config)." },
-                    "max_size": { "type": "integer", "minimum": 256, "maximum": 4096, "description": "Maximum encoded video long edge in pixels." },
-                    "max_fps": { "type": "integer", "minimum": 1, "maximum": 120, "description": "Target maximum frame rate." },
-                    "video_bit_rate": { "type": "integer", "minimum": 100_000, "description": "Target H.264 video bitrate in bps." },
-                    "audio_enabled": { "type": "boolean", "description": "Enable audio capture using the configured audio source." },
-                    "logcat_enabled": { "type": "boolean", "description": "Enable logcat stream (default true)." },
-                    "input_enabled": { "type": "boolean", "description": "Enable touch/input stream (default true)." },
-                    "heartbeat_ms": { "type": "integer", "minimum": 50, "description": "Companion beacon heartbeat interval in ms." },
-                    "companion_jar": { "type": "string", "description": "Optional path to arb-companion.dex.jar." },
-                    "scrcpy_jar": { "type": "string", "description": "Optional path to replay-scrcpy-audio.dex.jar." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_capture_stop",
-            "Stop the active live capture session while keeping buffered ring data available for saving.",
-            &json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_config_get",
-            "Read the persisted validated ArbConfig (seconds-based save_window_secs, ring budget, video/audio settings, crash auto-save).",
-            &json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_config_update",
-            "Patch and atomically persist ArbConfig settings (validated on the daemon).",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "save_window_secs": { "type": "integer", "minimum": 5, "maximum": 600 },
-                    "ring_budget_bytes": { "type": "integer", "minimum": 16_777_216 },
-                    "min_free_disk_bytes": { "type": "integer", "minimum": 67_108_864 },
-                    "video_max_size": { "type": "integer", "minimum": 256, "maximum": 4096 },
-                    "video_max_fps": { "type": "integer", "minimum": 1, "maximum": 120 },
-                    "audio_enabled": { "type": "boolean" },
-                    "audio_capture_mode": { "type": "string", "enum": ["playback_dup", "output_compat"], "description": "再生音複製は API 33 以上。出力互換は API 30 以上で、録音中は端末スピーカーが消音されます。" },
-                    "capture_mode": { "type": "string", "enum": ["video_and_logs", "logs_only"] },
-                    "device_serial": { "type": ["string", "null"] },
-                    "crash_autosave_enabled": { "type": "boolean" },
-                    "crash_autosave_cooldown_secs": { "type": "integer", "minimum": 1, "maximum": 3600 },
-                    "output_dir_override": { "type": ["string", "null"] },
-                    "screenshot_dir_override": { "type": ["string", "null"] },
-                    "ide_default_save_action": { "type": "string", "enum": ["save_and_open", "save_only"] }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_save",
-            "Save the last `window_secs` of the live ring buffer into an immutable WORM bundle.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "window_secs": { "type": "integer", "minimum": 5, "maximum": 600, "description": "Lookback duration in seconds (defaults to config.save_window_secs)." },
-                    "dest_dir": { "type": "string", "description": "Optional destination parent directory." },
-                    "drain_timeout_ms": { "type": "integer", "minimum": 0, "description": "Boundary drain timeout in ms (default 500)." },
-                    "note": { "type": "string", "description": "Optional caller note echoed in the tool result." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_screenshot",
-            "Capture the current Android device screen as a validated PNG and optionally return an inline MCP image/png block.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "serial": { "type": "string", "description": "Optional ADB device serial." },
-                    "output_path": { "type": "string", "description": "Optional explicit output PNG file path." },
-                    "output_dir": { "type": "string", "description": "Optional output directory where an auto-named screenshot PNG will be written." },
-                    "overwrite": { "type": "boolean", "description": "Allow atomic overwrite if output_path exists (default false)." },
-                    "include_image": { "type": "boolean", "description": "Include inline MCP image/png content block (default true)." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_save_logs",
-            "Save a log-only WORM bundle (`timeline.sqlite` + `logs.jsonl` + `unanchored.jsonl`) without interrupting video capture.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "window_secs": { "type": "integer", "minimum": 5, "maximum": 600 },
-                    "dest_dir": { "type": "string" },
-                    "drain_timeout_ms": { "type": "integer", "minimum": 0 }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_list_bundles",
-            "List saved, trimmed, crash-autosaved, legacy read-only, or trashed bundles from the arbd catalog.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "state": { "type": "string", "enum": ["active", "trashed"], "description": "Optional lifecycle state filter." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_trash_bundle",
-            "Non-destructively move an active catalog bundle to Trash (files remain intact on disk and restorable).",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id to move to Trash." }
-                },
-                "required": ["bundle_id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_restore_bundle",
-            "Restore a previously trashed bundle back to active state.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id to restore from Trash." }
-                },
-                "required": ["bundle_id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_gc_bundles",
-            "Purge eligible trashed bundles. Set ignore_grace only for an explicit immediate purge.",
-            &json!({
-                "type": "object",
-                "properties": { "ignore_grace": { "type": "boolean", "default": false } },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_forget_bundle",
-            "Non-destructively remove catalog rows whose bundle directory is missing on disk (`disk_state == missing`, parent exists). Never touches files on disk; skips present, storage_unavailable, leased, and active-job entries.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Specific missing catalog bundle_id to forget." },
-                    "all_missing": { "type": "boolean", "description": "When true, forget every catalog entry currently missing on disk." }
-                },
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_timeline_overview",
-            "Return a compact one-shot structured overview of a bundle: frame count, duration, dimensions, audio status, Activity screen spans, taps with frame indices, crashes, discontinuities, per-app extracted `app_logs` summaries, and top E/F error log highlights.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id or filesystem path." },
-                    "max_error_logs": { "type": "integer", "minimum": 0, "maximum": 200, "description": "Maximum E/F error highlights (default 50)." }
-                },
-                "required": ["bundle_id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_query_logs",
-            "Query bounded logcat rows from a bundle (`main` or `unanchored` bucket) with optional frame range, package, tag, level, and keyword filters.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id or filesystem path." },
-                    "bucket": { "type": "string", "enum": ["main", "unanchored", "all"], "description": "Timeline bucket filter (default all)." },
-                    "start_frame": { "type": "integer", "minimum": 0 },
-                    "end_frame": { "type": "integer", "minimum": 0 },
-                    "start_ns": { "type": "integer" },
-                    "end_ns": { "type": "integer" },
-                    "package": { "type": "string", "description": "Exact Android package name filter (matches foreground/crashed package attribution)." },
-                    "tag": { "type": "string", "description": "Case-insensitive tag substring filter." },
-                    "level": { "type": "string", "enum": ["V", "D", "I", "W", "E", "F", "A"] },
-                    "keyword": { "type": "string", "description": "Case-insensitive message/tag substring filter." },
-                    "after_seq": { "type": "integer", "minimum": 0, "description": "Return log rows strictly after this sequence number." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100_000 }
-                },
-                "required": ["bundle_id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_inspect_frames",
-            "Visually inspect frames of a bundle and return an MCP native image/png + JSON metadata. Supports `contact_sheet` (up to 16 labeled tiles with #frame_index + timestamps), `single` full-res frame, and `tap_crop` (28%x12% crop with center crosshair).",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id or filesystem path." },
-                    "mode": { "type": "string", "enum": ["contact_sheet", "single", "tap_crop"] },
-                    "start_frame": { "type": "integer", "minimum": 0 },
-                    "end_frame": { "type": "integer", "minimum": 0 },
-                    "frame_indices": {
-                        "type": "array",
-                        "items": { "type": "integer", "minimum": 0 },
-                        "minItems": 1,
-                        "maxItems": 16
-                    },
-                    "max_tiles": { "type": "integer", "minimum": 1, "maximum": 16 },
-                    "frame_index": { "type": "integer", "minimum": 0 },
-                    "tap_index": { "type": "integer", "minimum": 0, "description": "Zero-based tap index from arb_timeline_overview." },
-                    "tap_x": { "type": "integer", "minimum": 0 },
-                    "tap_y": { "type": "integer", "minimum": 0 },
-                    "include_tap_marker": { "type": "boolean" },
-                    "display_width": { "type": "integer", "minimum": 1, "description": "Device display width in pixels; scales recorded tap coordinates onto the video. Required for tap_index crops/markers when taps lie outside the video frame." },
-                    "display_height": { "type": "integer", "minimum": 1, "description": "Device display height in pixels (see display_width)." },
-                    "max_tile_width": { "type": "integer", "minimum": 16, "maximum": 1024 },
-                    "max_tile_height": { "type": "integer", "minimum": 16, "maximum": 1024 },
-                    "columns": { "type": "integer", "minimum": 1, "maximum": 16 }
-                },
-                "required": ["bundle_id", "mode"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_export_trim",
-            "Precision-trim a bundle by strict integer [in_frame_index..=out_frame_index] (or export full bundle for share_mp4) into either a standalone faststart zero-elst `share_mp4` (H.264 + AAC-LC) or an immutable WORM `bundle`. Optional `trash_original` moves source to non-destructive Trash strictly after commit (refused on legacy read-only bundles).",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id or filesystem path." },
-                    "format": { "type": "string", "enum": ["share_mp4", "bundle"], "description": "Output format (default share_mp4)." },
-                    "in_frame_index": { "type": "integer", "minimum": 0 },
-                    "out_frame_index": { "type": "integer", "minimum": 0 },
-                    "output_path": { "type": "string", "description": "Optional explicit .mp4 output path (for share_mp4)." },
-                    "dest_dir": { "type": "string", "description": "Optional parent directory for the trimmed WORM bundle." },
-                    "burn_taps": { "type": "boolean", "description": "Composite recorded Tap/Swipe overlays onto output video frames (default false; WORM source stays untouched)." },
-                    "include_share_mp4": { "type": "boolean", "description": "When format=\"bundle\", also emit ready-to-share share.mp4 (or share-taps.mp4 when burn_taps=true) inside the trimmed bundle directory." },
-                    "trash_original": { "type": "boolean", "description": "Move source bundle to non-destructive Trash after verified commit (default false)." }
-                },
-                "required": ["bundle_id"],
-                "additionalProperties": false
-            }),
-        ),
-        tool_def(
-            "arb_export_frame_png",
-            "Export one exact zero-based integer `frame_index` from a bundle to a PNG file with provenance tEXt chunks.",
-            &json!({
-                "type": "object",
-                "properties": {
-                    "bundle_id": { "type": "string", "description": "Catalog bundle_id or filesystem path." },
-                    "frame_index": { "type": "integer", "minimum": 0 },
-                    "output_path": { "type": "string", "description": "Destination PNG file path (never overwrites source)." }
-                },
-                "required": ["bundle_id", "frame_index", "output_path"],
-                "additionalProperties": false
-            }),
-        ),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -1138,22 +1107,18 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        KNOWN_TOOLS, LineRead, McpServer, base64_encode, is_retry_safe_method, read_bounded_line,
-        tool_definitions,
+        LineRead, McpServer, base64_encode, contract::TOOLS, is_retry_safe_method,
+        read_bounded_line,
     };
     use arb_os::paths::ArbPaths;
     use serde_json::{Value, json};
 
     #[test]
     fn tool_registry_matches_known_tools_with_valid_schemas() {
-        let defs = tool_definitions();
-        assert_eq!(
-            defs.len(),
-            KNOWN_TOOLS.len(),
-            "tool_definitions count must match KNOWN_TOOLS"
-        );
+        let defs = &*TOOLS;
+        assert_eq!(defs.len(), 20);
         let mut names = BTreeSet::new();
-        for def in &defs {
+        for def in defs {
             let name = def["name"].as_str().expect("tool must have string name");
             assert!(
                 names.insert(name.to_owned()),
@@ -1166,12 +1131,6 @@ mod tests {
             assert_eq!(
                 def["inputSchema"]["type"], "object",
                 "tool `{name}` inputSchema must be a JSON Schema object"
-            );
-        }
-        for &known in KNOWN_TOOLS {
-            assert!(
-                names.contains(known),
-                "KNOWN_TOOLS entry `{known}` missing from tool_definitions"
             );
         }
     }
@@ -1224,18 +1183,6 @@ mod tests {
             .handle_line("not valid json")
             .expect("parse error must respond");
         assert_eq!(bad["error"]["code"], -32_700, "parse error code");
-
-        let preview = srv.handle_line(&json!({
-            "jsonrpc":"2.0", "id":"gc", "method":"tools/call",
-            "params":{"name":"arb_gc_bundles","arguments":{"ignore_grace":true,"dry_run":true}}
-        }).to_string()).expect("tool error");
-        assert_eq!(preview["result"]["isError"], true);
-        assert!(
-            preview["result"]["content"][0]["text"]
-                .as_str()
-                .expect("text")
-                .contains("GC was not run")
-        );
 
         let unknown_tool = srv
             .handle_line(
@@ -1322,6 +1269,18 @@ mod tests {
             { "jsonrpc": "2.0", "method": "notifications/initialized" },
             { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
         ]);
+        for version in ["2025-11-25", "2025-06-18", "2025-03-26"] {
+            let init = srv.handle_message(&json!({
+                "jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":version}
+            })).unwrap();
+            assert_eq!(init["result"]["protocolVersion"], version);
+            if version != "2025-03-26" {
+                assert_eq!(
+                    srv.handle_line(&batch.to_string()).unwrap()["error"]["code"],
+                    -32600
+                );
+            }
+        }
         let resp = srv.handle_line(&batch.to_string()).expect("batch response");
         let arr = resp.as_array().expect("array response");
         assert_eq!(arr.len(), 2, "notification must not produce a response");
@@ -1330,6 +1289,132 @@ mod tests {
         let empty = srv.handle_line("[]").expect("empty batch error");
         assert_eq!(empty["error"]["code"], -32600);
     }
+    #[test]
+    fn previous_daemon_reports_safe_gc_capability_and_actual_capture_state() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(listener.accept().unwrap());
+            for (method, result) in [
+                (
+                    "system.hello",
+                    json!({"protocol_version":arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION}),
+                ),
+                ("system.status", json!({})),
+                (
+                    "capture.start",
+                    json!({"started":true,"serial":"fixture","capture_mode":"video_and_logs"}),
+                ),
+                (
+                    "system.status",
+                    json!({"capture":{"serial":"fixture","connected":true,"audio_state":"available"}}),
+                ),
+            ] {
+                let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(req["method"], method);
+                let reply = json!({"jsonrpc":"2.0","id":req["id"],"result":result});
+                write_frame_line(
+                    reader.get_mut(),
+                    &reply.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                )
+                .unwrap();
+            }
+            reader.get_mut().drain().unwrap();
+        });
+        let mut mcp = McpServer::new(paths);
+        mcp.client = Some(super::RpcClient::connect_endpoint(&endpoint).unwrap());
+        assert_eq!(
+            mcp.tool_status().unwrap().body["hello"]["gc_dry_run"],
+            false
+        );
+        let capture = mcp
+            .tool_capture_start(&serde_json::Map::new())
+            .unwrap()
+            .body;
+        assert_eq!(capture["connected"], true);
+        assert_eq!(capture["wait_timed_out"], false);
+        assert_eq!(capture["audio_state"], "available");
+        assert!(capture["audio_cause"].is_null());
+        let schema = super::contract::for_version("2025-11-25")
+            .iter()
+            .find(|t| t["name"] == "arb_capture_start")
+            .unwrap();
+        super::schema::validate(&schema["outputSchema"], &capture, "capture.start").unwrap();
+        drop(mcp);
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn cancelling_during_hello_prevents_the_first_mutation() {
+        use arb_os::ipc::{
+            DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let listener = LocalIpcListener::bind(paths.ipc_endpoint()).unwrap();
+        let (began, hello) = mpsc::channel();
+        let (release, cancelled) = mpsc::channel();
+        let daemon = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .unwrap()
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "system.hello");
+            began.send(()).unwrap();
+            cancelled.recv_timeout(Duration::from_secs(5)).unwrap();
+            let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocol_version":arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION}});
+            write_frame_line(
+                reader.get_mut(),
+                &response.to_string(),
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .unwrap();
+            assert!(
+                read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let mut mcp = McpServer::new(paths);
+        let created = mcp.handle_tools_call(
+            &json!(1),
+            &json!({"name":"arb_save","arguments":{},"task":{}}),
+        );
+        hello.recv_timeout(Duration::from_secs(5)).unwrap();
+        let task = &created["result"]["task"];
+        let result = mcp
+            .session
+            .request("tasks/cancel", &json!(2), &json!({"taskId":task["taskId"]}))
+            .unwrap();
+        assert_eq!(result["result"]["status"], "cancelled");
+        release.send(()).unwrap();
+        daemon.join().unwrap();
+    }
+
     #[test]
     fn mutation_timeout_is_reported_without_connecting_again() {
         use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line};
@@ -1366,13 +1451,13 @@ mod tests {
         client.set_default_timeout(Duration::from_millis(250));
         client.set_long_timeout(Duration::from_millis(250));
         let mut mcp = super::McpServer {
-            paths,
             client: Some(client),
+            ..McpServer::new(paths)
         };
         let result = mcp
             .call_daemon("save.trigger", &serde_json::json!({}))
             .unwrap_err();
-        assert!(result.contains("timed out"), "{result}");
+        assert!(result.message.contains("timed out"), "{result:?}");
         assert!(mcp.client.is_none());
         server.join().unwrap();
     }
@@ -1426,8 +1511,8 @@ mod tests {
             Err(super::RpcClientError::Timeout)
         ));
         let mut mcp = super::McpServer {
-            paths,
             client: Some(closed_client),
+            ..McpServer::new(paths)
         };
         let resp = mcp
             .call_daemon("save.trigger", &json!({}))
@@ -1439,15 +1524,11 @@ mod tests {
     #[test]
     fn save_content_only_accepts_a_recovered_job_with_a_bundle() {
         let mut body = serde_json::json!({"job":{"job_id":"same-job","state":"failed_retryable","pinned_chunk_ids":["c1"]}, "bundle_id":"b1"});
-        assert!(super::save_content(&body).is_err());
+        assert!(super::save_content(body.clone()).is_err());
         body["job"]["state"] = serde_json::json!("completed");
-        let content = super::save_content(&body).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(content[0]["text"].as_str().unwrap())
-                .unwrap(),
-            body
-        );
+        let content = super::save_content(body.clone()).unwrap();
+        assert_eq!(content.body["bundle_id"], body["bundle_id"]);
         body["bundle_id"] = serde_json::Value::Null;
-        assert!(super::save_content(&body).is_err());
+        assert!(super::save_content(body.clone()).is_err());
     }
 }

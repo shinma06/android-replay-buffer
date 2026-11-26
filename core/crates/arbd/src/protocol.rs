@@ -110,6 +110,9 @@ impl RpcResponse {
 /// Response payload for `system.hello`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemHelloResponse {
+    /// The connected daemon safely supports preview-only garbage collection.
+    #[serde(default)]
+    pub gc_dry_run: bool,
     /// Control-plane IPC protocol version.
     pub protocol_version: u32,
     /// Bundle manifest schema version (`2`).
@@ -756,6 +759,10 @@ pub enum QueryBucket {
 /// Request parameters for `timeline.query_logs` and `timeline.query_taps`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineQueryParams {
+    /// Keep the latest matching rows, ordered chronologically. `has_more` reports dropped older
+    /// matches and no forward cursor is returned.
+    #[serde(default)]
+    pub tail: bool,
     /// Decimal exclusive log sequence; valid with the same filters and immutable bundle.
     pub cursor: Option<String>,
     /// Match the entire keyword/tag token (Unicode alphanumerics and underscore delimit words).
@@ -1418,6 +1425,9 @@ pub enum InspectFramesMode {
 /// Request parameters for `media.inspect_frames`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaInspectFramesParams {
+    /// Return metadata without rendering or caching any PNG.
+    #[serde(default)]
+    pub metadata_only: bool,
     /// Catalog `bundle_id` or filesystem path.
     #[serde(alias = "bundle_id_or_path")]
     pub bundle_id: String,

@@ -625,7 +625,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "success",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": false
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": null
       }
     },
     {
@@ -656,7 +657,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "warning",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": true
+        "ide_recovery_lists_job": true,
+        "mcp_error_code": "FAILED_RETRYABLE"
       }
     },
     {
@@ -687,7 +689,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "warning",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": true
+        "ide_recovery_lists_job": true,
+        "mcp_error_code": "FAILED_RETRYABLE"
       }
     },
     {
@@ -718,7 +721,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "warning",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": false
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": "FAILED_RETRYABLE"
       }
     },
     {
@@ -750,7 +754,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "success",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": false
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": null
       }
     },
     {
@@ -784,7 +789,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "success",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": false
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": null
       }
     },
     {
@@ -815,7 +821,8 @@
         "mcp_preserves_job_id": true,
         "ide_feedback": "warning",
         "ide_daemon_connected": true,
-        "ide_recovery_lists_job": false
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": "FAILED_RETRYABLE"
       }
     }
   ],
@@ -929,7 +936,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "BUNDLE_NOT_FOUND"
       }
     },
     {
@@ -944,7 +952,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "CONFLICT"
       }
     },
     {
@@ -959,7 +968,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "INVALID_PARAMS"
       }
     },
     {
@@ -974,7 +984,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "OPERATION_FAILED"
       }
     },
     {
@@ -989,7 +1000,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "OPERATION_FAILED"
       }
     },
     {
@@ -1004,7 +1016,8 @@
         "is_transport": false,
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "OPERATION_FAILED"
       }
     },
     {
@@ -1019,7 +1032,8 @@
         "is_transport": false,
         "ide_daemon_connected": false,
         "ide_stale_daemon_banner": true,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "DAEMON_UNAVAILABLE"
       }
     },
     {
@@ -1033,7 +1047,8 @@
         "is_transport": true,
         "ide_daemon_connected": false,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "DAEMON_UNAVAILABLE"
       }
     },
     {
@@ -1047,7 +1062,8 @@
         "is_transport": true,
         "ide_daemon_connected": false,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "DAEMON_UNAVAILABLE"
       }
     },
     {
@@ -1061,7 +1077,8 @@
         "is_transport": true,
         "ide_daemon_connected": false,
         "ide_stale_daemon_banner": false,
-        "ide_action_error_notified": true
+        "ide_action_error_notified": true,
+        "mcp_error_code": "DAEMON_UNAVAILABLE"
       }
     }
   ],
@@ -1069,7 +1086,10 @@
     {
       "id": "CE-01",
       "warning": "末尾は未確認",
-      "warnings": ["末尾は未確認", "要求 90 秒に対し映像は 50 秒"],
+      "warnings": [
+        "末尾は未確認",
+        "要求 90 秒に対し映像は 50 秒"
+      ],
       "notification_warning": "末尾は未確認、要求 90 秒に対し映像は 50 秒",
       "requested_duration_secs": 90,
       "actual_video_duration_ms": 50000,

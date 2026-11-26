@@ -470,6 +470,65 @@ pub fn build_timeline_overview(
     })
 }
 
+/// Reads only timing, geometry and interaction metadata. No decode or PNG cache write.
+pub(super) fn inspect_metadata(
+    catalog: &Catalog,
+    path: &Path,
+    source_id: Option<&str>,
+    params: &MediaInspectFramesParams,
+) -> Result<serde_json::Value, DaemonError> {
+    use serde_json::json;
+    let _lease = acquire_export_lease(catalog, source_id, std::process::id())?;
+    let reader = open_bundle(path)?;
+    let manifest = reader.manifest_summary();
+    let id = source_id.unwrap_or(&manifest.bundle_id);
+    let video = reader
+        .video_path()
+        .ok_or_else(|| DaemonError::NotFound(format!("{id}: video")))?;
+    let track = Mp4VideoTrack::open(&video)?;
+    if track.frame_count() == 0 {
+        return Err(DaemonError::NotFound(format!("{id}: no frames")));
+    }
+    let width = u32::from(track.width());
+    let height = u32::from(track.height());
+    let display = manifest.streams.video.as_ref();
+    let dims = (
+        params
+            .display_width
+            .or_else(|| display.and_then(|v| v.display_width)),
+        params
+            .display_height
+            .or_else(|| display.and_then(|v| v.display_height)),
+    );
+    let mut taps = build_frame_tap_map(reader.as_ref(), width, height, dims)?;
+    let indices = match params.mode {
+        InspectFramesMode::ContactSheet => contact_indices(params, track.frame_count())?,
+        InspectFramesMode::Single => vec![single_index(params)],
+        InspectFramesMode::TapCrop => {
+            let (i, x, y) = tap_target(reader.as_ref(), params, width, height, dims)?;
+            taps.insert(i, (x, y));
+            vec![i]
+        }
+    };
+    let screens = reader.screens()?;
+    let mut frames = Vec::with_capacity(indices.len());
+    for &i in &indices {
+        let info = track.frame(i)?;
+        let screen = screens.iter().find(|s| {
+            s.start_frame_index
+                .zip(s.end_frame_index)
+                .is_some_and(|(a, b)| (a..=b).contains(&i))
+        });
+        frames.push(
+            json!({"frame_index":i,"timestamp_ms":info.pts_ns/1_000_000,"screen":screen,
+            "tap":taps.get(&i).map(|(x,y)|json!({"x":x,"y":y}))}),
+        );
+    }
+    Ok(
+        json!({"bundle_id":id,"mode":params.mode,"width":width,"height":height,"frame_indices_rendered":indices,"frames":frames}),
+    )
+}
+
 /// Renders a contact sheet, single frame, or tap-crop PNG for AI visual inspection, caches it
 /// atomically under `<cache_dir>/inspect/`, and returns metadata + inline base64 PNG (when small).
 ///
@@ -1004,7 +1063,7 @@ fn scan_logs(
         || params.keyword.is_some()
         || package_filter.is_some();
 
-    if !has_text_filter {
+    if !has_text_filter && !params.tail {
         let fetch = limit.saturating_add(1);
         let mut logs = reader.query_logs_after(bucket, range, params.after_seq, Some(fetch))?;
         let candidate_rows_scanned = logs.len();
@@ -1047,7 +1106,7 @@ fn scan_logs(
         .clamp(MIN_FILTERED_LOG_BATCH_ROWS, MAX_FILTERED_LOG_BATCH_ROWS);
     let mut total_matched = 0;
     let mut cursor_seq = if count_all { None } else { params.after_seq };
-    let mut matched = Vec::with_capacity(limit.min(MAX_FILTERED_LOG_BATCH_ROWS));
+    let mut matched = VecDeque::with_capacity(limit.min(MAX_FILTERED_LOG_BATCH_ROWS));
     let mut has_more = false;
     let mut candidate_rows_scanned = 0_usize;
 
@@ -1065,8 +1124,11 @@ fn scan_logs(
                 if params.after_seq.is_some_and(|after| log.seq <= after) {
                     continue;
                 }
+                if params.tail && matched.len() == limit {
+                    has_more |= matched.pop_front().is_some();
+                }
                 if matched.len() < limit {
-                    matched.push(log);
+                    matched.push_back(log);
                 } else {
                     has_more = true;
                     if !count_all {
@@ -1075,14 +1137,14 @@ fn scan_logs(
                 }
             }
         }
-        if (has_more && !count_all) || batch_len < batch_size {
+        if (has_more && !count_all && !params.tail) || batch_len < batch_size {
             break;
         }
     }
 
-    let next_after_seq = matched.last().map(|r| r.seq);
+    let next_after_seq = matched.back().map(|r| r.seq).filter(|_| !params.tail);
     Ok(FilteredLogPage {
-        logs: matched,
+        logs: matched.into(),
         has_more,
         next_after_seq,
         candidate_rows_scanned,
@@ -1125,42 +1187,7 @@ fn render_inspect_contact_sheet(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
-    let frame_count = track.frame_count();
-    let indices = if let Some(explicit) = &params.frame_indices {
-        if explicit.is_empty() || explicit.len() > MAX_CONTACT_SHEET_TILES {
-            return Err(DaemonError::InvalidParams(format!(
-                "frame_indices must contain 1..={MAX_CONTACT_SHEET_TILES} indices, got {}",
-                explicit.len()
-            )));
-        }
-        for &idx in explicit {
-            if idx >= frame_count {
-                return Err(MediaError::FrameOutOfRange {
-                    frame_index: idx,
-                    frame_count,
-                }
-                .into());
-            }
-        }
-        explicit.clone()
-    } else {
-        let start = params.start_frame.unwrap_or(0);
-        let end = params.end_frame.unwrap_or(frame_count - 1);
-        if start > end || end >= frame_count {
-            return Err(MediaError::InvalidFrameRange {
-                in_frame_index: start,
-                out_frame_index: end,
-                frame_count,
-            }
-            .into());
-        }
-        let max_tiles = params
-            .max_tiles
-            .unwrap_or(MAX_CONTACT_SHEET_TILES)
-            .clamp(1, MAX_CONTACT_SHEET_TILES);
-        select_contact_sheet_indices(start, end, max_tiles)
-    };
-
+    let indices = contact_indices(params, track.frame_count())?;
     let tap_map = if params.include_tap_marker {
         build_frame_tap_map(reader, video_w, video_h, display_dims)?
     } else {
@@ -1211,15 +1238,7 @@ fn render_inspect_single(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let idx = params
-        .frame_index
-        .or_else(|| {
-            params
-                .frame_indices
-                .as_ref()
-                .and_then(|v| v.first().copied())
-        })
-        .unwrap_or(0);
+    let idx = single_index(params);
     if idx >= frame_count {
         return Err(MediaError::FrameOutOfRange {
             frame_index: idx,
@@ -1256,7 +1275,97 @@ fn render_inspect_tap_crop(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let (idx, tx, ty) = if let Some(tap_idx) = params.tap_index {
+    let (idx, tx, ty) = tap_target(reader, params, video_w, video_h, display_dims)?;
+    if idx >= frame_count {
+        return Err(MediaError::FrameOutOfRange {
+            frame_index: idx,
+            frame_count,
+        }
+        .into());
+    }
+
+    let (decoded, _) = gop_cache.fetch_frame(track, idx, MediaPixelFormat::Rgba8, backend)?;
+    let crop = render_tap_crop_png(
+        &decoded.data,
+        decoded.width,
+        decoded.height,
+        tx,
+        ty,
+        &TapCropOptions::default(),
+    )?;
+    let meta = TapCropMeta {
+        crop_x: crop.crop_x,
+        crop_y: crop.crop_y,
+        crop_width: crop.crop_width,
+        crop_height: crop.crop_height,
+        tap_x: tx,
+        tap_y: ty,
+        tap_rel_x: crop.tap_rel_x,
+        tap_rel_y: crop.tap_rel_y,
+    };
+    Ok((crop.png_bytes, vec![idx], Some(meta)))
+}
+
+fn contact_indices(
+    params: &MediaInspectFramesParams,
+    frame_count: u64,
+) -> Result<Vec<u64>, DaemonError> {
+    Ok(if let Some(explicit) = &params.frame_indices {
+        if explicit.is_empty() || explicit.len() > MAX_CONTACT_SHEET_TILES {
+            return Err(DaemonError::InvalidParams(format!(
+                "frame_indices must contain 1..={MAX_CONTACT_SHEET_TILES} indices, got {}",
+                explicit.len()
+            )));
+        }
+        for &idx in explicit {
+            if idx >= frame_count {
+                return Err(MediaError::FrameOutOfRange {
+                    frame_index: idx,
+                    frame_count,
+                }
+                .into());
+            }
+        }
+        explicit.clone()
+    } else {
+        let start = params.start_frame.unwrap_or(0);
+        let end = params.end_frame.unwrap_or(frame_count - 1);
+        if start > end || end >= frame_count {
+            return Err(MediaError::InvalidFrameRange {
+                in_frame_index: start,
+                out_frame_index: end,
+                frame_count,
+            }
+            .into());
+        }
+        let max_tiles = params
+            .max_tiles
+            .unwrap_or(MAX_CONTACT_SHEET_TILES)
+            .clamp(1, MAX_CONTACT_SHEET_TILES);
+        select_contact_sheet_indices(start, end, max_tiles)
+    })
+}
+
+fn single_index(params: &MediaInspectFramesParams) -> u64 {
+    params
+        .frame_index
+        .or_else(|| {
+            params
+                .frame_indices
+                .as_ref()
+                .and_then(|v| v.first().copied())
+        })
+        .unwrap_or(0)
+}
+
+fn tap_target(
+    reader: &dyn BundleReader,
+    params: &MediaInspectFramesParams,
+    video_w: u32,
+    video_h: u32,
+    display_dims: (Option<u32>, Option<u32>),
+) -> Result<(u64, u32, u32), DaemonError> {
+    Ok(if let Some(tap_idx) = params.tap_index {
         let frames = reader.frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
         let selected_taps = select_overview_taps(&main_taps);
@@ -1311,36 +1420,7 @@ fn render_inspect_tap_crop(
         })?;
         let frame_idx = params.frame_index.unwrap_or(0);
         (frame_idx, tx, ty)
-    };
-
-    if idx >= frame_count {
-        return Err(MediaError::FrameOutOfRange {
-            frame_index: idx,
-            frame_count,
-        }
-        .into());
-    }
-
-    let (decoded, _) = gop_cache.fetch_frame(track, idx, MediaPixelFormat::Rgba8, backend)?;
-    let crop = render_tap_crop_png(
-        &decoded.data,
-        decoded.width,
-        decoded.height,
-        tx,
-        ty,
-        &TapCropOptions::default(),
-    )?;
-    let meta = TapCropMeta {
-        crop_x: crop.crop_x,
-        crop_y: crop.crop_y,
-        crop_width: crop.crop_width,
-        crop_height: crop.crop_height,
-        tap_x: tx,
-        tap_y: ty,
-        tap_rel_x: crop.tap_rel_x,
-        tap_rel_y: crop.tap_rel_y,
-    };
-    Ok((crop.png_bytes, vec![idx], Some(meta)))
+    })
 }
 
 fn build_frame_tap_map(

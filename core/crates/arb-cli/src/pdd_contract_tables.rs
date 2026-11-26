@@ -34,17 +34,20 @@ fn save_rows_match_cli_exit_code_and_mcp_is_error() {
             expected["cli_exit_code"].as_u64(),
             "{id}: CLI exit code"
         );
-        let mcp = mcp::save_content(response);
+        let mcp = mcp::save_content(response.clone());
         assert_eq!(
             Some(mcp.is_err()),
             expected["mcp_is_error"].as_bool(),
             "{id}: MCP isError"
         );
-        let text = match &mcp {
-            Ok(content) => content[0]["text"].as_str().unwrap().to_owned(),
-            Err(text) => text.clone(),
+        let echoed = match mcp {
+            Ok(output) => output.body,
+            Err(failure) => failure.result()["structuredContent"].clone(),
         };
-        let echoed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            echoed["error_code"], expected["mcp_error_code"],
+            "{id}: structured error code"
+        );
         assert_eq!(
             echoed["job"]["job_id"], response["job"]["job_id"],
             "{id}: MCP content preserves job_id"
@@ -75,6 +78,18 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
             Some(err.is_transport()),
             expected["is_transport"].as_bool(),
             "{id}: transport vs business error"
+        );
+        let duplicate = match failure["kind"].as_str().unwrap() {
+            "rpc_error" => RpcClientError::Rpc {
+                code: i32::try_from(failure["code"].as_i64().unwrap()).unwrap(),
+                message: "contract".into(),
+            },
+            _ => RpcClientError::UnexpectedEof,
+        };
+        assert_eq!(
+            mcp::Failure::from_rpc(duplicate).result()["structuredContent"]["error_code"],
+            expected["mcp_error_code"],
+            "{id}: MCP error"
         );
         assert_eq!(
             Some(u64::from(CliError::from_rpc(err).exit_code)),

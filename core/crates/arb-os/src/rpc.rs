@@ -408,6 +408,16 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+        // Older daemons ignore unknown GC parameters. Verify this socket before any preview.
+        if method == "bundle.gc"
+            && params["dry_run"] == true
+            && self.verify_hello()?["gc_dry_run"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                code: -32601,
+                message: "GC プレビューには arbd の更新が必要です".into(),
+            });
+        }
         let timeout = if is_quick_method(method) {
             self.default_timeout
         } else if is_export_method(method) {

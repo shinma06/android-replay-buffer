@@ -1,0 +1,1743 @@
+{
+  "tools": [
+    {
+      "description": "デーモンと録画状態を取得します。",
+      "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
+      "name": "arb_status",
+      "outputType": "Status",
+      "annotations": {"title": "状態の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "接続中の Android 端末を一覧します。",
+      "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
+      "name": "arb_devices",
+      "outputType": "DeviceListResponse",
+      "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "選択した端末で直前の画面・音声・ログの記録を開始します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_enabled": {"description": "端末音声を取得します。省略時は設定値。", "type": "boolean"},
+          "capture_mode": {"description": "録画方式。省略時は設定値。", "enum": ["video_and_logs", "logs_only"], "type": "string"},
+          "companion_jar": {"description": "端末エージェントの JAR ファイル。", "type": "string"},
+          "heartbeat_ms": {"description": "端末からの生存通知の間隔（ミリ秒）。", "minimum": 50, "type": "integer", "maximum": 4294967295},
+          "input_enabled": {"description": "タップを記録します。", "type": "boolean", "default": true},
+          "logcat_enabled": {"description": "logcat を記録します。", "type": "boolean", "default": true},
+          "max_fps": {"description": "映像の最大フレームレート。", "maximum": 120, "minimum": 1, "type": "integer"},
+          "max_size": {"description": "映像の長辺の上限（ピクセル）。", "maximum": 4096, "minimum": 256, "type": "integer"},
+          "scrcpy_jar": {"description": "scrcpy サーバーの JAR ファイル。", "type": "string"},
+          "serial": {"description": "対象の ADB シリアル。省略時は設定と接続中端末から選択します。", "type": "string"},
+          "video_bit_rate": {"description": "映像の目標ビットレート（bps）。", "minimum": 100000, "type": "integer", "maximum": 4294967295},
+          "wait_connected": {"type": "boolean", "description": "端末との接続完了まで待ちます。", "default": false},
+          "wait_timeout_ms": {"type": "integer", "description": "接続の待ち時間（ミリ秒）。", "minimum": 0, "maximum": 30000, "default": 5000}
+        },
+        "type": "object"
+      },
+      "name": "arb_capture_start",
+      "outputType": "CaptureStartResponse",
+      "annotations": {"title": "録画開始", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+      "execution": {"taskSupport": "optional"}
+    },
+    {
+      "description": "録画を停止し、バッファ内の記録を保持します。",
+      "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
+      "name": "arb_capture_stop",
+      "outputType": "CaptureStopResponse",
+      "annotations": {"title": "録画停止", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "現在の録画・保存設定を取得します。",
+      "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
+      "name": "arb_config_get",
+      "outputType": "ConfigResponse",
+      "annotations": {"title": "設定の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "指定した設定項目を更新します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_capture_mode": {
+            "description": "再生音複製は API 33 以上。出力互換は API 30 以上で、録音中は端末スピーカーが消音されます。",
+            "enum": ["playback_dup", "output_compat"],
+            "type": "string"
+          },
+          "audio_enabled": {"type": "boolean", "description": "端末音声を取得します。省略時は設定値。"},
+          "capture_mode": {"enum": ["video_and_logs", "logs_only"], "type": "string", "description": "録画方式。省略時は設定値。"},
+          "crash_autosave_cooldown_secs": {"maximum": 3600, "minimum": 1, "type": "integer", "description": "次のクラッシュ自動保存までの最短間隔（秒）。"},
+          "crash_autosave_enabled": {"type": "boolean", "description": "クラッシュ検出時に自動保存します。"},
+          "device_serial": {"type": ["string", "null"], "description": "優先する端末。null で設定を解除します。"},
+          "ide_default_save_action": {"enum": ["save_and_open", "save_only"], "type": "string", "description": "保存後に IDE で開くかを指定します。"},
+          "min_free_disk_bytes": {"minimum": 67108864, "type": "integer", "maximum": 1099511627776, "description": "確保するディスク空き容量（バイト）。"},
+          "output_dir_override": {"type": ["string", "null"], "description": "既定の保存先。null で解除します。"},
+          "ring_budget_bytes": {"minimum": 16777216, "type": "integer", "maximum": 68719476736, "description": "リングバッファの上限（バイト）。"},
+          "save_window_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "保存範囲の秒数。"},
+          "screenshot_dir_override": {"type": ["string", "null"], "description": "スクリーンショットの保存先。null で解除します。"},
+          "video_max_fps": {"maximum": 120, "minimum": 1, "type": "integer", "description": "録画時のフレームレート上限。"},
+          "video_max_size": {"maximum": 4096, "minimum": 256, "type": "integer", "description": "録画する映像の長辺上限（ピクセル）。"},
+          "capture_enabled": {"type": "boolean", "description": "バックグラウンド録画を有効にします。"},
+          "gc_grace_secs": {"type": "integer", "description": "ごみ箱の猶予期間（秒）。", "minimum": 0, "maximum": 18446744073709551615}
+        },
+        "type": "object"
+      },
+      "name": "arb_config_update",
+      "outputType": "ConfigResponse",
+      "annotations": {"title": "設定の更新", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "直前の記録をバンドルに保存し、完全性の測定値とリソースへのリンクを返します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dest_dir": {"description": "出力先の親ディレクトリ。", "type": "string"},
+          "drain_timeout_ms": {
+            "description": "保存境界のデータ到着を待つ時間（ミリ秒、最大 5000）。",
+            "minimum": 0,
+            "type": "integer",
+            "maximum": 18446744073709551615,
+            "default": 500
+          },
+          "note": {"description": "保存結果に添えるメモ。", "type": "string"},
+          "window_secs": {"description": "保存する直近の秒数。省略時は設定 save_window_secs。", "maximum": 600, "minimum": 5, "type": "integer"},
+          "duration_sec": {"description": "window_secs の互換名。", "maximum": 600, "minimum": 5, "type": "integer"},
+          "duration_secs": {"description": "保存する直近の秒数。省略時は設定 save_window_secs。", "maximum": 600, "minimum": 5, "type": "integer"}
+        },
+        "type": "object",
+        "allOf": [
+          {"not": {"required": ["duration_sec", "duration_secs"]}},
+          {"not": {"required": ["duration_sec", "window_secs"]}},
+          {"not": {"required": ["duration_secs", "window_secs"]}}
+        ]
+      },
+      "name": "arb_save",
+      "outputType": "SaveOutcomeResponse",
+      "annotations": {"title": "録画の保存", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+      "execution": {"taskSupport": "optional"}
+    },
+    {
+      "description": "端末画面を PNG に保存します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_image": {"description": "応答にスクリーンショットの PNG を含めます。", "type": "boolean", "default": true},
+          "output_dir": {"description": "ファイル名を自動生成する出力ディレクトリ。", "type": "string"},
+          "output_path": {"description": "出力ファイルのパス。", "type": "string"},
+          "overwrite": {"description": "既存ファイルを保護します。同名ファイルがある場合は別の出力先を指定します。", "type": "boolean", "const": false, "default": false},
+          "serial": {"description": "対象の ADB シリアル。省略時は設定と接続中端末から選択します。", "type": "string"}
+        },
+        "type": "object",
+        "not": {"required": ["output_path", "output_dir"]}
+      },
+      "name": "arb_screenshot",
+      "outputType": "SaveScreenshotResponse",
+      "annotations": {
+        "title": "スクリーンショット",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "description": "直前のログをバンドルに保存します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dest_dir": {"type": "string", "description": "出力先の親ディレクトリ。"},
+          "drain_timeout_ms": {
+            "minimum": 0,
+            "type": "integer",
+            "description": "保存境界のデータ到着を待つ時間（ミリ秒、最大 5000）。",
+            "maximum": 18446744073709551615,
+            "default": 500
+          },
+          "window_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "保存する直近の秒数。省略時は設定 save_window_secs。"},
+          "duration_sec": {"maximum": 600, "minimum": 5, "type": "integer", "description": "window_secs の互換名。"},
+          "duration_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "保存する直近の秒数。省略時は設定 save_window_secs。"}
+        },
+        "type": "object",
+        "allOf": [
+          {"not": {"required": ["duration_sec", "duration_secs"]}},
+          {"not": {"required": ["duration_sec", "window_secs"]}},
+          {"not": {"required": ["duration_secs", "window_secs"]}}
+        ]
+      },
+      "name": "arb_save_logs",
+      "outputType": "SaveOutcomeResponse",
+      "annotations": {"title": "ログの保存", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "description": "バンドルの状態、期間、件数と保存先を一覧します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {"state": {"description": "カタログの状態フィルター。", "enum": ["active", "trashed", "purging"], "type": "string"}},
+        "type": "object"
+      },
+      "name": "arb_list_bundles",
+      "outputType": "BundleListResponse",
+      "annotations": {"title": "バンドル一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "バンドルをごみ箱に移します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {"bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}},
+        "required": ["bundle_id"],
+        "type": "object"
+      },
+      "name": "arb_trash_bundle",
+      "outputType": "BundleEntryView",
+      "annotations": {"title": "ごみ箱へ移動", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "description": "ごみ箱からバンドルを復元します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {"bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}},
+        "required": ["bundle_id"],
+        "type": "object"
+      },
+      "name": "arb_restore_bundle",
+      "outputType": "BundleEntryView",
+      "annotations": {"title": "バンドルの復元", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "description": "ごみ箱の回収候補と保護理由を確認し、指定時に削除します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "ignore_grace": {"default": false, "type": "boolean", "description": "猶予期間を無視します。"},
+          "dry_run": {"type": "boolean", "description": "ファイルを残したまま回収見込みと保護理由を表示します。", "default": false}
+        },
+        "type": "object"
+      },
+      "name": "arb_gc_bundles",
+      "outputType": "BundleGcResponse",
+      "annotations": {"title": "ごみ箱の整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "description": "実体が見つからないバンドルをカタログから解除します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all_missing": {"description": "保存先が見つからないカタログ行を一括整理します。", "type": "boolean"},
+          "bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}
+        },
+        "type": "object",
+        "oneOf": [
+          {"required": ["bundle_id"], "properties": {"all_missing": {"const": false}}},
+          {"properties": {"all_missing": {"const": true}}, "required": ["all_missing"], "not": {"required": ["bundle_id"]}}
+        ]
+      },
+      "name": "arb_forget_bundle",
+      "outputType": "BundleForgetResponse",
+      "annotations": {"title": "カタログの整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "description": "画面遷移、クラッシュ、タップ、ログの概要を取得します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "max_error_logs": {"description": "概要に含めるエラーの最大件数。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
+          "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
+        },
+        "required": [],
+        "type": "object",
+        "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
+      },
+      "name": "arb_timeline_overview",
+      "outputType": "TimelineOverviewResponse",
+      "annotations": {"title": "タイムラインの概要", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "条件に一致するログとフレーム番号をページ単位で取得します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "after_seq": {
+            "description": "このシーケンス番号の次から取得します。cursor と排他です。",
+            "minimum": 0,
+            "type": "integer",
+            "maximum": 18446744073709551615
+          },
+          "bucket": {
+            "description": "時刻が確定したログ、未確定ログ、または両方。",
+            "enum": ["main", "unanchored", "all"],
+            "type": "string",
+            "default": "all"
+          },
+          "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "end_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
+          "end_ns": {"type": "integer", "description": "範囲の終了（ナノ秒）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "keyword": {"description": "ログ本文またはタグを照合するキーワード。", "type": "string"},
+          "level": {
+            "type": "string",
+            "description": "Android のログレベル。大文字・小文字を区別しません。",
+            "pattern": "^([Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"
+          },
+          "limit": {"maximum": 100000, "minimum": 1, "type": "integer", "default": 100, "description": "1 ページの最大行数。"},
+          "package": {"description": "Android パッケージ名で完全一致検索します。", "type": "string"},
+          "start_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の先頭フレーム（0 始まり）。", "maximum": 18446744073709551615},
+          "start_ns": {"type": "integer", "description": "範囲の開始（ナノ秒）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "tag": {"description": "ログタグの部分一致条件。", "type": "string"},
+          "cursor": {"type": "string", "description": "直前のページが返した next_cursor。", "pattern": "^[0-9]+$"},
+          "whole_word": {"type": "boolean", "description": "単語境界でキーワードを照合します。", "default": false},
+          "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
+        },
+        "required": [],
+        "type": "object",
+        "not": {"required": ["after_seq", "cursor"]},
+        "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
+      },
+      "name": "arb_query_logs",
+      "outputType": "TimelineLogsResponse",
+      "annotations": {"title": "ログ検索", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "選択フレームの時刻・座標・参照先を返します。画像の同梱は include_images で指定します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "columns": {"maximum": 16, "minimum": 1, "type": "integer", "description": "コンタクトシートの列数。", "default": 4},
+          "display_height": {"description": "タップ座標を変換する端末表示高（ピクセル）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
+          "display_width": {"description": "タップ座標を変換する端末表示幅（ピクセル）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
+          "end_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
+          "frame_index": {"minimum": 0, "type": "integer", "description": "0 始まりのフレーム番号。", "maximum": 18446744073709551615},
+          "frame_indices": {
+            "items": {"minimum": 0, "type": "integer"},
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array",
+            "description": "表示するフレーム番号の一覧。"
+          },
+          "include_tap_marker": {"type": "boolean", "description": "タップ位置を描画します。", "default": false},
+          "max_tile_height": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "各タイルの最大高（ピクセル）。", "default": 560},
+          "max_tile_width": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "各タイルの最大幅（ピクセル）。", "default": 280},
+          "max_tiles": {"maximum": 16, "minimum": 1, "type": "integer", "description": "最大タイル数。", "default": 16},
+          "mode": {"enum": ["contact_sheet", "single", "tap_crop"], "type": "string", "description": "複数フレーム、単一フレーム、またはタップ周辺の切り抜き。"},
+          "start_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の先頭フレーム（0 始まり）。", "maximum": 18446744073709551615},
+          "tap_index": {"description": "概要に含まれるタップの番号（0 始まり）。", "minimum": 0, "type": "integer", "maximum": 18446744073709551615},
+          "tap_x": {"minimum": 0, "type": "integer", "description": "タップ横座標（映像ピクセル）。", "maximum": 4294967295},
+          "tap_y": {"minimum": 0, "type": "integer", "description": "タップ縦座標（映像ピクセル）。", "maximum": 4294967295},
+          "include_images": {"type": "boolean", "description": "PNG を応答に含めます。省略時はメタデータと参照リンクを返します。", "default": false},
+          "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
+        },
+        "required": ["mode"],
+        "type": "object",
+        "if": {"properties": {"mode": {"const": "tap_crop"}}, "required": ["mode"]},
+        "then": {"anyOf": [{"required": ["tap_index"]}, {"required": ["tap_x", "tap_y"]}]},
+        "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
+      },
+      "name": "arb_inspect_frames",
+      "outputType": "Inspect",
+      "annotations": {"title": "フレームの確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+    },
+    {
+      "description": "フレーム範囲をトリムし、共有 MP4 またはバンドルを書き出します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "burn_taps": {"description": "映像にタップ・スワイプを焼き込みます。", "type": "boolean", "default": false},
+          "dest_dir": {"description": "出力先の親ディレクトリ。", "type": "string"},
+          "format": {"description": "共有 MP4 または編集済みバンドル。", "enum": ["share_mp4", "bundle"], "type": "string", "default": "share_mp4"},
+          "in_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す先頭フレーム（両端を含む）。", "maximum": 18446744073709551615},
+          "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。省略時は burn_taps に従います。", "type": "boolean"},
+          "out_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
+          "output_path": {"description": "出力ファイルのパス。", "type": "string"},
+          "trash_original": {"description": "元バンドルを保持します。移動には書き出し後に arb_trash_bundle を使います。", "type": "boolean", "const": false, "default": false},
+          "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
+        },
+        "required": [],
+        "type": "object",
+        "dependentRequired": {"in_frame_index": ["out_frame_index"], "out_frame_index": ["in_frame_index"]},
+        "if": {"properties": {"format": {"const": "bundle"}}, "required": ["format"]},
+        "then": {"required": ["in_frame_index", "out_frame_index"]},
+        "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
+      },
+      "name": "arb_export_trim",
+      "outputType": "Export",
+      "annotations": {
+        "title": "トリム・MP4出力",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {"taskSupport": "optional"}
+    },
+    {
+      "description": "指定フレームを出典付き PNG として書き出します。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "frame_index": {"minimum": 0, "type": "integer", "description": "0 始まりのフレーム番号。", "maximum": 18446744073709551615},
+          "output_path": {"description": "出力ファイルのパス。", "type": "string"},
+          "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
+        },
+        "required": ["frame_index", "output_path"],
+        "type": "object",
+        "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
+      },
+      "name": "arb_export_frame_png",
+      "outputType": "ExportPngResponse",
+      "annotations": {"title": "PNG出力", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "arb_save_and_inspect",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "duration_secs": {"type": "integer", "description": "保存する秒数。省略時は save_window_secs。", "minimum": 5, "maximum": 600},
+          "logs_only": {"type": "boolean", "description": "ログだけを保存します。", "default": false},
+          "memo": {"type": "string", "description": "調査結果に添えるメモ。"},
+          "max_errors": {"type": "integer", "description": "保存期間に含まれるエラーの最大表示数。", "minimum": 1, "maximum": 100000, "default": 20},
+          "include_key_frame_links": {"type": "boolean", "description": "画面遷移の先頭フレームのリンクを含めます。", "default": true}
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "description": "直近の記録を保存し、証跡の長さ、画面遷移、クラッシュ、エラーログをまとめて確認します。",
+      "outputType": "Investigation",
+      "annotations": {"title": "保存して調査", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+      "execution": {"taskSupport": "optional"}
+    }
+  ],
+  "$defs": {
+    "AdbDeviceInfo": {
+      "type": "object",
+      "properties": {
+        "serial": {"type": "string"},
+        "state": {"$ref": "#/$defs/AdbDeviceState"},
+        "product": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "model": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "device": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "transport_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      },
+      "required": ["serial", "state", "product", "model", "device", "transport_id"],
+      "additionalProperties": false
+    },
+    "AdbDeviceState": {
+      "oneOf": [
+        {"type": "string", "enum": ["device", "offline", "unauthorized", "recovery", "bootloader"]},
+        {
+          "type": "object",
+          "properties": {"unknown": {"type": "string"}},
+          "required": ["unknown"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "AppLogSummary": {
+      "type": "object",
+      "properties": {
+        "package_name": {"type": "string"},
+        "relative_path": {"type": "string"},
+        "line_count": {"type": "integer", "minimum": 0},
+        "crash_count": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string"}
+      },
+      "required": ["package_name", "relative_path", "line_count", "crash_count", "sha256"],
+      "additionalProperties": false
+    },
+    "ArbConfig": {
+      "type": "object",
+      "properties": {
+        "config_version": {"type": "integer", "minimum": 0},
+        "capture_enabled": {"type": "boolean"},
+        "capture_mode": {"$ref": "#/$defs/CaptureMode"},
+        "device_serial": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "save_window_secs": {"type": "integer", "minimum": 0},
+        "gc_grace_secs": {"type": "integer", "minimum": 0},
+        "ring_budget_bytes": {"type": "integer", "minimum": 0},
+        "min_free_disk_bytes": {"type": "integer", "minimum": 0},
+        "video_max_size": {"type": "integer", "minimum": 0},
+        "video_max_fps": {"type": "integer", "minimum": 0},
+        "audio_enabled": {"type": "boolean"},
+        "audio_capture_mode": {"$ref": "#/$defs/AudioCaptureMode"},
+        "crash_autosave_enabled": {"type": "boolean"},
+        "crash_autosave_cooldown_secs": {"type": "integer", "minimum": 0},
+        "output_dir_override": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "screenshot_dir_override": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "ide_default_save_action": {"$ref": "#/$defs/IdeDefaultSaveAction"}
+      },
+      "required": [
+        "config_version",
+        "capture_enabled",
+        "capture_mode",
+        "device_serial",
+        "save_window_secs",
+        "gc_grace_secs",
+        "ring_budget_bytes",
+        "min_free_disk_bytes",
+        "video_max_size",
+        "video_max_fps",
+        "audio_enabled",
+        "audio_capture_mode",
+        "crash_autosave_enabled",
+        "crash_autosave_cooldown_secs",
+        "output_dir_override",
+        "screenshot_dir_override",
+        "ide_default_save_action"
+      ],
+      "additionalProperties": false
+    },
+    "AudioCaptureMode": {"type": "string", "enum": ["playback_dup", "output_compat"]},
+    "AudioCaptureState": {"type": "string", "enum": ["unknown", "available", "disabled", "unavailable"]},
+    "AudioCause": {
+      "type": "string",
+      "enum": [
+        "none",
+        "user_disabled",
+        "logs_only",
+        "api_below_min",
+        "device_capture_failed",
+        "encoder_fatal",
+        "handshake_io",
+        "tunnel_connect_failed",
+        "launch_failed_audio_true",
+        "launch_failed_both",
+        "runtime_sticky_disabled",
+        "unknown"
+      ]
+    },
+    "AudioStreamMeta": {
+      "type": "object",
+      "properties": {
+        "status": {"$ref": "#/$defs/StreamStatus"},
+        "av_offset_status": {"$ref": "#/$defs/AvOffsetStatus"},
+        "av_offset_ms": {"type": "integer"},
+        "audio_lead_in_offset_ns": {"type": "integer"},
+        "tail_may_be_incomplete": {"type": "boolean"}
+      },
+      "required": ["status", "av_offset_status", "av_offset_ms", "audio_lead_in_offset_ns", "tail_may_be_incomplete"],
+      "additionalProperties": false
+    },
+    "AvMuxReport": {
+      "type": "object",
+      "properties": {
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "video_frame_count": {"type": "integer", "minimum": 0},
+        "video_keyframe_count": {"type": "integer", "minimum": 0},
+        "video_duration_ns": {"type": "integer", "minimum": 0},
+        "audio_included": {"type": "boolean"},
+        "audio_packet_count": {"type": "integer", "minimum": 0},
+        "audio_packets_skipped_leading": {"type": "integer", "minimum": 0},
+        "audio_packets_dropped_trailing": {"type": "integer", "minimum": 0},
+        "audio_duration_ns": {"type": "integer", "minimum": 0},
+        "sample_rate_hz": {"type": "integer", "minimum": 0},
+        "channels": {"type": "integer", "minimum": 0},
+        "requested_audio_lead_in_offset_ns": {"type": "integer"},
+        "audio_start_ns": {"type": "integer"},
+        "audio_residual_offset_ns": {"type": "integer"},
+        "edts_box_count": {"type": "integer", "minimum": 0},
+        "elst_box_count": {"type": "integer", "minimum": 0},
+        "faststart": {"type": "boolean"},
+        "output_bytes": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "width",
+        "height",
+        "video_frame_count",
+        "video_keyframe_count",
+        "video_duration_ns",
+        "audio_included",
+        "audio_packet_count",
+        "audio_packets_skipped_leading",
+        "audio_packets_dropped_trailing",
+        "audio_duration_ns",
+        "sample_rate_hz",
+        "channels",
+        "requested_audio_lead_in_offset_ns",
+        "audio_start_ns",
+        "audio_residual_offset_ns",
+        "edts_box_count",
+        "elst_box_count",
+        "faststart",
+        "output_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "AvOffsetStatus": {"type": "string", "enum": ["uncalibrated", "calibrated", "user_overridden"]},
+    "BundleDiskState": {"type": "string", "enum": ["present", "missing", "storage_unavailable"]},
+    "BundleEntryView": {
+      "type": "object",
+      "properties": {
+        "bundle_kind": {"type": "string"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "has_video": {"type": "boolean"},
+        "has_audio": {"type": "boolean"},
+        "log_count": {"type": "integer", "minimum": 0},
+        "crash_marker_count": {"type": "integer", "minimum": 0},
+        "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_utc": {"type": "string"},
+        "bundle_id": {"type": "string"},
+        "path": {"type": "string"},
+        "format_version": {"$ref": "#/$defs/CatalogFormatVersion"},
+        "state": {"$ref": "#/$defs/BundleLifecycleState"},
+        "trashed_at_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "parent_bundle_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_at_utc": {"type": "string"},
+        "active_leases": {"type": "integer", "minimum": 0},
+        "disk_state": {"$ref": "#/$defs/BundleDiskState"}
+      },
+      "required": [
+        "memo",
+        "bundle_id",
+        "path",
+        "format_version",
+        "state",
+        "trashed_at_utc",
+        "parent_bundle_id",
+        "created_at_utc",
+        "active_leases",
+        "disk_state"
+      ],
+      "additionalProperties": false
+    },
+    "BundleForgetResponse": {
+      "type": "object",
+      "properties": {
+        "forgotten_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_present_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_storage_unavailable_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_leased_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_active_job_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "reaped_lease_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": [
+        "forgotten_bundle_ids",
+        "skipped_present_bundle_ids",
+        "skipped_storage_unavailable_bundle_ids",
+        "skipped_leased_bundle_ids",
+        "skipped_active_job_bundle_ids",
+        "reaped_lease_ids"
+      ],
+      "additionalProperties": false
+    },
+    "BundleFormat": {"type": "string", "enum": ["v2", "legacy_schema4", "legacy_schema3"]},
+    "BundleGcFailure": {
+      "type": "object",
+      "properties": {"bundle_id": {"type": "string"}, "error": {"type": "string"}},
+      "required": ["bundle_id", "error"],
+      "additionalProperties": false
+    },
+    "BundleGcResponse": {
+      "type": "object",
+      "properties": {
+        "dry_run": {"type": "boolean"},
+        "preview": {"$ref": "#/$defs/GcPreview"},
+        "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "purged_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_leased_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_active_job_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_unmanaged_or_legacy_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "skipped_in_grace_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "failed": {"type": "array", "items": {"$ref": "#/$defs/BundleGcFailure"}},
+        "reaped_lease_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": [
+        "purged_bundle_ids",
+        "skipped_leased_bundle_ids",
+        "skipped_active_job_bundle_ids",
+        "skipped_unmanaged_or_legacy_bundle_ids",
+        "skipped_in_grace_bundle_ids",
+        "failed",
+        "reaped_lease_ids"
+      ],
+      "additionalProperties": false
+    },
+    "BundleKind": {"type": "string", "enum": ["full", "logs_only"]},
+    "BundleLifecycleState": {"type": "string", "enum": ["active", "trashed", "purging"]},
+    "BundleListResponse": {
+      "type": "object",
+      "properties": {"bundles": {"type": "array", "items": {"$ref": "#/$defs/ListedBundle"}}},
+      "required": ["bundles"],
+      "additionalProperties": false
+    },
+    "CaptureMode": {"type": "string", "enum": ["video_and_logs", "logs_only"]},
+    "CaptureStartResponse": {
+      "type": "object",
+      "properties": {
+        "connected": {"type": "boolean"},
+        "wait_timed_out": {"type": "boolean"},
+        "audio_state": {"$ref": "#/$defs/AudioCaptureState"},
+        "audio_cause": {"anyOf": [{"$ref": "#/$defs/AudioCause"}, {"type": "null"}]},
+        "serial": {"type": "string"},
+        "started": {"type": "boolean"},
+        "capture_mode": {"$ref": "#/$defs/CaptureMode"},
+        "selection": {"$ref": "#/$defs/DeviceSelectionOutcome"}
+      },
+      "required": ["serial", "started", "capture_mode", "connected", "wait_timed_out", "audio_state", "audio_cause"],
+      "additionalProperties": false
+    },
+    "CaptureStatusView": {
+      "type": "object",
+      "properties": {
+        "active": {"type": "boolean"},
+        "connected": {"type": "boolean"},
+        "capture_mode": {"$ref": "#/$defs/CaptureMode"},
+        "serial": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "boot_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "storage_pressure_stopped": {"type": "boolean"},
+        "video_frames": {"type": "integer", "minimum": 0},
+        "audio_frames": {"type": "integer", "minimum": 0},
+        "log_records": {"type": "integer", "minimum": 0},
+        "tap_records": {"type": "integer", "minimum": 0},
+        "discontinuities": {"type": "integer", "minimum": 0},
+        "static_hold_events": {"type": "integer", "minimum": 0},
+        "ring_write_errors": {"type": "integer", "minimum": 0},
+        "last_video_error": {"type": "string"},
+        "audio_state": {"$ref": "#/$defs/AudioCaptureState"},
+        "audio_capture_mode": {"$ref": "#/$defs/AudioCaptureMode"},
+        "audio_cause": {"$ref": "#/$defs/AudioCause"},
+        "audio_reason": {"type": "string"},
+        "device_api_level": {"type": "integer", "minimum": 0},
+        "device_api_warning": {"type": "string"}
+      },
+      "required": [
+        "active",
+        "connected",
+        "capture_mode",
+        "serial",
+        "boot_id",
+        "storage_pressure_stopped",
+        "video_frames",
+        "audio_frames",
+        "log_records",
+        "tap_records",
+        "discontinuities",
+        "static_hold_events",
+        "ring_write_errors",
+        "audio_state",
+        "audio_capture_mode"
+      ],
+      "additionalProperties": false
+    },
+    "CaptureStopResponse": {
+      "type": "object",
+      "properties": {"stopped": {"type": "boolean"}, "capture": {"$ref": "#/$defs/CaptureStatusView"}},
+      "required": ["stopped", "capture"],
+      "additionalProperties": false
+    },
+    "CatalogFormatVersion": {"type": "string", "enum": ["v2", "legacy_ro"]},
+    "ConfigResponse": {
+      "type": "object",
+      "properties": {"config": {"$ref": "#/$defs/ArbConfig"}, "config_path": {"type": "string"}},
+      "required": ["config", "config_path"],
+      "additionalProperties": false
+    },
+    "CrashAutoSaveStatusView": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "cooldown_secs": {"type": "integer", "minimum": 0},
+        "detected_crashes": {"type": "integer", "minimum": 0},
+        "triggered_saves": {"type": "integer", "minimum": 0},
+        "suppressed_cooldown": {"type": "integer", "minimum": 0},
+        "suppressed_storage_pressure": {"type": "integer", "minimum": 0},
+        "in_flight": {"type": "boolean"},
+        "last_crash_process": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "last_crash_exception": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "last_job_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "last_bundle_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "last_error": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      },
+      "required": [
+        "enabled",
+        "cooldown_secs",
+        "detected_crashes",
+        "triggered_saves",
+        "suppressed_cooldown",
+        "suppressed_storage_pressure",
+        "in_flight",
+        "last_crash_process",
+        "last_crash_exception",
+        "last_job_id",
+        "last_bundle_id",
+        "last_error"
+      ],
+      "additionalProperties": false
+    },
+    "CrashMarker": {
+      "type": "object",
+      "properties": {
+        "boottime_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "frame_index_hint": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "process_name": {"type": "string"},
+        "package_name": {"type": "string"},
+        "pid": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "exception_class": {"type": "string"},
+        "message": {"type": "string"},
+        "source_log_seq": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "boottime_ns",
+        "frame_index_hint",
+        "process_name",
+        "package_name",
+        "pid",
+        "exception_class",
+        "message",
+        "source_log_seq"
+      ],
+      "additionalProperties": false
+    },
+    "DeviceInfo": {
+      "type": "object",
+      "properties": {
+        "serial": {"type": "string"},
+        "model": {"type": "string"},
+        "api_level": {"type": "integer", "minimum": 0},
+        "is_emulator": {"type": "boolean"}
+      },
+      "required": ["serial", "model", "api_level", "is_emulator"],
+      "additionalProperties": false
+    },
+    "DeviceListResponse": {
+      "type": "object",
+      "properties": {"devices": {"type": "array", "items": {"$ref": "#/$defs/AdbDeviceInfo"}}},
+      "required": ["devices"],
+      "additionalProperties": false
+    },
+    "DeviceSelectionOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {"serial": {"type": "string"}, "status": {"const": "selected"}},
+          "required": ["serial", "status"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preferred_serial": {"type": "string"},
+            "other_online_serials": {"type": "array", "items": {"type": "string"}},
+            "status": {"const": "waiting_for_preferred_device"}
+          },
+          "required": ["preferred_serial", "other_online_serials", "status"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {"status": {"const": "no_online_devices"}},
+          "required": ["status"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "online_serials": {"type": "array", "items": {"type": "string"}},
+            "status": {"const": "multiple_devices_need_selection"}
+          },
+          "required": ["online_serials", "status"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DiscontinuityEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {"$ref": "#/$defs/DiscontinuityKind"},
+        "stream": {"anyOf": [{"$ref": "#/$defs/StreamKind"}, {"type": "null"}]},
+        "boot_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "start_boottime_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "end_boottime_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "pc_cont_start_ns": {"type": "integer"},
+        "pc_cont_end_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "delta_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "detail": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      },
+      "required": [
+        "kind",
+        "stream",
+        "boot_id",
+        "start_boottime_ns",
+        "end_boottime_ns",
+        "pc_cont_start_ns",
+        "pc_cont_end_ns",
+        "delta_ns",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "DiscontinuityKind": {
+      "type": "string",
+      "enum": [
+        "device_reboot",
+        "device_sleep",
+        "device_wall_jump",
+        "pc_sleep",
+        "connection_lost",
+        "stream_gap",
+        "storage_pressure_stop",
+        "clock_sync_stale"
+      ]
+    },
+    "EpochFrameRange": {
+      "type": "object",
+      "properties": {
+        "epoch_index": {"type": "integer", "minimum": 0},
+        "boot_id": {"type": "string"},
+        "start_frame_index": {"type": "integer", "minimum": 0},
+        "end_frame_index": {"type": "integer", "minimum": 0},
+        "start_boottime_ns": {"type": "integer"},
+        "end_boottime_ns": {"type": "integer"}
+      },
+      "required": ["epoch_index", "boot_id", "start_frame_index", "end_frame_index", "start_boottime_ns", "end_boottime_ns"],
+      "additionalProperties": false
+    },
+    "EpochSpan": {
+      "type": "object",
+      "properties": {"boot_id": {"type": "string"}, "start_boottime_ns": {"type": "integer"}, "end_boottime_ns": {"type": "integer"}},
+      "required": ["boot_id", "start_boottime_ns", "end_boottime_ns"],
+      "additionalProperties": false
+    },
+    "ErrorLogHighlight": {
+      "type": "object",
+      "properties": {
+        "seq": {"type": "integer", "minimum": 0},
+        "level": {"type": "string"},
+        "frame_index_hint": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "t_ms": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "message": {"type": "string"}
+      },
+      "required": ["seq", "level", "frame_index_hint", "t_ms", "tag", "message"],
+      "additionalProperties": false
+    },
+    "Export": {"type": "object", "oneOf": [{"$ref": "#/$defs/ExportTrimResponse"}, {"$ref": "#/$defs/ExportShareMp4Response"}]},
+    "ExportPngResponse": {
+      "type": "object",
+      "properties": {"output_path": {"type": "string"}, "report": {"$ref": "#/$defs/PngExportReport"}},
+      "required": ["output_path", "report"],
+      "additionalProperties": false
+    },
+    "ExportShareMp4Response": {
+      "type": "object",
+      "properties": {
+        "share_mp4_path": {"type": "string"},
+        "trimmed_bundle_id": {"type": "string"},
+        "trimmed_bundle_path": {"type": "string"},
+        "audio_included": {"type": "boolean"},
+        "video_frame_count": {"type": "integer", "minimum": 0},
+        "edts_box_count": {"type": "integer", "minimum": 0},
+        "elst_box_count": {"type": "integer", "minimum": 0},
+        "output_bytes": {"type": "integer", "minimum": 0},
+        "original_trashed": {"type": "boolean"},
+        "av_mux_report": {"$ref": "#/$defs/AvMuxReport"},
+        "warning": {"type": "string"}
+      },
+      "required": [
+        "share_mp4_path",
+        "audio_included",
+        "video_frame_count",
+        "edts_box_count",
+        "elst_box_count",
+        "output_bytes",
+        "original_trashed",
+        "av_mux_report"
+      ],
+      "additionalProperties": false
+    },
+    "ExportTrimResponse": {
+      "type": "object",
+      "properties": {
+        "bundle_id": {"type": "string"},
+        "bundle_path": {"type": "string"},
+        "trim_report": {"$ref": "#/$defs/TrimReport"},
+        "unanchored_summary": {"$ref": "#/$defs/UnanchoredSummary"},
+        "main_log_count": {"type": "integer", "minimum": 0},
+        "unanchored_log_count": {"type": "integer", "minimum": 0},
+        "main_tap_count": {"type": "integer", "minimum": 0},
+        "unanchored_tap_count": {"type": "integer", "minimum": 0},
+        "share_mp4_path": {"type": "string"},
+        "av_mux_report": {"$ref": "#/$defs/AvMuxReport"},
+        "app_logs_count": {"type": "integer", "minimum": 0},
+        "original_trashed": {"type": "boolean"},
+        "burn_taps_applied": {"type": "boolean"},
+        "warning": {"type": "string"}
+      },
+      "required": [
+        "bundle_id",
+        "bundle_path",
+        "trim_report",
+        "unanchored_summary",
+        "main_log_count",
+        "unanchored_log_count",
+        "main_tap_count",
+        "unanchored_tap_count",
+        "app_logs_count",
+        "original_trashed",
+        "burn_taps_applied"
+      ],
+      "additionalProperties": false
+    },
+    "GcPreview": {
+      "type": "object",
+      "properties": {
+        "candidate_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "missing_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "legacy_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "unmanaged_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "expired_lease_ids": {"type": "array", "items": {"type": "string"}},
+        "estimated_reclaim_bytes": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "candidate_bundle_ids",
+        "missing_bundle_ids",
+        "legacy_bundle_ids",
+        "unmanaged_bundle_ids",
+        "expired_lease_ids",
+        "estimated_reclaim_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "GestureKind": {"type": "string", "enum": ["tap", "swipe"]},
+    "IdeDefaultSaveAction": {"type": "string", "enum": ["save_and_open", "save_only"]},
+    "InputStreamMeta": {
+      "type": "object",
+      "properties": {"status": {"$ref": "#/$defs/StreamStatus"}, "tail_may_be_incomplete": {"type": "boolean"}},
+      "required": ["status", "tail_may_be_incomplete"],
+      "additionalProperties": false
+    },
+    "Inspect": {
+      "type": "object",
+      "oneOf": [
+        {"$ref": "#/$defs/MediaInspectFramesResponse"},
+        {
+          "type": "object",
+          "properties": {
+            "mode": {"$ref": "#/$defs/InspectFramesMode"},
+            "bundle_id": {"type": "string"},
+            "frame_indices_rendered": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            "width": {"type": "integer", "minimum": 0},
+            "height": {"type": "integer", "minimum": 0},
+            "frames": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "frame_index": {"type": "integer", "minimum": 0},
+                  "timestamp_ms": {"type": "integer"},
+                  "screen": {"anyOf": [{"$ref": "#/$defs/ScreenSpan"}, {"type": "null"}]},
+                  "tap": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer", "minimum": 0}, "y": {"type": "integer", "minimum": 0}},
+                        "required": ["x", "y"],
+                        "additionalProperties": false
+                      },
+                      {"type": "null"}
+                    ]
+                  }
+                },
+                "required": ["frame_index", "timestamp_ms", "screen", "tap"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["mode", "bundle_id", "frame_indices_rendered", "width", "height", "frames"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "InspectFramesMode": {"type": "string", "enum": ["contact_sheet", "single", "tap_crop"]},
+    "Investigation": {
+      "type": "object",
+      "properties": {
+        "save": {"$ref": "#/$defs/SaveOutcomeResponse"},
+        "summary": {"$ref": "#/$defs/TimelineSummaryResponse"},
+        "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
+        "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
+        "error_logs": {"$ref": "#/$defs/TimelineLogsResponse"},
+        "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      },
+      "required": ["save", "summary", "screens", "crashes", "error_logs", "memo"],
+      "additionalProperties": false
+    },
+    "ListedBundle": {
+      "type": "object",
+      "properties": {
+        "bundle_kind": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "duration_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "frame_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "has_video": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "has_audio": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "crash_marker_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "bundle_id": {"type": "string"},
+        "path": {"type": "string"},
+        "format_version": {"$ref": "#/$defs/CatalogFormatVersion"},
+        "state": {"$ref": "#/$defs/BundleLifecycleState"},
+        "trashed_at_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "parent_bundle_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_at_utc": {"type": "string"},
+        "active_leases": {"type": "integer", "minimum": 0},
+        "disk_state": {"$ref": "#/$defs/BundleDiskState"}
+      },
+      "required": [
+        "memo",
+        "bundle_id",
+        "path",
+        "format_version",
+        "state",
+        "trashed_at_utc",
+        "parent_bundle_id",
+        "created_at_utc",
+        "active_leases",
+        "disk_state",
+        "bundle_kind",
+        "duration_ms",
+        "frame_count",
+        "has_video",
+        "has_audio",
+        "log_count",
+        "crash_marker_count",
+        "created_utc"
+      ],
+      "additionalProperties": false
+    },
+    "LogCompleteness": {"type": "string", "enum": ["verified_no_overflow", "overflow_detected", "unverified"]},
+    "LogcatStreamMeta": {
+      "type": "object",
+      "properties": {
+        "status": {"$ref": "#/$defs/StreamStatus"},
+        "completeness": {"$ref": "#/$defs/LogCompleteness"},
+        "overflow_events": {"type": "integer", "minimum": 0},
+        "tail_may_be_incomplete": {"type": "boolean"}
+      },
+      "required": ["status", "completeness", "overflow_events", "tail_may_be_incomplete"],
+      "additionalProperties": false
+    },
+    "MediaInspectFramesResponse": {
+      "type": "object",
+      "properties": {
+        "mode": {"$ref": "#/$defs/InspectFramesMode"},
+        "bundle_id": {"type": "string"},
+        "frame_indices_rendered": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "png_bytes_len": {"type": "integer", "minimum": 0},
+        "png_path": {"type": "string"},
+        "tap_crop": {"$ref": "#/$defs/TapCropMeta"}
+      },
+      "required": ["mode", "bundle_id", "frame_indices_rendered", "width", "height", "png_bytes_len", "png_path"],
+      "additionalProperties": false
+    },
+    "OverviewTapItem": {
+      "type": "object",
+      "properties": {
+        "tap_index": {"type": "integer", "minimum": 0},
+        "seq": {"type": "integer", "minimum": 0},
+        "frame_index": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "t_ms": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "x": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "y": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "kind": {"type": "string"},
+        "gesture_kind": {"$ref": "#/$defs/GestureKind"},
+        "end_x": {"type": "number"},
+        "end_y": {"type": "number"},
+        "end_t_ms": {"type": "integer"}
+      },
+      "required": ["tap_index", "seq", "frame_index", "t_ms", "x", "y", "kind", "gesture_kind"],
+      "additionalProperties": false
+    },
+    "PngExportReport": {
+      "type": "object",
+      "properties": {
+        "frame_index": {"type": "integer", "minimum": 0},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "backend_name": {"type": "string"},
+        "output_bytes": {"type": "integer", "minimum": 0}
+      },
+      "required": ["frame_index", "width", "height", "backend_name", "output_bytes"],
+      "additionalProperties": false
+    },
+    "Provenance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {"kind": {"const": "original"}},
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "parent_bundle_id": {"type": "string"},
+            "in_frame_index": {"type": "integer", "minimum": 0},
+            "out_frame_index": {"type": "integer", "minimum": 0},
+            "kind": {"const": "trimmed"}
+          },
+          "required": ["parent_bundle_id", "in_frame_index", "out_frame_index", "kind"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "QueryLogRow": {
+      "type": "object",
+      "properties": {
+        "seq": {"type": "integer", "minimum": 0},
+        "boot_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "header_epoch_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "device_read_boottime_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "pc_ingest_cont_ns": {"type": "integer"},
+        "alignment": {"$ref": "#/$defs/TimeAlignment"},
+        "bucket": {"$ref": "#/$defs/RecordBucket"},
+        "level": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "pid": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "tid": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "uid": {"type": "integer", "minimum": 0},
+        "package_name": {"type": "string"},
+        "message": {"type": "string"},
+        "timestamp_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "offset_ms": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "frame_index": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
+      },
+      "required": [
+        "seq",
+        "boot_id",
+        "header_epoch_ns",
+        "device_read_boottime_ns",
+        "pc_ingest_cont_ns",
+        "alignment",
+        "bucket",
+        "level",
+        "tag",
+        "pid",
+        "tid",
+        "message",
+        "timestamp_utc",
+        "offset_ms",
+        "frame_index"
+      ],
+      "additionalProperties": false
+    },
+    "RecordBucket": {"type": "string", "enum": ["main", "unanchored"]},
+    "RecoverySummaryView": {
+      "type": "object",
+      "properties": {
+        "removed_staging_dirs": {"type": "integer", "minimum": 0},
+        "reaped_leases": {"type": "integer", "minimum": 0},
+        "recovered_jobs": {"type": "integer", "minimum": 0},
+        "completed_purging_bundles": {"type": "integer", "minimum": 0},
+        "failed_purging_bundles": {"type": "integer", "minimum": 0},
+        "failed_purging_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "released_pin_journals": {"type": "integer", "minimum": 0},
+        "repinned_jobs": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "removed_staging_dirs",
+        "reaped_leases",
+        "recovered_jobs",
+        "completed_purging_bundles",
+        "failed_purging_bundles",
+        "released_pin_journals",
+        "repinned_jobs"
+      ],
+      "additionalProperties": false
+    },
+    "SaveError": {
+      "type": "object",
+      "properties": {
+        "actual_video_duration_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "actual_log_duration_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "video_frame_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "unanchored_log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "truncated_unanchored_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "discontinuity_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "window_shortfall": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "warnings": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "requested_duration_secs": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "job": {"$ref": "#/$defs/SaveJobView"},
+        "bundle_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "bundle_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "tail_may_be_incomplete": {"type": "boolean"},
+        "unanchored_summary": {"anyOf": [{"$ref": "#/$defs/UnanchoredSummary"}, {"type": "null"}]},
+        "warning": {"type": "string"},
+        "note": {"type": "string"},
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "INVALID_PARAMS",
+            "BUNDLE_NOT_FOUND",
+            "CONFLICT",
+            "DAEMON_UNAVAILABLE",
+            "FAILED_RETRYABLE",
+            "OPERATION_FAILED",
+            "CANCELLED"
+          ]
+        },
+        "rpc_code": {"type": "integer"},
+        "message": {"type": "string"}
+      },
+      "required": [
+        "job",
+        "bundle_id",
+        "bundle_path",
+        "tail_may_be_incomplete",
+        "unanchored_summary",
+        "requested_duration_secs",
+        "actual_video_duration_ms",
+        "actual_log_duration_ms",
+        "video_frame_count",
+        "log_count",
+        "unanchored_log_count",
+        "truncated_unanchored_count",
+        "discontinuity_count",
+        "window_shortfall",
+        "warnings",
+        "error_code",
+        "rpc_code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "SaveJobState": {"type": "string", "enum": ["pinned", "draining", "materializing", "failed_retryable", "completed", "discarded"]},
+    "SaveJobView": {
+      "type": "object",
+      "properties": {
+        "job_id": {"type": "string"},
+        "state": {"$ref": "#/$defs/SaveJobState"},
+        "trigger": {"$ref": "#/$defs/SaveTriggerKind"},
+        "destination_path": {"type": "string"},
+        "pinned_chunk_ids": {"type": "array", "items": {"type": "string"}},
+        "last_error": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_at_utc": {"type": "string"},
+        "updated_at_utc": {"type": "string"}
+      },
+      "required": [
+        "job_id",
+        "state",
+        "trigger",
+        "destination_path",
+        "pinned_chunk_ids",
+        "last_error",
+        "created_at_utc",
+        "updated_at_utc"
+      ],
+      "additionalProperties": false
+    },
+    "SaveOutcomeResponse": {
+      "type": "object",
+      "properties": {
+        "actual_video_duration_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "actual_log_duration_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "video_frame_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "unanchored_log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "truncated_unanchored_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "discontinuity_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "window_shortfall": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "warnings": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "requested_duration_secs": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "job": {"$ref": "#/$defs/SaveJobView"},
+        "bundle_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "bundle_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "tail_may_be_incomplete": {"type": "boolean"},
+        "unanchored_summary": {"anyOf": [{"$ref": "#/$defs/UnanchoredSummary"}, {"type": "null"}]},
+        "warning": {"type": "string"},
+        "note": {"type": "string"}
+      },
+      "required": [
+        "job",
+        "bundle_id",
+        "bundle_path",
+        "tail_may_be_incomplete",
+        "unanchored_summary",
+        "requested_duration_secs",
+        "actual_video_duration_ms",
+        "actual_log_duration_ms",
+        "video_frame_count",
+        "log_count",
+        "unanchored_log_count",
+        "truncated_unanchored_count",
+        "discontinuity_count",
+        "window_shortfall",
+        "warnings"
+      ],
+      "additionalProperties": false
+    },
+    "SaveScreenshotResponse": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string"},
+        "captured_at_unix_ms": {"type": "integer", "minimum": 0},
+        "serial": {"type": "string"}
+      },
+      "required": ["path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
+      "additionalProperties": false
+    },
+    "SaveTriggerKind": {"type": "string", "enum": ["manual", "crash_auto_save"]},
+    "ScreenSpan": {
+      "type": "object",
+      "properties": {
+        "start_ns": {"type": "integer"},
+        "end_ns": {"type": "integer"},
+        "start_frame_index": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "end_frame_index": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "package_name": {"type": "string"},
+        "activity_name": {"type": "string"},
+        "short_name": {"type": "string"}
+      },
+      "required": ["start_ns", "end_ns", "start_frame_index", "end_frame_index", "package_name", "activity_name", "short_name"],
+      "additionalProperties": false
+    },
+    "Status": {
+      "type": "object",
+      "properties": {"hello": {"$ref": "#/$defs/SystemHelloResponse"}, "status": {"$ref": "#/$defs/SystemStatusResponse"}},
+      "required": ["hello", "status"],
+      "additionalProperties": false
+    },
+    "StreamKind": {"type": "string", "enum": ["video", "audio", "logcat", "input"]},
+    "StreamStatus": {"type": "string", "enum": ["present", "partial", "absent", "excluded"]},
+    "StreamsSummary": {
+      "type": "object",
+      "properties": {
+        "video": {"anyOf": [{"$ref": "#/$defs/VideoStreamMeta"}, {"type": "null"}]},
+        "audio": {"anyOf": [{"$ref": "#/$defs/AudioStreamMeta"}, {"type": "null"}]},
+        "logcat": {"anyOf": [{"$ref": "#/$defs/LogcatStreamMeta"}, {"type": "null"}]},
+        "input": {"anyOf": [{"$ref": "#/$defs/InputStreamMeta"}, {"type": "null"}]}
+      },
+      "required": ["video", "audio", "logcat", "input"],
+      "additionalProperties": false
+    },
+    "SystemHelloResponse": {
+      "type": "object",
+      "properties": {
+        "gc_dry_run": {"type": "boolean"},
+        "protocol_version": {"type": "integer", "minimum": 0},
+        "schema_version": {"type": "integer", "minimum": 0},
+        "pid": {"type": "integer", "minimum": 0},
+        "data_dir": {"type": "string"},
+        "cache_dir": {"type": "string"},
+        "runtime_dir": {"type": "string"},
+        "daemon_version": {"type": "string"},
+        "build_id": {"type": "string"},
+        "binary_mtime_secs": {"type": "integer", "minimum": 0},
+        "parent_bound": {"type": "boolean"}
+      },
+      "required": [
+        "gc_dry_run",
+        "protocol_version",
+        "schema_version",
+        "pid",
+        "data_dir",
+        "cache_dir",
+        "runtime_dir",
+        "daemon_version",
+        "parent_bound"
+      ],
+      "additionalProperties": false
+    },
+    "SystemStatusResponse": {
+      "type": "object",
+      "properties": {
+        "capture_enabled": {"type": "boolean"},
+        "pid": {"type": "integer", "minimum": 0},
+        "uptime_ms": {"type": "integer", "minimum": 0},
+        "capture": {"$ref": "#/$defs/CaptureStatusView"},
+        "ring_chunk_count": {"type": "integer", "minimum": 0},
+        "ring_total_bytes": {"type": "integer", "minimum": 0},
+        "ring_pinned_chunk_count": {"type": "integer", "minimum": 0},
+        "buffered_secs": {"type": "integer", "minimum": 0},
+        "active_viewports": {"type": "integer", "minimum": 0},
+        "active_save_jobs": {"type": "integer", "minimum": 0},
+        "recovery": {"$ref": "#/$defs/RecoverySummaryView"},
+        "crash_autosave": {"$ref": "#/$defs/CrashAutoSaveStatusView"},
+        "config_warning": {"type": "string"}
+      },
+      "required": [
+        "capture_enabled",
+        "pid",
+        "uptime_ms",
+        "capture",
+        "ring_chunk_count",
+        "ring_total_bytes",
+        "ring_pinned_chunk_count",
+        "buffered_secs",
+        "active_viewports",
+        "active_save_jobs",
+        "recovery",
+        "crash_autosave"
+      ],
+      "additionalProperties": false
+    },
+    "TapCropMeta": {
+      "type": "object",
+      "properties": {
+        "crop_x": {"type": "integer", "minimum": 0},
+        "crop_y": {"type": "integer", "minimum": 0},
+        "crop_width": {"type": "integer", "minimum": 0},
+        "crop_height": {"type": "integer", "minimum": 0},
+        "tap_x": {"type": "integer", "minimum": 0},
+        "tap_y": {"type": "integer", "minimum": 0},
+        "tap_rel_x": {"type": "integer", "minimum": 0},
+        "tap_rel_y": {"type": "integer", "minimum": 0}
+      },
+      "required": ["crop_x", "crop_y", "crop_width", "crop_height", "tap_x", "tap_y", "tap_rel_x", "tap_rel_y"],
+      "additionalProperties": false
+    },
+    "TimeAlignment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "boot_id": {"type": "string"},
+            "boottime_ns": {"type": "integer"},
+            "half_width_ns": {"type": "integer", "minimum": 0},
+            "semantics": {"$ref": "#/$defs/TimestampSemantics"},
+            "certainty": {"const": "anchored"}
+          },
+          "required": ["boot_id", "boottime_ns", "half_width_ns", "semantics", "certainty"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "boot_id": {"type": "string"},
+            "min_boottime_ns": {"type": "integer"},
+            "max_boottime_ns": {"type": "integer"},
+            "reason": {"$ref": "#/$defs/UncertaintyReason"},
+            "certainty": {"const": "bounded"}
+          },
+          "required": ["boot_id", "min_boottime_ns", "max_boottime_ns", "reason", "certainty"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "pc_ingest_cont_ns": {"type": "integer"},
+            "reason": {"$ref": "#/$defs/UncertaintyReason"},
+            "certainty": {"const": "unanchored"}
+          },
+          "required": ["pc_ingest_cont_ns", "reason", "certainty"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TimelineLogsResponse": {
+      "type": "object",
+      "properties": {
+        "logs": {"type": "array", "items": {"$ref": "#/$defs/QueryLogRow"}},
+        "total_matched": {"type": "integer", "minimum": 0},
+        "returned_count": {"type": "integer", "minimum": 0},
+        "has_more": {"type": "boolean"},
+        "next_cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      },
+      "required": ["logs", "total_matched", "returned_count", "has_more", "next_cursor"],
+      "additionalProperties": false
+    },
+    "TimelineOverviewResponse": {
+      "type": "object",
+      "properties": {
+        "bundle_id": {"type": "string"},
+        "kind": {"$ref": "#/$defs/BundleKind"},
+        "legacy_read_only": {"type": "boolean"},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "width": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "height": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "display_width": {"type": "integer", "minimum": 0},
+        "display_height": {"type": "integer", "minimum": 0},
+        "epoch_frame_ranges": {"type": "array", "items": {"$ref": "#/$defs/EpochFrameRange"}},
+        "fps_estimate": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "audio_status": {"$ref": "#/$defs/StreamStatus"},
+        "av_offset_ms": {"type": "integer"},
+        "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
+        "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
+        "taps": {"type": "array", "items": {"$ref": "#/$defs/OverviewTapItem"}},
+        "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
+        "discontinuities": {"type": "array", "items": {"$ref": "#/$defs/DiscontinuityEvent"}},
+        "error_log_highlights": {"type": "array", "items": {"$ref": "#/$defs/ErrorLogHighlight"}},
+        "unanchored_count": {"type": "integer", "minimum": 0},
+        "unanchored_truncated_count": {"type": "integer", "minimum": 0},
+        "app_logs": {"type": "array", "items": {"$ref": "#/$defs/AppLogSummary"}}
+      },
+      "required": [
+        "bundle_id",
+        "kind",
+        "legacy_read_only",
+        "frame_count",
+        "duration_ms",
+        "width",
+        "height",
+        "epoch_frame_ranges",
+        "fps_estimate",
+        "audio_status",
+        "av_offset_ms",
+        "logcat_completeness",
+        "screens",
+        "taps",
+        "crashes",
+        "discontinuities",
+        "error_log_highlights",
+        "unanchored_count",
+        "unanchored_truncated_count",
+        "app_logs"
+      ],
+      "additionalProperties": false
+    },
+    "TimelineSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "bundle_id": {"type": "string"},
+        "path": {"type": "string"},
+        "format": {"$ref": "#/$defs/BundleFormat"},
+        "bundle_kind": {"$ref": "#/$defs/BundleKind"},
+        "is_legacy": {"type": "boolean"},
+        "created_at_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "provenance": {"$ref": "#/$defs/Provenance"},
+        "device": {"anyOf": [{"$ref": "#/$defs/DeviceInfo"}, {"type": "null"}]},
+        "streams": {"$ref": "#/$defs/StreamsSummary"},
+        "unanchored_summary": {"$ref": "#/$defs/UnanchoredSummary"},
+        "epochs": {"type": "array", "items": {"$ref": "#/$defs/EpochSpan"}},
+        "epoch_frame_ranges": {"type": "array", "items": {"$ref": "#/$defs/EpochFrameRange"}},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "keyframe_count": {"type": "integer", "minimum": 0},
+        "log_main_count": {"type": "integer", "minimum": 0},
+        "log_unanchored_count": {"type": "integer", "minimum": 0},
+        "tap_main_count": {"type": "integer", "minimum": 0},
+        "tap_unanchored_count": {"type": "integer", "minimum": 0},
+        "discontinuity_count": {"type": "integer", "minimum": 0},
+        "video_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "audio_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "app_logs": {"type": "array", "items": {"$ref": "#/$defs/AppLogSummary"}}
+      },
+      "required": [
+        "bundle_id",
+        "path",
+        "format",
+        "bundle_kind",
+        "is_legacy",
+        "created_at_utc",
+        "provenance",
+        "device",
+        "streams",
+        "unanchored_summary",
+        "epochs",
+        "epoch_frame_ranges",
+        "frame_count",
+        "keyframe_count",
+        "log_main_count",
+        "log_unanchored_count",
+        "tap_main_count",
+        "tap_unanchored_count",
+        "discontinuity_count",
+        "video_path",
+        "audio_path",
+        "app_logs"
+      ],
+      "additionalProperties": false
+    },
+    "TimestampSemantics": {
+      "type": "string",
+      "enum": [
+        "video_encoder_input_estimate",
+        "audio_capture_pts_uncalibrated",
+        "input_event_time",
+        "logcat_header_wall",
+        "logcat_device_read_boottime",
+        "pc_ingest_only"
+      ]
+    },
+    "ToolError": {
+      "type": "object",
+      "properties": {
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "INVALID_PARAMS",
+            "BUNDLE_NOT_FOUND",
+            "CONFLICT",
+            "DAEMON_UNAVAILABLE",
+            "FAILED_RETRYABLE",
+            "OPERATION_FAILED",
+            "CANCELLED"
+          ]
+        },
+        "rpc_code": {"type": "integer"},
+        "message": {"type": "string"},
+        "save": {"$ref": "#/$defs/SaveOutcomeResponse"}
+      },
+      "required": ["error_code", "rpc_code", "message"],
+      "additionalProperties": false
+    },
+    "TrimReport": {
+      "type": "object",
+      "properties": {
+        "in_frame_index": {"type": "integer", "minimum": 0},
+        "out_frame_index": {"type": "integer", "minimum": 0},
+        "output_frame_count": {"type": "integer", "minimum": 0},
+        "head_decoded_frames": {"type": "integer", "minimum": 0},
+        "reencoded_frames": {"type": "integer", "minimum": 0},
+        "stream_copied_frames": {"type": "integer", "minimum": 0},
+        "backend_name": {"type": "string"},
+        "edts_box_count": {"type": "integer", "minimum": 0},
+        "elst_box_count": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "in_frame_index",
+        "out_frame_index",
+        "output_frame_count",
+        "head_decoded_frames",
+        "reencoded_frames",
+        "stream_copied_frames",
+        "backend_name",
+        "edts_box_count",
+        "elst_box_count"
+      ],
+      "additionalProperties": false
+    },
+    "UnanchoredSummary": {
+      "type": "object",
+      "properties": {"included_count": {"type": "integer", "minimum": 0}, "truncated_count": {"type": "integer", "minimum": 0}},
+      "required": ["included_count", "truncated_count"],
+      "additionalProperties": false
+    },
+    "UncertaintyReason": {
+      "type": "string",
+      "enum": [
+        "no_clock_anchor",
+        "cross_boot_boundary",
+        "device_sleep_spanned",
+        "device_wall_jump_spanned",
+        "clock_sync_stale",
+        "pc_ingest_only",
+        "partial_window_overlap",
+        "legacy_sentinel_unknown",
+        "unbracketed_monotonic_extrapolation"
+      ]
+    },
+    "VideoStreamMeta": {
+      "type": "object",
+      "properties": {
+        "status": {"$ref": "#/$defs/StreamStatus"},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "tail_may_be_incomplete": {"type": "boolean"},
+        "semantics": {"$ref": "#/$defs/TimestampSemantics"},
+        "display_width": {"type": "integer", "minimum": 0},
+        "display_height": {"type": "integer", "minimum": 0}
+      },
+      "required": ["status", "frame_count", "tail_may_be_incomplete", "semantics"],
+      "additionalProperties": false
+    }
+  }
+}
