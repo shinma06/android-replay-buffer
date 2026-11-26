@@ -121,6 +121,19 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+internal fun ArbStudioController.handleStudioKey(key: Key, textFieldHasFocus: Boolean): Boolean {
+    if (textFieldHasFocus) return false
+    when (key) {
+        Key.Spacebar -> togglePlayPause()
+        Key.DirectionLeft -> stepFrame(-1)
+        Key.DirectionRight -> stepFrame(1)
+        Key.I -> markInAtPlayhead()
+        Key.O -> markOutAtPlayhead()
+        else -> return false
+    }
+    return true
+}
+
 /**
  * Native JetBrains Jewel Compose UI for the Integrated Viewer & Trim Studio (`ArbBundleFileEditor`).
  *
@@ -154,22 +167,12 @@ fun ArbStudioContent(controller: ArbStudioController) {
             .fillMaxSize()
             .background(ArbJewelPalette.panelBackground())
             .focusRequester(focusRequester)
-            .focusable()
             .onPreviewKeyEvent { event ->
-                if (searchHasFocus) return@onPreviewKeyEvent false
-                if (event.type != KeyEventType.KeyDown || event.isCtrlPressed || event.isMetaPressed || event.isAltPressed) {
-                    return@onPreviewKeyEvent false
-                }
-                when (event.key) {
-                    Key.Spacebar -> controller.togglePlayPause()
-                    Key.DirectionLeft -> controller.stepFrame(-1)
-                    Key.DirectionRight -> controller.stepFrame(1)
-                    Key.I -> controller.markInAtPlayhead()
-                    Key.O -> controller.markOutAtPlayhead()
-                    else -> return@onPreviewKeyEvent false
-                }
-                true
-            },
+                event.type == KeyEventType.KeyDown &&
+                    !event.isCtrlPressed && !event.isMetaPressed && !event.isAltPressed &&
+                    controller.handleStudioKey(event.key, searchHasFocus)
+            }
+            .focusable(),
     ) {
         // 1. Clean single-row Studio Header (~38dp)
         StudioHeaderBar(controller = controller, state = state)
@@ -853,7 +856,7 @@ private fun RightEventsAndLogsPane(
                         placeholder = { Text("検索...", style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.mutedText())) },
                         modifier = Modifier
                             .weight(1f)
-                            .onFocusChanged { onSearchFocusChanged(it.isFocused) },
+                            .onFocusChanged { onSearchFocusChanged(it.hasFocus) },
                     )
                 }
 

@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.ui
 
+import androidx.compose.ui.input.key.Key
 import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.ide.SourceJumpResolver
 import io.github.shinma06.arb.model.ArbConfig
@@ -197,8 +198,12 @@ class ArbUiComponentsTest {
         val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
         studio.renderState(videoState().copy(axis = axis, frameCount = 4, outFrameIndex = 3), null)
         studio.seekTime(220_000_000)
-        studio.markInAtPlayhead()
-        studio.markOutAtPlayhead()
+        assertFalse(studio.handleStudioKey(Key.I, textFieldHasFocus = true))
+        assertFalse(studio.handleStudioKey(Key.O, textFieldHasFocus = true))
+        assertEquals(0L, studio.viewerState?.inFrameIndex)
+        assertEquals(3L, studio.viewerState?.outFrameIndex)
+        assertTrue(studio.handleStudioKey(Key.I, textFieldHasFocus = false))
+        assertTrue(studio.handleStudioKey(Key.O, textFieldHasFocus = false))
         fun check(i: Long, o: Long, preview: Long) {
             val state = requireNotNull(studio.viewerState)
             assertEquals(i..o, state.inFrameIndex..state.outFrameIndex)
