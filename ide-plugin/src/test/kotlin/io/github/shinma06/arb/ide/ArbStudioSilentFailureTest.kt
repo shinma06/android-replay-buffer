@@ -10,6 +10,7 @@ import io.github.shinma06.arb.testsupport.awaitReady
 import io.github.shinma06.arb.testsupport.openStudioEditor
 import io.github.shinma06.arb.testsupport.awaitTrue
 import io.github.shinma06.arb.testsupport.crashesJson
+import io.github.shinma06.arb.ui.TrimEdge
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
@@ -241,6 +242,33 @@ class ArbStudioSilentFailureTest {
             assertNull(exactEditor.studioController.logLimitNotice)
         } finally {
             exactEditor.dispose()
+        }
+    }
+
+    @Test
+    fun trimGesturePreviewsOncePerHoldAndPersistsOnlyOnRelease(@TempDir tmp: Path) {
+        val daemon = Daemon(tmp)
+        val editor = openStudioEditor(daemon)
+        try {
+            editor.awaitReady()
+            editor.awaitAuxSettled()
+            editor.awaitQueuedWorkForTest()
+            val ctrl = editor.studioController
+            val state = requireNotNull(ctrl.viewerState)
+            val start = state.axis.start(4)
+            val initialExact = daemon.transport.count("media.seek_frame")
+            val initialScrub = daemon.transport.count("media.scrub")
+            repeat(50) { ctrl.dragTrim(TrimEdge.OUT, start + it + 1, false) }
+            editor.awaitQueuedWorkForTest()
+            assertEquals(initialScrub + 1, daemon.transport.count("media.scrub"))
+            assertEquals(start + 50, ctrl.playheadTimeNs)
+            assertTrue(daemon.storedRanges.isEmpty())
+            ctrl.dragTrim(TrimEdge.OUT, start + 50, true)
+            editor.awaitQueuedWorkForTest()
+            assertEquals(initialExact + 1, daemon.transport.count("media.seek_frame"))
+            assertEquals(listOf(Triple(0L, 4L, 4L)), daemon.storedRanges.toList())
+        } finally {
+            editor.dispose()
         }
     }
 

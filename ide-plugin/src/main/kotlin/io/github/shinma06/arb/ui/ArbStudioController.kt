@@ -65,6 +65,8 @@ class LatestValueMailbox<T : Any> {
     fun take(): T? = slot.getAndSet(null)
 }
 
+internal enum class TrimEdge { IN, OUT }
+
 enum class StudioRightTab {
     EVENTS_AND_LOGS,
     UNANCHORED,
@@ -262,11 +264,17 @@ class ArbStudioController(
     val loopTooltip: String
         get() = if (isLoopEnabled) "ループ再生 ON" else "ループ再生 OFF"
 
-    var playheadTimeNs by mutableStateOf(0L)
+    internal var dragEdge by mutableStateOf<TrimEdge?>(null)
         private set
+    internal var dragTime by mutableStateOf<Long?>(null)
+        private set
+    private var previewFrame: Long? = null
+
+    val playheadTimeNs: Long get() = dragTime ?: clockTimeNs
+    private var clockTimeNs by mutableStateOf(0L)
 
     fun sampleClock() {
-        displayPositionNs()?.let { playheadTimeNs = it }
+        displayPositionNs()?.let { clockTimeNs = it }
     }
 
     val timecodeText: String
@@ -367,6 +375,7 @@ class ArbStudioController(
      * the UI thread; a `null` [bitmap] keeps the previous frame.
      */
     fun renderFrame(next: TimelineViewerState, bitmap: ImageBitmap?, width: Int, height: Int) {
+        if (viewerState?.axis !== next.axis) clearDrag()
         syncPlayheadToFrame(viewerState, next)
         viewerState = next
         errorMessage = null
@@ -389,7 +398,7 @@ class ArbStudioController(
         val axis = next.axis
         val hold = axis.start(next.currentFrameIndex)..axis.outTime(next.currentFrameIndex)
         val stale = previous == null || previous.axis !== axis || (!isPlaying && playheadTimeNs !in hold)
-        if (stale) playheadTimeNs = displayPositionNs()?.takeIf { it in hold } ?: hold.first
+        if (stale) clockTimeNs = displayPositionNs()?.takeIf { it in hold } ?: hold.first
     }
 
     /** Merges a newly published SHM frame into controller-owned state (preserving UI edits). */
@@ -458,10 +467,10 @@ class ArbStudioController(
         approximatePreviewVisible = pb.isApproximate || (viewerState?.showApproximatePreviewBadge == true)
         val current = viewerState
         if (current != null) {
-            playheadTimeNs = displayPositionNs() ?: current.axis.start(pb.currentFrameIndex)
-            val synced = current.copy(currentFrameIndex = pb.currentFrameIndex)
-            viewerState = synced
-            rebuildSyncedRows(synced)
+            clockTimeNs = displayPositionNs() ?: current.axis.start(pb.currentFrameIndex)
+            if (current.currentFrameIndex != pb.currentFrameIndex) {
+                viewerState = current.copy(currentFrameIndex = pb.currentFrameIndex)
+            }
         }
     }
 
@@ -517,7 +526,7 @@ class ArbStudioController(
         val next = TimelineViewerReducer.stepFrame(s, delta.toLong())
         viewerState = next
         rebuildSyncedRows(next)
-        playheadTimeNs = next.axis.start(next.currentFrameIndex)
+        clockTimeNs = next.axis.start(next.currentFrameIndex)
         onStepFrame?.invoke(delta) ?: onSeekExact(next.currentFrameIndex)
         onRangeChanged(next.inFrameIndex, next.outFrameIndex, next.currentFrameIndex)
     }
@@ -560,19 +569,98 @@ class ArbStudioController(
     fun seekTime(timeNs: Long, settled: Boolean = true) {
         val s = viewerState ?: return
         if (s.frameCount == 0L) return
-        playheadTimeNs = timeNs.coerceIn(0, s.axis.endNs)
-        val frame = s.axis.frameAt(playheadTimeNs)
+        val time = timeNs.coerceIn(0, s.axis.endNs)
+        val frame = s.axis.frameAt(time)
+        if (!settled) {
+            preview(null, time, frame, time)
+            return
+        }
+        finishSeek(s, frame, time)
+    }
+
+    private fun preview(edge: TrimEdge?, time: Long, frame: Long, seekNs: Long) {
+        dragEdge = edge
+        dragTime = time
+        if (previewFrame == frame) return
+        previewFrame = frame
+        onTimeSeek?.invoke(seekNs, false) ?: onScrub(frame)
+    }
+
+    internal fun cancelDrag(originalTime: Long) {
+        clearDrag()
+        val s = viewerState ?: return
+        val frame = s.axis.frameAt(originalTime)
+        clockTimeNs = originalTime
         viewerState = s.copy(currentFrameIndex = frame)
-        rebuildSyncedRows(viewerState!!)
-        onTimeSeek?.invoke(playheadTimeNs, settled) ?: if (settled) onSeekExact(frame) else onScrub(frame)
-        if (settled) onRangeChanged(s.inFrameIndex, s.outFrameIndex, frame)
+        onTimeSeek?.invoke(originalTime, true) ?: onSeekExact(frame)
+    }
+
+    private fun clearDrag() {
+        dragTime = null
+        dragEdge = null
+        previewFrame = null
+    }
+
+    private fun finishSeek(state: TimelineViewerState, frame: Long, time: Long) {
+        clearDrag()
+        clockTimeNs = time
+        val next = state.copy(currentFrameIndex = frame)
+        val previous = viewerState
+        viewerState = next
+        if (previous?.inFrameIndex != next.inFrameIndex || previous.outFrameIndex != next.outFrameIndex) {
+            rebuildSyncedRows(next)
+        }
+        onTimeSeek?.invoke(time, true) ?: onSeekExact(frame)
+        onRangeChanged(next.inFrameIndex, next.outFrameIndex, frame)
+    }
+
+    internal fun dragTrim(edge: TrimEdge, pointerTime: Long, settled: Boolean) {
+        val s = viewerState ?: return
+        if (s.frameCount <= 0L) return
+        val axis = s.axis
+        val time = when (edge) {
+            TrimEdge.IN -> pointerTime.coerceIn(0, axis.start(s.outFrameIndex))
+            TrimEdge.OUT -> pointerTime.coerceIn(axis.outTime(s.inFrameIndex), axis.endNs)
+        }
+        val frame = if (edge == TrimEdge.IN) axis.frameAt(time) else axis.outFrame(time)
+        if (settled) {
+            commitTrim(edge, frame)
+        } else {
+            // OUT is exclusive. At a boundary preview the last included frame.
+            preview(edge, time, frame, if (edge == TrimEdge.OUT) time - 1 else time)
+        }
+    }
+
+    private fun commitTrim(edge: TrimEdge, requested: Long) {
+        val s = viewerState ?: return
+        if (s.frameCount <= 0) return
+        val frame = when (edge) {
+            TrimEdge.IN -> requested.coerceIn(0, s.outFrameIndex)
+            TrimEdge.OUT -> requested.coerceIn(s.inFrameIndex, s.frameCount - 1)
+        }
+        val next = if (edge == TrimEdge.IN) s.copy(inFrameIndex = frame) else s.copy(outFrameIndex = frame)
+        finishSeek(next, frame, s.axis.start(frame))
+    }
+
+    internal fun nudge(edge: TrimEdge, direction: Int, byTime: Boolean) {
+        val s = viewerState ?: return
+        if (s.frameCount <= 0) return
+        val frame = if (edge == TrimEdge.IN) s.inFrameIndex else s.outFrameIndex
+        val adjacent = frame + direction
+        val target = if (byTime) {
+            val boundary = if (edge == TrimEdge.IN) s.axis.start(frame) else s.axis.outTime(frame)
+            val time = boundary + (direction * 100_000_000L).coerceIn(-boundary, s.axis.endNs - boundary)
+            val mapped = if (edge == TrimEdge.IN) s.axis.frameAt(time) else s.axis.outFrame(time)
+            if (direction < 0) minOf(mapped, adjacent) else maxOf(mapped, adjacent)
+        } else adjacent
+        commitTrim(edge, target)
     }
 
     fun scrubToFrame(frameIndex: Long) {
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)
-        playheadTimeNs = s.axis.start(clamped)
+        clockTimeNs = s.axis.start(clamped)
         viewerState = s.copy(currentFrameIndex = clamped)
         rebuildSyncedRows(viewerState!!)
         onScrub(clamped)
@@ -582,7 +670,7 @@ class ArbStudioController(
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)
-        playheadTimeNs = s.axis.start(clamped)
+        clockTimeNs = s.axis.start(clamped)
         viewerState = s.copy(currentFrameIndex = clamped)
         rebuildSyncedRows(viewerState!!)
         onSeekExact(clamped)
@@ -610,11 +698,11 @@ class ArbStudioController(
     }
 
     fun markInAtPlayhead() {
-        viewerState?.let { applyInFrame(it.currentFrameIndex, settled = true) }
+        viewerState?.let { commitTrim(TrimEdge.IN, it.axis.frameAt(playheadTimeNs)) }
     }
 
     fun markOutAtPlayhead() {
-        viewerState?.let { applyOutFrame(it.currentFrameIndex, settled = true) }
+        viewerState?.let { commitTrim(TrimEdge.OUT, it.axis.frameAt(playheadTimeNs)) }
     }
 
     fun selectTapRange() {

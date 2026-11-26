@@ -770,15 +770,24 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
+    // Each exact seek closes the preceding gesture's mailbox. Later drags cannot be
+    // drained by an older worker task queued before that exact seek.
+    private var previewTimes = LatestValueMailbox<Long>()
+
     private fun performTimeSeek(timeNs: Long, settled: Boolean) {
         val ctrl = currentPlaybackController() ?: return
-        submitWork {
-            if (!settled) {
-                // Same policy as performScrub: a dropped preview is superseded by the next drag event.
-                runCatching { ctrl.scrubToTime(timeNs) }.onFailure { logger.debug("ARB scrub failed", it) }
-                return@submitWork
+        if (settled) {
+            previewTimes.take()
+            previewTimes = LatestValueMailbox()
+            submitWork {
+                runCatching { ctrl.seekToTime(timeNs) }.onFailure { logger.debug("ARB seek_frame failed", it) }
             }
-            runCatching { ctrl.seekToTime(timeNs) }.onFailure { logger.debug("ARB seek_frame failed", it) }
+        } else {
+            val pending = previewTimes
+            if (pending.offer(timeNs)) submitWork {
+                val latest = pending.take() ?: return@submitWork
+                runCatching { ctrl.scrubToTime(latest) }.onFailure { logger.debug("ARB scrub failed", it) }
+            }
         }
     }
 
