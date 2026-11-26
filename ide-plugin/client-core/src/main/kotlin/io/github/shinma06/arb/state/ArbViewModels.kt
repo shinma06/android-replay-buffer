@@ -664,7 +664,7 @@ data class TimelineViewerState(
     val outFrameIndex get() = axis.outFrame(outTimeNs)
 
     init {
-        require(inTimeNs in 0..outTimeNs && outTimeNs <= axis.endNs && outTimeNs - inTimeNs >= minSelectionNs)
+        require(inTimeNs in 0..outTimeNs && outTimeNs <= axis.endNs && (axis.endNs == 0L || inTimeNs < outTimeNs))
     }
 
     fun streamState(stream: AuxStream): StreamLoadState = auxStreams[stream] ?: StreamLoadState.Pending
@@ -1172,8 +1172,8 @@ data class TrimPreviewState(val edge: TrimEdge, val timeNs: Long, val frameIndex
 object TimelineViewerReducer {
     fun setEdge(state: TimelineViewerState, edge: TrimEdge, timeNs: Long): TimelineViewerState =
         when (edge) {
-            TrimEdge.IN -> state.copy(inTimeNs = timeNs.coerceIn(0, state.outTimeNs - state.minSelectionNs))
-            TrimEdge.OUT -> state.copy(outTimeNs = timeNs.coerceIn(state.inTimeNs + state.minSelectionNs, state.axis.endNs))
+            TrimEdge.IN -> state.copy(inTimeNs = timeNs.coerceIn(0, (state.outTimeNs - state.minSelectionNs).coerceAtLeast(0L)))
+            TrimEdge.OUT -> state.copy(outTimeNs = timeNs.coerceIn(state.inTimeNs + minOf(state.minSelectionNs, state.axis.endNs - state.inTimeNs), state.axis.endNs))
         }
 
     fun setRange(state: TimelineViewerState, start: Long, end: Long): TimelineViewerState {

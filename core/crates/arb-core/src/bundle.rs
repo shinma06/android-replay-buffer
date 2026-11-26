@@ -116,6 +116,12 @@ pub enum RequestedWindow {
     },
     /// Exact integer frame range requested during trim.
     TrimFrameRange {
+        /// Optional half-open bounds on the parent media timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_time_ns: Option<u64>,
+        /// Exclusive end on the parent media timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        out_time_ns: Option<u64>,
         /// Inclusive starting frame index.
         in_frame_index: u64,
         /// Inclusive ending frame index.
@@ -395,6 +401,9 @@ pub struct TapRecord {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ValidationError {
+    /// The optional trim times are incomplete or empty.
+    #[error("expected both trim times and a positive duration")]
+    InvalidTrimTimes,
     /// `schema_version` was not `2`.
     #[error("unsupported manifest schema_version {found}; expected {BUNDLE_SCHEMA_VERSION}")]
     UnsupportedSchemaVersion {
@@ -541,9 +550,16 @@ impl ManifestV2 {
                 }
             }
             RequestedWindow::TrimFrameRange {
+                in_time_ns,
+                out_time_ns,
                 in_frame_index,
                 out_frame_index,
             } => {
+                if !matches!((in_time_ns, out_time_ns), (None, None))
+                    && !matches!((in_time_ns,out_time_ns),(Some(a),Some(b)) if a<b)
+                {
+                    return Err(ValidationError::InvalidTrimTimes);
+                }
                 if in_frame_index > out_frame_index {
                     return Err(ValidationError::InvalidFrameRange {
                         in_frame_index: *in_frame_index,

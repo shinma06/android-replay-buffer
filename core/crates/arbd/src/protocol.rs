@@ -109,7 +109,14 @@ impl RpcResponse {
 
 /// Response payload for `system.hello`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent negotiated wire capabilities"
+)]
 pub struct SystemHelloResponse {
+    /// Exact half-open time ranges are supported by session writes and both exports.
+    #[serde(default)]
+    pub realtime_trim: bool,
     /// Ranged share exports only create a bundle on explicit request.
     #[serde(default)]
     pub standalone_share_trim: bool,
@@ -989,6 +996,10 @@ pub struct TimelineScreensResponse {
 /// Serialized non-destructive editor session view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditSessionView {
+    /// Inclusive start on the bundle media clock.
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    pub out_time_ns: Option<u64>,
     /// Unique edit session identifier.
     pub session_id: String,
     /// Referenced immutable bundle identifier.
@@ -1015,6 +1026,10 @@ pub struct EditGetSessionParams {
 /// Request parameters for `edit.update_session`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditUpdateSessionParams {
+    /// Inclusive start on the bundle media clock.
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    pub out_time_ns: Option<u64>,
     /// Edit session identifier.
     pub session_id: String,
     /// Referenced bundle identifier.
@@ -1034,12 +1049,16 @@ pub struct EditUpdateSessionParams {
 /// Request parameters for `export.trim`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportTrimParams {
+    /// Inclusive start on the bundle media clock.
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    pub out_time_ns: Option<u64>,
     /// Source catalog `bundle_id` or filesystem path.
     pub bundle_id_or_path: String,
     /// Inclusive integer starting frame index.
-    pub in_frame_index: u64,
+    pub in_frame_index: Option<u64>,
     /// Inclusive integer ending frame index.
-    pub out_frame_index: u64,
+    pub out_frame_index: Option<u64>,
     /// Optional destination parent directory (defaults to `output_dir_override` or `<data_dir>/bundles`).
     pub dest_dir: Option<PathBuf>,
     /// Optional client PID for the temporary `ExportJob` lease.
@@ -1063,6 +1082,12 @@ pub struct ExportTrimParams {
 /// Response payload for `export.trim`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportTrimResponse {
+    /// Inclusive start on the bundle media clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_time_ns: Option<u64>,
     /// Newly created trimmed v2 bundle ID.
     pub bundle_id: String,
     /// Filesystem path of the newly committed trimmed v2 bundle.
@@ -1293,6 +1318,10 @@ pub struct MediaDecodeAudioPcmResponse {
 /// Request parameters for `export.share_mp4`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportShareMp4Params {
+    /// Inclusive start on the bundle media clock.
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    pub out_time_ns: Option<u64>,
     /// Source catalog `bundle_id` or filesystem path.
     #[serde(alias = "bundle_id_or_path")]
     pub bundle_id: String,
@@ -1321,6 +1350,12 @@ pub struct ExportShareMp4Params {
 /// Response payload for `export.share_mp4`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportShareMp4Response {
+    /// Inclusive start on the bundle media clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_time_ns: Option<u64>,
     /// Written standalone faststart zero-`elst` `share.mp4` file path.
     pub share_mp4_path: PathBuf,
     /// Newly created immutable WORM trimmed bundle ID, when a narrower frame range was trimmed.

@@ -780,28 +780,14 @@ impl McpServer {
 
         match format {
             "share_mp4" => {
-                let (in_f, out_f) = match (args.get("in_frame_index"), args.get("out_frame_index"))
-                {
-                    (Some(first), Some(last)) => (
-                        Some(
-                            first
-                                .as_u64()
-                                .ok_or("in_frame_index は非負の整数で指定してください")?,
-                        ),
-                        Some(
-                            last.as_u64()
-                                .ok_or("out_frame_index は非負の整数で指定してください")?,
-                        ),
-                    ),
-                    (None, None) => (None, None),
-                    _ => return Err("開始と終了のフレーム番号を両方指定してください".into()),
-                };
                 let resp = self.call_daemon(
                     "export.share_mp4",
                     &json!({
                         "bundle_id": bundle_id,
-                        "in_frame_index": in_f,
-                        "out_frame_index": out_f,
+                        "in_frame_index": args.get("in_frame_index"),
+                        "out_frame_index": args.get("out_frame_index"),
+                        "in_time_ns": args.get("in_time_ns"),
+                        "out_time_ns": args.get("out_time_ns"),
                         "output_path": optional_abs_path(args, "output_path")?,
                         "dest_dir": optional_abs_path(args, "dest_dir")?,
                         "keep_bundle": args.get("keep_bundle").and_then(Value::as_bool).unwrap_or(false),
@@ -813,20 +799,14 @@ impl McpServer {
                 Ok(ToolOutput::new(resp))
             }
             "bundle" => {
-                let first = args
-                    .get("in_frame_index")
-                    .and_then(Value::as_u64)
-                    .ok_or("in_frame_index は非負の整数で指定してください")?;
-                let last = args
-                    .get("out_frame_index")
-                    .and_then(Value::as_u64)
-                    .ok_or("out_frame_index は非負の整数で指定してください")?;
                 let resp = self.call_daemon(
                     "export.trim",
                     &json!({
                         "bundle_id_or_path": bundle_id,
-                        "in_frame_index": first,
-                        "out_frame_index": last,
+                        "in_frame_index": args.get("in_frame_index"),
+                        "out_frame_index": args.get("out_frame_index"),
+                        "in_time_ns": args.get("in_time_ns"),
+                        "out_time_ns": args.get("out_time_ns"),
                         "include_share_mp4": include_share_mp4,
                         "share_output_path": optional_abs_path(args, "output_path")?,
                         "burn_taps": burn_taps,

@@ -11,6 +11,7 @@
     reason = "end-to-end scenario tests intentionally read as linear scripts"
 )]
 
+use arb_media::codec::VideoCodecBackend;
 use std::f64::consts::PI;
 use std::fs;
 use std::io::BufReader;
@@ -192,6 +193,14 @@ fn seed_rich_v2_bundle(
     bundle_id: &str,
     with_audio: bool,
 ) -> PathBuf {
+    let draft = rich_draft(work_tmp, bundle_id, with_audio);
+    let bundle_path = dest_dir.join(bundle_id);
+    V2BundleWriter::write(&bundle_path, &format!("seed-{bundle_id}"), &draft)
+        .expect("write seeded bundle");
+    bundle_path
+}
+
+fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDraft {
     let video_src = work_tmp.join(format!("{bundle_id}-src.mp4"));
     build_real_video_mp4(&video_src, 128, 128, 30);
     let track = Mp4VideoTrack::open(&video_src).expect("open video track");
@@ -350,7 +359,7 @@ fn seed_rich_v2_bundle(
         })
     };
 
-    let draft = V2BundleDraft {
+    V2BundleDraft {
         memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: bundle_id.to_owned(),
@@ -405,12 +414,7 @@ fn seed_rich_v2_bundle(
         logs,
         taps,
         clock_anchors: Vec::new(),
-    };
-
-    let bundle_path = dest_dir.join(bundle_id);
-    V2BundleWriter::write(&bundle_path, &format!("seed-{bundle_id}"), &draft)
-        .expect("write seeded v2 bundle");
-    bundle_path
+    }
 }
 
 /// Seeds a minimal legacy schema-4 read-only folder containing a valid video.mp4 + replay.json.
@@ -1410,5 +1414,274 @@ fn trim_stops_before_commit_when_source_clock_anchors_cannot_be_read() {
     }));
     assert!(message.contains("parse_device_triple"), "{message}");
     assert!(!dest.exists() || fs::read_dir(dest).unwrap().next().is_none());
+    server.shutdown();
+}
+
+#[test]
+fn realtime_trim_round_trip_and_four_streams_inside_one_held_picture() {
+    const START: i64 = 1_500_000_003;
+    const END: i64 = 4_000_000_003;
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let mut draft = rich_draft(tmp.path(), "still", false);
+    let file = tmp.path().join("held.mp4");
+    let frames = vec![
+        DecodedFrame {
+            frame_index: 0,
+            width: 128,
+            height: 128,
+            format: PixelFormat::Yuv420p,
+            data: vec![128; 128 * 128 * 3 / 2]
+        };
+        2
+    ];
+    let packets = OpenH264Backend::new()
+        .encode_yuv420p_sequence(&frames, 1, 5 * SEC_NS, EncodeParams::default())
+        .unwrap();
+    mux_raw_h264_to_mp4(&file, 128, 128, 90_000, 3000, &packets).unwrap();
+    let track = Mp4VideoTrack::open(&file).unwrap();
+    draft.frames.truncate(2);
+    for (record, frame) in draft.frames.iter_mut().zip(track.frames()) {
+        let t = BASE_BT_NS + frame.pts_ns;
+        record.pts_device_mono_ns = t;
+        record.pc_ingest_cont_ns = t;
+        if let TimeAlignment::Anchored { boottime_ns, .. } = &mut record.alignment {
+            *boottime_ns = t;
+        }
+        record.mp4_sample_offset = frame.offset;
+        record.mp4_sample_size = frame.size;
+        record.is_keyframe = frame.is_keyframe;
+        record.gop_id = frame.gop_id;
+    }
+    draft.video_mp4 = Some(MediaPayload::File(file));
+    draft.streams.video.as_mut().unwrap().frame_count = 2;
+    draft.epochs[0].end_boottime_ns = BASE_BT_NS + 5 * SEC_NS;
+    let audio = tmp.path().join("long.m4a");
+    build_real_audio_m4a(&audio, 48_000, 2, 240_000);
+    draft.audio_m4a = Some(MediaPayload::File(audio));
+    let meta = draft.streams.audio.as_mut().unwrap();
+    meta.status = StreamStatus::Present;
+    meta.audio_lead_in_offset_ns = 20_000_000;
+    let mut foreground = draft.logs[0].clone();
+    foreground.seq = 5;
+    let template = draft.logs[1].clone();
+    draft.logs = [START - 1, START, END - 1, END]
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut row = template.clone();
+            row.seq = u64::try_from(i + 1).unwrap();
+            row.message = format!("log-{t}");
+            if let TimeAlignment::Anchored { boottime_ns, .. } = &mut row.alignment {
+                *boottime_ns = BASE_BT_NS + t;
+            }
+            row
+        })
+        .collect();
+    draft.logs.push(foreground);
+    let tap = draft.taps[0].clone();
+    draft.taps = [
+        START - 500_000_000,
+        START + 700_000_000,
+        START + 1_600_000_000,
+        END,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, t)| {
+        let mut row = tap.clone();
+        row.seq = u64::try_from(i + 1).unwrap();
+        if let TimeAlignment::Anchored { boottime_ns, .. } = &mut row.alignment {
+            *boottime_ns = BASE_BT_NS + t;
+        }
+        if i == 0 {
+            row.gesture_kind = GestureKind::Swipe;
+            row.x = Some(20.0);
+            row.end_x = Some(100.0);
+            row.end_y = row.y;
+            row.end_t_offset_ns = Some(1_000_000_000);
+        }
+        row
+    })
+    .collect();
+    let source = paths.data_dir.join("bundles/still");
+    V2BundleWriter::write(&source, "seed-still", &draft).unwrap();
+    let opened = rpc.call(
+        "bundle.open",
+        &json!({"bundle_id_or_path":source,"holder_kind":"cli","holder_pid":std::process::id()}),
+    );
+    let _ = rpc.call("bundle.close", &json!({"lease_id":opened["lease_id"]}));
+    let session=rpc.call("edit.update_session",&json!({"bundle_id":"still","session_id":"edit","in_time_ns":START,"out_time_ns":END,"in_frame_index":12,"out_frame_index":11}));
+    assert_eq!(
+        session,
+        rpc.call("edit.get_session", &json!({"session_id":"edit"}))
+    );
+    for (key, expected) in [
+        ("in_time_ns", START),
+        ("out_time_ns", END),
+        ("in_frame_index", 0),
+        ("out_frame_index", 0),
+    ] {
+        assert_eq!(session["session"][key], expected);
+    }
+    for method in ["edit.update_session", "export.trim", "export.share_mp4"] {
+        for mut args in [
+            json!({"in_time_ns":START}),
+            json!({"out_time_ns":END}),
+            json!({"in_time_ns":END,"out_time_ns":START}),
+            json!({"in_time_ns":START,"out_time_ns":START}),
+            json!({"in_time_ns":START,"out_time_ns":9*SEC_NS}),
+        ] {
+            args[if method == "export.trim" {
+                "bundle_id_or_path"
+            } else {
+                "bundle_id"
+            }] = json!("still");
+            args["session_id"] = json!("edit");
+            assert_eq!(rpc.call_err(method, &args).0, -32602);
+        }
+    }
+    let mut count = 1;
+    for (method, keep) in [
+        ("export.share_mp4", false),
+        ("export.share_mp4", true),
+        ("export.trim", true),
+    ] {
+        for burn in [false, true] {
+            let mut args = json!({"in_time_ns":START,"out_time_ns":END,"burn_taps":burn,"keep_bundle":keep,"include_share_mp4":true});
+            args[if method == "export.trim" {
+                "bundle_id_or_path"
+            } else {
+                "bundle_id"
+            }] = json!("still");
+            let r = rpc.call(method, &args);
+            assert_eq!(r["in_time_ns"], START);
+            assert_eq!(r["out_time_ns"], END);
+            let share = Path::new(r["share_mp4_path"].as_str().unwrap());
+            let atoms = inspect_mp4_atoms(share).unwrap();
+            assert_eq!((atoms.edts_count, atoms.elst_count), (0, 0));
+            let video = Mp4VideoTrack::open(share).unwrap();
+            assert_eq!(
+                arb_media::trim::trim_timeline(&video).unwrap().1,
+                2_500_000_000
+            );
+            if burn {
+                assert!(video.frame_count() > 3);
+                let pts = video.frames().iter().map(|f| f.pts_ns).collect::<Vec<_>>();
+                for onset in [700_000_000, 1_600_000_000] {
+                    assert!(pts.contains(&onset), "overlay starts exactly at {onset}");
+                }
+                let decoder = OpenH264Backend::new();
+                for (time, x) in [(0_i64, 60_usize), (700_000_000, 64), (1_600_000_000, 64)] {
+                    let index =
+                        u64::try_from(pts.iter().position(|t| *t == time).unwrap()).unwrap();
+                    let picture = decoder
+                        .decode_frame(&video, index, PixelFormat::Yuv420p)
+                        .unwrap();
+                    assert!(
+                        picture.data[80 * 128 + x] > 175,
+                        "touch center at {time} ns"
+                    );
+                }
+            } else {
+                assert_eq!(video.frame_count(), 1);
+            }
+            assert_eq!(
+                Mp4AudioTrack::open(share).unwrap().duration_ns(),
+                2_500_000_000
+            );
+            let wav = tmp
+                .path()
+                .join(format!("decoded-{method}-{keep}-{burn}.wav"));
+            let decoded = arb_media::audio_decode::decode_audio_m4a_to_wav(share, &wav).unwrap();
+            assert_eq!(decoded.pcm_frame_count, 120_000);
+            let input_wav = tmp.path().join("original.wav");
+            if !input_wav.exists() {
+                arb_media::audio_decode::decode_audio_m4a_to_wav(
+                    tmp.path().join("long.m4a"),
+                    &input_wav,
+                )
+                .unwrap();
+            }
+            // Compare interior PCM against the source on the measured A/V clock.
+            let raw = fs::read(&input_wav).unwrap();
+            let cut = fs::read(wav).unwrap();
+            let sample = |data: &[u8], i: usize| {
+                i32::from(i16::from_le_bytes(
+                    data[44 + i * 4..46 + i * 4].try_into().unwrap(),
+                ))
+            };
+            let source_start = 71_041; // ceil((1.500000003 - 0.020) * 48000)
+            let error = (4000..6000)
+                .map(|i| (sample(&raw, source_start + i) - sample(&cut, i)).unsigned_abs())
+                .sum::<u32>()
+                / 2000;
+            assert!(
+                error < 1200,
+                "PCM aligned within AAC coding error, got {error}"
+            );
+            if keep {
+                count += 1;
+                let dir = Path::new(
+                    r["trimmed_bundle_path"]
+                        .as_str()
+                        .or(r["bundle_path"].as_str())
+                        .unwrap(),
+                );
+                assert_eq!(
+                    Mp4AudioTrack::open(dir.join("audio.m4a"))
+                        .unwrap()
+                        .duration_ns(),
+                    2_500_000_000
+                );
+                assert_eq!(
+                    arb_media::trim::trim_timeline(
+                        &Mp4VideoTrack::open(dir.join("video.mp4")).unwrap()
+                    )
+                    .unwrap()
+                    .1,
+                    2_500_000_000
+                );
+                let rows = |name: &str| {
+                    fs::read_to_string(dir.join(name))
+                        .unwrap()
+                        .lines()
+                        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+                        .collect::<Vec<_>>()
+                };
+                let logs = rows("logs.jsonl");
+                assert_eq!(logs.len(), 2);
+                assert_eq!(logs[0]["relative_time_ns"], 0);
+                assert_eq!(logs[1]["relative_time_ns"], END - START - 1);
+                let app = fs::read_to_string(dir.join("app-logs/com.example.shop.log")).unwrap();
+                assert!(app.contains(&format!("log-{START}")));
+                assert!(!app.contains(&format!("log-{END}")));
+                let taps = rows("events.jsonl")
+                    .into_iter()
+                    .filter(|v| v["kind"] == "tap" || v["kind"] == "swipe")
+                    .collect::<Vec<_>>();
+                assert_eq!(taps.len(), 3);
+                assert_eq!(taps[0]["x"], 60.0);
+                assert_eq!(taps[0]["relative_time_ns"], 0);
+                assert_eq!(taps[0]["end_t_offset_ns"], 500_000_000);
+                assert_eq!(taps[1]["relative_time_ns"], 700_000_000);
+            }
+            assert_eq!(
+                rpc.call("bundle.list", &json!({}))["bundles"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                count
+            );
+            assert_eq!(fs::read_dir(paths.data_dir.join("tmp")).unwrap().count(), 0);
+        }
+    }
+    let legacy = rpc.call(
+        "export.trim",
+        &json!({"bundle_id_or_path":"still","in_frame_index":0,"out_frame_index":0}),
+    );
+    assert_eq!(legacy["out_time_ns"], 5 * SEC_NS);
     server.shutdown();
 }

@@ -179,7 +179,7 @@ fn stream_decode_packets<W: Write>(
         if raw_au.is_empty() {
             continue;
         }
-        let audio = match aac_dec.decode(&raw_au, None) {
+        let mut audio = match aac_dec.decode(&raw_au, None) {
             Ok(frame) => frame,
             Err(rusty_aac::Error::Again) => continue,
             Err(err) => {
@@ -216,6 +216,18 @@ fn stream_decode_packets<W: Write>(
             )));
         }
 
+        // AAC decodes a complete access unit even when the final stts entry
+        // presents only the selected prefix of that unit.
+        if idx + 1 == packet_count {
+            let ticks = track.packet(idx)?.duration_ticks;
+            let frames = (u64::from(ticks) * u64::from(acc.sample_rate_hz))
+                .div_ceil(u64::from(track.timescale()));
+            audio.samples.truncate(
+                usize::try_from(frames)
+                    .unwrap_or(usize::MAX)
+                    .saturating_mul(ch),
+            );
+        }
         let chunk_bytes = u64::try_from(audio.samples.len())
             .ok()
             .and_then(|n| n.checked_mul(2))

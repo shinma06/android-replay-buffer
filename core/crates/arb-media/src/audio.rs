@@ -25,6 +25,9 @@ use crate::mp4::{
     read_exact_at, read_moov_box, read_u16_be, sample_size_u32, ticks_to_ns_signed,
     ticks_to_ns_unsigned,
 };
+mod realtime;
+pub use realtime::trim_audio_time_range;
+
 use crate::output::{Publish, ensure_output_is_not_input, write_atomically};
 
 /// MPEG-4 Audio Object Type for AAC-LC (ISO/IEC 14496-3 Table 1.17).

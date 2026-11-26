@@ -46,6 +46,11 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
             Fault.NONE -> Unit
         }
         return when (method) {
+            "system.hello" -> """{"protocol_version":1,"standalone_share_trim":true,"realtime_trim":true}"""
+            "export.share_mp4" -> {
+                exportGate?.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                """{"share_mp4_path":"/tmp/share.mp4","video_frame_count":10}"""
+            }
             "bundle.open" -> bundleOpenResultJson("bundle", frameCount, 10_000_000_000L, 10_000_000_000L + frameCount * 33_333_333L)
             "edit.get_session" -> """{"session":${storedSession.get() ?: "null"}}"""
             "edit.update_session" -> {
@@ -53,6 +58,7 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
                 storedRanges += Triple(p("in_frame_index"), p("out_frame_index"), p("playhead_frame_index"))
                 val json = """{"session_id":"ide-bundle","bundle_id":"bundle","in_frame_index":${p("in_frame_index")},""" +
                     """"out_frame_index":${p("out_frame_index")},"playhead_frame_index":${p("playhead_frame_index")},""" +
+                    """"in_time_ns":${p("in_time_ns")},"out_time_ns":${p("out_time_ns")},""" +
                     """"updated_at_utc":"2026-11-25T00:00:00Z"}"""
                 storedSession.set(json)
                 if (loseEditResponse) throw TransportDown("response lost")

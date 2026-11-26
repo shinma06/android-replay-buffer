@@ -584,6 +584,25 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     assert_eq!(collision["structuredContent"]["rpc_code"], -32002);
     let reversed=c.result("tools/call",json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"contact_sheet","start_frame":12,"end_frame":4}}));
     assert_eq!(reversed["structuredContent"]["rpc_code"], -32602);
+    for format in ["share_mp4", "bundle"] {
+        let cut=c.tool("arb_export_trim",json!({"format":format,"bundle_id":id,"in_time_ns":12_345_678,"out_time_ns":23_456_789}));
+        assert_eq!(cut["in_time_ns"], 12_345_678);
+        assert_eq!(cut["out_time_ns"], 23_456_789);
+    }
+    for args in [
+        json!({"bundle_id":id,"in_time_ns":1}),
+        json!({"bundle_id":id,"in_time_ns":5,"out_time_ns":4}),
+        json!({"bundle_id":id,"in_time_ns":5,"out_time_ns":99_000_000_000_u64}),
+    ] {
+        let r = c.request(
+            "tools/call",
+            json!({"name":"arb_export_trim","arguments":args}),
+        );
+        assert!(
+            r["error"]["code"] == -32602 || r["result"]["structuredContent"]["rpc_code"] == -32602,
+            "{r}"
+        );
+    }
     resources_and_prompts(&mut c, id);
     let trashed = c.tool("arb_trash_bundle", target.clone());
     assert_eq!(trashed["frame_count"], 18);

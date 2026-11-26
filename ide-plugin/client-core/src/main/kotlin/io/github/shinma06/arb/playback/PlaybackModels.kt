@@ -85,6 +85,8 @@ data class PlaybackState(
     val isApproximate: Boolean = false,
     val avOffsetMs: Long = 0L,
     val audioState: AudioState = AudioState.UNAVAILABLE,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 ) {
     init {
         require(totalFrames >= 0L) { "totalFrames must be non-negative: $totalFrames" }

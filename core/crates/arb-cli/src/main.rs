@@ -302,8 +302,10 @@ enum CommandSpec {
     },
     Trim {
         target: String,
-        in_frame: u64,
-        out_frame: u64,
+        in_frame: Option<u64>,
+        out_frame: Option<u64>,
+        in_time_ns: Option<u64>,
+        out_time_ns: Option<u64>,
         dest: Option<PathBuf>,
         burn_taps: bool,
         include_share_mp4: bool,
@@ -313,6 +315,8 @@ enum CommandSpec {
         target: String,
         in_frame: Option<u64>,
         out_frame: Option<u64>,
+        in_time_ns: Option<u64>,
+        out_time_ns: Option<u64>,
         out: Option<PathBuf>,
         dest: Option<PathBuf>,
         keep_bundle: bool,
@@ -1054,15 +1058,31 @@ fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 }
 
+fn validate_export_range(
+    first: Option<u64>,
+    last: Option<u64>,
+    start: Option<u64>,
+    end: Option<u64>,
+) -> Result<(), CliError> {
+    match (start, end) {
+        (Some(a), Some(b)) if a < b => Ok(()),
+        (None, None) if first.is_some() == last.is_some() => Ok(()),
+        (None, None) => Err(CliError::usage("specify both --in-frame and --out-frame")),
+        _ => Err(CliError::usage("specify --in-time-ns < --out-time-ns")),
+    }
+}
+
 fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage(
-            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> [--dest <dir>] [--include-share-mp4] [--burn-taps] [--trash-original]",
+            "usage: arb-cli trim <bundle-id-or-path> --in-frame <n> --out-frame <m> | --in-time-ns <ns> --out-time-ns <ns> [--dest <dir>] [--include-share-mp4] [--burn-taps] [--trash-original]",
         )
     })?;
     let target = absolutize_bundle_target(raw)?;
     let mut in_frame = None;
     let mut out_frame = None;
+    let mut in_time_ns = None;
+    let mut out_time_ns = None;
     let mut dest = None;
     let mut burn_taps = false;
     let mut include_share_mp4 = false;
@@ -1071,6 +1091,16 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 
     while i < args.len() {
         match args[i].as_str() {
+            "--in-time-ns" | "--out-time-ns" => {
+                let key = args[i].as_str();
+                let value = Some(parse_u64(require_val(args, i, key)?, key)?);
+                if key == "--in-time-ns" {
+                    in_time_ns = value;
+                } else {
+                    out_time_ns = value;
+                }
+                i += 2;
+            }
             "--in-frame" => {
                 in_frame = Some(parse_u64(
                     require_val(args, i, "--in-frame")?,
@@ -1106,12 +1136,13 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         }
     }
 
-    let in_frame = in_frame.ok_or_else(|| CliError::usage("trim requires --in-frame <n>"))?;
-    let out_frame = out_frame.ok_or_else(|| CliError::usage("trim requires --out-frame <m>"))?;
+    validate_export_range(in_frame, out_frame, in_time_ns, out_time_ns)?;
     Ok(CommandSpec::Trim {
         target,
         in_frame,
         out_frame,
+        in_time_ns,
+        out_time_ns,
         dest,
         burn_taps,
         include_share_mp4,
@@ -1122,12 +1153,14 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage(
-            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--keep-bundle] [--burn-taps] [--trash-original]",
+            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m> | --in-time-ns <ns> --out-time-ns <ns>] [--out <file.mp4>] [--dest <dir>] [--keep-bundle] [--burn-taps] [--trash-original]",
         )
     })?;
     let target = absolutize_bundle_target(raw)?;
     let mut in_frame = None;
     let mut out_frame = None;
+    let mut in_time_ns = None;
+    let mut out_time_ns = None;
     let mut out = None;
     let mut dest = None;
     let mut keep_bundle = false;
@@ -1137,6 +1170,16 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 
     while i < args.len() {
         match args[i].as_str() {
+            "--in-time-ns" | "--out-time-ns" => {
+                let key = args[i].as_str();
+                let value = Some(parse_u64(require_val(args, i, key)?, key)?);
+                if key == "--in-time-ns" {
+                    in_time_ns = value;
+                } else {
+                    out_time_ns = value;
+                }
+                i += 2;
+            }
             "--in-frame" => {
                 in_frame = Some(parse_u64(
                     require_val(args, i, "--in-frame")?,
@@ -1179,16 +1222,13 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         }
     }
 
-    if in_frame.is_some() != out_frame.is_some() {
-        return Err(CliError::usage(
-            "share-mp4 requires both --in-frame and --out-frame when trimming",
-        ));
-    }
-
+    validate_export_range(in_frame, out_frame, in_time_ns, out_time_ns)?;
     Ok(CommandSpec::ShareMp4 {
         target,
         in_frame,
         out_frame,
+        in_time_ns,
+        out_time_ns,
         out,
         dest,
         keep_bundle,
@@ -1473,6 +1513,8 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             target,
             in_frame,
             out_frame,
+            in_time_ns,
+            out_time_ns,
             dest,
             burn_taps,
             include_share_mp4,
@@ -1483,6 +1525,8 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
                 "bundle_id_or_path": target,
                 "in_frame_index": in_frame,
                 "out_frame_index": out_frame,
+                "in_time_ns": in_time_ns,
+                "out_time_ns": out_time_ns,
                 "dest_dir": dest,
                 "burn_taps": burn_taps,
                 "include_share_mp4": include_share_mp4,
@@ -1513,6 +1557,8 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         target,
         in_frame,
         out_frame,
+        in_time_ns,
+        out_time_ns,
         out,
         dest,
         keep_bundle,
@@ -1528,6 +1574,8 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "bundle_id": target,
             "in_frame_index": in_frame,
             "out_frame_index": out_frame,
+            "in_time_ns": in_time_ns,
+            "out_time_ns": out_time_ns,
             "output_path": out,
             "dest_dir": dest,
             "keep_bundle": keep_bundle,
@@ -1850,8 +1898,8 @@ COMMANDS:\n  \
   bundles close <LEASE_ID>\n  \
   gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
-  trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
-  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
+  trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
+  share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
   mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n  \
@@ -1903,6 +1951,38 @@ mod tests {
     }
 
     #[test]
+    fn realtime_cli_commands_forward_both_bounds_and_reject_incomplete_ranges() {
+        for (cmd, method) in [("trim", "export.trim"), ("share-mp4", "export.share_mp4")] {
+            let args = vec_str(&[
+                cmd,
+                "bundle",
+                "--in-time-ns",
+                "1500000001",
+                "--out-time-ns",
+                "4000000007",
+            ]);
+            let (_, parsed) = parse_args(&args).expect("valid ns-only range");
+            let (rpc, params, _) = super::command_to_rpc(parsed);
+            assert_eq!(rpc, method);
+            assert_eq!(params["in_time_ns"], 1_500_000_001_u64);
+            assert_eq!(params["out_time_ns"], 4_000_000_007_u64);
+            assert!(params["in_frame_index"].is_null());
+            assert!(parse_args(&args[..4]).is_err());
+            assert!(
+                parse_args(&vec_str(&[
+                    cmd,
+                    "bundle",
+                    "--in-time-ns",
+                    "3",
+                    "--out-time-ns",
+                    "3"
+                ]))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn parses_global_flags_and_trim_subcommand() {
         let args = vec_str(&[
             "--data-dir",
@@ -1934,8 +2014,10 @@ mod tests {
             cmd,
             CommandSpec::Trim {
                 target: "bundle-1".to_owned(),
-                in_frame: 17,
-                out_frame: 49,
+                in_frame: Some(17),
+                out_frame: Some(49),
+                in_time_ns: None,
+                out_time_ns: None,
                 dest: Some(abs("/tmp/out")),
                 burn_taps: false,
                 include_share_mp4: false,
@@ -1960,8 +2042,10 @@ mod tests {
             burn_trim,
             CommandSpec::Trim {
                 target: "bundle-1".to_owned(),
-                in_frame: 1,
-                out_frame: 10,
+                in_frame: Some(1),
+                out_frame: Some(10),
+                in_time_ns: None,
+                out_time_ns: None,
                 dest: None,
                 burn_taps: true,
                 include_share_mp4: true,
@@ -2394,6 +2478,8 @@ mod tests {
                 target: "bundle-7".to_owned(),
                 in_frame: Some(5),
                 out_frame: Some(20),
+                in_time_ns: None,
+                out_time_ns: None,
                 out: Some(cwd.join("clips/out.mp4")),
                 dest: None,
                 keep_bundle: false,
@@ -2416,6 +2502,8 @@ mod tests {
                 target: "bundle-7".to_owned(),
                 in_frame: None,
                 out_frame: None,
+                in_time_ns: None,
+                out_time_ns: None,
                 out: None,
                 dest: None,
                 keep_bundle: true,

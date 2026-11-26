@@ -351,6 +351,8 @@
           "burn_taps": {"description": "映像にタップ・スワイプを焼き込みます。", "type": "boolean", "default": false},
           "dest_dir": {"description": "出力先の親ディレクトリ。", "type": "string"},
           "format": {"description": "共有 MP4 または編集済みバンドル。", "enum": ["share_mp4", "bundle"], "type": "string", "default": "share_mp4"},
+          "in_time_ns": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615, "description": "バンドル先頭からの開始時刻（ns、含む）。"},
+          "out_time_ns": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615, "description": "バンドル先頭からの終了時刻（ns、含まない）。"},
           "in_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す先頭フレーム（両端を含む）。", "maximum": 18446744073709551615},
           "keep_bundle": {"description": "共有 MP4 とともに編集済みバンドルを dest_dir に保存します。", "type": "boolean", "default": false},
           "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。format=bundle での既定は true。", "type": "boolean"},
@@ -360,9 +362,9 @@
         },
         "required": [],
         "type": "object",
-        "dependentRequired": {"in_frame_index": ["out_frame_index"], "out_frame_index": ["in_frame_index"]},
-        "if": {"properties": {"format": {"const": "bundle"}}, "required": ["format"]},
-        "then": {"required": ["in_frame_index", "out_frame_index"]},
+        "dependentRequired": {"in_time_ns": ["out_time_ns"], "out_time_ns": ["in_time_ns"]},
+        "if": {"not": {"required": ["in_time_ns"]}},
+        "then": {"dependentRequired": {"in_frame_index": ["out_frame_index"], "out_frame_index": ["in_frame_index"]}},
         "anyOf": [{"required": ["bundle_id"]}, {"required": ["bundle_id_or_path"]}]
       },
       "name": "arb_export_trim",
@@ -945,6 +947,8 @@
     "ExportShareMp4Response": {
       "type": "object",
       "properties": {
+        "in_time_ns": {"type": "integer", "minimum": 0},
+        "out_time_ns": {"type": "integer", "minimum": 1},
         "share_mp4_path": {"type": "string"},
         "trimmed_bundle_id": {"type": "string", "description": "keep_bundle が true の場合に作成したバンドル ID。"},
         "trimmed_bundle_path": {"type": "string", "description": "keep_bundle が true の場合の出力ディレクトリ。"},
@@ -972,6 +976,8 @@
     "ExportTrimResponse": {
       "type": "object",
       "properties": {
+        "in_time_ns": {"type": "integer", "minimum": 0},
+        "out_time_ns": {"type": "integer", "minimum": 1},
         "bundle_id": {"type": "string"},
         "bundle_path": {"type": "string"},
         "trim_report": {"$ref": "#/$defs/TrimReport"},
@@ -1410,6 +1416,7 @@
     "SystemHelloResponse": {
       "type": "object",
       "properties": {
+        "realtime_trim": {"type": "boolean"},
         "standalone_share_trim": {"type": "boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"type": "integer", "minimum": 0},
@@ -1686,6 +1693,9 @@
     "TrimReport": {
       "type": "object",
       "properties": {
+        "in_time_ns": {"type": "integer", "minimum": 0},
+        "out_time_ns": {"type": "integer", "minimum": 1},
+        "output_duration_ns": {"type": "integer", "minimum": 1},
         "in_frame_index": {"type": "integer", "minimum": 0},
         "out_frame_index": {"type": "integer", "minimum": 0},
         "output_frame_count": {"type": "integer", "minimum": 0},

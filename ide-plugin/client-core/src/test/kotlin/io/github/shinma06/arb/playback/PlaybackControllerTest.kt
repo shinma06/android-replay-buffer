@@ -13,6 +13,34 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PlaybackControllerTest {
+    @Test
+    fun heldFrameUsesExactStartEndAndDeferredLoopRange() {
+        val clock = ManualClock()
+        PlaybackController(
+            totalFrames = 2, framePtsNs = listOf(0L, 5_000_000_000L),
+            lastFrameDurationNs = 1_000_000_000L, frameSeeker = RecordingSeeker(),
+            clock = clock, autoRunLoop = false,
+        ).use { player ->
+            player.setStudioRange(1_500_000_003L, 3_000_000_001L)
+            player.setLoopEnabled(true)
+            player.play()
+            assertEquals(1_500_000_003L, player.displayPositionNs())
+            clock.advanceNs(20)
+            player.setStudioRange(4_000_000_001L, 4_000_000_004L)
+            assertEquals(1_500_000_023L, player.displayPositionNs())
+            clock.advanceNs(1_499_999_978L)
+            player.tick()
+            assertEquals(1_500_000_003L, player.displayPositionNs())
+            player.pause()
+            player.setLoopEnabled(false)
+            player.play()
+            assertEquals(4_000_000_001L, player.displayPositionNs())
+            clock.advanceNs(3)
+            player.tick()
+            assertEquals(PlaybackMode.PAUSED, player.state.mode)
+            assertEquals(4_000_000_004L, player.displayPositionNs())
+        }
+    }
     private class ManualClock(initialNs: Long = 1_000_000_000L) : PlaybackClock {
         private val now = AtomicLong(initialNs)
         override fun nowNs(): Long = now.get()

@@ -883,6 +883,155 @@ pub fn burn_in_taps_video(
     })
 }
 
+fn overlay_times(
+    pts: &[u64],
+    end: u64,
+    origin: i64,
+    mapped: &[MappedTouchEvent],
+) -> Result<Vec<u64>, MediaError> {
+    let mut starts = std::collections::BTreeSet::from_iter(pts.iter().copied());
+    let mut add = |t: i64| {
+        if let Ok(relative) = u64::try_from(t.saturating_sub(origin))
+            && relative < end
+        {
+            starts.insert(relative);
+            if starts.len() > crate::mp4::MAX_TRACK_SAMPLES {
+                return Err(MediaError::InvalidArgument(
+                    "overlay exceeds track sample limit".into(),
+                ));
+            }
+        }
+        Ok(())
+    };
+    let limit = origin.saturating_add(i64::try_from(end).unwrap_or(i64::MAX));
+    for event in mapped {
+        let expiry = if event.kind == GestureKind::Swipe {
+            event.end_t_ns.saturating_add(SWIPE_FADE_DURATION_NS)
+        } else {
+            event.start_t_ns.saturating_add(TAP_FADE_DURATION_NS)
+        };
+        add(event.start_t_ns)?;
+        add(event.end_t_ns)?;
+        for &(_, _, offset) in &event.polyline {
+            add(event.start_t_ns.saturating_add(offset))?;
+        }
+        let mut t = event.start_t_ns.max(origin);
+        while t < expiry.min(limit) {
+            add(t)?;
+            t = t.saturating_add(33_333_333);
+        }
+        add(expiry)?;
+    }
+    let mut starts: Vec<_> = starts.into_iter().collect();
+    starts.push(end);
+    Ok(starts)
+}
+
+/// Burns gestures on an already cut video. Split held pictures at each gesture boundary,
+/// trajectory vertex and animation tick so touches can begin and end inside a single sample.
+///
+/// # Errors
+/// Returns an error for invalid timing, a codec failure or an output that cannot be published.
+pub fn burn_in_taps_time_range(
+    input: &Path,
+    output: &Path,
+    origin: i64,
+    events: &[BurnInTouchEvent],
+    geometry: BurnInDisplayGeometry,
+    backend: &dyn VideoCodecBackend,
+) -> Result<BurnInReport, MediaError> {
+    ensure_output_is_not_input(input, output)?;
+    let track = Mp4VideoTrack::open(input)?;
+    track.require_no_b_frames("burn_in_taps_time_range")?;
+    let (pts, end) = crate::trim::trim_timeline(&track)?;
+    let mapped = map_events(
+        events,
+        u32::from(track.width()),
+        u32::from(track.height()),
+        geometry,
+    );
+    if mapped.is_empty() {
+        let r = trim_video(
+            input,
+            output,
+            0,
+            track.frame_count().saturating_sub(1),
+            backend,
+        )?;
+        return Ok(BurnInReport {
+            output_frame_count: r.output_frame_count,
+            burned_frame_count: 0,
+            reencoded: false,
+            backend_name: r.backend_name,
+            edts_box_count: 0,
+            elst_box_count: 0,
+        });
+    }
+    let starts = overlay_times(&pts, end, origin, &mapped)?;
+    let durations: Vec<_> = starts.windows(2).map(|w| w[1] - w[0]).collect();
+    // Use nanosecond precision when possible. Long holds are limited by the stts u32 field.
+    let longest = durations.iter().copied().max().unwrap_or(1).max(1);
+    let scale = u32::try_from(
+        (u128::from(u32::MAX) * 1_000_000_000 / u128::from(longest)).min(1_000_000_000),
+    )
+    .unwrap_or(1)
+    .max(track.timescale());
+    let ticks = crate::timeline::quantize_durations_ns_to_ticks(&durations, scale)
+        .map_err(|e| MediaError::InvalidArgument(e.into()))?;
+    let mut schedule = Vec::with_capacity(ticks.len());
+    for (index, (&time, &ticks)) in starts.iter().zip(&ticks).enumerate() {
+        let source = pts.partition_point(|&p| p <= time).saturating_sub(1);
+        schedule.push(crate::codec::OverlaySample {
+            source: u64::try_from(source).unwrap_or(u64::MAX),
+            index: u64::try_from(index).unwrap_or(u64::MAX),
+            ticks,
+        });
+    }
+    let time = |i: u64| {
+        origin.saturating_add(
+            i64::try_from(starts[usize::try_from(i).unwrap_or(0)]).unwrap_or(i64::MAX),
+        )
+    };
+    let mut burned = 0;
+    let encoded = backend.reencode_overlay_samples(
+        &track,
+        &schedule,
+        scale,
+        estimate_encode_params(&track),
+        DEFAULT_BURN_IN_KEYFRAME_INTERVAL,
+        &|i| mapped.iter().any(|e| e.is_active_at(time(i))),
+        &mut |i, frame| {
+            if let Some(overlay) =
+                rasterize_frame_overlay(&mapped, time(i), frame.width(), frame.height())
+            {
+                composite_overlay_onto_yuv(&overlay, frame);
+                burned += 1;
+            }
+        },
+    )?;
+    let segment = MuxSegment {
+        avcc_payload: encoded.avcc_payload,
+        samples: encoded
+            .samples
+            .into_iter()
+            .map(|s| MuxSample {
+                data: s.avcc_data,
+                duration_ticks: s.duration_ticks,
+                is_keyframe: s.is_keyframe,
+            })
+            .collect(),
+    };
+    write_trim_mp4(output, &track, Some(&segment), None, Some((scale, &ticks)))?;
+    Ok(BurnInReport {
+        output_frame_count: u64::try_from(schedule.len()).unwrap_or(u64::MAX),
+        burned_frame_count: burned,
+        reencoded: true,
+        backend_name: backend.name().into(),
+        edts_box_count: 0,
+        elst_box_count: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;

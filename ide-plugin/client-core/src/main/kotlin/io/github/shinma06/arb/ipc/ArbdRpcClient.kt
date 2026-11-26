@@ -349,21 +349,38 @@ class ArbdRpcClient(
     fun editGetSession(sessionId: String): EditSessionView? =
         call("edit.get_session", jsonObj("session_id" to sessionId), EditSessionEnvelope::class.java).session
 
-    fun editUpdateSession(params: EditUpdateSessionParams): EditSessionView =
-        call("edit.update_session", gson.toJsonTree(params), EditSessionEnvelope::class.java).session
+    private val supportsRealtimeTrim by lazy { systemHello().realtimeTrim }
+
+    private fun requireRealtimeTrim(method: String, start: Long?, end: Long?) {
+        if ((start != null || end != null) && !supportsRealtimeTrim) {
+            throw ArbdRpcException(
+                code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+                message = "実時間トリムには arbd の更新が必要です",
+                method = method,
+            )
+        }
+    }
+
+    fun editUpdateSession(params: EditUpdateSessionParams): EditSessionView {
+        requireRealtimeTrim("edit.update_session", params.inTimeNs, params.outTimeNs)
+        return call("edit.update_session", gson.toJsonTree(params), EditSessionEnvelope::class.java).session
             ?: throw IOException("arbd edit.update_session returned null session")
+    }
 
     // ---------------- Export ----------------
 
-    fun exportTrim(params: ExportTrimParams): ExportTrimResponse =
-        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
+    fun exportTrim(params: ExportTrimParams): ExportTrimResponse {
+        requireRealtimeTrim("export.trim", params.inTimeNs, params.outTimeNs)
+        return call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
+    }
 
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
     fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response {
-        val needsOutputPolicy = params.inFrameIndex != null || params.keepBundle ||
-            (params.destDir != null && params.outputPath == null)
+        requireRealtimeTrim("export.share_mp4", params.inTimeNs, params.outTimeNs)
+        val needsOutputPolicy = params.inTimeNs == null && (params.inFrameIndex != null || params.keepBundle ||
+            (params.destDir != null && params.outputPath == null))
         if (needsOutputPolicy && !systemHello().standaloneShareTrim) {
             throw ArbdRpcException(
                 code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,

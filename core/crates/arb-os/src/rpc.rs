@@ -489,6 +489,18 @@ impl RpcClient {
                 message: "GC プレビューには arbd の更新が必要です".into(),
             });
         }
+        if matches!(
+            method,
+            "edit.update_session" | "export.trim" | "export.share_mp4"
+        ) && (!params["in_time_ns"].is_null() || !params["out_time_ns"].is_null())
+            && self.verify_hello()?["realtime_trim"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                error_code: None,
+                code: -32601,
+                message: "実時間トリムには arbd の更新が必要です".into(),
+            });
+        }
         // Older daemons eagerly catalog ranged MP4 exports and ignore dest_dir for generated names.
         if method == "export.share_mp4"
             && (params["in_frame_index"].is_u64()

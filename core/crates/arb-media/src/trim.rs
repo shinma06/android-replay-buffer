@@ -88,22 +88,11 @@ pub fn trim_video(
     )
 }
 
-/// Writes the frames displayed in the half-open media time range, shortening the boundary samples.
+/// Normalized sample starts and exclusive end used by editing and export.
 ///
 /// # Errors
-/// Rejects invalid ranges, reordered video and unsupported sample timing. Uses the same codec,
-/// container and atomic publication checks as [`trim_video`].
-pub fn trim_video_time_range(
-    input_mp4: impl AsRef<Path>,
-    output_mp4: impl AsRef<Path>,
-    in_time_ns: u64,
-    out_time_ns: u64,
-    backend: &dyn VideoCodecBackend,
-) -> Result<TrimReport, MediaError> {
-    let output = output_mp4.as_ref();
-    ensure_output_is_not_input(input_mp4.as_ref(), output)?;
-    let track = Mp4VideoTrack::open(input_mp4)?;
-    track.require_no_b_frames("trim_video_time_range")?;
+/// Returns a container error if the final sample timestamp overflows.
+pub fn trim_timeline(track: &Mp4VideoTrack) -> Result<(Vec<u64>, u64), MediaError> {
     let frames = track.frames();
     let pts = crate::timeline::normalized_timestamps(frames.iter().map(|frame| frame.pts_ns));
     // Accept both the viewport's end (truncated PTS plus truncated duration) and the end
@@ -127,6 +116,26 @@ pub fn trim_video_time_range(
     }
     let end = end.unsigned_abs();
     let pts: Vec<_> = pts.into_iter().map(i64::unsigned_abs).collect();
+    Ok((pts, end))
+}
+
+/// Writes the frames displayed in the half-open media time range, shortening the boundary samples.
+///
+/// # Errors
+/// Rejects invalid ranges, reordered video and unsupported sample timing. Uses the same codec,
+/// container and atomic publication checks as [`trim_video`].
+pub fn trim_video_time_range(
+    input_mp4: impl AsRef<Path>,
+    output_mp4: impl AsRef<Path>,
+    in_time_ns: u64,
+    out_time_ns: u64,
+    backend: &dyn VideoCodecBackend,
+) -> Result<TrimReport, MediaError> {
+    let output = output_mp4.as_ref();
+    ensure_output_is_not_input(input_mp4.as_ref(), output)?;
+    let track = Mp4VideoTrack::open(input_mp4)?;
+    track.require_no_b_frames("trim_video_time_range")?;
+    let (pts, end) = trim_timeline(&track)?;
     let invalid = |msg: &str| MediaError::InvalidArgument(msg.to_owned());
     let plan = crate::timeline::plan_time_range_trim(&pts, end, in_time_ns, out_time_ns)
         .map_err(invalid)?;

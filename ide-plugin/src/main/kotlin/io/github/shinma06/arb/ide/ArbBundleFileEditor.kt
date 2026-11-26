@@ -16,6 +16,7 @@ import io.github.shinma06.arb.ipc.BundleLeaseController
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
+import io.github.shinma06.arb.model.ExportShareMp4Params
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.LeaseHolderKind
 import io.github.shinma06.arb.model.LogRecord
@@ -44,6 +45,7 @@ import io.github.shinma06.arb.state.TrimCloseState
 import io.github.shinma06.arb.ui.ArbStudioContent
 import io.github.shinma06.arb.ui.ArbStudioController
 import io.github.shinma06.arb.ui.LatestValueMailbox
+import io.github.shinma06.arb.ui.StudioTrimRange
 import io.github.shinma06.arb.ui.StudioExportFormat
 import org.jetbrains.jewel.bridge.JewelComposePanel
 import java.awt.BorderLayout
@@ -141,14 +143,13 @@ class ArbBundleFileEditor internal constructor(
         onTimeSeek = { time, settled -> performTimeSeek(time, settled) },
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
-        onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onTrimPreviewFrame = ::requestTrimPreview,
         onTrimPreviewEnded = ::endTrimPreview,
         onTimeRangeChanged = { range, playhead ->
             trimCloseState.onRangeAdjusted(range.inTimeNs, range.outTimeNs)
-            submitWork { currentPlaybackController()?.setStudioRange(range.inFrameIndex..range.outFrameIndex) }
-            persistEditSession(range.inFrameIndex, range.outFrameIndex, playhead)
+            currentPlaybackController()?.setStudioRange(range.inTimeNs, range.outTimeNs)
+            persistEditSession(range, playhead)
         },
         onPlayPauseToggle = {
             submitWork {
@@ -208,7 +209,7 @@ class ArbBundleFileEditor internal constructor(
             }
         },
         onTimeRangeExport = { range, format ->
-            performExport(range.inFrameIndex, range.outFrameIndex, format)
+            performExport(range, format)
         },
         onChoosePngOutputPath = { bundleId, frameIndex, onChosen ->
             // Default the native IntelliJ save dialog to the same screenshot destination as the
@@ -461,7 +462,14 @@ class ArbBundleFileEditor internal constructor(
                     }
                 }
 
-                initialState = TimelineViewerReducer.setRange(initialState, initialState.axis.start(initialIn), initialState.axis.outTime(initialOut))
+                val savedStart = existingSession?.inTimeNs
+                val savedEnd = existingSession?.outTimeNs
+                initialState = if (savedStart != null && savedEnd != null && savedStart >= 0 && savedStart < savedEnd && savedEnd <= initialState.axis.endNs) {
+                    initialState.copy(inTimeNs = savedStart, outTimeNs = savedEnd)
+                } else {
+                    TimelineViewerReducer.setRange(initialState, initialState.axis.start(initialIn), initialState.axis.outTime(initialOut))
+                }
+                activeCtrl?.setStudioRange(initialState.inTimeNs, initialState.outTimeNs)
                 trimCloseState.initializeTimeRange(initialState.axis.endNs, initialState.inTimeNs, initialState.outTimeNs)
                 publishEdt {
                     if (!disposed) {
@@ -907,8 +915,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun performExport(
-        inFrameIndex: Long,
-        outFrameIndex: Long,
+        range: StudioTrimRange,
         format: StudioExportFormat,
     ) {
         val current = viewerState ?: return
@@ -921,57 +928,60 @@ class ArbBundleFileEditor internal constructor(
 
         submitWork {
             try {
-                val res = daemonService.withClient {
-                    it.exportTrim(
-                        ExportTrimParams(
-                            bundleIdOrPath = current.bundleId,
-                            inFrameIndex = inFrameIndex,
-                            outFrameIndex = outFrameIndex,
-                            burnTaps = burnTapsEnabled,
-                            includeShareMp4 = includeShareMp4,
-                            trashOriginal = shouldTrashOriginal,
-                            holderPid = ProcessHandle.current().pid(),
-                        ),
-                    )
+                val completion = daemonService.withClient { rpc ->
+                    if (includeShareMp4) {
+                        val res = rpc.exportShareMp4(
+                            ExportShareMp4Params(
+                                bundleIdOrPath = current.bundleId,
+                                inFrameIndex = range.inFrameIndex,
+                                outFrameIndex = range.outFrameIndex,
+                                inTimeNs = range.inTimeNs,
+                                outTimeNs = range.outTimeNs,
+                                burnTaps = burnTapsEnabled,
+                                trashOriginal = shouldTrashOriginal,
+                                holderPid = ProcessHandle.current().pid(),
+                            ),
+                        )
+                        ExportCompletionInfo(
+                            summaryText = "共有 MP4 を書き出しました（${res.videoFrameCount} フレーム）" + res.warning?.let { " · $it" }.orEmpty(),
+                            outputPath = res.shareMp4Path,
+                            shareMp4Path = res.shareMp4Path,
+                            originalTrashedBundleId = current.bundleId.takeIf { res.originalTrashed },
+                        )
+                    } else {
+                        val res = rpc.exportTrim(
+                            ExportTrimParams(
+                                bundleIdOrPath = current.bundleId,
+                                inFrameIndex = range.inFrameIndex,
+                                outFrameIndex = range.outFrameIndex,
+                                inTimeNs = range.inTimeNs,
+                                outTimeNs = range.outTimeNs,
+                                trashOriginal = shouldTrashOriginal,
+                                holderPid = ProcessHandle.current().pid(),
+                            ),
+                        )
+                        ExportCompletionInfo(
+                            summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)" + res.warning?.let { " · $it" }.orEmpty(),
+                            outputPath = res.bundlePath,
+                            bundleId = res.bundleId,
+                            isTrimBundle = true,
+                            originalTrashedBundleId = current.bundleId.takeIf { res.originalTrashed },
+                        )
+                    }
                 }
-                trimCloseState.markExported(current.inTimeNs, current.outTimeNs)
-                daemonService.notifyCatalogChanged()
-
-                val shareName = res.shareMp4Path
-                    ?.let { p -> runCatching { Path.of(p).fileName?.toString() }.getOrNull() }
-                val shareNote = when {
-                    shareName != null && res.burnTapsApplied -> " · $shareName (タップ焼き込み)"
-                    shareName != null -> " · $shareName"
-                    else -> ""
-                }
-                val trashedBundleId = if (res.originalTrashed) current.bundleId else null
-                val trashedNote = if (res.originalTrashed) {
-                    " · 元バンドルをゴミ箱へ移動しました（復元可）"
-                } else {
-                    ""
-                }
-                val warningNote = res.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
-                val summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)$shareNote$trashedNote$warningNote"
-                val completion = ExportCompletionInfo(
-                    summaryText = summaryText,
-                    outputPath = res.bundlePath,
-                    bundleId = res.bundleId,
-                    isTrimBundle = true,
-                    shareMp4Path = res.shareMp4Path,
-                    originalTrashedBundleId = trashedBundleId,
-                    burnTapsApplied = res.burnTapsApplied,
-                )
+                trimCloseState.markExported(range.inTimeNs, range.outTimeNs)
+                if (completion.isTrimBundle || completion.originalTrashedBundleId != null) daemonService.notifyCatalogChanged()
                 publishEdt {
                     if (!disposed) studioController.setExporting(false)
                 }
-                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = completion.summaryText) }
                 ArbNotifications.notifyExportCompleted(
                     project = project,
                     daemonService = daemonService,
-                    summaryText = summaryText,
-                    outputPath = res.bundlePath,
-                    trimmedBundleId = res.bundleId,
-                    originalTrashedBundleId = trashedBundleId,
+                    summaryText = completion.summaryText,
+                    outputPath = completion.outputPath,
+                    trimmedBundleId = completion.bundleId,
+                    originalTrashedBundleId = completion.originalTrashedBundleId,
                 )
             } catch (t: Throwable) {
                 logger.warn("ARB export failed (format=$format)", t)
@@ -1027,7 +1037,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     /** The newest IN/OUT/playhead the user chose; stays set until `edit.update_session` accepted it. */
-    private class PendingEdit(val revision: Long, val bundleId: String, val inFrame: Long, val outFrame: Long, val playhead: Long)
+    private class PendingEdit(val revision: Long, val bundleId: String, val range: StudioTrimRange, val playhead: Long)
 
     private val editPersistLock = Any()
     private var pendingEdit: PendingEdit? = null
@@ -1037,11 +1047,11 @@ class ArbBundleFileEditor internal constructor(
         var lastSubmitted = 0L
     }
 
-    private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
+    private fun persistEditSession(range: StudioTrimRange, playhead: Long) {
         val current = viewerState ?: return
         val session = editSession ?: return
         synchronized(editPersistLock) {
-            pendingEdit = PendingEdit(session.revision.incrementAndGet(), current.bundleId, inFrame, outFrame, playhead)
+            pendingEdit = PendingEdit(session.revision.incrementAndGet(), current.bundleId, range, playhead)
         }
         flushEditSessionAsync()
     }
@@ -1087,8 +1097,10 @@ class ArbBundleFileEditor internal constructor(
                         EditUpdateSessionParams(
                             sessionId = session.id,
                             bundleId = edit.bundleId,
-                            inFrameIndex = edit.inFrame,
-                            outFrameIndex = edit.outFrame,
+                            inFrameIndex = edit.range.inFrameIndex,
+                            outFrameIndex = edit.range.outFrameIndex,
+                            inTimeNs = edit.range.inTimeNs,
+                            outTimeNs = edit.range.outTimeNs,
                             playheadFrameIndex = edit.playhead,
                         ),
                     )

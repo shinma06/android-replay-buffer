@@ -86,7 +86,7 @@ class PddS6PlaybackTraceReplayTest {
                 val shared = ScriptedTransport { method, _ ->
                     assertEquals("system.hello", method)
                     if (sharedHellos.incrementAndGet() == 1) throw IOException("shared connection reset")
-                    """{"protocol_version":1,"schema_version":2,"pid":1,"daemon_version":"test"}"""
+                    """{"protocol_version":1,"realtime_trim":true,"schema_version":2,"pid":1,"daemon_version":"test"}"""
                 }
                 val hello = SystemHelloResponse(1, 2, 1, "", "", "", "test")
                 ArbdProcessManager.ConnectedDaemon(ArbdRpcClient(shared), hello)
