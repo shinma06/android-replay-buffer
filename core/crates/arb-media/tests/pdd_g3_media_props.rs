@@ -325,3 +325,27 @@ proptest! {
         prop_assert!(measured.abs_diff(stop-start) <= 1_000_000_000u64.div_ceil(u64::from(track.timescale())));
     }
 }
+
+#[test]
+fn complete_90khz_clock_range_can_be_trimmed_again_at_reported_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("input.mp4");
+    let first = tmp.path().join("first.mp4");
+    let second = tmp.path().join("second.mp4");
+    let backend = OpenH264Backend::new();
+    let mut packets = encode_vfr(&[3], &[33]);
+    for (packet, pts) in packets.iter_mut().zip([0, 33_333_333, 66_666_666]) {
+        packet.pts_ns = pts;
+    }
+    mux_raw_h264_to_mp4(&src, 64, 48, 90_000, 3_000, &packets).unwrap();
+    let trim =
+        |src, dst, end| arb_media::trim::trim_video_time_range(src, dst, 0, end, &backend).unwrap();
+    let report = trim(&src, &first, 100_000_000);
+    assert_eq!(report.output_duration_ns, Some(100_000_000));
+    let repeated = trim(&first, &second, report.output_duration_ns.unwrap());
+    assert_eq!(repeated, report);
+    assert_eq!(
+        Mp4VideoTrack::open(&second).unwrap().duration_ticks(),
+        9_000
+    );
+}

@@ -106,11 +106,18 @@ pub fn trim_video_time_range(
     track.require_no_b_frames("trim_video_time_range")?;
     let pts =
         crate::timeline::normalized_timestamps(track.frames().iter().map(|frame| frame.pts_ns));
-    let tail = track
-        .frames()
-        .last()
-        .map(|f| i64::try_from(f.duration_ns).unwrap_or(i64::MAX));
-    let end = crate::timeline::end_ns(&pts, tail, 1).unsigned_abs();
+    // Convert the final stts boundary once. Adding independently truncated ns for the
+    // last PTS and its duration can reject the track's own reported end by one ns.
+    let end = if let Some(last) = track.frames().last().filter(|f| f.duration_ticks > 0) {
+        let ticks = last
+            .dts_ticks
+            .checked_add(u64::from(last.duration_ticks))
+            .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
+        crate::mp4::ticks_to_ns_unsigned(ticks, track.timescale())
+            .max(crate::timeline::end_ns(&pts, Some(1), 1).unsigned_abs())
+    } else {
+        crate::timeline::end_ns(&pts, None, 1).unsigned_abs()
+    };
     let pts: Vec<_> = pts.into_iter().map(i64::unsigned_abs).collect();
     let invalid = |msg: &str| MediaError::InvalidArgument(msg.to_owned());
     let plan = crate::timeline::plan_time_range_trim(&pts, end, in_time_ns, out_time_ns)
