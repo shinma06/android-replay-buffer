@@ -3,9 +3,11 @@ use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 
-pub(super) static TOOLS: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(false));
+pub(super) static TOOLS: LazyLock<Vec<Value>> =
+    LazyLock::new(|| build_catalog(super::MCP_PROTOCOL_LATEST));
 
-fn build_catalog(legacy: bool) -> Vec<Value> {
+fn build_catalog(version: &str) -> Vec<Value> {
+    let legacy = version != super::MCP_PROTOCOL_LATEST;
     let mut table: Value = serde_json::from_str(include_str!(
         "../../../../../docs/specs/mcp-tools-table.json"
     ))
@@ -47,7 +49,7 @@ fn build_catalog(legacy: bool) -> Vec<Value> {
 
 pub(super) fn for_version(version: &str) -> &'static [Value] {
     static JUNE: LazyLock<Vec<Value>> = LazyLock::new(|| {
-        let mut tools = build_catalog(true);
+        let mut tools = build_catalog("2025-06-18");
         for (name, flag, description) in [
             (
                 "arb_screenshot",
