@@ -475,6 +475,13 @@ data class SaveOutcomeResponse(
      */
     val savedBundleId: String?
         get() = bundleId?.takeIf { job.state != SaveJobState.FAILED_RETRYABLE }
+
+    val notificationWarning: String?
+        get() = (listOfNotNull(warning) + warnings.orEmpty())
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString("、")
+            .ifBlank { null }
 }
 
 data class SaveListJobsResponse(

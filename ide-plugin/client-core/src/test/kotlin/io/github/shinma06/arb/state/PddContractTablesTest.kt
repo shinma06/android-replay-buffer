@@ -161,6 +161,9 @@ class PddContractTablesTest {
             val wire = base.deepCopy()
             for ((name, value) in row.entrySet()) wire.add(name, value)
             val res = ProtocolJson.gson.fromJson(wire, SaveOutcomeResponse::class.java)
+            row["notification_warning"]?.let { expected ->
+                assertEquals(expected.asString, res.notificationWarning)
+            }
             assertEquals(row["window_shortfall"].asBoolean, res.windowShortfall)
             assertEquals(row["actual_log_duration_ms"].asLong, res.actualLogDurationMs)
             assertEquals(row["actual_video_duration_ms"].takeUnless { it.isJsonNull }?.asLong, res.actualVideoDurationMs)

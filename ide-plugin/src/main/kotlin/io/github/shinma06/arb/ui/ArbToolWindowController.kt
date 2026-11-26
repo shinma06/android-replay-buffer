@@ -527,8 +527,8 @@ class ArbToolWindowController(
                         daemonService = daemonService,
                         bundleId = savedId,
                         bundlePath = res.bundlePath,
-                        windowSecs = durationSec,
-                        warning = res.warning,
+                        windowSecs = res.actualLogDurationMs?.div(1000) ?: durationSec,
+                        warning = res.notificationWarning,
                     )
                 } else {
                     ArbNotifications.notifyWarning(
@@ -820,9 +820,9 @@ class ArbToolWindowController(
                         daemonService = daemonService,
                         bundleId = savedId,
                         bundlePath = res.bundlePath,
-                        windowSecs = durationSec,
+                        windowSecs = res.actualVideoDurationMs?.div(1000) ?: durationSec,
                         openedInStudio = openEditor,
-                        warning = res.warning,
+                        warning = res.notificationWarning,
                     )
                 } else {
                     ArbNotifications.notifyWarning(
