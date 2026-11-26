@@ -536,10 +536,14 @@ fn snapshot_directory(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     for entry in fs::read_dir(dir).expect("read_dir must succeed") {
         let entry = entry.expect("dir entry must succeed");
         let path = entry.path();
-        if path.is_file() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let bytes = fs::read(&path).expect("read file bytes must succeed");
-            map.insert(name, bytes);
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = entry.file_type().expect("file type");
+        if kind.is_dir() {
+            for (child, bytes) in snapshot_directory(&path) {
+                map.insert(format!("{name}/{child}"), bytes);
+            }
+        } else if kind.is_file() {
+            map.insert(name, fs::read(&path).expect("read file bytes must succeed"));
         }
     }
     map
@@ -3023,6 +3027,9 @@ fn moved_managed_tree_forgets_only_catalog_rows() {
     let saved = client.call("save.logs", &json!({"dest_dir":parent}));
     let id = saved["bundle_id"].as_str().expect("id");
     let path = PathBuf::from(saved["bundle_path"].as_str().expect("path"));
+    let nested = path.join("user-files");
+    fs::create_dir(&nested).expect("nested directory");
+    fs::write(nested.join("note"), [0, 127, 255]).expect("user bytes");
     let contents = snapshot_directory(&path);
     let dest = tmp.path().join("moved");
     fs::rename(&parent, &dest).expect("move parent and bundle");
@@ -3121,10 +3128,7 @@ fn rpc_parameter_errors_match_shared_contract() {
     server.shutdown();
 }
 
-#[test]
-fn long_preroll_and_sparse_vfr_measured_from_published_evidence() {
-    let tmp = TempDir::new().expect("temp");
-    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("daemon");
+fn sparse_vfr_log_source() -> MockDeviceSource {
     let base = 300 * SEC_NS;
     let mut builder =
         push_initial_session_steps(FaultScenarioBuilder::new("vfr-device"), "vfr-boot", base);
@@ -3177,8 +3181,15 @@ fn long_preroll_and_sparse_vfr_measured_from_published_evidence() {
             });
         }
     }
+    builder.build()
+}
+
+#[test]
+fn long_preroll_and_sparse_vfr_measured_from_published_evidence() {
+    let tmp = TempDir::new().expect("temp");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("daemon");
     server
-        .ingest_device_source(&mut builder.build())
+        .ingest_device_source(&mut sparse_vfr_log_source())
         .expect("capture");
     let mut client = TestIpcClient::connect(server.endpoint());
     let full = client.call(

@@ -770,11 +770,23 @@ impl DaemonState {
         let state = Arc::clone(self);
         let serial = parsed.serial.clone().unwrap_or_default();
         let mode = parsed.capture_mode;
-        thread::Builder::new()
+        let worker_ticket = Arc::clone(&reservation);
+        let spawned = thread::Builder::new()
             .name("arbd-connect-wait".into())
             .spawn(move || {
-                let _ = tx.send(state.attach_reserved(&reservation, &parsed));
-            })?;
+                let _ = tx.send(state.attach_reserved(&worker_ticket, &parsed));
+            });
+        if let Err(err) = spawned {
+            let mut live = self.lock(&self.live_capture, "live capture")?;
+            if live
+                .reservation
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &reservation))
+            {
+                live.reservation = None;
+            }
+            return Err(err.into());
+        }
         let (result, generation) = match rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {

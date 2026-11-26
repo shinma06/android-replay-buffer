@@ -1139,7 +1139,9 @@
     {
       "method": "media.inspect_frames",
       "params": {
-        "bundle_id": "nonexistent"
+        "bundle_id": "nonexistent",
+        "mode": "single",
+        "frame_index": 0
       },
       "code": -32001
     }
