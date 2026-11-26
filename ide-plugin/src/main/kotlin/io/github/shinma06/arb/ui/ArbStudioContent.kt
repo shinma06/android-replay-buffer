@@ -124,6 +124,10 @@ import kotlin.math.sin
 
 internal fun ArbStudioController.handleStudioKey(key: Key, textFieldHasFocus: Boolean): Boolean {
     if (textFieldHasFocus) return false
+    if (gestureActive || trimPreview != null) {
+        if (key == Key.Escape) cancelGesture()
+        return true
+    }
     when (key) {
         Key.Spacebar -> togglePlayPause()
         Key.DirectionLeft -> stepFrame(-1)

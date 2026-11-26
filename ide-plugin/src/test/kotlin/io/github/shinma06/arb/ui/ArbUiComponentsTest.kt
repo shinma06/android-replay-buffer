@@ -192,6 +192,30 @@ class ArbUiComponentsTest {
     }
 
     @Test
+    fun keysDuringATrimGestureNeitherPublishNorCommitItAndEscapeCancels() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(
+            4, listOf(0L, 12_000_000_000L, 22_000_000_000L, 28_000_000_000L), lastDurationNs = 4_000_000_000L,
+        )
+        val writes = mutableListOf<StudioTrimRange>()
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
+            onTimeRangeChanged = { range, _ -> writes += range })
+        studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
+        studio.dragTrim(TrimEdge.IN, 15_500_000_000, false)
+        for (key in listOf(Key.DirectionRight, Key.DirectionLeft, Key.O, Key.I, Key.Spacebar)) {
+            assertTrue(studio.handleStudioKey(key, textFieldHasFocus = false))
+            assertEquals(15_500_000_000L, studio.trimPreview?.timeNs)
+        }
+        assertTrue(writes.isEmpty())
+        assertEquals(0L, studio.playheadTimeNs)
+        assertTrue(studio.handleStudioKey(Key.Escape, textFieldHasFocus = false))
+        assertEquals(null, studio.trimPreview)
+        assertEquals(0L, studio.viewerState?.inTimeNs)
+        assertEquals(axis.endNs, studio.viewerState?.outTimeNs)
+        assertTrue(writes.isEmpty())
+        assertFalse(studio.handleStudioKey(Key.Escape, textFieldHasFocus = false))
+    }
+
+    @Test
     fun hitTestingSeparatesRulerHandlesOverlapsAndBody() {
         val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 1_000_000_000)
         val state = studioVideoState().copy(axis = axis, frameCount = 1, inTimeNs = 499_000_000, outTimeNs = 501_000_000)
