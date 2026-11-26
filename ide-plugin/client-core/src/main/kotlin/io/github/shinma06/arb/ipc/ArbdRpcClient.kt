@@ -41,6 +41,7 @@ import io.github.shinma06.arb.model.MediaScrubResponse
 import io.github.shinma06.arb.model.MediaSeekFrameResponse
 import io.github.shinma06.arb.model.ProtocolJson
 import io.github.shinma06.arb.model.QueryBucket
+import io.github.shinma06.arb.model.RpcErrorDetails
 import io.github.shinma06.arb.model.SaveJobView
 import io.github.shinma06.arb.model.SaveListJobsResponse
 import io.github.shinma06.arb.model.SaveLogsParams
@@ -348,20 +349,47 @@ class ArbdRpcClient(
     fun editGetSession(sessionId: String): EditSessionView? =
         call("edit.get_session", jsonObj("session_id" to sessionId), EditSessionEnvelope::class.java).session
 
-    fun editUpdateSession(params: EditUpdateSessionParams): EditSessionView =
-        call("edit.update_session", gson.toJsonTree(params), EditSessionEnvelope::class.java).session
+    private val supportsRealtimeTrim by lazy { systemHello().realtimeTrim }
+
+    private fun requireRealtimeTrim(method: String, start: Long?, end: Long?) {
+        if ((start != null || end != null) && !supportsRealtimeTrim) {
+            throw ArbdRpcException(
+                code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+                message = "実時間トリムには arbd の更新が必要です",
+                method = method,
+            )
+        }
+    }
+
+    fun editUpdateSession(params: EditUpdateSessionParams): EditSessionView {
+        requireRealtimeTrim("edit.update_session", params.inTimeNs, params.outTimeNs)
+        return call("edit.update_session", gson.toJsonTree(params), EditSessionEnvelope::class.java).session
             ?: throw IOException("arbd edit.update_session returned null session")
+    }
 
     // ---------------- Export ----------------
 
-    fun exportTrim(params: ExportTrimParams): ExportTrimResponse =
-        call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
+    fun exportTrim(params: ExportTrimParams): ExportTrimResponse {
+        requireRealtimeTrim("export.trim", params.inTimeNs, params.outTimeNs)
+        return call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
+    }
 
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
-    fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response =
-        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+    fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response {
+        requireRealtimeTrim("export.share_mp4", params.inTimeNs, params.outTimeNs)
+        val needsOutputPolicy = params.inTimeNs == null && (params.inFrameIndex != null || params.keepBundle ||
+            (params.destDir != null && params.outputPath == null))
+        if (needsOutputPolicy && !systemHello().standaloneShareTrim) {
+            throw ArbdRpcException(
+                code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+                message = "共有 MP4 の出力方式を選ぶには arbd の更新が必要です",
+                method = "export.share_mp4",
+            )
+        }
+        return call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+    }
 
     /**
      * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected
@@ -492,7 +520,10 @@ class ArbdRpcClient(
             val errObj = errorElem.asJsonObject
             val code = errObj.get("code")?.asInt ?: -32603
             val message = errObj.get("message")?.asString ?: "Unknown RPC error"
-            throw ArbdRpcException(code = code, message = message, method = method)
+            val details = errObj.get("data")?.takeIf { it.isJsonObject }?.let {
+                runCatching { gson.fromJson(it, RpcErrorDetails::class.java) }.getOrNull()
+            }
+            throw ArbdRpcException(code = code, message = message, method = method, details = details)
         }
         return respObj.get("result") ?: JsonNull.INSTANCE
     }

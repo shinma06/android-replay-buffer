@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use arb_core::time::format_unix_ms_iso8601;
 pub use arb_core::time::format_unix_secs_iso8601;
-const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 static ID_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -26,24 +26,22 @@ pub fn current_unix_millis() -> u64 {
     u64::try_from(dur.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Formats the current system wall time as an ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SSZ`).
+/// Formats the current system wall time as an ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SS.sssZ`).
 #[must_use]
 pub fn utc_now_iso8601() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0_i64, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    format_unix_secs_iso8601(secs)
+    format_unix_ms_iso8601(i64::try_from(current_unix_millis()).unwrap_or(i64::MAX))
 }
 
-/// Formats a Unix epoch nanosecond timestamp as an ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SSZ`).
+/// Formats a Unix epoch nanosecond timestamp as an ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SS.sssZ`).
 #[must_use]
 pub fn format_epoch_ns_iso8601(epoch_ns: i64) -> String {
-    format_unix_secs_iso8601(epoch_ns.div_euclid(NANOS_PER_SEC))
+    format_unix_ms_iso8601(epoch_ns.div_euclid(1_000_000))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_unix_secs_iso8601, next_id};
+    use super::next_id;
+    use arb_core::time::format_unix_secs_iso8601;
 
     #[test]
     fn formats_known_utc_timestamps_accurately() {

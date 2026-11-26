@@ -150,6 +150,7 @@ fn sample_logs() -> Vec<LogRecord> {
 )]
 fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
     V2BundleDraft {
+        memo: None,
         bundle_kind: arb_core::bundle::BundleKind::Full,
         bundle_id: bundle_id.to_owned(),
         created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
@@ -180,6 +181,7 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
             }),
             audio: None,
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Present,
                 completeness: LogCompleteness::Unverified,
                 overflow_events: 0,
@@ -526,6 +528,8 @@ fn register_v2_bundle(catalog: &Catalog, bundle_id: &str, dir: &Path, job_id: &s
 
 fn assert_edit_session_and_leased_trash(catalog: &Catalog, managed_dir: &Path) -> String {
     let edit = EditSession {
+        in_time_ns: None,
+        out_time_ns: None,
         session_id: "edit-1".to_owned(),
         bundle_id: "bundle-managed-1".to_owned(),
         in_frame_index: Some(0),
@@ -2208,6 +2212,8 @@ fn forget_missing_bundles_is_nondestructive_and_enforces_all_guards() {
 
     catalog
         .upsert_edit_session(&EditSession {
+            in_time_ns: None,
+            out_time_ns: None,
             session_id: "sess-missing-ext".to_owned(),
             bundle_id: "b-missing-ext".to_owned(),
             in_frame_index: Some(1),

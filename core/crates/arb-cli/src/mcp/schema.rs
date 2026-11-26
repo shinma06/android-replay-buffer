@@ -41,6 +41,17 @@ pub(super) fn normalize_integers(schema: &Value, v: &mut Value) {
 }
 
 pub(super) fn validate(schema: &Value, v: &Value, path: &str) -> Result<(), String> {
+    validate_node(schema, v, path, schema)
+}
+
+fn validate_node(schema: &Value, v: &Value, path: &str, root: &Value) -> Result<(), String> {
+    if let Some(reference) = schema["$ref"].as_str() {
+        let definition = reference
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+            .ok_or_else(|| format!("unknown schema reference {reference}"))?;
+        validate_node(definition, v, path, root)?;
+    }
     let kind = &schema["type"];
     let correct = if let Some(k) = kind.as_str() {
         matches_type(k, v)
@@ -78,7 +89,7 @@ pub(super) fn validate(schema: &Value, v: &Value, path: &str) -> Result<(), Stri
     {
         return Err(format!("{path} は許容範囲外です"));
     }
-    validate_object(schema, v, path)?;
+    validate_object(schema, v, path, root)?;
     if let Some(a) = v.as_array() {
         let len = u64::try_from(a.len()).unwrap_or(u64::MAX);
         if schema["minItems"].as_u64().is_some_and(|n| len < n)
@@ -88,18 +99,18 @@ pub(super) fn validate(schema: &Value, v: &Value, path: &str) -> Result<(), Stri
         }
         if let Some(items) = schema.get("items") {
             for x in a {
-                validate(items, x, path)?;
+                validate_node(items, x, path, root)?;
             }
         }
     }
     for part in schema["allOf"].as_array().into_iter().flatten() {
-        validate(part, v, path)?;
+        validate_node(part, v, path, root)?;
     }
     for key in ["anyOf", "oneOf"] {
         if let Some(options) = schema[key].as_array() {
             let matches = options
                 .iter()
-                .filter(|s| validate(s, v, path).is_ok())
+                .filter(|s| validate_node(s, v, path, root).is_ok())
                 .count();
             if matches == 0 || (key == "oneOf" && matches != 1) {
                 return Err(format!("{path} の組み合わせが不正です ({key})"));
@@ -108,20 +119,32 @@ pub(super) fn validate(schema: &Value, v: &Value, path: &str) -> Result<(), Stri
     }
     if schema
         .get("not")
-        .is_some_and(|s| validate(s, v, path).is_ok())
+        .is_some_and(|s| validate_node(s, v, path, root).is_ok())
     {
         return Err(format!("{path} の引数は併用できません"));
     }
     if schema
         .get("if")
-        .is_some_and(|s| validate(s, v, path).is_ok())
+        .is_some_and(|s| validate_node(s, v, path, root).is_ok())
     {
-        validate(&schema["then"], v, path)?;
+        validate_node(&schema["then"], v, path, root)?;
     }
     Ok(())
 }
 
-fn validate_object(schema: &Value, v: &Value, path: &str) -> Result<(), String> {
+// Our closed composed record schemas declare fields in properties and allOf/$ref branches.
+fn declares_field(schema: &Value, key: &str, root: &Value) -> bool {
+    schema["properties"].get(key).is_some()
+        || schema["$ref"]
+            .as_str()
+            .and_then(|r| root.pointer(r.strip_prefix('#')?))
+            .is_some_and(|sub| declares_field(sub, key, root))
+        || schema["allOf"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|sub| declares_field(sub, key, root)))
+}
+
+fn validate_object(schema: &Value, v: &Value, path: &str, root: &Value) -> Result<(), String> {
     if let Some(obj) = v.as_object() {
         for k in schema["required"]
             .as_array()
@@ -135,12 +158,21 @@ fn validate_object(schema: &Value, v: &Value, path: &str) -> Result<(), String> 
         }
         for (k, x) in obj {
             if let Some(sub) = schema["properties"].get(k) {
-                validate(sub, x, &format!("{path}.{k}"))?;
-            } else if schema["additionalProperties"] == false {
+                validate_node(sub, x, &format!("{path}.{k}"), root)?;
+            } else if schema["additionalProperties"] == false
+                || (schema["unevaluatedProperties"] == false && !declares_field(schema, k, root))
+            {
                 return Err(format!("{path}.{k} は未定義です"));
             } else if schema["additionalProperties"].is_object() {
-                validate(&schema["additionalProperties"], x, &format!("{path}.{k}"))?;
+                validate_node(
+                    &schema["additionalProperties"],
+                    x,
+                    &format!("{path}.{k}"),
+                    root,
+                )?;
             }
+        }
+        for k in obj.keys() {
             if let Some(keys) = schema["dependentRequired"][k].as_array() {
                 for dep in keys.iter().filter_map(Value::as_str) {
                     if !obj.contains_key(dep) {

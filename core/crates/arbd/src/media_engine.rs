@@ -22,7 +22,7 @@ use arb_media::playback::{
     FilmstripCache, FilmstripConfig, FilmstripOrigin, GopLruCache, ScrubController,
 };
 use arb_media::timeline::{end_ns, viewport_timestamps};
-use arb_media::trim::{PngExportMetadata, export_frame_png_with_metadata, trim_video};
+use arb_media::trim::{PngExportMetadata, export_frame_png_with_metadata};
 use arb_os::shm::{FrameDescriptor, PixelFormat as ShmPixelFormat, ShmFrameRingWriter};
 use arb_storage::bundle_io::{
     BundleReader, ClockAnchorRecord, MediaPayload, SHARE_MP4_FILE, SHARE_TAPS_MP4_FILE,
@@ -161,7 +161,7 @@ impl MediaEngine {
         let shm_path = self.shm_dir.join(format!("{viewport_id}.shm"));
         let shm_writer = ShmFrameRingWriter::create(&shm_path, slot_capacity)?;
 
-        let last_frame_duration_ns = track.frames().last().map(|frame| frame.duration_ns);
+        let last_frame_duration_ns = track.last_presentation_duration_ns()?;
         let frame_count = track.frame_count();
         let keyframe_count = track.keyframes().len();
         let frame_pts_ns = viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
@@ -591,18 +591,24 @@ pub fn export_trim(
         validate_trash_source(reader.as_ref(), entry.as_ref())?;
     }
 
+    let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
     let video_path = reader.video_path().ok_or_else(|| {
+        if times.is_some() {
+            return DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into());
+        }
         DaemonError::NotFound(format!(
             "source bundle `{parent_bundle_id}` has no video.mp4"
         ))
     })?;
 
     let source_frames = reader.frames()?;
-    let frame_window = WindowSpec::from_frame_indices(
-        &source_frames,
-        params.in_frame_index,
-        params.out_frame_index,
+    let track = Mp4VideoTrack::open(&video_path)?;
+    let range = crate::trim_range::TrimRange::resolve(
+        &track,
+        (params.in_frame_index, params.out_frame_index),
+        times,
     )?;
+    let frame_window = range.window(&source_frames)?;
 
     let trim_job_id = next_id("trim");
     let new_bundle_id = next_id("bundle");
@@ -611,21 +617,20 @@ pub fn export_trim(
     let tmp_trimmed_mp4 = tmp_dir.join(format!("{trim_job_id}.mp4"));
     let _tmp_guard = FileCleanupGuard(tmp_trimmed_mp4.clone());
 
-    let trim_report = trim_video(
-        &video_path,
-        &tmp_trimmed_mp4,
-        params.in_frame_index,
-        params.out_frame_index,
-        ctx.backend,
-    )?;
+    let trim_report = range.trim_video(&video_path, &tmp_trimmed_mp4, ctx.backend)?;
 
     // W11: cut the source `audio.m4a` (if any) to the trimmed video's time range.
     let (trimmed_audio, _tmp_audio_guard) =
-        trim_source_audio(reader.as_ref(), &video_path, params, &tmp_dir, &trim_job_id)?.unzip();
+        trim_source_audio(reader.as_ref(), range, &tmp_dir, &trim_job_id)?.unzip();
 
     let trimmed_track = Mp4VideoTrack::open(&tmp_trimmed_mp4)?;
-    let trimmed_frames =
-        build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
+    let trimmed_frames = build_trimmed_frame_records(
+        &trimmed_track,
+        &source_frames,
+        &frame_window,
+        range.first,
+        range.head_offset,
+    );
 
     let policy = SelectionPolicy::default();
     // Existing sidecars from either stream take precedence over newly uncertain rows.
@@ -640,6 +645,7 @@ pub fn export_trim(
         &frame_window,
         &policy.after_logs(&trimmed_logs),
         kept_taps,
+        range,
     )?;
     let trimmed_discs = filter_discontinuities_for_window(reader.discontinuities()?, &frame_window);
 
@@ -680,7 +686,7 @@ pub fn export_trim(
             SHARE_MP4_FILE
         };
         let video_for_share: std::borrow::Cow<'_, Path> = if params.burn_taps {
-            let burn_events: Vec<BurnInTouchEvent> = trimmed_taps
+            let mut burn_events: Vec<BurnInTouchEvent> = trimmed_taps
                 .iter()
                 .filter_map(BurnInTouchEvent::from_tap_record)
                 .collect();
@@ -699,16 +705,35 @@ pub fn export_trim(
             let tmp_burned = tmp_dir.join(format!("{trim_job_id}-burned.mp4"));
             let last_trimmed = u64::try_from(trimmed_frames.len().saturating_sub(1)).unwrap_or(0);
             _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
-            let burn_report = burn_in_taps_video(
-                &tmp_trimmed_mp4,
-                &tmp_burned,
-                0,
-                last_trimmed,
-                &frame_ts,
-                &burn_events,
-                geom,
-                ctx.backend,
-            )?;
+            let burn_report = if range.realtime {
+                let clock = arb_core::bundle::FrameMediaClock::new(
+                    &trimmed_frames,
+                    frame_window.boot_id(),
+                    frame_window.start_boottime_ns(),
+                );
+                for event in &mut burn_events {
+                    event.rebase_on_clock(&clock);
+                }
+                arb_media::burn_in::burn_in_taps_time_range(
+                    &tmp_trimmed_mp4,
+                    &tmp_burned,
+                    &range.sample_boundaries(&track)?,
+                    &burn_events,
+                    geom,
+                    ctx.backend,
+                )?
+            } else {
+                burn_in_taps_video(
+                    &tmp_trimmed_mp4,
+                    &tmp_burned,
+                    0,
+                    last_trimmed,
+                    &frame_ts,
+                    &burn_events,
+                    geom,
+                    ctx.backend,
+                )?
+            };
             burn_taps_applied = burn_report.reencoded;
             std::borrow::Cow::Owned(tmp_burned)
         } else {
@@ -740,8 +765,7 @@ pub fn export_trim(
 
     let dest_bundle_dir = dest_parent.join(&new_bundle_id);
     // R3 S8c: a trim that includes the source's last frame inherits its incomplete tail.
-    let last_source_frame = source_frames.iter().map(|f| f.frame_index).max();
-    let includes_source_tail = last_source_frame.is_some_and(|last| params.out_frame_index >= last);
+    let includes_source_tail = range.reaches_end;
     let tail_may_be_incomplete = includes_source_tail
         && summary
             .streams
@@ -755,7 +779,7 @@ pub fn export_trim(
         &now_utc,
         summary,
         &frame_window,
-        params,
+        range,
         TrimmedVideo {
             output_frame_count: trim_report.output_frame_count,
             tail_may_be_incomplete,
@@ -806,6 +830,8 @@ pub fn export_trim(
     );
 
     Ok(ExportTrimResponse {
+        in_time_ns: Some(range.start),
+        out_time_ns: Some(range.end),
         bundle_id: new_bundle_id,
         bundle_path: dest_bundle_dir,
         trim_report,
@@ -932,11 +958,11 @@ struct TrimmedVideo {
 }
 
 /// Trimmed `audio.m4a` payload for [`build_trimmed_bundle_draft`].
-struct TrimmedAudio {
-    tmp_m4a: PathBuf,
+pub(super) struct TrimmedAudio {
+    pub(super) tmp_m4a: PathBuf,
     /// Lead-in skew of the *trimmed* bundle: `D' = a0_sel + D - video_start_ns`
     /// (first selected packet's source audio pts + save-time skew − new video origin).
-    lead_in_offset_ns: i64,
+    pub(super) lead_in_offset_ns: i64,
 }
 
 /// Cuts the source bundle's `audio.m4a` (when it has one) to the trimmed video's time range
@@ -951,10 +977,9 @@ struct TrimmedAudio {
 /// only [`MediaError::NoAudioInRange`] maps to `None` — real `InvalidArgument` bugs and every
 /// other error propagate so a corrupt source audio track can never silently produce a bundle
 /// that claims trimmed audio (R3 M3, R4 S10).
-fn trim_source_audio(
+pub(super) fn trim_source_audio(
     reader: &dyn BundleReader,
-    video_path: &Path,
-    params: &ExportTrimParams,
+    range: crate::trim_range::TrimRange,
     tmp_dir: &Path,
     trim_job_id: &str,
 ) -> Result<Option<(TrimmedAudio, FileCleanupGuard)>, DaemonError> {
@@ -970,13 +995,8 @@ fn trim_source_audio(
         .as_ref()
         .map_or(0, |audio| audio.audio_lead_in_offset_ns);
 
-    let src_track = Mp4VideoTrack::open(video_path)?;
-    let video_start_ns = src_track.frame(params.in_frame_index)?.pts_ns.max(0);
-    let out_frame = src_track.frame(params.out_frame_index)?;
-    let video_end_ns = out_frame
-        .pts_ns
-        .saturating_add(i64::try_from(out_frame.duration_ns).unwrap_or(i64::MAX))
-        .max(video_start_ns.saturating_add(1));
+    let video_start_ns = i64::try_from(range.start).unwrap_or(i64::MAX);
+    let video_end_ns = i64::try_from(range.end).unwrap_or(i64::MAX);
 
     // Translate the video-axis window into audio-file coordinates.
     let start_ns = video_start_ns.saturating_sub(d_ns).max(0);
@@ -986,14 +1006,27 @@ fn trim_source_audio(
     }
 
     let tmp_m4a = tmp_dir.join(format!("{trim_job_id}.m4a"));
-    match trim_audio_m4a(&src_m4a, &tmp_m4a, start_ns, end_ns) {
-        Ok(report) => Ok(Some((
+    let lead_in = if range.realtime {
+        arb_media::audio::trim_audio_time_range(
+            &src_m4a,
+            &tmp_m4a,
+            video_start_ns.saturating_sub(d_ns),
+            end_ns,
+        )
+        .map(|()| 0)
+    } else {
+        trim_audio_m4a(&src_m4a, &tmp_m4a, start_ns, end_ns).map(|report| {
+            report
+                .first_selected_pts_ns
+                .saturating_add(d_ns)
+                .saturating_sub(video_start_ns)
+        })
+    };
+    match lead_in {
+        Ok(lead_in_offset_ns) => Ok(Some((
             TrimmedAudio {
                 tmp_m4a: tmp_m4a.clone(),
-                lead_in_offset_ns: report
-                    .first_selected_pts_ns
-                    .saturating_add(d_ns)
-                    .saturating_sub(video_start_ns),
+                lead_in_offset_ns,
             },
             FileCleanupGuard(tmp_m4a),
         ))),
@@ -1012,7 +1045,7 @@ fn build_trimmed_bundle_draft(
     now_utc: &str,
     summary: &arb_storage::bundle_io::BundleManifestSummary,
     frame_window: &WindowSpec,
-    params: &ExportTrimParams,
+    range: crate::trim_range::TrimRange,
     video: TrimmedVideo,
     trimmed_audio: Option<TrimmedAudio>,
     share_mp4: Option<ShareMp4Sidecar>,
@@ -1029,18 +1062,21 @@ fn build_trimmed_bundle_draft(
         is_emulator: false,
     });
     V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: new_bundle_id.to_owned(),
         created_at_utc: now_utc.to_owned(),
         provenance: Provenance::Trimmed {
             parent_bundle_id: parent_bundle_id.to_owned(),
-            in_frame_index: params.in_frame_index,
-            out_frame_index: params.out_frame_index,
+            in_frame_index: range.first,
+            out_frame_index: range.last,
         },
         device,
         requested_window: RequestedWindow::TrimFrameRange {
-            in_frame_index: params.in_frame_index,
-            out_frame_index: params.out_frame_index,
+            in_time_ns: range.realtime.then_some(range.start),
+            out_time_ns: range.realtime.then_some(range.end),
+            in_frame_index: range.first,
+            out_frame_index: range.last,
         },
         epochs: vec![EpochSpan {
             boot_id: frame_window.boot_id().to_owned(),
@@ -1105,7 +1141,8 @@ fn build_trimmed_frame_records(
     trimmed_track: &Mp4VideoTrack,
     source_frames: &[FrameRecord],
     frame_window: &WindowSpec,
-    params: &ExportTrimParams,
+    first: u64,
+    head_offset: i64,
 ) -> Vec<FrameRecord> {
     let trimmed_mp4_frames = trimmed_track.frames();
     let indexed: std::collections::BTreeMap<_, _> =
@@ -1113,22 +1150,24 @@ fn build_trimmed_frame_records(
     let mut trimmed_frames = Vec::with_capacity(trimmed_mp4_frames.len());
     for (idx, mp4_f) in trimmed_mp4_frames.iter().enumerate() {
         let frame_index = u64::try_from(idx).unwrap_or(0);
-        let record = match params
-            .in_frame_index
+        let record = match first
             .checked_add(frame_index)
             .and_then(|id| indexed.get(&id).copied())
         {
-            Some(orig) => FrameRecord {
-                frame_index,
-                boot_id: orig.boot_id.clone(),
-                pts_device_mono_ns: orig.pts_device_mono_ns,
-                pc_ingest_cont_ns: orig.pc_ingest_cont_ns,
-                alignment: orig.alignment.clone(),
-                is_keyframe: mp4_f.is_keyframe,
-                gop_id: mp4_f.gop_id,
-                mp4_sample_offset: mp4_f.offset,
-                mp4_sample_size: mp4_f.size,
-            },
+            Some(orig) => {
+                let offset = if idx == 0 { head_offset } else { 0 };
+                FrameRecord {
+                    frame_index,
+                    boot_id: orig.boot_id.clone(),
+                    pts_device_mono_ns: orig.pts_device_mono_ns.saturating_add(offset),
+                    pc_ingest_cont_ns: orig.pc_ingest_cont_ns.saturating_add(offset),
+                    alignment: crate::trim_range::shift_alignment(&orig.alignment, offset),
+                    is_keyframe: mp4_f.is_keyframe,
+                    gop_id: mp4_f.gop_id,
+                    mp4_sample_offset: mp4_f.offset,
+                    mp4_sample_size: mp4_f.size,
+                }
+            }
             // R3 S8b: never fabricate an exact anchor for a frame with no source record.
             None => FrameRecord {
                 frame_index,
@@ -1214,8 +1253,12 @@ fn select_trimmed_taps(
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
     previous: arb_core::selection::SelectedPartition<arb_core::bundle::TapRecord>,
+    range: crate::trim_range::TrimRange,
 ) -> Result<(Vec<arb_core::bundle::TapRecord>, usize, usize, usize), DaemonError> {
-    let source_main = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    let mut source_main = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    if range.realtime {
+        source_main.retain_mut(|tap| crate::trim_range::clip_tap(tap, frame_window));
+    }
     let part = select_for_trim_with_truncated(
         source_main,
         previous.unanchored,
@@ -1466,7 +1509,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::build_trimmed_frame_records;
-    use crate::protocol::ExportTrimParams;
 
     #[test]
     fn viewport_timestamps_preserve_static_holds_and_bound_wire_size() {
@@ -1567,19 +1609,7 @@ mod tests {
             },
         ];
         let window = WindowSpec::from_frame_indices(&source_frames, 0, 1).expect("window");
-        let params = ExportTrimParams {
-            bundle_id_or_path: "b1".to_owned(),
-            in_frame_index: 0,
-            out_frame_index: 1,
-            dest_dir: None,
-            holder_pid: None,
-            burn_taps: false,
-            share_output_path: None,
-            include_share_mp4: false,
-            trash_original: false,
-        };
-
-        let out = build_trimmed_frame_records(&track, &source_frames, &window, &params);
+        let out = build_trimmed_frame_records(&track, &source_frames, &window, 0, 0);
         assert_eq!(out.len(), 3, "all 3 MP4 frames must be indexed");
         assert!(
             matches!(

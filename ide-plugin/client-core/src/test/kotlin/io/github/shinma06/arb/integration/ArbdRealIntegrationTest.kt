@@ -408,6 +408,22 @@ class ArbdRealIntegrationTest {
                     ),
                 )
                 assertEquals(savedSession, rpc.editGetSession("ide-v2-session"))
+                val exact = rpc.editUpdateSession(
+                    EditUpdateSessionParams("studio-exact", v2Open.bundleId, inTimeNs = 12_345_678L, outTimeNs = 29_876_543L),
+                )
+                assertEquals(12_345_678L, exact.inTimeNs)
+                assertEquals(29_876_543L, exact.outTimeNs)
+                assertEquals(exact, rpc.editGetSession("studio-exact"))
+                val subframe = rpc.exportTrim(
+                    ExportTrimParams(v2Open.bundleId, inTimeNs = exact.inTimeNs, outTimeNs = exact.outTimeNs, includeShareMp4 = true),
+                )
+                val share = Paths.get(assertNotNull(subframe.shareMp4Path))
+                assertEquals(Paths.get(subframe.bundlePath).resolve("share.mp4"), share)
+                assertTrue(Files.isRegularFile(share))
+                assertEquals(v2Open.bundleId, rpc.bundleList().bundles.single { it.bundleId == subframe.bundleId }.parentBundleId)
+                assertEquals(exact.inTimeNs, subframe.inTimeNs)
+                assertEquals(exact.outTimeNs, subframe.outTimeNs)
+                assertEquals(0, subframe.trimReport.elstBoxCount)
 
                 // SHM Viewport on v2 bundle + BundleLeaseController heartbeat
                 val v2Vp = rpc.mediaOpenViewport(v2Open.bundleId)
@@ -743,6 +759,7 @@ class ArbdRealIntegrationTest {
                             inFrameIndex = 2L,
                             outFrameIndex = 18L,
                             outputPath = shareOut.toString(),
+                            keepBundle = true,
                             trashOriginal = true,
                             holderPid = ProcessHandle.current().pid(),
                         ),

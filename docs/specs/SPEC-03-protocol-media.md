@@ -20,7 +20,7 @@ satisfies:
 
 ホストの制御は同一ユーザーのローカル IPC 上の JSON-RPC 2.0、1 行 1 メッセージ。Unix はランタイムディレクトリの `arbd.sock`、Windows はランタイムディレクトリから導くハッシュ名の Named Pipe を使用し、所有者 SID を検査する。一つの要求に対応する応答は同じ ID、`jsonrpc="2.0"`、`result` または `error` の片方だけを持つ。Rust クライアントは `result: null` を受理し、通知・不正応答・期限切れ・伝送断で接続を破棄する。[エンドポイント](../../core/crates/arb-os/src/paths.rs)・[IPC クライアント](../../core/crates/arb-os/src/rpc.rs)
 
-### RPC 一覧（44 メソッド）
+### RPC 一覧（45 メソッド）
 
 | 領域 | ワイヤ名 |
 | --- | --- |
@@ -32,10 +32,12 @@ satisfies:
 | bundle | `bundle.manifest`、`bundle.list`、`bundle.open`、`bundle.lease_renew`、`bundle.close`、`bundle.trash`、`bundle.restore`、`bundle.gc`、`bundle.forget`、`bundle.query_logs` |
 | timeline | `timeline.summary`、`timeline.overview`、`timeline.query_logs`、`timeline.query_taps`、`timeline.discontinuities`、`timeline.crashes`、`timeline.screens` |
 | edit | `edit.get_session`、`edit.update_session` |
-| export | `export.trim`、`export.png` |
+| export | `export.trim`、`export.png`、`export.share_mp4` |
 | media | `media.open_viewport`、`media.filmstrip`、`media.scrub`、`media.seek_frame`、`media.close_viewport`、`media.decode_audio_pcm`、`media.inspect_frames` |
 
-`system.hello` は `protocol_version`、`build_id`、`parent_bound`、`gc_dry_run` 等を返す。終了引継ぎの拒否は成功応答内の `ok: false`。`system.status` の `recovery` は起動時の物理削除完了件数・失敗件数・失敗 ID を伝える。保存・カタログは [SPEC-02](SPEC-02-time-selection-bundle.md)、検索・MCP 側の既定値は [SPEC-06](SPEC-06-mcp-cli-contracts.md)。[ディスパッチ](../../core/crates/arbd/src/lib.rs)・[要求・応答の型](../../core/crates/arbd/src/protocol.rs)
+`system.hello` は `protocol_version`、`build_id`、`parent_bound`、`gc_dry_run`、`realtime_trim`、`standalone_share_trim` 等を返す。CLI／MCP の Rust クライアントは実時間引数を送る前に同じ接続で能力を確認する。旧デーモンが余分なバンドルを作りうるフレーム範囲指定等は単独共有能力も確認し、未対応なら `-32601` と更新案内を返す。終了引継ぎの拒否は成功応答内の `ok: false`。`system.status` の `recovery` は起動時の物理削除完了件数・失敗件数・失敗 ID を伝える。保存・カタログは [SPEC-02](SPEC-02-time-selection-bundle.md)、検索・MCP 側の既定値は [SPEC-06](SPEC-06-mcp-cli-contracts.md)。[ディスパッチ](../../core/crates/arbd/src/lib.rs)・[要求・応答の型](../../core/crates/arbd/src/protocol.rs)
+
+ログの生行（`bundle.query_logs`／`timeline.query_logs`）と概要（`timeline.overview`）は同じ `LogCoordinates` で、同じ boot の主ログの ns 時刻から表示中の VFR フレームを引く。生行の `frame_index` と概要の代表行の `frame_index_hint` は同じ行なら一致する。`timestamp_utc` はログヘッダのミリ秒 UTC。検索・集約の件数とフィルタ、版別の MCP 投影は [SPEC-06](SPEC-06-mcp-cli-contracts.md)、保存尺・ログ完全性・ドレイン・GC は [SPEC-02](SPEC-02-time-selection-bundle.md)、タップ座標の取得・読取時校正は [SPEC-07](SPEC-07-device-capture-audio-input.md) を参照する。
 
 ### エラーと再送
 
@@ -61,21 +63,37 @@ satisfies:
 - 外部フィルムストリップ `filmstrip.bin` の magic は `ARBFS002`。入力 MP4 の長さ、フレーム数、内容の SHA-256 等を照合する。同じ長さでも内容が異なる場合や旧形式は再生成する。ヒット時も元動画のハッシュ計算は必要。FHD30 の全体サムネイル 1 秒・正確なシーク 0.2〜0.5 秒は実機計測目標。[REQ-11](../requirements/REQ-11.md)
 - K10 の軸は先頭メディア時刻 0、各表示開始 `frame_pts_ns`、最終保持を含む排他的終端 `timeline_duration_ns`。時刻は直前の開始 PTS のフレームを指す。最終フレームは `last_frame_duration_ns` を含む。10 万枚超では全 PTS を転送せず中間を推定する。旧デーモンや末尾長不明の推定差は [既知制約 / TCB-18]。[実時間軸](../../core/crates/arb-media/src/timeline.rs)・[TCB 台帳](../proofs/tcb-axioms.md)
 
+### 実時間トリムと四つのストリーム
+
+`edit.update_session`、`export.trim`、`export.share_mp4` は元動画先頭からの整数 ns の対を受け付ける。成立条件は `0 ≤ in_time_ns < out_time_ns ≤ duration_ns`。片側だけ・空・逆順・総尺超過は `-32602`。両端があればフレーム指定に優先し、両端省略なら従来の両端を含むフレーム番号を使用する。カタログには時刻対と互換用フレーム番号を保存し、`edit.get_session` が返す。時刻対のない旧セッションは Studio がフレームの表示開始と OUT の次の開始（末尾なら総尺）から復元する。[範囲解決](../../core/crates/arbd/src/trim_range.rs)・[編集セッション](../../core/crates/arbd/src/lib.rs)
+
+| ストリーム | 同じ半開区間 `[in_time_ns, out_time_ns)` をどう出力するか |
+| --- | --- |
+| 映像 | `arb-media::timeline::plan_time_range_trim` が表示区間との共通部分を列挙し、`trim_video_time_range` が媒体へ書く。VFR 静止中の 12〜22 秒から 15.5〜18 秒を選べば、焼き込みなしでは IDR 1 枚で 2.5 秒。先頭 GOP 以外はコピー可能。累積時刻を丸めて各サンプルを最低 1 ティックとし、必要なら出力 timescale を上げる。faststart、単一 avc1、編集リスト 0 個（`elst=0`）。レポートは要求区間と量子化後の実尺を区別する |
+| 音声 | 選択の実時間を PCM サンプル境界へ写し、音声との重なりがあれば選択先頭・末尾の不足分を無音で補って AAC に再符号化する。準備用パケットの表示長は 0、音声ファイルと共有 MP4 の `iTunSMPB` に先頭・末尾パディングを記す |
+| ログ | 各端の映像フレームの端末時刻を使い、スリープをまたいでも同じ boot の記録を選ぶ。同期した主行は IN を含み OUT を除く。出力の相対時刻原点は IN |
+| 入力 | 同期した境界横断スワイプは時刻で軌跡を補間し両端を切る。焼き込みでは静止映像でも押下・軌跡・解放・フェードに合わせて保持時間を分割し、操作が見える区間だけ描画する |
+
+K13 の 5 ハーネスは区間・時間保存・表示同値・不正入力・ティック量子化を扱う。実際に書いた動画・AAC・ログ・入力の照合は G3 と実デーモン試験を通す。[メディア計画](../../core/crates/arb-media/src/timeline.rs)・[AAC 切り出し](../../core/crates/arb-media/src/audio/realtime.rs)・[G3](../../core/crates/arb-media/tests/pdd_g3_media_props.rs)・[四ストリーム統合試験](../../core/crates/arbd/tests/t2b_mcp_share_audio_e2e.rs)
+
 ### バンドル出力と共有動画
 
 `export.trim` は別の編集済みバンドルを作り、ログ・イベント・マニフェストも保存する。`include_share_mp4` を指定すれば共有動画を追加し、`burn_taps` でタップ／スワイプを描ける。`logcat.log` と `events.jsonl` は空でも作り、隔離ログがあれば `unanchored.log` を追加する。元の内容は不変。`trash_original` は成功後の論理退避である。
 
-`export.share_mp4` は映像と利用可能な音声を 1 本の動画として出力する。全体を範囲未指定で共有する経路と、フレーム範囲を指定する経路を区別する。[既知差分 / Trail #154・PR #557] 基準版で範囲を指定すると内部の `export.trim` が編集済みバンドルも作る。範囲指定でも既定で MP4 だけにする契約と `keep_bundle` は後続変更。出力先衝突で既存動画を上書きしてはならない。[共有動画の実装](../../core/crates/arbd/src/inspect_export.rs)
+| 操作 | RPC と成果物 | カタログ |
+| --- | --- | --- |
+| Studio「選択範囲を書き出し」 | `export.trim` で映像・利用可能な音声・ログ・入力を持つ完全なバンドルを作る。「共有用 MP4」なら `include_share_mp4=true`、同じフォルダに `share.mp4`（焼き込み時は `share-taps.mp4`）を同梱 | 「トリム済み」に新規登録 |
+| CLI／MCP の単独共有 | `export.share_mp4` の既定は `keep_bundle=false`。全体または選択区間を指定ファイルへ出力。パス省略時は指定ディレクトリまたは既定先へ出力し、既存動画との衝突は失敗 | 追加 0 件。`keep_bundle=true` の明示時だけ編集済みバンドルを保持・登録 |
 
-[設計 / Item #18] VFR の静止フレームが 12〜22 秒を占める場合、15.5〜18 秒の選択を動画・音声・ログ・入力の同じ窓に適用し、動画の最初／最後の保持長を切り詰める。目標出力尺は 2.5 秒。時刻区間、メディア timescale への丸め、RPC の永続化・配線が揃って初めて操作全体を実装済みと判定する。基準版のフレーム指定 RPC では保証しない。[Studio の受け入れ条件](SPEC-05-ide-studio-ux.md)
+[Studio の書き出し](../../ide-plugin/src/main/kotlin/io/github/shinma06/arb/ide/ArbBundleFileEditor.kt)・[バンドル生成](../../core/crates/arbd/src/media_engine.rs)・[単独動画の実装](../../core/crates/arbd/src/inspect_export.rs)
 
 ## 仕様 vs バグ
 
-| 条件 | 正常仕様 | バグ・既知差分 |
+| 条件 | 正常仕様 | バグ |
 | --- | --- | --- |
 | 存在しない ID と未定義メソッド | 前者は対象なし、後者は ER-07 | 両方で IDE が切断を表示する |
 | 静止画面の 5 秒保持 | 時計は進み同じ画を表示 | フレーム番号を等間隔に並べ時計とマーカーがずれる |
 | 非 IDR からフレーム指定出力 | 指定した先頭画像から再生 | 再生開始前のフレームがファイルに残る |
-| 範囲指定の共有動画 | MP4 を返す | 余分な編集済みバンドルの登録は PR #557 の既知差分 |
+| 範囲指定の共有動画 | 明示的な保持指定がなければ MP4 1 本 | 単独共有で編集済みバンドルを登録する |
 
-設計と検証は Trail #96・#97・#113・#114・#133／PR #538・#136／PR #540・#140／PR #543・#149／PR #552・#151／PR #554。K8〜K10・K12、S4、G3・G7、M1・M2、TCB-05／09／18／20。[TCB 台帳](../proofs/tcb-axioms.md)
+設計と検証は Trail #96・#97・#113・#114・#133／PR #538・#136／PR #540・#140／PR #543・#149／PR #552・#151／PR #554。K8〜K10・K12・K13、S4・S6・S7、G3・G7、M1・M2、TCB-05／09／18／20。[TCB 台帳](../proofs/tcb-axioms.md)

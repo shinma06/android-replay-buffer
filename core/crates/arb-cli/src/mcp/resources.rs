@@ -104,19 +104,56 @@ fn prompt_get(p: &Value) -> Result<Value, Failure> {
             }
         }
     }
+    let args = &p["arguments"];
     let guide = match name {
         "investigate_crash" => {
-            "ID 未指定時は arb_list_bundles で対象を選び、crashes を読みます。前後ログを arb_query_logs の level=ERROR と whole_word=true で絞り、screens で画面遷移を追い、必要なフレームだけ resources/read で確認します。"
+            let id = args["bundle_id"].as_str().unwrap_or("<選んだバンドルID>");
+            let prefix = if args["bundle_id"].is_null() {
+                "arb_list_bundles({}) で対象を選択します。\n"
+            } else {
+                ""
+            };
+            let logs = json!({"bundle_id":id,"level":"ERROR","whole_word":true});
+            format!(
+                "{prefix}resources/read で arb://bundles/{}/crashes を確認します。\narb_query_logs({logs}) で前後のログを調べ、screens と該当フレームを照合します。",
+                encode_segment(id)
+            )
         }
         "triage_recent_bug" => {
-            "arb_save_and_inspect で保存します。window_shortfall と warnings で証跡の完全性を確認し、arb_query_logs の whole_word=true でキーワードを検索して、該当フレームだけを取得します。"
+            let mut save = json!({});
+            if let Some(secs) = args["duration_secs"].as_str() {
+                let secs = secs
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|v| (5..=600).contains(v))
+                    .ok_or("duration_secs は 5～600 の整数で指定してください")?;
+                save["duration_secs"] = json!(secs);
+            }
+            let mut logs = json!({"bundle_id":"<保存結果のbundle_id>","whole_word":true});
+            if let Some(word) = args["keyword"].as_str() {
+                logs["keyword"] = json!(word);
+            }
+            format!(
+                "arb_save_and_inspect({save}) で保存し、window_shortfall と warning_codes を確認します。\narb_query_logs({logs}) で対象行を探し、該当フレームを取得します。"
+            )
         }
         _ => {
-            "必ず arb_gc_bundles(dry_run: true) を先に実行し、対象と保護理由、回収可能バイト数を提示してください。ユーザーの明示確認を待ち、同じ ignore_grace で実行してください。"
+            let ignore = args["ignore_grace"]
+                .as_str()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .map_err(|_| {
+                    Failure::invalid("ignore_grace は true または false で指定してください")
+                })?;
+            let preview = json!({"dry_run":true,"ignore_grace":ignore});
+            let execute = json!({"dry_run":false,"ignore_grace":ignore});
+            format!(
+                "arb_gc_bundles({preview}) で対象・保護理由・回収量を確認します。\n対象を提示して明示確認を得た後に arb_gc_bundles({execute}) を実行します。"
+            )
         }
     };
     Ok(
-        json!({"description":def["description"],"messages":[{"role":"user","content":{"type":"text","text":format!("{guide}\n指定値 {}",p.get("arguments").cloned().unwrap_or_else(||json!({})))}}]}),
+        json!({"description":def["description"],"messages":[{"role":"user","content":{"type":"text","text":guide}}]}),
     )
 }
 
@@ -242,7 +279,7 @@ impl McpServer {
                             Ok(frame) => frame,
                             Err(error) => {
                                 // Legacy media RPCs use a single code for out-of-range and codec errors.
-                                if error.rpc_code == -32004
+                                if matches!(error.rpc_code, -32004 | -32602)
                                     && self.call_daemon("timeline.summary", &target)?["frame_count"]
                                         .as_u64()
                                         .is_some_and(|n| i >= n)

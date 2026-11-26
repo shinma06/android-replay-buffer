@@ -11,10 +11,18 @@ data class RpcErrorObject(
     val data: Any? = null,
 )
 
+data class RpcErrorDetails(
+    val errorCode: String? = null,
+    val kind: String? = null,
+    val hint: String? = null,
+    val retryable: Boolean? = null,
+)
+
 class ArbdRpcException(
     val code: Int,
     override val message: String,
     val method: String? = null,
+    val details: RpcErrorDetails? = null,
 ) : RuntimeException(
     if (method != null) "arbd RPC error ($method) [$code]: $message" else "arbd RPC error [$code]: $message",
 ) {
@@ -47,6 +55,8 @@ data class SystemHelloResponse(
      * daemons.
      */
     val parentBound: Boolean = false,
+    val standaloneShareTrim: Boolean = false,
+    val realtimeTrim: Boolean = false,
 )
 
 enum class AudioCaptureMode(val wire: String, val minApi: Int) {
@@ -414,6 +424,7 @@ data class SaveLogsParams(
     val destDir: String? = null,
     val drainTimeoutMs: Long? = null,
     val selectionPolicy: SelectionPolicy? = null,
+    val note: String? = null,
 )
 
 data class SaveScreenshotParams(
@@ -468,6 +479,11 @@ data class SaveOutcomeResponse(
     val discontinuityCount: Long? = null,
     val windowShortfall: Boolean? = null,
     val warnings: List<String>? = null,
+    val warningCodes: List<String>? = null,
+    val logcatCompleteness: LogcatEvidence? = null,
+    val videoShortfall: Boolean? = null,
+    val logShortfall: Boolean? = null,
+    val note: String? = null,
 ) {
     /**
      * The saved bundle, or `null` when the save did not complete. Same rule as `arb-cli`
@@ -483,6 +499,14 @@ data class SaveOutcomeResponse(
             .joinToString("、")
             .ifBlank { null }
 }
+
+data class LogcatEvidence(
+    val status: LogCompleteness? = null,
+    val overflowEvents: Long = 0,
+    val droppedCount: Long? = null,
+    val unanchoredCount: Long = 0,
+    val unanchoredTruncatedCount: Long = 0,
+)
 
 data class SaveListJobsResponse(
     val jobs: List<SaveJobView>,
@@ -828,6 +852,7 @@ data class LogcatStreamMeta(
     val completeness: LogCompleteness,
     val overflowEvents: Long,
     val tailMayBeIncomplete: Boolean = false,
+    val droppedCount: Long? = null,
 )
 
 data class InputStreamMeta(
@@ -901,6 +926,7 @@ data class TimelineLogsResponse(
     val returnedCount: Int? = null,
     val hasMore: Boolean = false,
     val nextCursor: String? = null,
+    val unanchoredCount: Long = 0,
 )
 
 /**
@@ -1006,6 +1032,8 @@ data class EditSessionView(
     val playheadFrameIndex: Long? = null,
     val avOffsetOverrideMs: Long? = null,
     val updatedAtUtc: String,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class EditSessionEnvelope(
@@ -1019,19 +1047,23 @@ data class EditUpdateSessionParams(
     val outFrameIndex: Long? = null,
     val playheadFrameIndex: Long? = null,
     val avOffsetOverrideMs: Long? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 // ---------------- Export (Trim & PNG) ----------------
 
 data class ExportTrimParams(
     val bundleIdOrPath: String,
-    val inFrameIndex: Long,
-    val outFrameIndex: Long,
+    val inFrameIndex: Long? = null,
+    val outFrameIndex: Long? = null,
     val destDir: String? = null,
     val holderPid: Long? = null,
     val burnTaps: Boolean = false,
     val includeShareMp4: Boolean = false,
     val trashOriginal: Boolean = false,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class TrimReport(
@@ -1060,6 +1092,8 @@ data class ExportTrimResponse(
     val originalTrashed: Boolean = false,
     val burnTapsApplied: Boolean = false,
     val warning: String? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 // T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
@@ -1072,6 +1106,9 @@ data class ExportShareMp4Params(
     val trashOriginal: Boolean = false,
     val destDir: String? = null,
     val holderPid: Long? = null,
+    val keepBundle: Boolean = false,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class ExportShareMp4Response(
@@ -1085,6 +1122,8 @@ data class ExportShareMp4Response(
     val outputBytes: Long = 0L,
     val originalTrashed: Boolean = false,
     val warning: String? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class MediaDecodeAudioPcmParams(

@@ -71,6 +71,70 @@ pub enum AutoStartMode {
     Enabled,
 }
 
+/// Default application code for a tool or RPC failure without a more specific cause.
+#[must_use]
+pub const fn error_label(rpc_code: i32) -> &'static str {
+    match rpc_code {
+        -32602 => "INVALID_PARAMS",
+        -32001 => "BUNDLE_NOT_FOUND",
+        -32002 => "CONFLICT",
+        -32601 => "DAEMON_UNAVAILABLE",
+        _ => "OPERATION_FAILED",
+    }
+}
+
+/// Stable category, recovery hint and retry policy for a tool error code.
+#[must_use]
+pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
+    match label {
+        "INVALID_PARAMS" => (
+            "invalid_params",
+            "ツールの引数名、型、値の範囲を確認してください。",
+            false,
+        ),
+        "ALREADY_TRASHED" => (
+            "conflict",
+            "既にごみ箱にあります。復元には arb_restore_bundle を使います。",
+            false,
+        ),
+        "ALREADY_ACTIVE" => (
+            "conflict",
+            "既に有効です。arb_list_bundles で確認できます。",
+            false,
+        ),
+        "CONFLICT" => (
+            "conflict",
+            "対象の現在の状態と出力先を確認してください。",
+            false,
+        ),
+        "BUNDLE_NOT_FOUND" => (
+            "not_found",
+            "対象の ID、パスまたは端末を確認してください。",
+            false,
+        ),
+        "FAILED_RETRYABLE" => (
+            "save_failed",
+            "保存ジョブを確認し、原因を解消して再試行してください。",
+            true,
+        ),
+        "DAEMON_UNAVAILABLE" => (
+            "daemon_unavailable",
+            "デーモンの接続とバージョンを確認してください。",
+            false,
+        ),
+        "CANCELLED" => (
+            "cancelled",
+            "必要に応じて処理の状態を確認してください。",
+            false,
+        ),
+        _ => (
+            "operation_failed",
+            "エラーの詳細と対象の状態を確認してください。",
+            false,
+        ),
+    }
+}
+
 /// Errors returned by [`RpcClient`].
 #[non_exhaustive]
 #[derive(Debug, Error)]
@@ -87,6 +151,8 @@ pub enum RpcClientError {
     /// Server returned a JSON-RPC 2.0 error response.
     #[error("rpc error {code}: {message}")]
     Rpc {
+        /// Application-specific error code from JSON-RPC error.data, when available.
+        error_code: Option<String>,
         /// Numeric JSON-RPC error code.
         code: i32,
         /// Human-readable server error message.
@@ -164,6 +230,7 @@ struct OutgoingRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 struct IncomingError {
+    data: Option<Value>,
     code: i32,
     message: String,
 }
@@ -197,6 +264,9 @@ fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
         (None, Some(error)) => {
             let error: IncomingError = serde_json::from_value(error)?;
             Err(RpcClientError::Rpc {
+                error_code: error
+                    .data
+                    .and_then(|d| d["error_code"].as_str().map(str::to_owned)),
                 code: error.code,
                 message: error.message,
             })
@@ -414,8 +484,34 @@ impl RpcClient {
             && self.verify_hello()?["gc_dry_run"] != true
         {
             return Err(RpcClientError::Rpc {
+                error_code: None,
                 code: -32601,
                 message: "GC プレビューには arbd の更新が必要です".into(),
+            });
+        }
+        if matches!(
+            method,
+            "edit.update_session" | "export.trim" | "export.share_mp4"
+        ) && (!params["in_time_ns"].is_null() || !params["out_time_ns"].is_null())
+            && self.verify_hello()?["realtime_trim"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                error_code: None,
+                code: -32601,
+                message: "実時間トリムには arbd の更新が必要です".into(),
+            });
+        }
+        // Older daemons eagerly catalog ranged MP4 exports and ignore dest_dir for generated names.
+        if method == "export.share_mp4"
+            && (params["in_frame_index"].is_u64()
+                || params["keep_bundle"] == true
+                || (params["dest_dir"].is_string() && params["output_path"].is_null()))
+            && self.verify_hello()?["standalone_share_trim"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                error_code: None,
+                code: -32601,
+                message: "共有 MP4 の出力方式を選ぶには arbd の更新が必要です".into(),
             });
         }
         let timeout = if is_quick_method(method) {

@@ -35,6 +35,10 @@ Entire Trails drive the change; GitHub runs CI and publishes releases. Always pa
 - Support floor: Android 9 (API 28)+ core guaranteed (API 28–32 degrade audio cleanly to `audio=false` / `Unavailable`), Android 13 (API 33)+ recommended for audio capture/playback (non-muting `audio_source=playback audio_dup=true`, SPEC-03), API ≤ 27 unsupported (non-blocking warning). IDE plugin targets Android Studio Rabbit (2026.2 / IntelliJ `262.9437.185`–`262.*`); older Android Studio and VS Code/Cursor use native `arb-tray` + `arb-cli` + MCP.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
+## Before every code change or bug fix
+
+Read the [state ownership and invariants](docs/specs/README.md#ownership), the [change impact matrix](docs/specs/README.md#impact), and the [corresponding PDD evidence](docs/specs/README.md#evidence) before editing. Trace the affected row from its state owner through each listed consumer. For a bug, identify the violated invariant and check or add its proof or regression case first. For a contract change, update the specification, shared rows, and affected proof or test expectations first. Verify the same boundary through the affected layers before calling the change complete.
+
 ## PDD-first quality assurance
 
 - Build assurance around five layers: Kani symbolic proofs, Stateright interleaving exploration, shared Rust/Kotlin JSON contract tables, Proptest/Miri, and Konsist/dependency graph checks. Focus conventional tests on smoke coverage, OS/IPC/FS fault injection, bug reproduction, and device acceptance.

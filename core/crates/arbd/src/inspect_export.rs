@@ -168,7 +168,7 @@ pub fn decode_audio_pcm(
 }
 
 /// Exports a single-file faststart zero-`elst` `share.mp4`, optionally trimming to
-/// `[in_frame_index..=out_frame_index]` via a new WORM trimmed bundle first, and optionally
+/// `[in_frame_index..=out_frame_index]`. Only `keep_bundle` catalogs the selected range. Supports
 /// moving the source bundle to non-destructive Trash **strictly after** all outputs are
 /// fsynced, verified, and committed.
 ///
@@ -194,18 +194,25 @@ pub fn export_share_mp4(
         crate::media_engine::validate_trash_source(reader.as_ref(), source_entry)?;
     }
 
+    let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
     let source_video = reader.video_path().ok_or_else(|| {
+        if times.is_some() {
+            return DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into());
+        }
         DaemonError::NotFound(format!(
             "source bundle `{}` has no video.mp4 track",
             source_catalog_id.unwrap_or(&summary.bundle_id)
         ))
     })?;
     let src_track = Mp4VideoTrack::open(&source_video)?;
-    let requested_trim = resolve_share_trim_range(
-        params.in_frame_index,
-        params.out_frame_index,
-        src_track.frame_count(),
+    let range = crate::trim_range::TrimRange::resolve(
+        &src_track,
+        (params.in_frame_index, params.out_frame_index),
+        times,
     )?;
+    let requested_trim =
+        (range.realtime || range.first != 0 || range.last + 1 != src_track.frame_count())
+            .then_some(range);
 
     // Refuse an existing output before any trimmed WORM bundle is committed, so a doomed
     // export never leaves an orphan trimmed bundle in the catalog.
@@ -223,7 +230,7 @@ pub fn export_share_mp4(
         fs::create_dir_all(parent)?;
     }
 
-    let (av_mux_report, trimmed_bundle) = if let Some((first, last)) = requested_trim {
+    let (av_mux_report, trimmed_bundle) = if params.keep_bundle {
         let trim = export_trim(
             ctx,
             source_bundle_dir,
@@ -231,8 +238,10 @@ pub fn export_share_mp4(
             dest_parent,
             &ExportTrimParams {
                 bundle_id_or_path: params.bundle_id.clone(),
-                in_frame_index: first,
-                out_frame_index: last,
+                in_frame_index: Some(range.first),
+                out_frame_index: Some(range.last),
+                in_time_ns: params.in_time_ns,
+                out_time_ns: params.out_time_ns,
                 dest_dir: params.dest_dir.clone(),
                 holder_pid: params.holder_pid,
                 burn_taps: params.burn_taps,
@@ -249,20 +258,12 @@ pub fn export_share_mp4(
             (Some(trim.bundle_id), Some(trim.bundle_path), trim.warning),
         )
     } else {
-        let (video, _cleanup) = if params.burn_taps {
-            burn_in_share_video_if_nonempty(ctx, reader.as_ref(), &source_video)?
-        } else {
-            (source_video, None)
-        };
-        let offset = summary
-            .streams
-            .audio
-            .as_ref()
-            .map_or(0, |a| a.audio_lead_in_offset_ns);
-        let report = mux_share_mp4(
-            &video,
-            reader.audio_path().as_deref(),
-            offset,
+        let report = mux_selected_media(
+            ctx,
+            reader.as_ref(),
+            &source_video,
+            requested_trim,
+            params,
             share_mp4_path,
         )?;
         (report, (None, None, None))
@@ -279,6 +280,8 @@ pub fn export_share_mp4(
     );
 
     Ok(ExportShareMp4Response {
+        in_time_ns: Some(range.start),
+        out_time_ns: Some(range.end),
         share_mp4_path: share_mp4_path.to_path_buf(),
         trimmed_bundle_id,
         trimmed_bundle_path,
@@ -295,81 +298,134 @@ pub fn export_share_mp4(
 
 use crate::capture::TempFileGuard as TempFileCleanup;
 
-fn resolve_share_trim_range(
-    in_frame_index: Option<u64>,
-    out_frame_index: Option<u64>,
-    src_frame_count: u64,
-) -> Result<Option<(u64, u64)>, DaemonError> {
-    if src_frame_count == 0 {
-        return Err(DaemonError::InvalidParams(
-            "source bundle video track contains 0 frames".to_owned(),
-        ));
-    }
-    match (in_frame_index, out_frame_index) {
-        (Some(in_f), Some(out_f)) => {
-            if in_f > out_f || out_f >= src_frame_count {
-                return Err(MediaError::InvalidFrameRange {
-                    in_frame_index: in_f,
-                    out_frame_index: out_f,
-                    frame_count: src_frame_count,
-                }
-                .into());
+fn share_touch_events(
+    taps: Vec<arb_core::bundle::TapRecord>,
+    window: Option<&arb_core::selection::WindowSpec>,
+    range: Option<crate::trim_range::TrimRange>,
+) -> Vec<BurnInTouchEvent> {
+    taps.into_iter()
+        .filter(|tap| window.is_none_or(|w| tap_boot_id(tap) == Some(w.boot_id())))
+        .filter_map(|mut tap| {
+            if let Some(w) = window.filter(|_| range.is_some_and(|r| r.realtime))
+                && (!crate::trim_range::clip_tap(&mut tap, w)
+                    || arb_core::selection::classify_record(&tap, w)
+                        != arb_core::selection::Membership::InRange)
+            {
+                return None;
             }
-            Ok((in_f > 0 || out_f + 1 < src_frame_count).then_some((in_f, out_f)))
-        }
-        (None, None) => Ok(None),
-        _ => Err(DaemonError::InvalidParams(
-            "開始と終了のフレーム番号を両方指定してください".into(),
-        )),
-    }
+            BurnInTouchEvent::from_tap_record(&tap)
+        })
+        .collect()
 }
 
-fn burn_in_share_video_if_nonempty(
+fn mux_selected_media(
     ctx: &ExportContext<'_>,
-    bundle_reader: &dyn BundleReader,
-    video_path: &Path,
-) -> Result<(PathBuf, Option<TempFileCleanup>), DaemonError> {
-    let frames = bundle_reader.frames()?;
-    if frames.is_empty() {
-        return Ok((video_path.to_path_buf(), None));
-    }
-    let taps = bundle_reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let events: Vec<BurnInTouchEvent> = taps
-        .iter()
-        .filter_map(BurnInTouchEvent::from_tap_record)
-        .collect();
-    if events.is_empty() {
-        return Ok((video_path.to_path_buf(), None));
-    }
-    let frame_ts: Vec<i64> = frames
-        .iter()
-        .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
-        .collect();
-    let summary = bundle_reader.manifest_summary();
-    let geom = BurnInDisplayGeometry {
-        display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
-        display_height: summary
-            .streams
-            .video
-            .as_ref()
-            .and_then(|v| v.display_height),
+    reader: &dyn BundleReader,
+    source: &Path,
+    range: Option<crate::trim_range::TrimRange>,
+    params: &ExportShareMp4Params,
+    output: &Path,
+) -> Result<arb_media::AvMuxReport, DaemonError> {
+    let summary = reader.manifest_summary();
+    let tmp = ctx.data_dir.join("tmp");
+    let job = next_id("share");
+    let taps = if params.burn_taps {
+        reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?
+    } else {
+        Vec::new()
     };
-    let tmp_dir = ctx.data_dir.join("tmp");
-    fs::create_dir_all(&tmp_dir)?;
-    let tmp_burned = tmp_dir.join(format!("{}-burned.mp4", next_id("share")));
-    let last_frame = u64::try_from(frames.len().saturating_sub(1)).unwrap_or(0);
-    let cleanup = TempFileCleanup(tmp_burned.clone());
-    let _report = burn_in_taps_video(
-        video_path,
-        &tmp_burned,
-        0,
-        last_frame,
-        &frame_ts,
-        &events,
-        geom,
-        ctx.backend,
-    )?;
-    Ok((tmp_burned, Some(cleanup)))
+    let video_guard = if range.is_some() || !taps.is_empty() {
+        fs::create_dir_all(&tmp)?;
+        let guard = TempFileCleanup(tmp.join(format!("{job}.mp4")));
+        let frames = reader.frames()?;
+        let window = range
+            .filter(|r| !r.realtime || !taps.is_empty())
+            .map(|r| r.window(&frames))
+            .transpose()?;
+        let mut events = share_touch_events(taps, window.as_ref(), range);
+        let geometry = BurnInDisplayGeometry {
+            display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
+            display_height: summary
+                .streams
+                .video
+                .as_ref()
+                .and_then(|v| v.display_height),
+        };
+        if let Some(r) = range.filter(|r| r.realtime) {
+            if events.is_empty() {
+                r.trim_video(source, &guard.0, ctx.backend)?;
+            } else {
+                let cut = TempFileCleanup(tmp.join(format!("{job}-cut.mp4")));
+                r.trim_video(source, &cut.0, ctx.backend)?;
+                let window = window
+                    .as_ref()
+                    .ok_or_else(|| DaemonError::Internal("missing trim window".into()))?;
+                let clock = arb_core::bundle::FrameMediaClock::new(
+                    &frames,
+                    window.boot_id(),
+                    window.start_boottime_ns(),
+                );
+                for event in &mut events {
+                    event.rebase_on_clock(&clock);
+                }
+                arb_media::burn_in::burn_in_taps_time_range(
+                    &cut.0,
+                    &guard.0,
+                    &r.sample_boundaries(&Mp4VideoTrack::open(source)?)?,
+                    &events,
+                    geometry,
+                    ctx.backend,
+                )?;
+            }
+        } else {
+            let (first, last) = range.map_or_else(
+                || Ok::<_, DaemonError>((0, Mp4VideoTrack::open(source)?.frame_count() - 1)),
+                |r| Ok((r.first, r.last)),
+            )?;
+            let timestamps = frames
+                .iter()
+                .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
+                .collect::<Vec<_>>();
+            burn_in_taps_video(
+                source,
+                &guard.0,
+                first,
+                last,
+                &timestamps,
+                &events,
+                geometry,
+                ctx.backend,
+            )?;
+        }
+        Some(guard)
+    } else {
+        None
+    };
+    let selected = video_guard.as_ref().map_or(source, |g| g.0.as_path());
+    let audio = range
+        .map(|bounds| crate::media_engine::trim_source_audio(reader, bounds, &tmp, &job))
+        .transpose()?
+        .flatten();
+    let (audio_path, offset) = match range {
+        Some(_) => (
+            audio.as_ref().map(|(a, _)| a.tmp_m4a.clone()),
+            audio.as_ref().map_or(0, |(a, _)| a.lead_in_offset_ns),
+        ),
+        None => (
+            reader.audio_path(),
+            summary
+                .streams
+                .audio
+                .as_ref()
+                .map_or(0, |a| a.audio_lead_in_offset_ns),
+        ),
+    };
+    Ok(mux_share_mp4(
+        selected,
+        audio_path.as_deref(),
+        offset,
+        output,
+    )?)
 }
 
 /// Builds a compact one-shot [`TimelineOverviewResponse`] for AI triage.
@@ -380,7 +436,7 @@ fn burn_in_share_video_if_nonempty(
 pub fn build_timeline_overview(
     bundle_dir: &Path,
     catalog_bundle_id: Option<&str>,
-    max_error_logs: Option<usize>,
+    params: &crate::protocol::TimelineOverviewParams,
 ) -> Result<TimelineOverviewResponse, DaemonError> {
     let reader = open_bundle(bundle_dir)?;
     let summary = reader.manifest_summary();
@@ -422,12 +478,8 @@ pub fn build_timeline_overview(
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let taps = build_overview_taps(&main_taps, &frames, base_boottime_ns);
 
-    let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let max_errors = max_error_logs
-        .unwrap_or(DEFAULT_OVERVIEW_ERROR_LOGS)
-        .min(MAX_OVERVIEW_ERROR_LOGS);
-    let error_log_highlights =
-        build_error_log_highlights(&main_logs, &frames, base_boottime_ns, max_errors);
+    let (error_log_highlights, total_error_logs, unique_error_logs) =
+        overview_highlights(reader.as_ref(), &frames, params)?;
 
     let audio_status = summary
         .streams
@@ -463,6 +515,10 @@ pub fn build_timeline_overview(
         taps,
         crashes,
         discontinuities,
+        logcat_completeness_detail: Some(summary.into()),
+        total_error_logs,
+        unique_error_logs,
+        error_logs_truncated: unique_error_logs > error_log_highlights.len(),
         error_log_highlights,
         unanchored_count: summary.unanchored_summary.included_count,
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
@@ -646,57 +702,15 @@ pub(super) fn query_log_response(
     limit: usize,
 ) -> Result<crate::protocol::TimelineLogsResponse, DaemonError> {
     let page = query_logs_with_total(reader, bucket, params, limit)?;
-    let mut frames = BTreeMap::<String, (Vec<i64>, Vec<u64>)>::new();
-    for frame in reader.frames()? {
-        if let Some(t) = frame_boottime_ns(&frame) {
-            let (times, indices) = frames.entry(frame.boot_id).or_default();
-            times.push(times.last().map_or(t, |prev| t.max(*prev)));
-            indices.push(frame.frame_index);
-        }
-    }
-    let epochs = &reader.manifest_summary().epochs;
+    let records = reader.frames()?;
+    let coordinates = LogCoordinates::new(&records, &reader.manifest_summary().epochs);
     let logs = page
         .logs
         .into_iter()
-        .map(|record| {
-            let timestamp_utc = record
-                .header_epoch_ns
-                .map(crate::time_util::format_epoch_ns_iso8601);
-            let (offset_ms, frame_index) = match (&record.alignment, record.bucket) {
-                (
-                    TimeAlignment::Anchored {
-                        boot_id,
-                        boottime_ns,
-                        ..
-                    },
-                    RecordBucket::Main,
-                ) => {
-                    let table = frames.get(boot_id);
-                    let start = table.and_then(|(p, _)| p.first().copied()).or_else(|| {
-                        epochs
-                            .iter()
-                            .find(|e| e.boot_id == *boot_id)
-                            .map(|e| e.start_boottime_ns)
-                    });
-                    let frame = table.and_then(|(p, ids)| {
-                        arb_media::timeline::frame_at_time(p, *boottime_ns).map(|i| ids[i])
-                    });
-                    (
-                        start.map(|s| boottime_ns.saturating_sub(s) / 1_000_000),
-                        frame,
-                    )
-                }
-                _ => (None, None),
-            };
-            crate::protocol::QueryLogRow {
-                record,
-                timestamp_utc,
-                offset_ms,
-                frame_index,
-            }
-        })
+        .map(|record| coordinates.query_row(record))
         .collect::<Vec<_>>();
     Ok(crate::protocol::TimelineLogsResponse {
+        unanchored_count: reader.count_logs(Some(RecordBucket::Unanchored), TimeRange::all())?,
         returned_count: logs.len(),
         logs,
         total_matched: page.total_matched,
@@ -1496,29 +1510,145 @@ fn build_overview_taps(
         .collect()
 }
 
+struct LogCoordinates<'a> {
+    frames: BTreeMap<&'a str, (Vec<i64>, Vec<u64>)>,
+    epochs: &'a [arb_core::bundle::EpochSpan],
+}
+
+impl<'a> LogCoordinates<'a> {
+    fn new(records: &'a [FrameRecord], epochs: &'a [arb_core::bundle::EpochSpan]) -> Self {
+        let mut frames = BTreeMap::<&str, (Vec<i64>, Vec<u64>)>::new();
+        for frame in records {
+            if let Some(t) = frame_boottime_ns(frame) {
+                let (times, indices) = frames.entry(frame.boot_id.as_str()).or_default();
+                times.push(times.last().map_or(t, |prev| t.max(*prev)));
+                indices.push(frame.frame_index);
+            }
+        }
+        Self { frames, epochs }
+    }
+
+    fn query_row(&self, record: LogRecord) -> crate::protocol::QueryLogRow {
+        let timestamp_utc = record
+            .header_epoch_ns
+            .map(crate::time_util::format_epoch_ns_iso8601);
+        let (offset_ms, frame_index) = self.locate(&record);
+        crate::protocol::QueryLogRow {
+            record,
+            timestamp_utc,
+            offset_ms,
+            frame_index,
+        }
+    }
+
+    fn locate(&self, log: &LogRecord) -> (Option<i64>, Option<u64>) {
+        let (
+            TimeAlignment::Anchored {
+                boot_id,
+                boottime_ns,
+                ..
+            },
+            RecordBucket::Main,
+        ) = (&log.alignment, log.bucket)
+        else {
+            return (None, None);
+        };
+        let table = self.frames.get(boot_id.as_str());
+        let start = table.and_then(|(p, _)| p.first().copied()).or_else(|| {
+            self.epochs
+                .iter()
+                .find(|e| e.boot_id == *boot_id)
+                .map(|e| e.start_boottime_ns)
+        });
+        let frame = table.and_then(|(p, ids)| {
+            arb_media::timeline::frame_at_time_ns(p, *boottime_ns).map(|i| ids[i])
+        });
+        (
+            start.map(|s| boottime_ns.saturating_sub(s) / 1_000_000),
+            frame,
+        )
+    }
+}
+
+fn overview_highlights(
+    reader: &dyn BundleReader,
+    frames: &[FrameRecord],
+    params: &crate::protocol::TimelineOverviewParams,
+) -> Result<(Vec<ErrorLogHighlight>, usize, usize), DaemonError> {
+    let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    let max_errors = params
+        .max_error_logs
+        .unwrap_or(DEFAULT_OVERVIEW_ERROR_LOGS)
+        .min(MAX_OVERVIEW_ERROR_LOGS);
+    let package = params
+        .package
+        .as_deref()
+        .map(|name| load_or_build_package_resolver(reader).map(|(resolver, _)| (name, resolver)))
+        .transpose()?;
+    let filter = CompiledLogFilter {
+        package,
+        tag_lower: params.tag.as_ref().map(|s| s.to_ascii_lowercase()),
+        level: None,
+        keyword_lower: None,
+        whole_word: false,
+    };
+    let coordinates = LogCoordinates::new(frames, &reader.manifest_summary().epochs);
+    Ok(build_error_log_highlights(
+        &main_logs,
+        &coordinates,
+        &filter,
+        &params.exclude_tags,
+        max_errors,
+    ))
+}
+
 fn build_error_log_highlights(
     main_logs: &[LogRecord],
-    frames: &[FrameRecord],
-    base_boottime_ns: Option<i64>,
+    coordinates: &LogCoordinates<'_>,
+    filter: &CompiledLogFilter<'_>,
+    exclude_tags: &[String],
     max_errors: usize,
-) -> Vec<ErrorLogHighlight> {
-    let mut out = Vec::new();
-    if max_errors == 0 {
-        return out;
-    }
-    for log in main_logs {
-        let Some(level_raw) = log.level.as_deref() else {
-            continue;
-        };
-        let level = normalize_log_level(level_raw);
-        if !matches!(level, "E" | "F") {
+) -> (Vec<ErrorLogHighlight>, usize, usize) {
+    let mut groups = std::collections::HashMap::new();
+    let mut out: Vec<ErrorLogHighlight> = Vec::with_capacity(max_errors);
+    let mut total = 0;
+    for log in main_logs.iter().rev() {
+        let level = normalize_log_level(log.level.as_deref().unwrap_or(""));
+        if !matches!(level, "E" | "F")
+            || !filter.matches(log)
+            || log
+                .tag
+                .as_ref()
+                .is_some_and(|tag| exclude_tags.iter().any(|x| x.eq_ignore_ascii_case(tag)))
+        {
             continue;
         }
-        let bt = log_boottime_ns(log);
-        let frame_index_hint =
-            bt.and_then(|t| nearest_frame_index_for_epoch(frames, log_boot_id(log), t));
-        let t_ms = bt.and_then(|t| base_boottime_ns.map(|base| t.saturating_sub(base) / 1_000_000));
+        total += 1;
+        let signature = (level, log.tag.as_deref(), log.message.as_str());
+        let slot = match groups.entry(signature) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                if let Some(index) = *entry.get() {
+                    let group: &mut ErrorLogHighlight = &mut out[index];
+                    group.repeat_count += 1;
+                    group.first_offset_ms = coordinates.locate(log).0;
+                }
+                continue;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => entry,
+        };
+        if out.len() == max_errors {
+            slot.insert(None);
+            continue;
+        }
+        slot.insert(Some(out.len()));
+        let (t_ms, frame_index_hint) = coordinates.locate(log);
         out.push(ErrorLogHighlight {
+            repeat_count: 1,
+            first_offset_ms: t_ms,
+            last_offset_ms: t_ms,
+            timestamp_utc: log
+                .header_epoch_ns
+                .map(crate::time_util::format_epoch_ns_iso8601),
             seq: log.seq,
             level: level.to_owned(),
             frame_index_hint,
@@ -1526,12 +1656,9 @@ fn build_error_log_highlights(
             tag: log.tag.clone(),
             message: truncate_chars(&log.message, MAX_ERROR_LOG_MESSAGE_CHARS),
         });
-        // Keep the LAST `max_errors` rows (nearest the end of the window, where crashes land).
-        if out.len() > max_errors {
-            out.remove(0);
-        }
     }
-    out
+    out.reverse();
+    (out, total, groups.len())
 }
 
 fn normalize_log_level(raw: &str) -> &str {
@@ -1579,31 +1706,8 @@ fn tap_boottime_ns(tap: &TapRecord) -> Option<i64> {
     }
 }
 
-fn log_boottime_ns(log: &LogRecord) -> Option<i64> {
-    match &log.alignment {
-        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
-        TimeAlignment::Bounded {
-            min_boottime_ns,
-            max_boottime_ns,
-            ..
-        } => Some(
-            min_boottime_ns.saturating_add(max_boottime_ns.saturating_sub(*min_boottime_ns) / 2),
-        ),
-        _ => log.device_read_boottime_ns,
-    }
-}
-
 fn tap_boot_id(tap: &TapRecord) -> Option<&str> {
     tap.boot_id.as_deref().or(match &tap.alignment {
-        TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
-            Some(boot_id.as_str())
-        }
-        _ => None,
-    })
-}
-
-fn log_boot_id(log: &LogRecord) -> Option<&str> {
-    log.boot_id.as_deref().or(match &log.alignment {
         TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
             Some(boot_id.as_str())
         }
@@ -1689,7 +1793,7 @@ pub(super) fn catalog_summary_with_logs(
         has_audio: Some(reader.audio_path().is_some()),
         log_count: Some(logs.count),
         crash_marker_count: Some(reader.crashes()?.len()),
-        memo: None,
+        memo: manifest.manifest_v2.as_ref().and_then(|m| m.memo.clone()),
     })
 }
 
@@ -1904,6 +2008,52 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=", "2-byte vector");
         assert_eq!(base64_encode(b"foo"), "Zm9v", "3-byte vector");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy", "6-byte vector");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn query_and_highlights_agree_at_vfr_boundaries(
+            gaps in proptest::collection::vec(1_i64..90_000_000, 1..50), arbitrary_time in -100_i64..5_000_000_000
+        ) {
+            use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket};
+            use arb_core::time::{TimeAlignment,TimestampSemantics};
+            let anchor = |ns| TimeAlignment::Anchored {boot_id:"boot".into(), boottime_ns:ns, half_width_ns:0, semantics:TimestampSemantics::LogcatDeviceReadBoottime};
+            let mut pts = vec![0];
+            for gap in gaps { pts.push(pts.last().unwrap()+gap); }
+            let frames = pts.iter().enumerate().map(|(i,&ns)| FrameRecord {
+                frame_index:u64::try_from(i).unwrap(), boot_id:"boot".into(), pts_device_mono_ns:ns, pc_ingest_cont_ns:ns,
+                alignment:anchor(ns), is_keyframe:i==0,gop_id:0, mp4_sample_offset:0,mp4_sample_size:1,
+            }).collect::<Vec<_>>();
+            let samples = pts.iter().flat_map(|t|[t-1,*t,t+1]).chain([arbitrary_time]);
+            let logs = samples.enumerate().map(|(i,t)| LogRecord {
+                seq:u64::try_from(i).unwrap(),boot_id:Some("boot".into()),header_epoch_ns:Some(t), device_read_boottime_ns:Some(t),
+                pc_ingest_cont_ns:t,alignment:anchor(t),bucket:RecordBucket::Main,level:Some("E".into()),tag:None,
+                pid:None,tid:None,uid:None,package_name:None,message:i.to_string(),
+            }).collect::<Vec<_>>();
+            let coordinates=super::LogCoordinates::new(&frames,&[]);
+            let filter=super::CompiledLogFilter{package:None,level:None,tag_lower:None,keyword_lower:None,whole_word:false};
+            // Repeated system errors consume one group, even when the chosen limit is smaller than the burst.
+            let mut burst = vec![logs[0].clone()];
+            for seq in 1..=43 {
+                let mut row = logs[1].clone();
+                row.message = "repeated".into();
+                row.seq = seq;
+                burst.push(row);
+            }
+            let (groups, raw, distinct) = super::build_error_log_highlights(&burst, &coordinates, &filter, &[], 2);
+            proptest::prop_assert_eq!((raw, distinct), (44,2));
+            proptest::prop_assert_eq!(groups[1].repeat_count,43);
+            proptest::prop_assert_eq!(groups[1].seq,43);
+            let (highlights,total,_)=super::build_error_log_highlights(&logs,&coordinates,&filter,&[],logs.len());
+            proptest::prop_assert_eq!(total,logs.len());
+            for (log,h) in logs.into_iter().zip(highlights) {
+                let expected = pts.iter().rposition(|p| *p <= log.pc_ingest_cont_ns).unwrap_or(0);
+                let row=coordinates.query_row(log);
+                proptest::prop_assert_eq!(row.frame_index,Some(u64::try_from(expected).unwrap()));
+                proptest::prop_assert_eq!(row.frame_index,h.frame_index_hint);
+                proptest::prop_assert_eq!(row.offset_ms,h.t_ms);
+            }
+        }
     }
 
     #[test]

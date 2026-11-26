@@ -262,7 +262,7 @@ object ProtocolJson {
                 parentBundleId = obj.optString("parent_bundle_id"),
                 createdAtUtc = obj.requireString("created_at_utc"),
                 activeLeases = obj.requireLong("active_leases").toInt(),
-                createdUtc = obj.optString("created_utc"),
+                createdUtc = obj.optString("created_at_utc") ?: obj.optString("created_utc"),
                 bundleKind = obj.optString("bundle_kind"),
                 durationMs = obj.optLong("duration_ms"),
                 frameCount = obj.optLong("frame_count"),

@@ -75,12 +75,15 @@ object ArbFormatters {
     ): String {
         if (totalFrames <= 0L) return EXPORT_FULL_LABEL
         val isFullRange = inFrameIndex <= 0L && outFrameIndex >= totalFrames - 1L
-        return if (isFullRange) {
+        return formatExportCtaLabel(isFullRange, selectedDurationMs)
+    }
+
+    fun formatExportCtaLabel(isFullRange: Boolean, selectedDurationMs: Long): String =
+        if (isFullRange) {
             EXPORT_FULL_LABEL
         } else {
             "選択範囲を書き出し (${formatDurationSeconds(selectedDurationMs)})"
         }
-    }
 
     /** Tabular monospace timecode `MM:SS.cc` for transport bar and timeline markers. */
     fun formatTimecode(relativeMs: Long): String {
@@ -108,10 +111,10 @@ object ArbFormatters {
         outMs: Long,
         inFrameIndex: Long,
         outFrameIndex: Long,
+        durationMs: Long = (outMs - inMs).coerceAtLeast(0L),
     ): String {
         val frameCount = (outFrameIndex - inFrameIndex + 1L).coerceAtLeast(0L)
-        val durMs = (outMs - inMs).coerceAtLeast(0L)
-        return "${formatShortTimecode(inMs)} – ${formatShortTimecode(outMs)} · ${formatDurationSeconds(durMs)} (${frameCount}f)"
+        return "${formatShortTimecode(inMs)} – ${formatShortTimecode(outMs)} · ${formatDurationSeconds(durationMs)} (${frameCount}f)"
     }
 
     /**

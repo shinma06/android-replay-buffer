@@ -256,17 +256,49 @@ class ArbStudioSilentFailureTest {
             val ctrl = editor.studioController
             val state = requireNotNull(ctrl.viewerState)
             val start = state.axis.start(4)
+            val initialOpens = daemon.transport.count("media.open_viewport")
+            val initialCloses = daemon.transport.count("media.close_viewport")
             val initialExact = daemon.transport.count("media.seek_frame")
             val initialScrub = daemon.transport.count("media.scrub")
+            val playhead = ctrl.playheadTimeNs
             repeat(50) { ctrl.dragTrim(TrimEdge.OUT, start + it + 1, false) }
             editor.awaitQueuedWorkForTest()
-            assertEquals(initialScrub + 1, daemon.transport.count("media.scrub"))
-            assertEquals(start + 50, ctrl.playheadTimeNs)
+            assertEquals(initialOpens + 1, daemon.transport.count("media.open_viewport"))
+            assertEquals(initialScrub, daemon.transport.count("media.scrub"))
+            assertEquals(initialExact + 1, daemon.transport.count("media.seek_frame"))
+            assertEquals(playhead, ctrl.playheadTimeNs)
+            assertEquals(start + 50, ctrl.trimPreview?.timeNs)
             assertTrue(daemon.storedRanges.isEmpty())
             ctrl.dragTrim(TrimEdge.OUT, start + 50, true)
             editor.awaitQueuedWorkForTest()
             assertEquals(initialExact + 1, daemon.transport.count("media.seek_frame"))
-            assertEquals(listOf(Triple(0L, 4L, 4L)), daemon.storedRanges.toList())
+            assertEquals(initialCloses + 1, daemon.transport.count("media.close_viewport"))
+            assertEquals(listOf(Triple(0L, 4L, state.currentFrameIndex)), daemon.storedRanges.toList())
+            assertEquals(start + 50, ctrl.viewerState?.outTimeNs)
+            assertEquals(playhead, ctrl.playheadTimeNs)
+            assertNull(ctrl.trimPreview)
+        } finally {
+            editor.dispose()
+        }
+    }
+
+    @Test
+    fun tabLossAndDisposalRollBackAnUncommittedPreview(@TempDir tmp: Path) {
+        val daemon = Daemon(tmp)
+        val editor = openStudioEditor(daemon)
+        try {
+            editor.awaitReady()
+            val studio = editor.studioController
+            val original = checkNotNull(studio.viewerState)
+            studio.dragTrim(TrimEdge.IN, original.axis.start(3), false)
+            editor.deselectNotify()
+            assertNull(studio.trimPreview)
+            assertEquals(original.inTimeNs, studio.viewerState?.inTimeNs)
+            studio.dragTrim(TrimEdge.OUT, original.axis.start(4), false)
+            editor.dispose()
+            assertNull(studio.trimPreview)
+            assertEquals(original.outTimeNs, studio.viewerState?.outTimeNs)
+            assertTrue(daemon.storedRanges.isEmpty())
         } finally {
             editor.dispose()
         }

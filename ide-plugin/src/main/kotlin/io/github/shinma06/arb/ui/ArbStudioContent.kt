@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.defaultScrollbarStyle
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.hoverable
@@ -123,6 +124,10 @@ import kotlin.math.sin
 
 internal fun ArbStudioController.handleStudioKey(key: Key, textFieldHasFocus: Boolean): Boolean {
     if (textFieldHasFocus) return false
+    if (gestureActive || trimPreview != null) {
+        if (key == Key.Escape) cancelGesture()
+        return true
+    }
     when (key) {
         Key.Spacebar -> togglePlayPause()
         Key.DirectionLeft -> stepFrame(-1)
@@ -149,10 +154,11 @@ fun ArbStudioContent(controller: ArbStudioController) {
     var searchHasFocus by remember { mutableStateOf(false) }
     var splitFraction by remember { mutableFloatStateOf(0.58f) }
 
-    LaunchedEffect(controller, controller.isPlaying) {
-        while (controller.isPlaying) {
-            controller.sampleClock()
+    LaunchedEffect(controller, controller.isPlaying, controller.trimPreview != null) {
+        controller.sampleClock()
+        while (controller.isPlaying && controller.trimPreview == null) {
             kotlinx.coroutines.delay(50L)
+            controller.sampleClock()
         }
     }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
@@ -1387,6 +1393,7 @@ private fun MultiTrackTimelineCanvas(
     controller: ArbStudioController,
     state: TimelineViewerState?,
 ) {
+    val focused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
     var zoom by remember(state?.axis) { mutableFloatStateOf(1f) }
     Column {
         FlowRow(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1404,8 +1411,20 @@ private fun MultiTrackTimelineCanvas(
                             val step = if (byTime) "0.1s" else "1f"
                             ArbSubtleAction(
                                 "$sign$step", { controller.nudge(edge, direction, byTime) },
+                                modifier = Modifier.pointerInput(controller, state?.axis, edge, direction, byTime, focused) {
+                                    if (!focused) return@pointerInput
+                                    awaitEachGesture {
+                                        awaitFirstDown(requireUnconsumed = false)
+                                        val preview = controller.previewNudge(edge, direction, byTime)
+                                        try {
+                                            waitForUpOrCancellation()
+                                        } finally {
+                                            controller.releaseNudge(preview)
+                                        }
+                                    }
+                                },
                                 compact = true, enabled = controller.hasVideo,
-                                tooltip = "${edge.name} を $sign$step 移動（フレーム境界に合わせる）",
+                                tooltip = "${edge.name} を $sign$step 移動",
                             )
                         }
                     }
@@ -1455,6 +1474,7 @@ private fun TimelineTracks(
         val trackW = (widthPx - padHPx * 2f).coerceAtLeast(1f)
         val geometry = state?.let { StudioTimelineGeometry(it, padHPx, trackW, zoom, viewportStart) }
         val latestGeometry by rememberUpdatedState(geometry)
+        val focused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
         LaunchedEffect(controller, state?.axis, zoom) {
             if (geometry != null) viewportStart = (controller.playheadTimeNs - geometry.span / 2).coerceIn(0L, geometry.maxStart)
             snapshotFlow { controller.playheadTimeNs }.collect { time ->
@@ -1485,7 +1505,8 @@ private fun TimelineTracks(
                         }
                     }
                 }
-                .pointerInput(widthPx, padHPx, state?.axis) {
+                .pointerInput(widthPx, padHPx, state?.axis, focused) {
+                    if (!focused) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         val s = currentState ?: return@awaitEachGesture
@@ -1520,18 +1541,17 @@ private fun TimelineTracks(
                             }
                         }
 
-                        val onFilmstrip = y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f)
-                        val edge = if (onFilmstrip) g.trimEdgeAt(x, handleHitPx) else null
+                        val target = g.hit(x, y, filmstripTopPx..(filmstripTopPx + filmstripHeightPx), handleHitPx)
 
                         fun dispatch(posX: Float, settled: Boolean) {
                             val view = latestGeometry ?: return
-                            val time = when {
-                                posX == x && view.start == g.start && edge == TrimEdge.IN -> s.axis.start(s.inFrameIndex)
-                                posX == x && view.start == g.start && edge == TrimEdge.OUT -> s.axis.outTime(s.outFrameIndex)
-                                else -> view.timeAt(posX)
+                            val time = view.timeAt(posX)
+                            when (target) {
+                                StudioTimelineGeometry.Hit.IN -> controller.dragTrim(TrimEdge.IN, time, settled)
+                                StudioTimelineGeometry.Hit.OUT -> controller.dragTrim(TrimEdge.OUT, time, settled)
+                                StudioTimelineGeometry.Hit.PLAYHEAD -> controller.seekTime(time, settled)
                             }
-                            if (edge == null) controller.seekTime(time, settled) else controller.dragTrim(edge, time, settled)
-                            if (!settled && view.zoom > 1f) {
+                            if (!settled && target == StudioTimelineGeometry.Hit.PLAYHEAD && view.zoom > 1f) {
                                 val overshoot = posX - posX.coerceIn(padHPx, padHPx + trackW)
                                 if (overshoot != 0f) {
                                     viewportStart = (view.start + view.span * (overshoot / trackW).coerceIn(-1f, 1f).toDouble())
@@ -1540,19 +1560,19 @@ private fun TimelineTracks(
                             }
                         }
 
-                        val originalTime = controller.playheadTimeNs
                         try {
                             dispatch(x, settled = false)
                             down.consume()
                             while (true) {
                                 val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                if (!controller.gestureActive || change.isConsumed) break
                                 dispatch(change.position.x, settled = !change.pressed)
                                 change.consume()
                                 if (!change.pressed) break
                             }
                         } finally {
-                            if (controller.dragTime != null && currentState?.axis === s.axis) {
-                                controller.cancelDrag(originalTime)
+                            if (controller.gestureActive && currentState?.axis === s.axis) {
+                                controller.cancelGesture()
                             }
                         }
                     }
@@ -1560,8 +1580,8 @@ private fun TimelineTracks(
         ) {
             val s = state
             val g = geometry ?: return@Canvas
-            val inX = if (controller.dragEdge == TrimEdge.IN) g.at(controller.playheadTimeNs) else g.inX
-            val outX = if (controller.dragEdge == TrimEdge.OUT) g.at(controller.playheadTimeNs) else g.outX
+            val inX = g.inX
+            val outX = g.outX
             // 1. Subtle ruler line & ticks
             drawLine(hairline, Offset(padHPx, rulerHeightPx), Offset(padHPx + trackW, rulerHeightPx), strokeWidth = 1f)
             if (s.frameCount > 0L) {
@@ -1796,11 +1816,9 @@ private fun TimelineTracks(
             }
 
             // Floating selection summary pill centered over the trim selection
-            val liveTime = controller.dragTime
-            val inTime = if (controller.dragEdge == TrimEdge.IN && liveTime != null) liveTime else state.axis.start(state.inFrameIndex)
-            val outTime = if (controller.dragEdge == TrimEdge.OUT && liveTime != null) liveTime else state.axis.outTime(state.outFrameIndex)
-            val inX = geometry.at(inTime)
-            val outX = geometry.at(outTime)
+            val preview = controller.trimPreview
+            val inX = geometry.inX
+            val outX = geometry.outX
             val centerX = ((inX + outX) / 2f).coerceIn(padHPx + 90f, (padHPx + trackW - 90f).coerceAtLeast(padHPx + 90f))
             val pillShape = RoundedCornerShape(5.dp)
             Box(
@@ -1811,12 +1829,9 @@ private fun TimelineTracks(
                     .padding(horizontal = 7.dp, vertical = 2.dp),
             ) {
                 Text(
-                    text = if (liveTime == null) state.selectionSummaryText else {
-                        val label = controller.dragEdge?.name ?: "再生"
-                        val time = ArbFormatters.formatTimecode(liveTime / 1_000_000)
-                        val duration = ArbFormatters.formatTimecode((outTime - inTime) / 1_000_000)
-                        "$label $time · 選択 $duration"
-                    },
+                    text = preview?.let {
+                        "${it.edge} ${ArbFormatters.formatTimecode(it.timeNs / 1_000_000L)} プレビュー"
+                    } ?: state.selectionSummaryText,
                     style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10f, bold = true),
                     maxLines = 1,
                     softWrap = false,

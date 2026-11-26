@@ -187,6 +187,27 @@ impl Mp4VideoTrack {
         self.duration_ticks
     }
 
+    /// Final sample hold on the nanosecond clock shared by Studio and the trimmer.
+    /// Converting the exclusive tick boundary once preserves a carry from a fractional PTS.
+    ///
+    /// # Errors
+    /// Returns a container error if the final tick boundary cannot be represented.
+    pub fn last_presentation_duration_ns(&self) -> Result<Option<u64>, MediaError> {
+        let Some(last) = self.frames.last() else {
+            return Ok(None);
+        };
+        if last.duration_ticks == 0 {
+            return Ok(Some(0));
+        }
+        let end_ticks = last
+            .pts_ticks
+            .checked_add(i64::from(last.duration_ticks))
+            .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
+        let end_ns = ticks_to_ns_signed(end_ticks, self.timescale);
+        let hold = end_ns.saturating_sub(last.pts_ns).max(1).unsigned_abs();
+        Ok(Some(last.duration_ns.max(hold)))
+    }
+
     /// Returns the parsed `avcC` parameter-set configuration.
     pub const fn avcc(&self) -> &AvccConfig {
         &self.avcc
@@ -1503,6 +1524,7 @@ pub(crate) fn write_trim_mp4(
     track: &Mp4VideoTrack,
     head: Option<&MuxSegment>,
     copy_range: Option<(u64, u64)>,
+    timing: Option<(u32, &[u32])>,
 ) -> Result<u64, MediaError> {
     let cfg = track.avcc();
     require_supported_nal_length_size(cfg.nal_length_size)?;
@@ -1559,6 +1581,7 @@ pub(crate) fn write_trim_mp4(
         ));
     }
 
+    let timescale = apply_trim_timing(&mut metas, track.timescale(), timing)?;
     let primary_avcc = if copy_frames.is_empty() {
         avcc_with_4byte_lengths(head.map_or(&[][..], |h| h.avcc_payload.as_slice()))
     } else {
@@ -1572,7 +1595,7 @@ pub(crate) fn write_trim_mp4(
         &Avc1TrackHeader {
             width: track.width(),
             height: track.height(),
-            timescale: track.timescale(),
+            timescale,
             avcc_payload: &primary_avcc,
         },
         &metas,
@@ -1601,6 +1624,26 @@ pub(crate) fn write_trim_mp4(
         },
     )?;
     Ok(written)
+}
+
+fn apply_trim_timing(
+    metas: &mut [SampleMeta],
+    source_scale: u32,
+    timing: Option<(u32, &[u32])>,
+) -> Result<u32, MediaError> {
+    let mut timescale = source_scale;
+    if let Some((scale, durations)) = timing {
+        if metas.len() != durations.len() {
+            return Err(MediaError::InvalidContainer(
+                "trim timing count mismatch".into(),
+            ));
+        }
+        timescale = scale;
+        for (sample, &ticks) in metas.iter_mut().zip(durations) {
+            sample.duration_ticks = ticks;
+        }
+    }
+    Ok(timescale)
 }
 
 /// How a stream-copied sample is rewritten for the spliced output.

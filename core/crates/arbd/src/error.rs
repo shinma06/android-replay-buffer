@@ -81,19 +81,55 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn into_response(self, id: serde_json::Value) -> crate::protocol::RpcResponse {
+        let mut response = crate::protocol::RpcResponse::err(id, self.rpc_code(), self.to_string());
+        if let Some(error) = &mut response.error {
+            let label = self
+                .lifecycle_code()
+                .unwrap_or_else(|| arb_os::rpc::error_label(error.code));
+            let (kind, hint, retryable) = arb_os::rpc::error_guidance(label);
+            error.data = Some(
+                serde_json::json!({"error_code":label,"kind":kind,"hint":hint,"retryable":retryable}),
+            );
+        }
+        response
+    }
+
+    fn lifecycle_code(&self) -> Option<&'static str> {
+        use arb_core::state::{BundleLifecycleState, StateTransitionError};
+        if let Self::Storage(StorageError::StateTransition(
+            StateTransitionError::InvalidBundleTransition { from, to },
+        )) = self
+            && from == to
+        {
+            return match to {
+                BundleLifecycleState::Trashed => Some("ALREADY_TRASHED"),
+                BundleLifecycleState::Active => Some("ALREADY_ACTIVE"),
+                _ => None,
+            };
+        }
+        None
+    }
+
     /// Maps this error to a stable JSON-RPC 2.0 numeric error code.
     #[must_use]
-    pub const fn rpc_code(&self) -> i32 {
+    pub fn rpc_code(&self) -> i32 {
         match self {
             Self::MethodNotFound(_) => RPC_ERR_METHOD_NOT_FOUND,
             Self::Storage(StorageError::NotFound { .. }) | Self::NotFound(_) => RPC_ERR_NOT_FOUND,
             Self::InvalidParams(_)
             | Self::Selection(_)
+            | Self::Media(
+                MediaError::InvalidFrameRange { .. } | MediaError::FrameOutOfRange { .. },
+            )
             | Self::Storage(
                 StorageError::InvalidArgument { .. } | StorageError::ConfigValidation(_),
             ) => RPC_ERR_INVALID_PARAMS,
             Self::Storage(StorageError::StateTransition(_)) | Self::Conflict(_) => RPC_ERR_CONFLICT,
             Self::Storage(_) => RPC_ERR_STORAGE,
+            Self::Media(MediaError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                RPC_ERR_CONFLICT
+            }
             Self::Media(_) => RPC_ERR_MEDIA,
             Self::Adb(_) | Self::CaptureSource(_) | Self::Wire(_) => RPC_ERR_ADB,
             Self::Os(_) | Self::Json(_) | Self::Io(_) | Self::Internal(_) => RPC_ERR_INTERNAL,

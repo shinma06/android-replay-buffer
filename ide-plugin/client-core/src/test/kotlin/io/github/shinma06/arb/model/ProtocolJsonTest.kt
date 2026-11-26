@@ -62,7 +62,7 @@ class ProtocolJsonTest {
         val responses = ArrayDeque(
             listOf(
                 """{"jsonrpc":"2.0","id":1,"result":{"protocol_version":1,"schema_version":2,"pid":42,"data_dir":"/d","cache_dir":"/c","runtime_dir":"/r","daemon_version":"0.1.0"}}""",
-                """{"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"bundle not found"}}""",
+                """{"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"bundle not found","data":{"error_code":"BUNDLE_NOT_FOUND","kind":"not_found","hint":"対象を確認","retryable":false}}}""",
                 """{"jsonrpc":"2.0","id":3,"result":{"protocol_version":99,"schema_version":2,"pid":42,"data_dir":"/d","cache_dir":"/c","runtime_dir":"/r","daemon_version":"0.9.0"}}""",
             ),
         )
@@ -87,6 +87,7 @@ class ProtocolJsonTest {
             }
             assertEquals(-32001, err.code)
             assertEquals("bundle not found", err.message)
+            assertEquals(RpcErrorDetails("BUNDLE_NOT_FOUND", "not_found", "対象を確認", false), err.details)
 
             assertFailsWith<IOException> {
                 client.systemHello(verifyProtocolVersion = true)

@@ -1,0 +1,1612 @@
+{
+  "endNs": 32000000000,
+  "frameStartsNs": [
+    0,
+    12000000000,
+    22000000000,
+    28000000000
+  ],
+  "leftPx": 14,
+  "traces": [
+    {
+      "name": "静止区間の IN",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 0
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 0
+        },
+        {
+          "action": {
+            "DragInMove": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "静止区間の OUT",
+      "steps": [
+        {
+          "action": {
+            "DragOutStart": 32000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 32000000000
+        },
+        {
+          "action": {
+            "DragOutMove": 18000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "静止区間内で往復",
+      "steps": [
+        {
+          "action": {
+            "DragPlayheadStart": 22000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "DragPlayheadEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "DragInMove": 18000000000
+          },
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": {
+            "DragInMove": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "IN 中断",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "DragInMove": 22000000000
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "DragInCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "OUT 中断",
+      "steps": [
+        {
+          "action": {
+            "DragOutStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "DragOutMove": 18000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "再生中の IN",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragInStart": 18000000000
+          },
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": {
+            "PlayTick": 22000000000
+          },
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 22000000000
+          },
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "再生中の OUT",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": {
+            "PlayTick": 22000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 22000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "離した後の遅延フレーム",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "中断後の遅延フレーム",
+      "steps": [
+        {
+          "action": {
+            "DragOutStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragOutCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "古いデコードと新しいデコード",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "DragInMove": 22000000000
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": true,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "同じフレームへの再入",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": true,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "I と O",
+      "steps": [
+        {
+          "action": {
+            "DragPlayheadStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "DragPlayheadEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "MarkInFromPlayhead",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragPlayheadStart": 18000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 18000000000,
+          "playheadX": 590.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "DragPlayheadEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 18000000000,
+          "playheadX": 590.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "MarkOutFromPlayhead",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 18000000000,
+          "playheadX": 590.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "同一時刻のマーク",
+      "steps": [
+        {
+          "action": {
+            "DragPlayheadStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "DragPlayheadEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "MarkInFromPlayhead",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "MarkOutFromPlayhead",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 15501000000,
+          "outX": 510.032,
+          "playheadNs": 15500000000,
+          "playheadX": 510.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "ドラッグ中のズームとパン",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "ZoomChange": [
+              8,
+              14000000000
+            ]
+          },
+          "inNs": 15500000000,
+          "inX": 398.0,
+          "outNs": 32000000000,
+          "outX": 4622.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "DragInMove": 18000000000
+          },
+          "inNs": 18000000000,
+          "inX": 1038.0,
+          "outNs": 32000000000,
+          "outX": 4622.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 18000000000,
+          "inX": 1038.0,
+          "outNs": 32000000000,
+          "outX": 4622.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "ZoomChange": [
+              1,
+              0
+            ]
+          },
+          "inNs": 18000000000,
+          "inX": 590.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "静止区間の 0.1 秒",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "NudgeIn": 1
+          },
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "NudgeIn": 1
+          },
+          "inNs": 15700000000,
+          "inX": 516.4,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "NudgeIn": -1
+          },
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "NudgeOut": -1
+          },
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 17900000000,
+          "outX": 586.8,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "NudgeOut": 1
+          },
+          "inNs": 15600000000,
+          "inX": 513.2,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "静止区間の前後フレーム",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "FrameIn": -1
+          },
+          "inNs": 12000000000,
+          "inX": 398.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "FrameIn": 1
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 22000000000
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 22001000000,
+          "outX": 718.032,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 22001000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 22001000000,
+          "outX": 718.032,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "FrameOut": 1
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 28000000000,
+          "outX": 910.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "FrameOut": -1
+          },
+          "inNs": 22000000000,
+          "inX": 718.0,
+          "outNs": 22001000000,
+          "outX": 718.032,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "IN の上限",
+      "steps": [
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragInStart": 32000000000
+          },
+          "inNs": 17999000000,
+          "inX": 589.968,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 17999000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 17999000000,
+          "inX": 589.968,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "OUT の下限",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 0
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 15501000000,
+          "outX": 510.032,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15501000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 15501000000,
+          "outX": 510.032,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "選択を維持するシーク",
+      "steps": [
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 18000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragPlayheadStart": 0
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragPlayheadMove": 22000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "DragPlayheadEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 18000000000,
+          "outX": 590.0,
+          "playheadNs": 22000000000,
+          "playheadX": 718.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "ズーム倍率と遅延デコード",
+      "steps": [
+        {
+          "action": {
+            "ZoomChange": [
+              2,
+              8000000000
+            ]
+          },
+          "inNs": 0,
+          "inX": -498.0,
+          "outNs": 32000000000,
+          "outX": 1550.0,
+          "playheadNs": 0,
+          "playheadX": -498.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 22000000000
+          },
+          "inNs": 0,
+          "inX": -498.0,
+          "outNs": 22000000000,
+          "outX": 910.0,
+          "playheadNs": 0,
+          "playheadX": -498.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "DecodeStart",
+          "inNs": 0,
+          "inX": -498.0,
+          "outNs": 22000000000,
+          "outX": 910.0,
+          "playheadNs": 0,
+          "playheadX": -498.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": {
+            "ZoomChange": [
+              4,
+              12000000000
+            ]
+          },
+          "inNs": 0,
+          "inX": -1522.0,
+          "outNs": 22000000000,
+          "outX": 1294.0,
+          "playheadNs": 0,
+          "playheadX": -1522.0,
+          "previewDisplayed": false,
+          "previewNs": 22000000000
+        },
+        {
+          "action": "LateFrameArrives",
+          "inNs": 0,
+          "inX": -1522.0,
+          "outNs": 22000000000,
+          "outX": 1294.0,
+          "playheadNs": 0,
+          "playheadX": -1522.0,
+          "previewDisplayed": true,
+          "previewNs": 22000000000
+        },
+        {
+          "action": {
+            "ZoomChange": [
+              8,
+              14000000000
+            ]
+          },
+          "inNs": 0,
+          "inX": -3570.0,
+          "outNs": 22000000000,
+          "outX": 2062.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": true,
+          "previewNs": 22000000000
+        },
+        {
+          "action": {
+            "DragOutMove": 18000000000
+          },
+          "inNs": 0,
+          "inX": -3570.0,
+          "outNs": 18000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": true,
+          "previewNs": 18000000000
+        },
+        {
+          "action": "DragOutEnd",
+          "inNs": 0,
+          "inX": -3570.0,
+          "outNs": 18000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": -3570.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "IN プレビュー中の再生終端",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 12000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "PlaybackStopsAt": 32000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "SampleStoppedClock",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 32000000000,
+          "playheadX": 1038.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "OUT 中断後の再生終端",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 12000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "PlaybackStopsAt": 32000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragOutCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "SampleStoppedClock",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 32000000000,
+          "playheadX": 1038.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    }
+  ],
+  "widthPx": 1024
+}

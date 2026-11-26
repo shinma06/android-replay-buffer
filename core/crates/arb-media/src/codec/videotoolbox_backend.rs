@@ -1601,29 +1601,22 @@ impl VideoCodecBackend for VideoToolboxBackend {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "streaming VideoToolbox decode-paint-reencode pipeline with GOP keyframe pacing"
-    )]
-    fn reencode_frame_range_with_overlay(
+    fn reencode_overlay_samples(
         &self,
         track: &Mp4VideoTrack,
-        start_frame: u64,
-        end_frame_exclusive: u64,
+        schedule: &[super::OverlaySample],
+        timescale: u32,
         params: EncodeParams,
         keyframe_interval: u64,
         has_overlay: &dyn Fn(u64) -> bool,
         apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
     ) -> Result<EncodedGop, MediaError> {
-        let frame_count = track.frame_count();
-        if start_frame >= end_frame_exclusive || end_frame_exclusive > frame_count {
-            return Err(MediaError::InvalidFrameRange {
-                in_frame_index: start_frame,
-                out_frame_index: end_frame_exclusive.saturating_sub(1),
-                frame_count,
-            });
-        }
-
+        let start_frame = schedule
+            .first()
+            .ok_or_else(|| MediaError::InvalidArgument("empty overlay schedule".into()))?
+            .source;
+        let end_frame_exclusive = schedule.last().map_or(0, |s| s.source.saturating_add(1));
+        let mut pending = schedule.iter().peekable();
         let interval = keyframe_interval.max(1);
         let gop_start = track.decodable_gop_start(start_frame)?;
         let avcc = track.avcc();
@@ -1637,7 +1630,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         let mut enc = VtEncoder::new(track.width(), track.height(), params.bitrate_bps)?;
         let mut raw = Vec::new();
         let mut rebased_pts: i64 = 0;
-        let expected_encoded = usize::try_from(end_frame_exclusive - start_frame).unwrap_or(0);
+        let expected_encoded = schedule.len();
         let mut head_meta = Vec::with_capacity(expected_encoded);
         let mut decoded_frames = 0u64;
 
@@ -1651,36 +1644,30 @@ impl VideoCodecBackend for VideoToolboxBackend {
                 info.duration_ticks,
             )?;
             decoded_frames += 1;
-            if idx >= start_frame {
-                let rel_idx = idx.saturating_sub(start_frame);
+            while let Some(sample) = pending.next_if(|s| s.source == idx) {
+                let rel_idx = u64::try_from(head_meta.len()).unwrap_or(u64::MAX);
                 let mode = if rel_idx % interval == 0 {
                     FrameEncodeMode::ForceKeyframe
                 } else {
                     FrameEncodeMode::Normal
                 };
-                if has_overlay(idx) {
+                if has_overlay(sample.index) {
                     let mut overlay_fn =
-                        |frame: &mut MutableYuvFrame<'_>| apply_overlay(idx, frame);
+                        |frame: &mut MutableYuvFrame<'_>| apply_overlay(sample.index, frame);
                     let composited_pb = pb.clone_writable_and_paint(&mut overlay_fn)?;
                     enc.encode_pixel_buffer(
                         &composited_pb,
                         rebased_pts,
-                        track.timescale(),
-                        info.duration_ticks,
+                        timescale,
+                        sample.ticks,
                         mode,
                     )?;
                 } else {
                     // Untouched frames stay zero-copy in GPU/IOSurface memory!
-                    enc.encode_pixel_buffer(
-                        &pb,
-                        rebased_pts,
-                        track.timescale(),
-                        info.duration_ticks,
-                        mode,
-                    )?;
+                    enc.encode_pixel_buffer(&pb, rebased_pts, timescale, sample.ticks, mode)?;
                 }
-                rebased_pts = rebased_pts.saturating_add(i64::from(info.duration_ticks));
-                head_meta.push((idx, info.duration_ticks));
+                rebased_pts = rebased_pts.saturating_add(i64::from(sample.ticks));
+                head_meta.push((sample.index, sample.ticks));
             }
         }
 
@@ -1689,7 +1676,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
             pps,
             samples: encoded_samples,
         } = enc.finish()?;
-        if encoded_samples.len() != head_meta.len() {
+        if encoded_samples.len() != expected_encoded || head_meta.len() != expected_encoded {
             return Err(MediaError::Codec(format!(
                 "VideoToolbox overlay-encoded {} frames, expected {}",
                 encoded_samples.len(),
@@ -1701,7 +1688,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         for ((avcc_data, is_keyframe), (frame_index, duration_ticks)) in
             encoded_samples.into_iter().zip(head_meta)
         {
-            if frame_index == start_frame && !is_keyframe {
+            if samples.is_empty() && !is_keyframe {
                 return Err(MediaError::Codec(format!(
                     "VideoToolbox first overlay-encoded frame {frame_index} was not IDR"
                 )));

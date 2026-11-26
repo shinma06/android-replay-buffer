@@ -298,6 +298,8 @@ pub struct CrashAutoSaveNotice {
 struct SaveJobMaterializeParams {
     bundle_id: String,
     #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
     mode: SaveMode,
     duration_sec: u64,
     trigger_utc: String,
@@ -415,6 +417,12 @@ pub struct PendingSave {
     drain_trigger_boottime_ns: i64,
     drain_decision: TailCompleteness,
     must_drain: bool,
+}
+
+struct SaveIntent {
+    mode: SaveMode,
+    trigger_kind: SaveTriggerKind,
+    note: Option<String>,
 }
 
 impl PendingSave {
@@ -1397,8 +1405,11 @@ impl CapturePipeline {
             secs,
             dest,
             SelectionPolicy::default(),
-            mode,
-            SaveTriggerKind::CrashAutoSave,
+            SaveIntent {
+                mode,
+                trigger_kind: SaveTriggerKind::CrashAutoSave,
+                note: None,
+            },
             window,
         )
     }
@@ -1661,13 +1672,35 @@ impl CapturePipeline {
         mode: SaveMode,
         trigger_kind: SaveTriggerKind,
     ) -> Result<PendingSave, DaemonError> {
-        let window = self.build_save_window(duration_sec, self.trigger_point());
-        self.pin_window(
+        self.pin_request(
             duration_sec,
             dest_parent_dir,
             policy,
             mode,
             trigger_kind,
+            None,
+        )
+    }
+
+    pub(super) fn pin_request(
+        &mut self,
+        duration_sec: u64,
+        dest_parent_dir: &Path,
+        policy: SelectionPolicy,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+        note: Option<String>,
+    ) -> Result<PendingSave, DaemonError> {
+        let window = self.build_save_window(duration_sec, self.trigger_point());
+        self.pin_window(
+            duration_sec,
+            dest_parent_dir,
+            policy,
+            SaveIntent {
+                mode,
+                trigger_kind,
+                note,
+            },
             window,
         )
     }
@@ -1677,10 +1710,14 @@ impl CapturePipeline {
         duration_sec: u64,
         dest_parent_dir: &Path,
         policy: SelectionPolicy,
-        mode: SaveMode,
-        trigger_kind: SaveTriggerKind,
+        intent: SaveIntent,
         window: WindowSpec,
     ) -> Result<PendingSave, DaemonError> {
+        let SaveIntent {
+            mode,
+            trigger_kind,
+            note,
+        } = intent;
         let initial_flush_failed =
             self.flush_pending_chunk().is_err() || self.storage_pressure_stopped;
         let chunk_ids = self.select_window_chunks(&window, &policy, mode);
@@ -1710,6 +1747,7 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
+            note,
             bundle_id,
             mode,
             duration_sec,
@@ -2116,8 +2154,18 @@ struct Materialized {
     warning: Option<String>,
 }
 
-fn window_shortfall(requested_secs: u64, actual_ms: u64) -> bool {
-    actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000)
+fn stream_shortfalls(
+    mode: SaveMode,
+    requested_secs: u64,
+    video_ms: Option<u64>,
+    logs_ms: u64,
+) -> (bool, bool) {
+    let short =
+        |actual_ms: u64| actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000);
+    (
+        mode == SaveMode::Full && short(video_ms.unwrap_or(0)),
+        short(logs_ms),
+    )
 }
 
 fn measure_saved_evidence(
@@ -2137,48 +2185,73 @@ fn measure_saved_evidence(
     let video = summary
         .duration_ms
         .filter(|_| summary.has_video == Some(true));
-    let actual = if params.mode == SaveMode::LogsOnly {
-        logs.duration_ms
-    } else {
-        video.unwrap_or(0)
-    };
-    let window_shortfall = window_shortfall(params.duration_sec, actual);
+    let (video_shortfall, log_shortfall) =
+        stream_shortfalls(params.mode, params.duration_sec, video, logs.duration_ms);
+    let window_shortfall = video_shortfall || log_shortfall;
+    let completeness = crate::protocol::LogcatEvidence::from(manifest);
+    let discontinuity_count = reader.discontinuities()?.len();
     let mut warnings = Vec::new();
+    let mut warning_codes = Vec::new();
+    for (flag, code, message) in [
+        (
+            video_shortfall,
+            "video_shortfall",
+            "映像が要求した保存時間に達していません",
+        ),
+        (
+            log_shortfall,
+            "log_shortfall",
+            "ログが要求した保存時間に達していません",
+        ),
+        (
+            completeness.overflow_events > 0
+                || completeness.status == Some(LogCompleteness::OverflowDetected),
+            "logcat_overflow",
+            "logcat のオーバーフローを検出しました",
+        ),
+        (
+            completeness.unanchored_truncated_count > 0,
+            "unanchored_truncated",
+            "時刻未確定の記録を件数・容量制限で切り捨てました",
+        ),
+        (
+            params.mode == SaveMode::Full && summary.has_audio != Some(true),
+            "audio_absent",
+            "音声がありません",
+        ),
+        (
+            discontinuity_count > 0,
+            "stream_discontinuity",
+            "記録に不連続箇所があります",
+        ),
+        (
+            params.tail_may_be_incomplete,
+            "tail_unconfirmed",
+            "保存範囲の末尾は未確認です",
+        ),
+    ] {
+        if flag {
+            warning_codes.push(code.to_owned());
+            warnings.push(message.to_owned());
+        }
+    }
     if window_shortfall {
-        warnings.push(format!(
-            "要求 {} 秒に対し、保存できた{}は {actual} ms です",
-            params.duration_sec,
-            if params.mode == SaveMode::LogsOnly {
-                "ログ"
-            } else {
-                "映像"
-            }
-        ));
-    }
-    if manifest.unanchored_summary.truncated_count > 0
-        || manifest
-            .streams
-            .logcat
-            .as_ref()
-            .is_some_and(|l| l.overflow_events > 0)
-    {
-        warnings.push("取りこぼしまたは隔離記録の切り捨てがあります".into());
-    }
-    if params.mode == SaveMode::Full && summary.has_audio != Some(true) {
-        warnings.push("音声がありません".into());
-    }
-    if params.tail_may_be_incomplete {
-        warnings.push("保存範囲の末尾は未確認です".into());
+        warning_codes.push("window_shortfall".into());
     }
     Ok((
         crate::protocol::SaveEvidence {
+            video_shortfall: Some(video_shortfall),
+            log_shortfall: Some(log_shortfall),
+            warning_codes: Some(warning_codes),
+            logcat_completeness: Some(completeness),
+            note: params.note.clone(),
             actual_video_duration_ms: Some(video.unwrap_or(0)),
             actual_log_duration_ms: Some(logs.duration_ms),
             video_frame_count: summary.frame_count,
             log_count: Some(logs.count),
             unanchored_log_count: Some(logs.unanchored),
             truncated_unanchored_count: Some(manifest.unanchored_summary.truncated_count),
-            discontinuity_count: Some(reader.discontinuities()?.len()),
+            discontinuity_count: Some(discontinuity_count),
             window_shortfall: Some(window_shortfall),
             warnings: Some(warnings),
         },
@@ -2197,6 +2270,8 @@ fn saved_evidence(
         Ok((evidence, summary)) => (evidence, Some(summary)),
         Err(e) => (
             crate::protocol::SaveEvidence {
+                note: params.note.clone(),
+                warning_codes: Some(vec!["evidence_unavailable".into()]),
                 warnings: Some(vec![format!("保存済み記録の集計に失敗しました: {e}")]),
                 ..Default::default()
             },
@@ -2317,7 +2392,10 @@ fn fail_job(
 ) -> Result<SaveOutcomeResponse, DaemonError> {
     let failed = catalog.mark_failed_retryable(job_id, message, &utc_now_iso8601())?;
     Ok(SaveOutcomeResponse {
-        evidence: crate::protocol::SaveEvidence::default(),
+        evidence: crate::protocol::SaveEvidence {
+            note: params.and_then(|p| p.note.clone()),
+            ..Default::default()
+        },
         requested_duration_secs: params.map(|p| p.duration_sec),
         job: save_job_to_view(&failed),
         bundle_id: None,
@@ -2429,6 +2507,7 @@ struct ReplayCollector {
     discontinuities: Vec<DiscontinuityEvent>,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
+    dropped_count: Option<u64>,
     touch_normalizer: TouchNormalizer,
     /// In-progress touch strokes keyed by pointer id (T-6H item 2 gesture classifier), flushed
     /// into `raw_taps` on `UP`/`CANCEL` or, for any still-active stroke, in [`Self::build_draft`]
@@ -2610,6 +2689,7 @@ impl ReplayCollector {
             discontinuities: params.extra_discontinuities.clone(),
             log_completeness: LogCompleteness::Unverified,
             log_overflow_events: 0,
+            dropped_count: Some(0),
             touch_normalizer: TouchNormalizer::default(),
             active_strokes: BTreeMap::new(),
             touch_slop_px: touch_slop(
@@ -2734,6 +2814,10 @@ impl ReplayCollector {
             }
             CaptureEvent::LogOverflowStats { payload, .. } => {
                 let next_comp = payload.completeness.to_core_completeness();
+                self.dropped_count = self
+                    .dropped_count
+                    .zip(payload.dropped_records())
+                    .and_then(|(total, delta)| total.checked_add(delta));
                 if next_comp == LogCompleteness::OverflowDetected {
                     self.log_completeness = LogCompleteness::OverflowDetected;
                     self.log_overflow_events = self.log_overflow_events.saturating_add(1);
@@ -3149,6 +3233,8 @@ impl ReplayCollector {
         } else {
             (params.display_width, params.display_height)
         };
+        let (log_completeness, dropped_count) =
+            saved_log_completeness(self.log_completeness, self.dropped_count, &discontinuities);
         let streams = build_streams_summary(&StreamSummaryCounts {
             frame_count,
             video_status: media.video_status,
@@ -3156,8 +3242,9 @@ impl ReplayCollector {
             display_height,
             audio_status: media.audio_status,
             logs_count: final_logs.len(),
-            log_completeness: self.log_completeness,
+            log_completeness,
             log_overflow_events: self.log_overflow_events,
+            dropped_count,
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -3170,6 +3257,7 @@ impl ReplayCollector {
         }];
 
         Ok(V2BundleDraft {
+            memo: params.note.clone(),
             bundle_kind: media.bundle_kind,
             bundle_id: params.bundle_id.clone(),
             created_at_utc: params.trigger_utc.clone(),
@@ -3323,9 +3411,34 @@ struct StreamSummaryCounts {
     logs_count: usize,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
+    dropped_count: Option<u64>,
     taps_count: usize,
     tail_may_be_incomplete: bool,
     av_lead_in_offset_ns: i64,
+}
+
+fn saved_log_completeness(
+    device_completeness: LogCompleteness,
+    device_dropped_count: Option<u64>,
+    discontinuities: &[DiscontinuityEvent],
+) -> (LogCompleteness, Option<u64>) {
+    // A device probe cannot account for data lost between the device and this bundle.
+    let log_gap = discontinuities.iter().any(|d| {
+        matches!(d.stream, None | Some(StreamKind::Logcat))
+            && matches!(
+                d.kind,
+                DiscontinuityKind::StreamGap
+                    | DiscontinuityKind::ConnectionLost
+                    | DiscontinuityKind::StoragePressureStop
+            )
+    });
+    let dropped_count = device_dropped_count
+        .filter(|_| !log_gap && device_completeness != LogCompleteness::Unverified);
+    let log_completeness = match (device_completeness, dropped_count) {
+        (LogCompleteness::VerifiedNoOverflow, None) => LogCompleteness::Unverified,
+        (completeness, _) => completeness,
+    };
+    (log_completeness, dropped_count)
 }
 
 fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
@@ -3359,6 +3472,7 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             tail_may_be_incomplete,
         }),
         logcat: Some(LogcatStreamMeta {
+            dropped_count: counts.dropped_count,
             status: if counts.logs_count == 0 {
                 StreamStatus::Absent
             } else if counts.log_completeness == LogCompleteness::OverflowDetected {
@@ -4365,16 +4479,21 @@ mod tests {
         ))
         .expect("table");
         for row in table["capture_evidence_rows"].as_array().expect("rows") {
-            let actual = if row["logs_only"] == true {
-                &row["actual_log_duration_ms"]
+            let mode = if row["logs_only"] == true {
+                SaveMode::LogsOnly
             } else {
-                &row["actual_video_duration_ms"]
+                SaveMode::Full
             };
+            let (v, l) = super::stream_shortfalls(
+                mode,
+                row["requested_duration_secs"].as_u64().unwrap(),
+                row["actual_video_duration_ms"].as_u64(),
+                row["actual_log_duration_ms"].as_u64().unwrap(),
+            );
+            assert_eq!(row["video_shortfall"], v);
+            assert_eq!(row["log_shortfall"], l);
             assert_eq!(
-                super::window_shortfall(
-                    row["requested_duration_secs"].as_u64().expect("requested"),
-                    actual.as_u64().unwrap_or(0)
-                ),
+                v || l,
                 row["window_shortfall"].as_bool().expect("shortfall"),
                 "row {row}"
             );
@@ -4723,13 +4842,27 @@ mod tests {
         cap.begin_session("A");
         cap.ingest_event(heartbeat_at(100)).unwrap();
         cap.ingest_event(heartbeat_at(200)).unwrap();
+        cap.ingest_event(CaptureEvent::LogOverflowStats {
+            pc_cont_ns: 200,
+            boot_id: "boot-t".into(),
+            payload: arb_adb::wire::LogOverflowStatsPayload {
+                boottime_ns: 200,
+                completeness: arb_adb::wire::WireLogCompleteness::Verified,
+                buffers_count: 4,
+                pruned_delta: 0,
+                pruned_cumulative: 0,
+                detail: "zero_pruned_delta".into(),
+            },
+        })
+        .unwrap();
         let mut pending = cap
-            .phase1_pin_with_options(
+            .pin_request(
                 10,
                 &out,
                 SelectionPolicy::default(),
                 SaveMode::LogsOnly,
                 super::SaveTriggerKind::Manual,
+                Some("保存メモ".to_owned()),
             )
             .unwrap();
         let job_id = pending.job_id().to_owned();
@@ -4750,6 +4883,10 @@ mod tests {
             .unwrap()
             .bundle_path
             .unwrap();
+        let manifest = arb_storage::bundle_io::read_bundle_manifest(&path).unwrap();
+        assert_eq!(manifest["memo"], "保存メモ");
+        assert_eq!(manifest["streams"]["logcat"]["completeness"], "unverified");
+        assert!(manifest["streams"]["logcat"]["dropped_count"].is_null());
         let saved = arb_storage::bundle_io::V2BundleReader::open(path).unwrap();
         assert_eq!(saved.clock_anchors().unwrap().len(), 1);
         assert!(
@@ -5325,6 +5462,7 @@ mod tests {
         display_height: Option<u32>,
     ) -> SaveJobMaterializeParams {
         SaveJobMaterializeParams {
+            note: None,
             bundle_id: "01JT6HGESTURE00000000000001".to_owned(),
             mode: SaveMode::Full,
             duration_sec: 10,
@@ -5697,6 +5835,18 @@ mod tests {
         e.ev_code = super::ABS_Y;
         e.ev_value = 4095;
         assert_eq!(calibration.display_value(&e), Some(2399));
+
+        let axes = "add device 2: /dev/input/event2\nABS_MT_POSITION_X : value 0, min 0, max 32767\nABS_MT_POSITION_Y : value 0, min 0, max 32767";
+        let emulator = TouchCalibration::from_getevent(axes, 1080, 2400);
+        for (code, raw, pixel) in [
+            (super::ABS_MT_POSITION_X, 364_077, 1079),
+            (super::ABS_MT_POSITION_Y, 204_793, 2399),
+            (super::ABS_MT_POSITION_X, -1, 0),
+            (super::ABS_MT_POSITION_X, 12_000, 395),
+        ] {
+            let event = raw_evdev(super::EV_ABS, code, raw, 0);
+            assert_eq!(emulator.display_value(&event), Some(pixel));
+        }
     }
 
     #[test]

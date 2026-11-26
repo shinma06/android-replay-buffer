@@ -25,6 +25,9 @@ use crate::mp4::{
     read_exact_at, read_moov_box, read_u16_be, sample_size_u32, ticks_to_ns_signed,
     ticks_to_ns_unsigned,
 };
+mod realtime;
+pub use realtime::trim_audio_time_range;
+
 use crate::output::{Publish, ensure_output_is_not_input, write_atomically};
 
 /// MPEG-4 Audio Object Type for AAC-LC (ISO/IEC 14496-3 Table 1.17).
@@ -1099,7 +1102,9 @@ pub fn trim_audio_m4a(
         let pkt_end_ticks = pkt.pts_ticks.saturating_add(u64::from(pkt.duration_ticks));
         let pkt_end_signed = i64::try_from(pkt_end_ticks).unwrap_or(i64::MAX);
         let pkt_end_ns = ticks_to_ns_signed(pkt_end_signed, timescale);
-        if pkt_end_ns > start_ns && pkt.pts_ns < end_ns {
+        if (pkt_end_ns > start_ns || (start_ns == 0 && pkt.index == 0 && pkt.duration_ticks == 0))
+            && pkt.pts_ns < end_ns
+        {
             selected_indices.push(pkt.index);
             metas.push(AudioSampleMeta {
                 size: pkt.size,
@@ -1334,7 +1339,34 @@ fn build_audio_moov(
     let mut moov_p = Vec::new();
     moov_p.extend_from_slice(&movie_header);
     moov_p.extend_from_slice(&trak);
+    if samples
+        .first()
+        .is_some_and(|sample| sample.duration_ticks == 0)
+    {
+        moov_p.extend_from_slice(&aac_gapless_metadata(total_duration)?);
+    }
     box_wrap(*b"moov", &moov_p)
+}
+
+/// Signals the decoder-only AAC-LC priming packet and the final partial packet
+/// to MP4 players. The media clock itself covers just the presented PCM frames.
+pub(crate) fn aac_gapless_metadata(presented_samples: u64) -> Result<Vec<u8>, MediaError> {
+    let padding = (1024 - presented_samples % 1024) % 1024;
+    let smpb = format!(
+        " 00000000 00000400 {padding:08X} {presented_samples:016X} 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+    );
+    let mut item = full_box_wrap(*b"mean", 0, 0, b"com.apple.iTunes")?;
+    item.extend_from_slice(&full_box_wrap(*b"name", 0, 0, b"iTunSMPB")?);
+    let mut value = vec![0; 4]; // locale
+    value.extend_from_slice(smpb.as_bytes());
+    item.extend_from_slice(&full_box_wrap(*b"data", 0, 1, &value)?);
+    let list = box_wrap(*b"ilst", &box_wrap(*b"----", &item)?)?;
+    let mut handler = vec![0; 4];
+    handler.extend_from_slice(b"mdirappl");
+    handler.extend_from_slice(&[0; 9]);
+    let mut meta = full_box_wrap(*b"hdlr", 0, 0, &handler)?;
+    meta.extend_from_slice(&list);
+    box_wrap(*b"udta", &full_box_wrap(*b"meta", 0, 0, &meta)?)
 }
 
 fn write_faststart_m4a(

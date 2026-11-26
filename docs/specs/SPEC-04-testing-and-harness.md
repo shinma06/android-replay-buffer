@@ -20,19 +20,21 @@ satisfies:
 
 | 層 | 検査するもの | 観測できる失敗 |
 | --- | --- | --- |
-| 1 Kani | 記号入力について純粋計算や有界スライスの性質を検査。基準版の通常構成で `cargo kani list -Z stubbing --format json` が列挙するのは **133 本**。内訳は arb-core 96、arb-media 20、arbd 10、arb-os 5、arb-adb 2 | 窓の端点、算術のあふれ、誤った状態遷移などを反例で特定。`kani-extended` は別集合 |
-| 2 Stateright | 複数主体の操作順序をモデル内で全探索。S1 親と所有、S2 pin／回復／GC、S3 取得世代・圧迫・ドレイン、S4 viewport／出力、S5 クラッシュ、S6 再生・接続 | 保護中の削除、古い応答の適用、復旧・解放の取り残し。S5 の仮定は TCB-16。S7 は Item #18 の設計段階 |
+| 1 Kani | 記号入力について純粋計算や有界スライスの性質を検査。基準版の通常構成で `cargo kani list -Z stubbing --format json` が列挙するのは **138 本**。内訳は arb-core 96、arb-media 25（K13 の 5 本を含む）、arbd 10、arb-os 5、arb-adb 2 | 窓の端点、算術のあふれ、誤った状態遷移などを反例で特定。`kani-extended` は別集合 |
+| 2 Stateright | 複数主体の操作順序をモデル内で全探索。S1 親と所有、S2 pin／回復／GC、S3 取得世代・圧迫・ドレイン、S4 viewport／出力、S5 クラッシュ、S6 再生・接続、S7 トリム操作 | 保護中の削除、古い応答の適用、復旧・解放の取り残し。S5 の仮定は TCB-16 |
 | 3 Proptest・Miri・共有 JSON | G1 カタログ、G2 リングの障害回復、G3 MP4、G4 複数ストリーム、G5 永続ジョブ等の互換、G6 ADB ワイヤ、G7 SHM レイアウト、G8 音声。M1 は SHM のメモリ操作、M2 は純粋ドメインと MP4 パーサ | 生成した入力を縮小して再現する。共有表・トレースで言語間や公開 wire と実際の実行結果のずれを検出 |
 | 4 構造ガード | Kotlin の KON-1〜7、Rust の RS-1〜5。依存方向、OS 境界、RPC 呼び出し、共有方針の再解釈を制限 | 個別の画面テストが成功しても、UI が独自に音声非対応・保存成功を判定すれば違反 |
 | 5 TCB 公理台帳 | TCB-01〜21。OS の意味、SQLite、実デコーダ、JVM、端末・OEM、モデルと本番実装の対応など、上の証拠が依存する仮定を記録 | 仮定が外れる事例は実機、I/O テスト、実プロセス等で確認し、未解決を残す |
 
-K1・K2 は時間窓と選別、K3 は時計、K4 はリング、K5 は状態遷移、K6・K7 は入力座標と軌跡、K8 は SHM、K9 はワイヤ・MP4、K10 は VFR 時間軸、K11 は音声方針、K12 は GOP 予算を対象とする。検証済み入力幅・スタブ・未証明集合は各 ID の台帳行に従う。[PDD 台帳](../proofs/tcb-axioms.md)・[Kani／Miri ワークフロー](../../.github/workflows/pdd-kani.yml)
+K1・K2 は時間窓と選別、K3 は時計、K4 はリング、K5 は状態遷移、K6・K7 は入力座標と軌跡、K8 は SHM、K9 はワイヤ・MP4、K10 は VFR 時間軸、K11 は音声方針、K12 は GOP 予算、K13 は VFR 実時間トリムの正長・時間保存・各時刻の表示同値・不正入力拒否・ティック量子化を対象とする。実 MP4 の切り出し、timescale 切替、デコード結果は G3 とメディア統合試験で確かめる。検証済み入力幅・スタブ・未証明集合は各 ID の台帳行に従う。[PDD 台帳](../proofs/tcb-axioms.md)・[Kani／Miri ワークフロー](../../.github/workflows/pdd-kani.yml)
 
 ### 共有表の読み手と非空虚性
 
-端末選択・音声・操作結果の表は Rust と Kotlin が読み、状態・原因の変更ではまず表の該当行を更新する。MCP ツール表は Rust の公開スキーマ生成・入力検証と stdio 契約テストが読む。S6 の 16 トレースは Stateright と Kotlin の本番時計・viewport セッションの対応を検査する。5 ファイルのリンクは[仕様索引](README.md)にある。
+端末選択・音声・操作結果の表は Rust と Kotlin が読み、状態・原因の変更ではまず表の該当行を更新する。MCP ツール表は Rust の公開スキーマ生成・入力検証と stdio 契約テストが読む。S6 の 16 トレースは Stateright と Kotlin の本番時計・viewport セッションの対応を検査する。S7 は 4,656 状態を探索し、再生位置の追従・リリース時の量子化・中断時のプレビュー残留の 3 変異で反例を得る。22 トレース・122 ステップを Kotlin の本番コントローラー・選択処理・描画座標変換で再生する。実画面のイベント配送は実 IDE の受け入れ対象。[S7 モデル](../../core/crates/arbd/tests/pdd_stateright_trim_s7.rs)・[共有トレース](studio-trim-s7-traces.json)・[Kotlin リプレイ](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ui/PddS7StudioTrimTraceReplayTest.kt)
 
 条件を取り除くなどの変異を入れ、期待する反例が出ることを確認する。S6 では到着フレーム時刻の書き戻し、失効した失敗応答の受理、再取得中の reader 解放漏れが対象。全状態数だけで非空虚性の証拠としない。Kani の到達性・変異は実施した個々のハーネスの範囲で評価する。[S6 モデル](../../core/crates/arbd/tests/pdd_stateright_playback_s6.rs)・[共有トレース](playback-s6-traces.json)
+
+`check-mcp-trim-schema.py` は実 stdio で 4 版を交渉し、各版の 20 ツール・40 入出力スキーマ、外部参照なしの Draft 2020-12、2 形式の実時間書き出しを検査する。`ArbBrandingGuardTest` は IDE の表示・メタデータに加え `docs/*.md` と `docs/specs/` 以下の全 Markdown を走査する。[スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt)
 
 通常の単体テストは実装の入口、過去データの回帰、OS・IPC・FS 障害注入に使う。実 SQLite、実 IPC、外部プレイヤー、デバイスの動作をモデルだけで代用してはならない。[統合試験](../../core/crates/arbd/tests)・[端末スモーク](../testing/work-device-smoke-checklist.md)
 

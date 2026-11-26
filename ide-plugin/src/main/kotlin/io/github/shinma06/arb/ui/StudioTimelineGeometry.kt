@@ -24,8 +24,8 @@ internal class StudioTimelineGeometry(
     val start = viewportStartNs.coerceIn(0, maxStart)
     val end = start + span
 
-    val inX get() = frame(state.inFrameIndex)
-    val outX get() = at(axis.outTime(state.outFrameIndex))
+    val inX get() = at(state.inTimeNs)
+    val outX get() = at(state.outTimeNs)
 
     fun at(time: Long) = if (zoom == 1f || span == 0L) axis.pixel(time, left, width) else
         (left + (time.coerceIn(0, axis.endNs) - start).toDouble() / span * width).toFloat()
@@ -38,6 +38,15 @@ internal class StudioTimelineGeometry(
 
     /** Marker-track hits; the gutters only hit at 1x, where nothing lies outside the track. */
     fun markerHittable(x: Float) = zoom == 1f || visible(x)
+
+    enum class Hit { IN, OUT, PLAYHEAD }
+
+    fun hit(x: Float, y: Float, handleBand: ClosedFloatingPointRange<Float>, radius: Float): Hit =
+        when (if (y in handleBand) trimEdgeAt(x, radius) else null) {
+            TrimEdge.IN -> Hit.IN
+            TrimEdge.OUT -> Hit.OUT
+            null -> Hit.PLAYHEAD
+        }
 
     fun trimEdgeAt(x: Float, hitPx: Float): TrimEdge? {
         val inDistance = inX.takeIf(::visible)?.let { abs(x - it) } ?: Float.POSITIVE_INFINITY

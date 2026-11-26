@@ -65,6 +65,7 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         let failure = &row["failure"];
         let err = match failure["kind"].as_str().unwrap() {
             "rpc_error" => RpcClientError::Rpc {
+                error_code: failure["error_code"].as_str().map(str::to_owned),
                 code: i32::try_from(failure["code"].as_i64().unwrap()).unwrap(),
                 message: "contract".to_owned(),
             },
@@ -81,6 +82,7 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         );
         let duplicate = match failure["kind"].as_str().unwrap() {
             "rpc_error" => RpcClientError::Rpc {
+                error_code: failure["error_code"].as_str().map(str::to_owned),
                 code: i32::try_from(failure["code"].as_i64().unwrap()).unwrap(),
                 message: "contract".into(),
             },

@@ -12,7 +12,7 @@ import kotlin.math.roundToLong
  * Deterministic, thread-safe continuous playback & trim-range controller for the ARB IDE viewer.
  *
  * Guarantees:
- * - Frame positions and trim boundaries are strictly integer `frameIndex: Long` values.
+ * - Frame positions are integer frame indices. Studio selection bounds are nanoseconds on the media clock.
  * - Real frame `ptsNs` deltas (or [fallbackFps] when unavailable) are scaled by [PlaybackSpeed]
  *   using exact integer ratios, dropping late frames rather than accumulating wall-clock drift.
  * - `isApproximate` becomes `true` ONLY from [scrubTo] (`media.scrub`) when an approximate preview
@@ -128,7 +128,7 @@ class PlaybackController(
     }
 
     /**
-     * Starts continuous playback inside `[inFrameIndex..=outFrameIndex]`.
+     * Starts continuous playback inside the selected half-open media interval.
      *
      * Resumes within a held sample; at or outside the exclusive selection end, restarts at IN.
      */
@@ -142,9 +142,14 @@ class PlaybackController(
             if (closed || totalFrames <= 0L) return
             if (currentState.mode == PlaybackMode.PLAYING) return
 
+            nextStudioRange?.let { range ->
+                currentState = currentState.withSelection(range)
+                nextStudioRange = null
+            }
             val cur = currentState
-            val resume = anchorMediaPtsNs >= axis.start(cur.inFrameIndex) && anchorMediaPtsNs < axis.outTime(cur.outFrameIndex)
-            startPtsNs = if (resume) anchorMediaPtsNs else axis.start(cur.inFrameIndex)
+            val start = cur.inTimeNs ?: axis.start(cur.inFrameIndex)
+            val resume = anchorMediaPtsNs >= start && anchorMediaPtsNs < selectionEnd(cur)
+            startPtsNs = if (resume) anchorMediaPtsNs else start
             val startFrame = axis.frameAt(startPtsNs)
             needInitialSeek = if (startFrame != cur.displayedFrameIndex || startFrame != cur.currentFrameIndex || cur.isApproximate) startFrame else null
             gen = seekGeneration.incrementAndGet()
@@ -404,6 +409,42 @@ class PlaybackController(
         performExactSeek(targetFrame, gen)
     }
 
+    // An edit made during playback applies to the next play session. The running
+    // session keeps its loop bounds, clock anchor, audio and decoder generation.
+    private data class Selection(val start: Long, val end: Long)
+
+    private var nextStudioRange: Selection? = null
+
+    private fun PlaybackState.withSelection(range: Selection) = copy(
+        inFrameIndex = axis.frameAt(range.start),
+        outFrameIndex = axis.outFrame(range.end),
+        inTimeNs = range.start,
+        outTimeNs = range.end,
+    )
+
+    private fun selectionEnd(state: PlaybackState) = state.outTimeNs ?: axis.outTime(state.outFrameIndex)
+
+    fun setStudioRange(range: LongRange) {
+        if (totalFrames == 0L) return
+        require(!range.isEmpty() && range.first >= 0 && range.last < totalFrames)
+        setStudioRange(axis.start(range.first), axis.outTime(range.last))
+    }
+
+    fun setStudioRange(inTimeNs: Long, outTimeNs: Long) {
+        val snapshot = stateLock.withLock {
+            if (closed || totalFrames == 0L) return
+            require(inTimeNs >= 0 && inTimeNs < outTimeNs && outTimeNs <= axis.endNs)
+            val range = Selection(inTimeNs, outTimeNs)
+            if (currentState.mode == PlaybackMode.PLAYING) {
+                nextStudioRange = range
+                return
+            }
+            nextStudioRange = null
+            publishStateLocked(currentState.withSelection(range))
+        }
+        snapshot?.let(::notifyListeners)
+    }
+
     /**
      * Sets the inclusive trim start boundary (`inFrameIndex`), clamping to `[0 .. totalFrames - 1]`
      * and preserving `inFrameIndex <= outFrameIndex`.
@@ -429,6 +470,8 @@ class PlaybackController(
                 null
             }
             val updated = currentState.copy(
+                inTimeNs = null,
+                outTimeNs = null,
                 inFrameIndex = newIn,
                 outFrameIndex = newOut,
                 currentFrameIndex = nextCur,
@@ -471,6 +514,8 @@ class PlaybackController(
                 null
             }
             val updated = currentState.copy(
+                inTimeNs = null,
+                outTimeNs = null,
                 inFrameIndex = newIn,
                 outFrameIndex = newOut,
                 currentFrameIndex = nextCur,
@@ -687,6 +732,8 @@ class PlaybackController(
                 null
             }
             val updated = currentState.copy(
+                inTimeNs = null,
+                outTimeNs = null,
                 inFrameIndex = newIn,
                 outFrameIndex = newOut,
                 currentFrameIndex = nextCur,
@@ -747,6 +794,8 @@ class PlaybackController(
             val nextMode = if (currentState.mode == PlaybackMode.SCRUBBING) PlaybackMode.PAUSED else currentState.mode
             val updated = currentState.copy(
                 mode = nextMode,
+                inTimeNs = null,
+                outTimeNs = null,
                 inFrameIndex = newIn,
                 outFrameIndex = newOut,
                 currentFrameIndex = crash,
@@ -769,6 +818,8 @@ class PlaybackController(
         val snapshot = stateLock.withLock {
             if (closed || totalFrames <= 0L) return
             val updated = currentState.copy(
+                inTimeNs = null,
+                outTimeNs = null,
                 inFrameIndex = 0L,
                 outFrameIndex = totalFrames - 1L,
             )
@@ -807,15 +858,13 @@ class PlaybackController(
             val elapsedMediaNs = cur.speed.wallToMediaNs(elapsedWallNs)
             val targetMediaPtsNs = saturatingAdd(anchorMediaPtsNs, elapsedMediaNs)
 
-            val outPtsNs = frameRelativePtsNs(cur.outFrameIndex)
-            val outFrameDurNs = frameDurationNs(cur.outFrameIndex)
-            val selectionEndPtsNs = saturatingAdd(outPtsNs, outFrameDurNs)
+            val selectionEndPtsNs = selectionEnd(cur)
 
             if (targetMediaPtsNs >= selectionEndPtsNs || cur.currentFrameIndex > cur.outFrameIndex ||
                 (cur.loopInSelection && cur.currentFrameIndex < cur.inFrameIndex)
             ) {
                 if (cur.loopInSelection) {
-                    val inPtsNs = frameRelativePtsNs(cur.inFrameIndex)
+                    val inPtsNs = cur.inTimeNs ?: frameRelativePtsNs(cur.inFrameIndex)
                     anchorWallNs = nowNs
                     anchorMediaPtsNs = inPtsNs
                     if (cur.inFrameIndex == cur.outFrameIndex && cur.currentFrameIndex == cur.inFrameIndex) {
@@ -823,7 +872,7 @@ class PlaybackController(
                         // but keep audio inside the selection. (A playhead that a user seek left
                         // outside the selection falls through and is brought back to `in`.)
                         audioPlayer?.seek(inPtsNs)
-                        nextWakeupNs = saturatingAdd(nowNs, cur.speed.mediaToWallNs(outFrameDurNs))
+                        nextWakeupNs = saturatingAdd(nowNs, cur.speed.mediaToWallNs(selectionEndPtsNs - inPtsNs))
                     } else {
                         frameToSeek = cur.inFrameIndex
                         genForSeek = seekGeneration.incrementAndGet()
@@ -833,7 +882,7 @@ class PlaybackController(
                             audioState = currentAudioState(),
                         )
                         notifySnapshot = publishStateLocked(updated)
-                        val nextFrameDurNs = frameDurationNs(cur.inFrameIndex)
+                        val nextFrameDurNs = minOf(axis.outTime(cur.inFrameIndex), selectionEndPtsNs) - inPtsNs
                         nextWakeupNs = saturatingAdd(nowNs, cur.speed.mediaToWallNs(nextFrameDurNs))
                     }
                 } else {
@@ -1079,15 +1128,13 @@ class PlaybackController(
         val state = currentState
         if (state.mode != PlaybackMode.PLAYING || clockFrozenLocked()) return anchorMediaPtsNs
         val elapsed = state.speed.wallToMediaNs((clock.nowNs() - anchorWallNs).coerceAtLeast(0L))
-        saturatingAdd(anchorMediaPtsNs, elapsed).coerceAtMost(saturatingAdd(frameRelativePtsNs(state.outFrameIndex), frameDurationNs(state.outFrameIndex)))
+        saturatingAdd(anchorMediaPtsNs, elapsed).coerceAtMost(selectionEnd(state))
     }
 
     private fun clockFrozenLocked(): Boolean {
         val generation = seekGeneration.get()
         return initialSeekGeneration == generation || recoveringGeneration == generation
     }
-
-    private fun frameDurationNs(frame: Long): Long = axis.outTime(frame) - axis.start(frame)
 
     private fun currentAudioState(): AudioState = audioPlayer?.audioState ?: AudioState.UNAVAILABLE
 

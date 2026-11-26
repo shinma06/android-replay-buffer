@@ -13,6 +13,34 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PlaybackControllerTest {
+    @Test
+    fun heldFrameUsesExactStartEndAndDeferredLoopRange() {
+        val clock = ManualClock()
+        PlaybackController(
+            totalFrames = 2, framePtsNs = listOf(0L, 5_000_000_000L),
+            lastFrameDurationNs = 1_000_000_000L, frameSeeker = RecordingSeeker(),
+            clock = clock, autoRunLoop = false,
+        ).use { player ->
+            player.setStudioRange(1_500_000_003L, 3_000_000_001L)
+            player.setLoopEnabled(true)
+            player.play()
+            assertEquals(1_500_000_003L, player.displayPositionNs())
+            clock.advanceNs(20)
+            player.setStudioRange(4_000_000_001L, 4_000_000_004L)
+            assertEquals(1_500_000_023L, player.displayPositionNs())
+            clock.advanceNs(1_499_999_978L)
+            player.tick()
+            assertEquals(1_500_000_003L, player.displayPositionNs())
+            player.pause()
+            player.setLoopEnabled(false)
+            player.play()
+            assertEquals(4_000_000_001L, player.displayPositionNs())
+            clock.advanceNs(3)
+            player.tick()
+            assertEquals(PlaybackMode.PAUSED, player.state.mode)
+            assertEquals(4_000_000_004L, player.displayPositionNs())
+        }
+    }
     private class ManualClock(initialNs: Long = 1_000_000_000L) : PlaybackClock {
         private val now = AtomicLong(initialNs)
         override fun nowNs(): Long = now.get()
@@ -86,6 +114,33 @@ class PlaybackControllerTest {
 
     private fun uniformPtsNs(count: Int, stepMs: Long = 100L, baseNs: Long = 10_000_000_000L): List<Long> =
         List(count) { i -> baseNs + i * stepMs * 1_000_000L }
+
+    @Test
+    fun studioEditOutsideThePlayingFrameAppliesOnNextPlay() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        PlaybackController(
+            totalFrames = 8, frameSeeker = seeker, framePtsNs = uniformPtsNs(8),
+            clock = clock, autoRunLoop = false,
+        ).use { playback ->
+            playback.play()
+            clock.advanceMs(250)
+            playback.tick()
+            val seeks = seeker.calls.toList()
+            val before = playback.displayPositionNs()
+            playback.setStudioRange(5L..6L)
+            assertEquals(before, playback.displayPositionNs())
+            assertEquals(PlaybackMode.PLAYING, playback.state.mode)
+            assertEquals(seeks, seeker.calls)
+            clock.advanceMs(100)
+            playback.tick()
+            assertEquals(3L, playback.state.currentFrameIndex)
+            playback.pause()
+            playback.play()
+            assertEquals(5L, playback.state.currentFrameIndex)
+            assertEquals(6L, playback.state.outFrameIndex)
+        }
+    }
 
     @Test
     fun sharedVfrQueriesAndConstantSpeedWhileHolding() {

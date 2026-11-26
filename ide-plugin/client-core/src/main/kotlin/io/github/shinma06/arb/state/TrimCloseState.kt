@@ -21,14 +21,17 @@ import java.nio.file.Path
  */
 class TrimCloseState {
     private val lock = Any()
-    private var totalFrames: Long = 0L
+    private var fullEnd: Long = 0L
     private var inFrame: Long = 0L
     private var outFrame: Long = 0L
     private var baselineRange: Pair<Long, Long>? = null
     private var lastExportedRange: Pair<Long, Long>? = null
 
-    fun initialize(totalFrames: Long, initialIn: Long, initialOut: Long) = synchronized(lock) {
-        this.totalFrames = totalFrames.coerceAtLeast(0L)
+    fun initialize(totalFrames: Long, initialIn: Long, initialOut: Long) =
+        initializeTimeRange((totalFrames.coerceAtLeast(1L) - 1L), initialIn, initialOut)
+
+    fun initializeTimeRange(end: Long, initialIn: Long, initialOut: Long) = synchronized(lock) {
+        fullEnd = end
         this.inFrame = initialIn
         this.outFrame = initialOut
         this.baselineRange = initialIn to initialOut
@@ -50,7 +53,7 @@ class TrimCloseState {
     fun currentRange(): Pair<Long, Long> = synchronized(lock) { inFrame to outFrame }
 
     fun hasUnexportedCustomTrim(): Boolean = synchronized(lock) {
-        if (totalFrames <= 1L) return false
+        if (fullEnd == 0L) return false
         if (isFullRangeLocked()) return false
         val current = inFrame to outFrame
         if (current == baselineRange) return false
@@ -59,7 +62,7 @@ class TrimCloseState {
     }
 
     private fun isFullRangeLocked(): Boolean =
-        totalFrames > 0L && inFrame <= 0L && outFrame >= totalFrames - 1L
+        inFrame == 0L && outFrame == fullEnd
 }
 
 enum class StorageSizeUnit(val label: String, val bytesPerUnit: Long) {

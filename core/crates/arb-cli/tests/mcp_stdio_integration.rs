@@ -220,6 +220,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
     }];
 
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: bundle_id.to_owned(),
         created_at_utc: "2026-11-23T09:10:00Z".to_owned(),
@@ -256,6 +257,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
                 tail_may_be_incomplete: false,
             }),
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Present,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,
@@ -627,7 +629,11 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     );
 
     // 9. `tools/call` -> `arb_export_trim` (`format: "share_mp4"` with `burn_taps: true`)
-    let mcp_mp4 = tmp.path().join("mcp-share.mp4");
+    let mut catalog = arb_os::rpc::RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
+    let list_before = catalog.call("bundle.list", json!({})).unwrap();
+    let dirs_before = fs::read_dir(&managed_bundles).unwrap().count();
+    let dest = tmp.path().join("share-exports");
+    let mcp_mp4 = dest.join("mcp-share.mp4");
     let trim_resp = send_mcp_request(
         &mut stdin,
         &mut stdout,
@@ -643,6 +649,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                     "in_frame_index": 2,
                     "out_frame_index": 12,
                     "burn_taps": true,
+                    "dest_dir": dest,
                     "output_path": mcp_mp4
                 }
             }
@@ -665,6 +672,10 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     assert_eq!(trim_json["edts_box_count"], 0, "zero edts");
     assert_eq!(trim_json["elst_box_count"], 0, "zero elst");
     assert_eq!(trim_json["audio_included"], true, "audio included");
+    assert_eq!(catalog.call("bundle.list", json!({})).unwrap(), list_before);
+    assert_eq!(fs::read_dir(&managed_bundles).unwrap().count(), dirs_before);
+    assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
+    assert!(trim_json.get("trimmed_bundle_id").is_none());
     assert!(mcp_mp4.is_file(), "share.mp4 written on disk");
     let atoms = inspect_mp4_atoms(&mcp_mp4).expect("inspect mcp share.mp4");
     assert_eq!(atoms.edts_count, 0, "disk edts=0");

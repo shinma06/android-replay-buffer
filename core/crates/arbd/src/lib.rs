@@ -19,6 +19,7 @@ pub mod protocol;
 pub mod screenshot;
 pub mod time_util;
 mod touch_calibration;
+mod trim_range;
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
@@ -64,8 +65,7 @@ use crate::capture::{
     TailCompleteness, phase2_materialize, save_job_to_view,
 };
 use crate::error::{
-    DaemonError, RPC_ERR_INTERNAL, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE,
-    RPC_ERR_RESPONSE_TOO_LARGE,
+    DaemonError, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE, RPC_ERR_RESPONSE_TOO_LARGE,
 };
 use crate::live_adb::{LiveCaptureHandle, select_live_target, start_selected_capture};
 use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
@@ -518,6 +518,24 @@ impl DaemonState {
         )))
     }
 
+    fn handle_system_hello(&self) -> Result<Value, DaemonError> {
+        Ok(serde_json::to_value(SystemHelloResponse {
+            protocol_version: IPC_PROTOCOL_VERSION,
+            gc_dry_run: true,
+            standalone_share_trim: true,
+            realtime_trim: true,
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            pid: std::process::id(),
+            data_dir: self.paths.data_dir.clone(),
+            cache_dir: self.paths.cache_dir.clone(),
+            runtime_dir: self.paths.runtime_dir.clone(),
+            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            build_id: self.build_id.clone(),
+            binary_mtime_secs: self.binary_mtime_secs,
+            parent_bound: self.parent_bound,
+        })?)
+    }
+
     fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, DaemonError> {
         if !params.is_null() && !params.is_object() {
             return Err(DaemonError::InvalidParams(
@@ -559,19 +577,7 @@ impl DaemonState {
             )));
         }
         match method {
-            "system.hello" => Ok(serde_json::to_value(SystemHelloResponse {
-                protocol_version: IPC_PROTOCOL_VERSION,
-                gc_dry_run: true,
-                schema_version: BUNDLE_SCHEMA_VERSION,
-                pid: std::process::id(),
-                data_dir: self.paths.data_dir.clone(),
-                cache_dir: self.paths.cache_dir.clone(),
-                runtime_dir: self.paths.runtime_dir.clone(),
-                daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-                build_id: self.build_id.clone(),
-                binary_mtime_secs: self.binary_mtime_secs,
-                parent_bound: self.parent_bound,
-            })?),
+            "system.hello" => self.handle_system_hello(),
             "system.status" => self.handle_system_status(),
             "system.shutdown" => Ok(json!({ "ok": true })),
             "config.get" => self.handle_config_get(),
@@ -993,39 +999,32 @@ impl DaemonState {
 
     fn handle_save_trigger(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveTriggerParams = parse_optional_params(params)?;
-        let outcome = self.execute_save(
-            parsed.duration_sec,
-            parsed.dest_dir.as_deref(),
-            parsed.drain_timeout_ms,
-            parsed.selection_policy,
-            parsed.mode,
-            SaveTriggerKind::Manual,
-        )?;
-        Ok(serde_json::to_value(outcome)?)
+        Ok(serde_json::to_value(self.execute_save(parsed)?)?)
     }
 
     fn handle_save_logs(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveLogsParams = parse_optional_params(params)?;
-        let outcome = self.execute_save(
-            parsed.window_secs,
-            parsed.dest_dir.as_deref(),
-            parsed.drain_timeout_ms,
-            parsed.selection_policy,
-            SaveMode::LogsOnly,
-            SaveTriggerKind::Manual,
-        )?;
+        let outcome = self.execute_save(SaveTriggerParams {
+            note: parsed.note,
+            duration_sec: parsed.window_secs,
+            dest_dir: parsed.dest_dir,
+            drain_timeout_ms: parsed.drain_timeout_ms,
+            selection_policy: parsed.selection_policy,
+            mode: SaveMode::LogsOnly,
+        })?;
         Ok(serde_json::to_value(outcome)?)
     }
 
-    fn execute_save(
-        &self,
-        duration_sec: Option<u64>,
-        dest_dir: Option<&Path>,
-        drain_timeout_ms: Option<u64>,
-        selection_policy: Option<SelectionPolicy>,
-        mode: SaveMode,
-        trigger_kind: SaveTriggerKind,
-    ) -> Result<SaveOutcomeResponse, DaemonError> {
+    fn execute_save(&self, params: SaveTriggerParams) -> Result<SaveOutcomeResponse, DaemonError> {
+        let SaveTriggerParams {
+            duration_sec,
+            dest_dir,
+            drain_timeout_ms,
+            selection_policy,
+            mode,
+            note,
+        } = params;
+        let trigger_kind = SaveTriggerKind::Manual;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let duration_sec = duration_sec.unwrap_or_else(|| u64::from(user_cfg.save_window_secs));
         let window_range = u64::from(MIN_SAVE_WINDOW_SECS)..=u64::from(MAX_SAVE_WINDOW_SECS);
@@ -1034,16 +1033,19 @@ impl DaemonState {
                 "save window {duration_sec}s is outside {MIN_SAVE_WINDOW_SECS}..={MAX_SAVE_WINDOW_SECS} seconds"
             )));
         }
+        let mut policy = selection_policy.unwrap_or_default();
+        policy.drain_timeout_ms = drain_timeout_ms.unwrap_or(policy.drain_timeout_ms);
+        if policy.drain_timeout_ms > 5_000 {
+            return Err(DaemonError::InvalidParams(
+                "drain_timeout_ms は 0～5000 ミリ秒で指定してください".into(),
+            ));
+        }
         let dest_dir = self.resolve_output_dir(
-            dest_dir,
+            dest_dir.as_deref(),
             user_cfg.output_dir_override.as_deref(),
             self.catalog.managed_bundles_root(),
             None,
         )?;
-        let mut policy = selection_policy.unwrap_or_default();
-        policy.drain_timeout_ms = drain_timeout_ms
-            .unwrap_or(policy.drain_timeout_ms)
-            .min(5_000);
         let limits = SelectionPolicy::default();
         policy.unanchored_ingest_margin_ns = policy
             .unanchored_ingest_margin_ns
@@ -1065,12 +1067,13 @@ impl DaemonState {
                 } else {
                     mode
                 };
-            cap.phase1_pin_with_options(
+            cap.pin_request(
                 duration_sec,
                 &dest_dir,
                 policy,
                 effective_mode,
                 trigger_kind,
+                note,
             )?
         };
 
@@ -1253,41 +1256,45 @@ impl DaemonState {
     fn handle_bundle_list(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: BundleListParams = parse_optional_params(params)?;
         let entries = self.catalog.list_bundles(parsed.state)?;
-        let mut views = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let active_leases = self
-                .catalog
-                .active_leases_for_bundle(&entry.bundle_id)?
-                .len();
-            let disk_state = self.catalog.bundle_disk_state(&entry.path);
-            views.push(BundleEntryView {
-                created_utc: Some(entry.created_at_utc.clone()),
-                summary: match self.catalog.bundle_summary(&entry.bundle_id)? {
-                    Some(summary) => summary,
-                    None if disk_state == arb_storage::catalog::BundleDiskState::Present => {
-                        let measured = open_bundle(&entry.path)
-                            .ok()
-                            .and_then(|r| inspect_export::catalog_summary(r.as_ref()).ok());
-                        if let Some(summary) = &measured {
-                            self.catalog
-                                .record_bundle_summary(&entry.bundle_id, summary)?;
-                        }
-                        measured.unwrap_or_default()
+        let bundles = entries
+            .into_iter()
+            .map(|entry| self.bundle_entry_view(entry))
+            .collect::<Result<_, _>>()?;
+        Ok(serde_json::to_value(BundleListResponse { bundles })?)
+    }
+
+    fn bundle_entry_view(&self, entry: BundleEntry) -> Result<BundleEntryView, DaemonError> {
+        let active_leases = self
+            .catalog
+            .active_leases_for_bundle(&entry.bundle_id)?
+            .len();
+        let disk_state = self.catalog.bundle_disk_state(&entry.path);
+        Ok(BundleEntryView {
+            created_utc: Some(entry.created_at_utc.clone()),
+            summary: match self.catalog.bundle_summary(&entry.bundle_id)? {
+                Some(summary) => summary,
+                None if disk_state == arb_storage::catalog::BundleDiskState::Present => {
+                    let measured = open_bundle(&entry.path)
+                        .ok()
+                        .and_then(|r| inspect_export::catalog_summary(r.as_ref()).ok());
+                    if let Some(summary) = &measured {
+                        self.catalog
+                            .record_bundle_summary(&entry.bundle_id, summary)?;
                     }
-                    None => protocol::CatalogSummary::default(),
-                },
-                bundle_id: entry.bundle_id,
-                path: entry.path,
-                format_version: entry.format_version,
-                state: entry.state,
-                trashed_at_utc: entry.trashed_at_utc,
-                parent_bundle_id: entry.parent_bundle_id,
-                created_at_utc: entry.created_at_utc,
-                active_leases,
-                disk_state,
-            });
-        }
-        Ok(serde_json::to_value(BundleListResponse { bundles: views })?)
+                    measured.unwrap_or_default()
+                }
+                None => protocol::CatalogSummary::default(),
+            },
+            bundle_id: entry.bundle_id,
+            path: entry.path,
+            format_version: entry.format_version,
+            state: entry.state,
+            trashed_at_utc: entry.trashed_at_utc,
+            parent_bundle_id: entry.parent_bundle_id,
+            created_at_utc: entry.created_at_utc,
+            active_leases,
+            disk_state,
+        })
     }
 
     fn handle_bundle_open(&self, params: Value) -> Result<Value, DaemonError> {
@@ -1382,47 +1389,13 @@ impl DaemonState {
         let parsed: BundleIdParams = parse_params(params)?;
         let now_utc = utc_now_iso8601();
         let entry = self.catalog.trash_bundle(&parsed.bundle_id, &now_utc)?;
-        let active_leases = self
-            .catalog
-            .active_leases_for_bundle(&entry.bundle_id)?
-            .len();
-        let disk_state = self.catalog.bundle_disk_state(&entry.path);
-        Ok(serde_json::to_value(BundleEntryView {
-            created_utc: Some(entry.created_at_utc.clone()),
-            summary: protocol::CatalogSummary::default(),
-            bundle_id: entry.bundle_id,
-            path: entry.path,
-            format_version: entry.format_version,
-            state: entry.state,
-            trashed_at_utc: entry.trashed_at_utc,
-            parent_bundle_id: entry.parent_bundle_id,
-            created_at_utc: entry.created_at_utc,
-            active_leases,
-            disk_state,
-        })?)
+        Ok(serde_json::to_value(self.bundle_entry_view(entry)?)?)
     }
 
     fn handle_bundle_restore(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: BundleIdParams = parse_params(params)?;
         let entry = self.catalog.restore_bundle(&parsed.bundle_id)?;
-        let active_leases = self
-            .catalog
-            .active_leases_for_bundle(&entry.bundle_id)?
-            .len();
-        let disk_state = self.catalog.bundle_disk_state(&entry.path);
-        Ok(serde_json::to_value(BundleEntryView {
-            created_utc: Some(entry.created_at_utc.clone()),
-            summary: protocol::CatalogSummary::default(),
-            bundle_id: entry.bundle_id,
-            path: entry.path,
-            format_version: entry.format_version,
-            state: entry.state,
-            trashed_at_utc: entry.trashed_at_utc,
-            parent_bundle_id: entry.parent_bundle_id,
-            created_at_utc: entry.created_at_utc,
-            active_leases,
-            disk_state,
-        })?)
+        Ok(serde_json::to_value(self.bundle_entry_view(entry)?)?)
     }
 
     fn handle_bundle_gc(&self, params: Value) -> Result<Value, DaemonError> {
@@ -1525,8 +1498,7 @@ impl DaemonState {
         let parsed: TimelineOverviewParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let catalog_id = existing.as_ref().map(|e| e.bundle_id.as_str());
-        let overview =
-            inspect_export::build_timeline_overview(&path, catalog_id, parsed.max_error_logs)?;
+        let overview = inspect_export::build_timeline_overview(&path, catalog_id, &parsed)?;
         Ok(serde_json::to_value(overview)?)
     }
 
@@ -1618,6 +1590,8 @@ impl DaemonState {
                 session_id: s.session_id,
                 bundle_id: s.bundle_id,
                 in_frame_index: s.in_frame_index,
+                in_time_ns: s.in_time_ns,
+                out_time_ns: s.out_time_ns,
                 out_frame_index: s.out_frame_index,
                 playhead_frame_index: s.playhead_frame_index,
                 av_offset_override_ms: s.av_offset_override_ms,
@@ -1627,12 +1601,25 @@ impl DaemonState {
     }
 
     fn handle_edit_update_session(&self, params: Value) -> Result<Value, DaemonError> {
-        let parsed: EditUpdateSessionParams = parse_params(params)?;
+        let mut parsed: EditUpdateSessionParams = parse_params(params)?;
+        if let Some(times) = trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)? {
+            let (path, _) = self.resolve_bundle_path(&parsed.bundle_id)?;
+            let reader = arb_storage::bundle_io::open_bundle(path)?;
+            let video = reader.video_path().ok_or_else(|| {
+                DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into())
+            })?;
+            let track = arb_media::mp4::Mp4VideoTrack::open(video)?;
+            let range = trim_range::TrimRange::resolve(&track, (None, None), Some(times))?;
+            parsed.in_frame_index = Some(range.first);
+            parsed.out_frame_index = Some(range.last);
+        }
         let now_utc = utc_now_iso8601();
         let session = EditSession {
             session_id: parsed.session_id,
             bundle_id: parsed.bundle_id,
             in_frame_index: parsed.in_frame_index,
+            in_time_ns: parsed.in_time_ns,
+            out_time_ns: parsed.out_time_ns,
             out_frame_index: parsed.out_frame_index,
             playhead_frame_index: parsed.playhead_frame_index,
             av_offset_override_ms: parsed.av_offset_override_ms,
@@ -1644,6 +1631,8 @@ impl DaemonState {
                 session_id: session.session_id,
                 bundle_id: session.bundle_id,
                 in_frame_index: session.in_frame_index,
+                in_time_ns: session.in_time_ns,
+                out_time_ns: session.out_time_ns,
                 out_frame_index: session.out_frame_index,
                 playhead_frame_index: session.playhead_frame_index,
                 av_offset_override_ms: session.av_offset_override_ms,
@@ -1672,6 +1661,7 @@ impl DaemonState {
 
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let dest_parent = self.resolve_output_dir(
@@ -1722,6 +1712,7 @@ impl DaemonState {
 
     fn handle_export_share_mp4(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportShareMp4Params = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 
@@ -1737,7 +1728,7 @@ impl DaemonState {
             explicit.clone()
         } else {
             let base_dir = self.resolve_output_dir(
-                None,
+                parsed.dest_dir.as_deref(),
                 user_cfg.output_dir_override.as_deref(),
                 &self.paths.data_dir.join("exports"),
                 Some(&path),
@@ -1748,7 +1739,9 @@ impl DaemonState {
             } else {
                 format!("{stem}.mp4")
             };
-            base_dir.join(file_name)
+            let output = base_dir.join(file_name);
+            self.reject_data_dir_state_file(&output, "dest_dir")?;
+            output
         };
 
         let backend = default_codec_backend();
@@ -1852,17 +1845,14 @@ impl DaemonState {
         self: &Arc<Self>,
         method: &str,
         params: Value,
-    ) -> Result<Value, (i32, String)> {
-        match catch_unwind(AssertUnwindSafe(|| self.dispatch(method, params))) {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(err)) => Err((err.rpc_code(), err.to_string())),
-            Err(_) => {
-                self.trigger_shutdown();
-                Err((
-                    RPC_ERR_INTERNAL,
-                    format!("internal error: `{method}` panicked; arbd is shutting down"),
-                ))
-            }
+    ) -> Result<Value, DaemonError> {
+        if let Ok(result) = catch_unwind(AssertUnwindSafe(|| self.dispatch(method, params))) {
+            result
+        } else {
+            self.trigger_shutdown();
+            Err(DaemonError::Internal(format!(
+                "`{method}` panicked; arbd is shutting down"
+            )))
         }
     }
 }
@@ -2548,7 +2538,7 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
                     }
                     RpcResponse::ok(request.id, result)
                 }
-                Err((code, message)) => RpcResponse::err(request.id, code, message),
+                Err(err) => err.into_response(request.id),
             }
         } else {
             RpcResponse::err(

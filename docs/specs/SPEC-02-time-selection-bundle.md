@@ -30,9 +30,10 @@ satisfies:
 | 同じ boot の `Anchored` | 共通分類器では中心 ± 誤差半幅が窓と交差すれば `InRange`。ライブ保存の確定ログ・映像にはさらに中心時刻が窓内という制限がある | 半幅だけが交差する窓外の確定ログや映像を出力に足さない |
 | 同じ boot の `Bounded` | 区間全体が窓内なら採用、完全に外なら除外 | 部分交差は `UncertainTime` |
 | `Unanchored` または boot 不一致 | 確定時刻として採用しない | 共通分類は不確実。受信時刻による近傍条件に従い、上限付きサイドカーに隔離する |
+| 実時間トリム | バンドル先頭からの整数 ns の半開区間 `[IN, OUT)`。表示中の先頭・末尾フレームから同一 boot のデバイス時刻へ写し、閉区間の選別器には最後の対象 ns（OUT − 1）を渡す | 境界をまたぐ同期済みスワイプは端点を補間。主ログ・入力の `relative_time_ns` は選択先頭基準とし、元の時計情報と親の選択区間も保存する |
 | フレーム指定トリム | IN・OUT とも含む。対応する映像フレームの採否はインデックスで決める | 既存の隔離記録を優先して引き継ぎ、上限超過を計上する |
 
-隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓外の時計アンカーや IDR は時刻変換・復号に使えるが、表示フレームの余白は 0 枚。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
+隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。`drain_timeout_ms` は整数 0〜5000 ms（両端を含む）。範囲外は RPC・MCP とも `-32602`。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓外の時計アンカーや IDR は時刻変換・復号に使えるが、表示フレームの余白は 0 枚。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
 
 ### 要求尺と測定結果
 
@@ -41,11 +42,13 @@ satisfies:
 | `requested_duration_secs` | 利用者の要求秒数。実際の録画尺とは独立 |
 | `actual_video_duration_ms` | MP4 の最終サンプルの表示時間まで含む再生尺。測定済みで映像なしなら 0 |
 | `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない |
-| `window_shortfall` | 映像保存は映像尺、ログ単体はログ尺について `actual_ms + 1000 < requested_secs × 1000` のときのみ true。ちょうど 1 秒の不足は false |
+| `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。各尺は独立に `actual_ms + 1000 < requested_secs × 1000` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
 | `video_frame_count`・`log_count`・`unanchored_log_count` | 映像枚数、隔離分を含むログ総数、そのうち隔離ログ数。未測定と確認済みの 0 を区別する |
 | `truncated_unanchored_count`・`discontinuity_count`・`warnings` | 全ストリームの隔離切り捨て、不連続の数、短尺・音声なし・末尾未確認などの警告。空の警告だけでは完全取得を保証しない |
 
-未発行や旧デーモンで測定値が省略され得る。発行後のカタログ登録に失敗して測定結果が返っても保存成功の判定は別に行う。一覧の `duration_ms` は映像があれば映像尺、なければ確定ログ尺。欠損時はカタログに残る集計を使う。[保存結果の型](../../core/crates/arbd/src/protocol.rs)・[共有契約表](ui-feedback-contract-table.json)
+`warning_codes` は機械判定用。`video_shortfall`、`log_shortfall`、`window_shortfall`、`logcat_overflow`、`unanchored_truncated`、`audio_absent`、`stream_discontinuity`、`tail_unconfirmed` を該当時に返す。`warnings` は表示文。`logcat_completeness` は `status`、`dropped_count`、`overflow_events`、`unanchored_count`、`unanchored_truncated_count` を分ける。破損チャンク等で窓内のログに欠損の可能性があれば既知の 0 を撤回し `dropped_count=null` とする。端末の送信キューで失われたフレーム数も失われたログ行数へ換算できない。完全性を裏付けられなければ `unverified`、溢れを観測した場合の `overflow_detected` は件数不明でも保持する。[端末統計のワイヤ](../../device-agent/PROTOCOL.md)・[保存時の完全性判定](../../core/crates/arbd/src/capture.rs)
+
+未発行や旧デーモンで測定値が省略され得る。発行後のカタログ登録に失敗して測定結果が返っても保存成功の判定は別に行う。一覧の `duration_ms` は映像があれば映像尺、なければ確定ログ尺。欠損時はカタログに残る集計を使う。新規保存の `created_at_utc` はミリ秒 UTC、RPC の `created_utc` は互換用の別名。`memo` は保存時のメモで未指定なら null。[保存結果の型](../../core/crates/arbd/src/protocol.rs)・[共有契約表](ui-feedback-contract-table.json)
 
 ## リング・二相保存・回復 [実装済み]
 

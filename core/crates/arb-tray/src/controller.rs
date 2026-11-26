@@ -673,18 +673,12 @@ fn build_recent_bundle_item(bundle: &RecentBundleSummary) -> TrayMenuItem {
 
 /// The `最近の保存` submenu (latest 5 active bundles, newest first -> 1-click file manager open).
 fn build_recent_bundles_section(state: &TrayViewState) -> TrayMenuItem {
-    let mut active: Vec<&RecentBundleSummary> = state
+    // The daemon orders catalog entries oldest first, including legacy second-precision dates.
+    let children: Vec<TrayMenuItem> = state
         .bundles
         .iter()
+        .rev()
         .filter(|bundle| bundle.lifecycle == BundleLifecycleState::Active)
-        .collect();
-    // `bundle.list` returns oldest-first (`created_at_utc ASC`); reverse to newest-first while
-    // keeping explicit UTC ordering deterministic when timestamps are present.
-    active.reverse();
-    // Stable sort: equal (or missing) timestamps keep the newest-first list order from `reverse`.
-    active.sort_by(|a, b| b.created_at_utc.cmp(&a.created_at_utc));
-    let children: Vec<TrayMenuItem> = active
-        .into_iter()
         .take(RECENT_BUNDLES_LIMIT)
         .map(build_recent_bundle_item)
         .collect();
@@ -1123,6 +1117,7 @@ impl TrayController {
             && response["ok"] != true
         {
             return Err(RpcClientError::Rpc {
+                error_code: None,
                 code: -32009,
                 message: "Android Studio が管理中、または保存処理中のため終了を延期しました。"
                     .into(),
@@ -1536,7 +1531,11 @@ mod tests {
                     BundleFormatBadge::V2
                 },
                 lifecycle: BundleLifecycleState::Active,
-                created_at_utc: format!("2026-11-23T00:0{idx}:00Z"),
+                created_at_utc: if idx == 7 {
+                    "2026-11-23T00:06:00.001Z".to_owned()
+                } else {
+                    format!("2026-11-23T00:0{idx}:00Z")
+                },
             });
         }
         state.bundles.push(RecentBundleSummary {

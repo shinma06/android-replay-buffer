@@ -289,3 +289,86 @@ fn shared_studio_timeline_contract() {
         );
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(8), ..ProptestConfig::default() })]
+    #[test]
+    fn g3_subframe_vfr_roundtrip(a in 0u64..23_000_000_000, b in 0u64..23_000_000_000) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("source.mp4");
+        let output = tmp.path().join("output.mp4");
+        let packets = encode_vfr(&[3, 3, 1], &[2000, 2000, 2000, 2000, 4000, 10_000]);
+        mux_raw_h264_to_mp4(&src, 64, 48, 90_000, 90_000, &packets).unwrap();
+        let start = a.min(b);
+        let stop = a.max(b) + 1;
+        let backend = OpenH264Backend::new();
+        let report = arb_media::trim::trim_video_time_range(&src, &output, start, stop, &backend).unwrap();
+        let track = Mp4VideoTrack::open(&output).unwrap();
+        let atoms = inspect_mp4_atoms(&output).unwrap();
+        prop_assert_eq!((atoms.edts_count, atoms.elst_count), (0,0));
+        let mut idx = 0;
+        for (i, (&begin, &end)) in [0,2,4,6,8,12,22].iter().zip(&[2,4,6,8,12,22,23]).enumerate() {
+            let left = start.max(begin * 1_000_000_000);
+            let right = stop.min(end * 1_000_000_000);
+            if left < right {
+                let frame = track.frame(idx).unwrap();
+                prop_assert!(frame.duration_ns.abs_diff(right-left) <= 1_000_000_000u64.div_ceil(u64::from(track.timescale())));
+                let decoded = arb_media::codec::VideoCodecBackend::decode_frame(&backend, &track, idx, PixelFormat::Yuv420p).unwrap();
+                let bar = decoded.data[..64].iter().position(|&px| px > 128);
+                prop_assert_eq!(bar, Some(i));
+                idx += 1;
+            }
+        }
+        prop_assert_eq!(track.frame_count(), idx);
+        let measured = track.duration_ticks() * 1_000_000_000 / u64::from(track.timescale());
+        prop_assert_eq!(report.output_duration_ns, Some(measured));
+        prop_assert!(measured.abs_diff(stop-start) <= 1_000_000_000u64.div_ceil(u64::from(track.timescale())));
+    }
+}
+
+#[test]
+fn complete_90khz_clock_range_can_be_trimmed_again_at_reported_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("input.mp4");
+    let first = tmp.path().join("first.mp4");
+    let second = tmp.path().join("second.mp4");
+    let backend = OpenH264Backend::new();
+    let mut packets = encode_vfr(&[3], &[33]);
+    for (packet, pts) in packets.iter_mut().zip([0, 33_333_333, 66_666_666]) {
+        packet.pts_ns = pts;
+    }
+    mux_raw_h264_to_mp4(&src, 64, 48, 90_000, 3_000, &packets).unwrap();
+    let trim =
+        |src, dst, end| arb_media::trim::trim_video_time_range(src, dst, 0, end, &backend).unwrap();
+    let input = Mp4VideoTrack::open(&src).unwrap();
+    assert_eq!(input.frame(2).unwrap().pts_ns, 66_666_666);
+    assert_eq!(
+        input.last_presentation_duration_ns().unwrap(),
+        Some(33_333_334)
+    );
+    let report = trim(&src, &first, 100_000_000);
+    assert_eq!(report.output_duration_ns, Some(100_000_000));
+    let repeated = trim(&first, &second, report.output_duration_ns.unwrap());
+    assert_eq!(repeated, report);
+    assert_eq!(
+        Mp4VideoTrack::open(&second).unwrap().duration_ticks(),
+        9_000
+    );
+}
+
+#[test]
+fn sub_nanosecond_tick_trim_reports_a_positive_retrimmable_duration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("input.mp4");
+    let first = tmp.path().join("first.mp4");
+    let second = tmp.path().join("second.mp4");
+    let backend = OpenH264Backend::new();
+    let packets = encode_vfr(&[2], &[400]);
+    mux_raw_h264_to_mp4(&src, 64, 48, u32::MAX, 1, &packets).unwrap();
+    let report = arb_media::trim::trim_video_time_range(&src, &first, 0, 1, &backend).unwrap();
+    // One ns is 4 ticks (0.93 ns) at this clock; the track still lasts for a nonzero time.
+    assert_eq!(Mp4VideoTrack::open(&first).unwrap().duration_ticks(), 4);
+    assert_eq!(report.output_duration_ns, Some(1));
+    let end = report.output_duration_ns.unwrap();
+    arb_media::trim::trim_video_time_range(&first, &second, 0, end, &backend).unwrap();
+}
