@@ -318,6 +318,13 @@ impl McpServer {
                 Ok(vec![text_block(&resp)])
             }
             "arb_gc_bundles" => {
+                // Enforce the advertised schema before dispatching a destructive legacy call.
+                // Older daemons silently ignore unrecognized fields, including dry_run.
+                if let Some(field) = args.keys().find(|key| key.as_str() != "ignore_grace") {
+                    return Err(format!(
+                        "unsupported arb_gc_bundles parameter '{field}'; GC was not run"
+                    ));
+                }
                 let params = match args.get("ignore_grace") {
                     None | Some(Value::Bool(false)) => json!({}),
                     Some(Value::Bool(true)) => json!({ "ignore_grace": true }),
@@ -475,6 +482,14 @@ impl McpServer {
         let mut params = args.clone();
         params.insert("bundle_id_or_path".to_owned(), Value::String(bundle_id));
         params.remove("bundle_id");
+        // The existing MCP schema advertises Android's legacy ASSERT abbreviation.
+        if params
+            .get("level")
+            .and_then(Value::as_str)
+            .is_some_and(|v| v.eq_ignore_ascii_case("A"))
+        {
+            params.insert("level".into(), Value::String("F".into()));
+        }
         let resp = self.call_daemon("timeline.query_logs", &Value::Object(params))?;
         Ok(vec![text_block(&resp)])
     }
@@ -1209,6 +1224,18 @@ mod tests {
             .handle_line("not valid json")
             .expect("parse error must respond");
         assert_eq!(bad["error"]["code"], -32_700, "parse error code");
+
+        let preview = srv.handle_line(&json!({
+            "jsonrpc":"2.0", "id":"gc", "method":"tools/call",
+            "params":{"name":"arb_gc_bundles","arguments":{"ignore_grace":true,"dry_run":true}}
+        }).to_string()).expect("tool error");
+        assert_eq!(preview["result"]["isError"], true);
+        assert!(
+            preview["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("GC was not run")
+        );
 
         let unknown_tool = srv
             .handle_line(

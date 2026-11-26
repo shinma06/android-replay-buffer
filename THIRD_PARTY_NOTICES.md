@@ -12,6 +12,7 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 | OpenH264（Cisco）／ Rust クレート `openh264`・`openh264-sys2` | クレート 0.9.x | BSD-2-Clause | H.264 のデコードとエンコード（トリム・共有 MP4・タップ焼き込みの再エンコード）。ソースからビルドして静的リンクします。 |
 | `rusty_aac` | 2.x | Apache-2.0 | AAC の処理（音声付き保存・書き出し）。 |
 | SQLite（`rusqlite` / `libsqlite3-sys` の bundled ビルド） | rusqlite 0.35 | SQLite 本体はパブリックドメイン、`rusqlite` は MIT | 保存バンドル・カタログのメタデータ。 |
+| `serde_path_to_error` | 0.1.x | MIT OR Apache-2.0 | RPC 引数のデコードエラーにフィールド名を付与。 |
 | Gson | 2.14.0 | Apache-2.0 | IDE プラグイン（`client-core`）の JSON 処理。 |
 | Error Prone Annotations（Gson の推移的依存） | 2.48.0 | Apache-2.0 | IDE プラグイン ZIP の `lib/` に同梱される注釈のみのライブラリ。 |
 

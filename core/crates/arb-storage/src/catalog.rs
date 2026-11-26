@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS bundles (
   created_at_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bundle_summaries (
+  bundle_id TEXT PRIMARY KEY REFERENCES bundles(bundle_id) ON DELETE CASCADE,
+  summary_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS purge_claims (
   bundle_id TEXT PRIMARY KEY REFERENCES bundles(bundle_id) ON DELETE CASCADE,
   token TEXT NOT NULL UNIQUE
@@ -305,6 +310,8 @@ pub struct ForgetReport {
 /// Summary report returned by [`Catalog::gc_trashed_bundles`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GcReport {
+    /// Additional read-only estimates when previewing GC.
+    pub preview: Option<GcPreview>,
     /// Managed trashed bundle IDs physically deleted and removed from the catalog.
     pub purged_bundle_ids: Vec<String>,
     /// Trashed bundle IDs retained because active leases were present.
@@ -322,6 +329,62 @@ pub struct GcReport {
     pub failed: Vec<GcFailure>,
     /// Lease IDs reaped at the start of this GC run because their `holder_pid` was dead.
     pub reaped_lease_ids: Vec<String>,
+}
+
+/// Controls whether eligible catalog entries are inspected or purged.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GcMode {
+    /// Report candidates and reclamation estimates.
+    Preview,
+    /// Perform eligible cleanup.
+    Execute,
+}
+
+/// Optional catalog summary; inaccessible recordings retain their catalog identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogSummary {
+    /// `full`, `logs_only` or `trimmed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_kind: Option<String>,
+    /// Encoded video duration or anchored log span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Number of indexed frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_count: Option<u64>,
+    /// Playable video file exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_video: Option<bool>,
+    /// Audio track exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_audio: Option<bool>,
+    /// Total stored logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_count: Option<usize>,
+    /// Number of detected crashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash_marker_count: Option<usize>,
+    /// Optional user memo; older bundles have none.
+    #[serde(default)]
+    pub memo: Option<String>,
+}
+
+/// Read-only GC plan. Missing rows have no files to reclaim.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GcPreview {
+    /// Eligible IDs including catalog-only removals.
+    pub candidate_bundle_ids: Vec<String>,
+    /// Candidates whose public entry is missing and only catalog rows need removal.
+    pub missing_bundle_ids: Vec<String>,
+    /// Existing protected legacy directories.
+    pub legacy_bundle_ids: Vec<String>,
+    /// Existing protected external directories.
+    pub unmanaged_bundle_ids: Vec<String>,
+    /// Leases the next actual GC would release.
+    pub expired_lease_ids: Vec<String>,
+    /// Sum of regular-file lengths; hard links and sparse files affect physical reclamation.
+    pub estimated_reclaim_bytes: u64,
 }
 
 /// One bundle whose physical purge failed during [`Catalog::gc_trashed_bundles`] or
@@ -420,6 +483,71 @@ impl Catalog {
     #[must_use]
     pub fn managed_bundles_root(&self) -> &Path {
         &self.managed_bundles_root
+    }
+
+    /// Distinguishes a missing managed subtree from an unavailable external volume.
+    /// Only missing components below an accessible managed directory qualify.
+    #[must_use]
+    pub fn bundle_disk_state(&self, path: &Path) -> BundleDiskState {
+        let state = probe_bundle_disk_state(path);
+        if state != BundleDiskState::StorageUnavailable
+            || path
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+        {
+            return state;
+        }
+        for ancestor in path.ancestors() {
+            match fs::symlink_metadata(ancestor) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Ok(meta)
+                    if ancestor != path
+                        && meta.is_dir()
+                        && ancestor
+                            .canonicalize()
+                            .is_ok_and(|p| p.starts_with(&self.managed_bundles_root)) =>
+                {
+                    return BundleDiskState::Missing;
+                }
+                _ => break,
+            }
+        }
+        state
+    }
+
+    /// Retrieves the last measured summary of an immutable recording, even when offline.
+    ///
+    /// # Errors
+    /// Returns an error for unreadable catalog rows.
+    pub fn bundle_summary(&self, id: &str) -> Result<Option<CatalogSummary>, StorageError> {
+        let wire: Option<String> = self
+            .lock_conn()?
+            .query_row(
+                "SELECT summary_json FROM bundle_summaries WHERE bundle_id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| StorageError::sqlite("read_bundle_summary", e))?;
+        wire.map(|v| {
+            serde_json::from_str(&v).map_err(|e| StorageError::json("decode_bundle_summary", e))
+        })
+        .transpose()
+    }
+
+    /// Attaches measurements to a still-registered immutable recording.
+    ///
+    /// # Errors
+    /// Returns an error if the snapshot cannot be serialized or stored.
+    pub fn record_bundle_summary(
+        &self,
+        id: &str,
+        summary: &CatalogSummary,
+    ) -> Result<(), StorageError> {
+        let wire = serde_json::to_string(summary)
+            .map_err(|e| StorageError::json("encode_bundle_summary", e))?;
+        self.lock_conn()?.execute("INSERT OR IGNORE INTO bundle_summaries SELECT bundle_id, ?2 FROM bundles WHERE bundle_id=?1",params![id,wire]).map_err(|e| StorageError::sqlite("record_bundle_summary",e))?;
+        Ok(())
     }
 
     /// Registers a bundle in `bundles` with initial state `Active`.
@@ -864,6 +992,21 @@ impl Catalog {
         gc_grace_secs: u64,
         now_utc: &str,
     ) -> Result<GcReport, StorageError> {
+        self.collect_garbage(as_of, gc_grace_secs, now_utc, GcMode::Execute)
+    }
+
+    /// Plans or executes a GC pass with the same grace and identity checks.
+    ///
+    /// # Errors
+    /// Returns an error if the cutoff or catalog cannot be read.
+    pub fn collect_garbage(
+        &self,
+        as_of: &str,
+        gc_grace_secs: u64,
+        now_utc: &str,
+        mode: GcMode,
+    ) -> Result<GcReport, StorageError> {
+        let dry_run = mode == GcMode::Preview;
         let as_of_ns =
             parse_utc_timestamp_ns(as_of).ok_or_else(|| StorageError::InvalidArgument {
                 name: "now_utc",
@@ -877,23 +1020,61 @@ impl Catalog {
         let cutoff = as_of_ns.min(now_ns) - i128::from(gc_grace_secs) * 1_000_000_000;
         let mut report = GcReport {
             // R3 S6: a crashed viewer must not block GC until the next daemon restart.
-            reaped_lease_ids: self.reap_dead_leases(now_ns)?,
+            preview: dry_run.then(GcPreview::default),
+            reaped_lease_ids: if dry_run {
+                Vec::new()
+            } else {
+                self.reap_dead_leases(now_ns)?
+            },
             ..GcReport::default()
         };
 
+        if let Some(preview) = &mut report.preview {
+            let conn = self.lock_conn()?;
+            preview.expired_lease_ids = fetch_all_leases(&conn)?
+                .into_iter()
+                .filter(|l| lease_expired(l, now_ns))
+                .map(|l| l.lease_id)
+                .collect();
+        }
         let purging = self.list_bundles(Some(BundleLifecycleState::Purging))?;
         let trashed = self.list_bundles(Some(BundleLifecycleState::Trashed))?;
         for bundle in purging.into_iter().chain(trashed) {
             let outcome = if bundle.state == BundleLifecycleState::Purging {
-                self.finish_purge(&bundle)
+                if dry_run {
+                    self.preview_interrupted_purge(&bundle, now_ns)
+                } else {
+                    self.finish_purge(&bundle)
+                }
             } else {
-                self.try_mark_purging(&bundle, cutoff)
+                self.try_mark_purging(&bundle, cutoff, dry_run.then_some(now_ns))
                     .and_then(|gate| match gate {
-                        PurgeGate::Marked => self.finish_purge(&bundle),
+                        PurgeGate::Marked if !dry_run => self.finish_purge(&bundle),
                         other => Ok(other),
                     })
             };
             match outcome {
+                Ok(gate @ (PurgeGate::Marked | PurgeGate::ForgottenMissing)) if dry_run => {
+                    if let Some(preview) = &mut report.preview {
+                        if gate == PurgeGate::ForgottenMissing {
+                            preview.missing_bundle_ids.push(bundle.bundle_id.clone());
+                        }
+                        match self
+                            .existing_purge_path(&bundle)
+                            .and_then(|path| estimate_tree_bytes(&path))
+                        {
+                            Ok(bytes) => {
+                                preview.estimated_reclaim_bytes =
+                                    preview.estimated_reclaim_bytes.saturating_add(bytes);
+                            }
+                            Err(error) => report.failed.push(GcFailure {
+                                bundle_id: bundle.bundle_id.clone(),
+                                error: error.to_string(),
+                            }),
+                        }
+                        preview.candidate_bundle_ids.push(bundle.bundle_id);
+                    }
+                }
                 Ok(PurgeGate::Marked | PurgeGate::ForgottenMissing) => {
                     report.purged_bundle_ids.push(bundle.bundle_id);
                 }
@@ -902,9 +1083,19 @@ impl Catalog {
                     report.skipped_active_job_bundle_ids.push(bundle.bundle_id);
                 }
                 Ok(PurgeGate::Grace) => report.skipped_in_grace_bundle_ids.push(bundle.bundle_id),
-                Ok(PurgeGate::Unmanaged) => report
-                    .skipped_unmanaged_or_legacy_bundle_ids
-                    .push(bundle.bundle_id),
+                Ok(PurgeGate::Unmanaged) => {
+                    if let Some(preview) = &mut report.preview {
+                        let ids = if bundle.format_version == CatalogFormatVersion::LegacyRo {
+                            &mut preview.legacy_bundle_ids
+                        } else {
+                            &mut preview.unmanaged_bundle_ids
+                        };
+                        ids.push(bundle.bundle_id.clone());
+                    }
+                    report
+                        .skipped_unmanaged_or_legacy_bundle_ids
+                        .push(bundle.bundle_id);
+                }
                 Ok(PurgeGate::Gone) => {}
                 Err(err) => report.failed.push(GcFailure {
                     bundle_id: bundle.bundle_id,
@@ -1017,7 +1208,7 @@ impl Catalog {
         let Some(current) = fetch_bundle(&tx, &bundle.bundle_id)? else {
             return Ok(ForgetGate::Gone);
         };
-        match probe_bundle_disk_state(&current.path) {
+        match self.bundle_disk_state(&current.path) {
             BundleDiskState::Present => return Ok(ForgetGate::Present),
             BundleDiskState::StorageUnavailable => return Ok(ForgetGate::StorageUnavailable),
             // Only GC can finish an interrupted delete: the bundle can still exist at its claim.
@@ -1094,6 +1285,7 @@ impl Catalog {
         &self,
         bundle: &BundleEntry,
         cutoff: i128,
+        preview_at: Option<i128>,
     ) -> Result<PurgeGate, StorageError> {
         let mut conn = self.lock_conn()?;
         let tx = conn
@@ -1106,7 +1298,7 @@ impl Catalog {
         if current.state != BundleLifecycleState::Trashed {
             return Ok(PurgeGate::Gone);
         }
-        let disk_state = probe_bundle_disk_state(&current.path);
+        let disk_state = self.bundle_disk_state(&current.path);
         if current.path != bundle.path
             || (disk_state != BundleDiskState::Missing && !self.is_purgeable_location(&current)?)
         {
@@ -1119,7 +1311,7 @@ impl Catalog {
                 io::Error::other("bundle storage is unavailable"),
             ));
         }
-        let active_leases = count_active_leases(&tx, &bundle.bundle_id)?;
+        let active_leases = gc_lease_count(&tx, &bundle.bundle_id, preview_at)?;
         if active_leases > 0 {
             return Ok(PurgeGate::Leased);
         }
@@ -1138,6 +1330,9 @@ impl Catalog {
             return Ok(PurgeGate::Grace);
         }
         if disk_state == BundleDiskState::Missing {
+            if preview_at.is_some() {
+                return Ok(PurgeGate::ForgottenMissing);
+            }
             delete_bundle_catalog_rows(&tx, &current.bundle_id)?;
             tx.commit()
                 .map_err(|source| StorageError::sqlite("commit_gc_forget_missing", source))?;
@@ -1147,6 +1342,9 @@ impl Catalog {
         // identity check stays `Trashed`, so it can still be restored or forgotten.
         let expected_manifest_id = fetch_expected_manifest_bundle_id(&tx, &current.bundle_id)?;
         verify_purge_identity(&current, &current.path, expected_manifest_id.as_deref())?;
+        if preview_at.is_some() {
+            return Ok(PurgeGate::Marked);
+        }
         let purging = current.state.begin_purge(active_leases, active_jobs)?;
         tx.execute(
             "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
@@ -1155,6 +1353,66 @@ impl Catalog {
         .map_err(|source| StorageError::sqlite("mark_bundle_purging", source))?;
         tx.commit()
             .map_err(|source| StorageError::sqlite("commit_gc_mark", source))?;
+        Ok(PurgeGate::Marked)
+    }
+
+    fn existing_purge_path(&self, bundle: &BundleEntry) -> Result<PathBuf, StorageError> {
+        if bundle.state == BundleLifecycleState::Purging {
+            let conn = self.lock_conn()?;
+            let token: Option<String> = conn
+                .query_row(
+                    "SELECT token FROM purge_claims WHERE bundle_id=?1",
+                    params![bundle.bundle_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| StorageError::sqlite("preview_purge_claim", e))?;
+            if let Some(token) = token {
+                if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(StorageError::CorruptData {
+                        reason: "invalid purge claim".into(),
+                    });
+                }
+                for prefix in [".purged-", ".purging-"] {
+                    let path = bundle.path.with_file_name(format!("{prefix}{token}"));
+                    if fs::symlink_metadata(&path).is_ok() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+        Ok(bundle.path.clone())
+    }
+
+    fn preview_interrupted_purge(
+        &self,
+        bundle: &BundleEntry,
+        now_ns: i128,
+    ) -> Result<PurgeGate, StorageError> {
+        let path = self.existing_purge_path(bundle)?;
+        let conn = self.lock_conn()?;
+        if gc_lease_count(&conn, &bundle.bundle_id, Some(now_ns))? > 0 {
+            return Ok(PurgeGate::Leased);
+        }
+        if count_active_jobs_for_path(&conn, &bundle.path)? > 0 {
+            return Ok(PurgeGate::ActiveJobs);
+        }
+        if bundle.format_version != CatalogFormatVersion::V2
+            || !is_strictly_inside_managed_root(&path, &self.managed_bundles_root)
+        {
+            return Ok(PurgeGate::Unmanaged);
+        }
+        if probe_bundle_disk_state(&path) == BundleDiskState::Missing {
+            return Ok(PurgeGate::ForgottenMissing);
+        }
+        if path == bundle.path
+            || !path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".purged-"))
+        {
+            let expected = fetch_expected_manifest_bundle_id(&conn, &bundle.bundle_id)?;
+            verify_purge_identity(bundle, &path, expected.as_deref())?;
+        }
         Ok(PurgeGate::Marked)
     }
 
@@ -1791,6 +2049,12 @@ impl Catalog {
         let playhead = opt_u64_to_i64(session.playhead_frame_index, "playhead_frame_index")?;
 
         let conn = self.lock_conn()?;
+        if fetch_bundle(&conn, &session.bundle_id)?.is_none() {
+            return Err(StorageError::NotFound {
+                entity: "bundle",
+                id: session.bundle_id.clone(),
+            });
+        }
         conn.execute(
             "INSERT INTO edit_sessions (
                 session_id, bundle_id, in_frame_index, out_frame_index,
@@ -2352,6 +2616,47 @@ fn count_active_leases(conn: &Connection, bundle_id: &str) -> Result<usize, Stor
     })
 }
 
+fn gc_lease_count(
+    conn: &Connection,
+    id: &str,
+    preview_at: Option<i128>,
+) -> Result<usize, StorageError> {
+    if let Some(now) = preview_at {
+        Ok(fetch_all_leases(conn)?
+            .iter()
+            .filter(|l| l.bundle_id == id && !lease_expired(l, now))
+            .count())
+    } else {
+        count_active_leases(conn, id)
+    }
+}
+
+fn estimate_tree_bytes(path: &Path) -> Result<u64, StorageError> {
+    let mut pending = vec![path.to_owned()];
+    let mut total = 0u64;
+    while let Some(p) = pending.pop() {
+        let m = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(StorageError::io("estimate_gc_bytes", &p, e)),
+        };
+        if m.is_file() {
+            total = total.saturating_add(m.len());
+        } else if m.is_dir() {
+            for entry in
+                fs::read_dir(&p).map_err(|e| StorageError::io("estimate_gc_bytes", &p, e))?
+            {
+                pending.push(
+                    entry
+                        .map_err(|e| StorageError::io("estimate_gc_bytes", &p, e))?
+                        .path(),
+                );
+            }
+        }
+    }
+    Ok(total)
+}
+
 fn count_active_jobs_for_path(
     conn: &Connection,
     bundle_path: &Path,
@@ -2735,10 +3040,74 @@ mod tests {
             [lease]
         );
         assert!(matches!(
-            catalog.try_mark_purging(&old, i128::MAX).unwrap(),
+            catalog.try_mark_purging(&old, i128::MAX, None).unwrap(),
             super::PurgeGate::Grace
         ));
         assert!(path.is_dir());
+    }
+
+    #[test]
+    fn gc_preview_keeps_expired_leases_and_matches_the_next_execution() {
+        let tmp = TempDir::new().expect("temp dir must be created");
+        let managed_root = tmp.path().join("bundles");
+        let db = tmp.path().join("catalog.sqlite");
+        let catalog = Catalog::open(&db, &managed_root).expect("catalog open must succeed");
+        let path = managed_root.join("b-preview");
+        std::fs::create_dir_all(&path).expect("bundle dir must be created");
+        super::catalog_fixture::write_manifest(&path, "b-preview", "2026-11-22T10:00:00Z");
+        catalog
+            .register_bundle(&entry("b-preview", path.clone()))
+            .expect("register must succeed");
+        let dead_lease = catalog
+            .acquire_lease(
+                "b-preview",
+                LeaseHolderKind::IdeViewer,
+                u32::MAX - 7,
+                "2026-11-22T10:00:00Z",
+            )
+            .expect("acquire dead lease");
+        catalog
+            .trash_bundle("b-preview", "2026-11-22T10:00:00Z")
+            .expect("trash must succeed");
+        let wal = tmp.path().join("catalog.sqlite-wal");
+        let snapshot = || (std::fs::read(&db).unwrap(), std::fs::read(&wal).ok());
+        let before = snapshot();
+
+        let preview = catalog
+            .collect_garbage(
+                "2099-01-01T00:00:00Z",
+                0,
+                "2099-01-01T00:00:00Z",
+                super::GcMode::Preview,
+            )
+            .expect("preview must run");
+        let plan = preview.preview.expect("preview plan");
+        assert_eq!(plan.expired_lease_ids, vec![dead_lease]);
+        assert_eq!(plan.candidate_bundle_ids, vec!["b-preview".to_owned()]);
+        assert!(preview.reaped_lease_ids.is_empty(), "preview reaps nothing");
+        assert_eq!(
+            snapshot(),
+            before,
+            "preview must not write SQLite or its WAL"
+        );
+        assert_eq!(
+            super::count_active_leases(&catalog.lock_conn().unwrap(), "b-preview").unwrap(),
+            1,
+            "expired lease row is still present"
+        );
+        assert!(path.is_dir(), "payload untouched");
+
+        let executed = catalog
+            .collect_garbage(
+                "2099-01-01T00:00:00Z",
+                0,
+                "2099-01-01T00:00:00Z",
+                super::GcMode::Execute,
+            )
+            .expect("gc must run");
+        assert_eq!(executed.reaped_lease_ids, plan.expired_lease_ids);
+        assert_eq!(executed.purged_bundle_ids, plan.candidate_bundle_ids);
+        assert!(!path.exists(), "execution purges the previewed candidate");
     }
 
     #[test]

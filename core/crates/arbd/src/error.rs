@@ -64,7 +64,7 @@ pub enum DaemonError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     /// Caller supplied invalid parameters.
-    #[error("invalid argument: {0}")]
+    #[error("{0}")]
     InvalidParams(String),
     /// Requested entity was not found.
     #[error("not found: {0}")]
@@ -85,10 +85,14 @@ impl DaemonError {
     #[must_use]
     pub const fn rpc_code(&self) -> i32 {
         match self {
-            Self::InvalidParams(_) | Self::Selection(_) => RPC_ERR_INVALID_PARAMS,
             Self::MethodNotFound(_) => RPC_ERR_METHOD_NOT_FOUND,
-            Self::NotFound(_) => RPC_ERR_NOT_FOUND,
-            Self::Conflict(_) => RPC_ERR_CONFLICT,
+            Self::Storage(StorageError::NotFound { .. }) | Self::NotFound(_) => RPC_ERR_NOT_FOUND,
+            Self::InvalidParams(_)
+            | Self::Selection(_)
+            | Self::Storage(
+                StorageError::InvalidArgument { .. } | StorageError::ConfigValidation(_),
+            ) => RPC_ERR_INVALID_PARAMS,
+            Self::Storage(StorageError::StateTransition(_)) | Self::Conflict(_) => RPC_ERR_CONFLICT,
             Self::Storage(_) => RPC_ERR_STORAGE,
             Self::Media(_) => RPC_ERR_MEDIA,
             Self::Adb(_) | Self::CaptureSource(_) | Self::Wire(_) => RPC_ERR_ADB,

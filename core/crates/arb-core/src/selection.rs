@@ -498,6 +498,26 @@ pub fn classify_alignment(alignment: &TimeAlignment, window: &WindowSpec) -> Mem
 /// overlap never leaks neighbor `in - 1` or `out + 1` frames into a trim. All
 /// other streams and window kinds use [`classify_alignment`].
 pub fn classify_record<T: AlignedRecord>(record: &T, window: &WindowSpec) -> Membership {
+    // The uncertainty interval is useful for classification, but a save may not
+    // publish an anchored timestamp outside its requested real-time interval.
+    if let (
+        WindowSpec::RealElapsed {
+            start_boottime_ns,
+            end_boottime_ns,
+            ..
+        },
+        TimeAlignment::Anchored {
+            boottime_ns,
+            boot_id,
+            ..
+        },
+    ) = (window, record.time_alignment())
+        && boot_id == window.boot_id()
+        && !(*start_boottime_ns.min(end_boottime_ns)..=*start_boottime_ns.max(end_boottime_ns))
+            .contains(boottime_ns)
+    {
+        return Membership::OutOfRange;
+    }
     if let (
         WindowSpec::FrameRange {
             boot_id: w_boot,

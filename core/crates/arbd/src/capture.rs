@@ -591,6 +591,7 @@ pub struct CapturePipeline {
     latest_pc_cont_ns: Option<i64>,
     last_chunk_created_cont_ns: Option<i64>,
     host_boot_ns: i64,
+    resume_from_ns: Option<i64>,
     recovered_boot_id: Option<String>,
     latest_video_config: Option<Vec<u8>>,
     latest_audio_config: Option<Vec<u8>>,
@@ -675,6 +676,7 @@ impl CapturePipeline {
             latest_pc_cont_ns: None,
             last_chunk_created_cont_ns: None,
             host_boot_ns,
+            resume_from_ns: None,
             recovered_boot_id: None,
             latest_video_config: None,
             latest_audio_config: None,
@@ -699,7 +701,18 @@ impl CapturePipeline {
                 excluded_ids.push(chunk.chunk_id);
                 continue;
             };
-            if self.serial.as_ref() != Some(&info.device_serial) {
+            let boot_id = info
+                .device_boot_id
+                .or_else(|| info.heartbeat.as_ref().map(|h| h.0.clone()));
+            if self.serial.as_ref() != Some(&info.device_serial)
+                || self
+                    .recovered_boot_id
+                    .as_ref()
+                    .zip(boot_id.as_ref())
+                    .is_some_and(|(old, new)| old != new)
+            {
+                self.session_first_event_cont_ns = Some(chunk.created_cont_ns);
+                self.ring.set_span_floor(self.session_first_event_cont_ns);
                 self.chunk_contents.clear();
             }
             self.serial = Some(info.device_serial.clone());
@@ -714,7 +727,7 @@ impl CapturePipeline {
             self.latest_video_config = info.video_config;
             self.latest_audio_config = info.audio_config;
             (self.video_width, self.video_height) = info.video_size;
-            self.recovered_boot_id = info.heartbeat.as_ref().map(|h| h.0.clone());
+            self.recovered_boot_id = boot_id;
             self.latest_heartbeat_boottime_ns = info.heartbeat.as_ref().map(|h| h.1);
             self.latest_heartbeat_pc_cont_ns = info.heartbeat.map(|h| h.2);
             self.chunk_contents.insert(
@@ -919,7 +932,11 @@ impl CapturePipeline {
         clock_domain: ClockDomain,
         capture_mode: CaptureMode,
     ) -> u64 {
+        self.resume_from_ns = self.latest_pc_cont_ns;
         if self.serial.as_deref().is_some_and(|old| old != serial) {
+            self.resume_from_ns = None;
+            self.session_first_event_cont_ns = None;
+            self.ring.set_span_floor(Some(i64::MAX));
             let _ = self.flush_pending_chunk();
             self.recovered_boot_id = None;
             self.latest_video_config = None;
@@ -958,8 +975,6 @@ impl CapturePipeline {
         self.display_width = None;
         self.display_height = None;
         self.uid_packages.clear();
-        self.session_first_event_cont_ns = None;
-        self.ring.set_span_floor(None);
         self.session_generation
     }
 
@@ -1055,7 +1070,7 @@ impl CapturePipeline {
     }
 
     /// Computes the honest elapsed duration currently retained in the Zone-1 ring buffer (in
-    /// whole seconds), scoped to the active capture session when one is running and bounded by
+    /// whole seconds), scoped to the current serial and device boot and bounded by
     /// the configured ring duration cap.
     #[must_use]
     pub fn buffered_secs(&self) -> u64 {
@@ -1134,7 +1149,45 @@ impl CapturePipeline {
             return Ok(());
         }
 
+        let announced_boot = match &event {
+            CaptureEvent::Hello { payload, .. } => Some(payload.boot_id.as_str()),
+            CaptureEvent::Heartbeat { boot_id, .. } => Some(boot_id.as_str()),
+            _ => None,
+        };
+        if let Some(boot) = announced_boot {
+            if self
+                .timeline
+                .current_boot_id()
+                .or(self.recovered_boot_id.as_deref())
+                .is_some_and(|old| old != boot)
+            {
+                self.flush_pending_chunk()?;
+                self.chunk_contents.clear();
+                self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
+                self.latest_heartbeat_boottime_ns = None;
+                self.latest_heartbeat_pc_cont_ns = None;
+                self.drain_watermark_ns = None;
+                self.latest_video_config = None;
+                self.latest_audio_config = None;
+                self.session_first_event_cont_ns = None;
+                self.resume_from_ns = None;
+                self.pressure_discontinuities.clear();
+            }
+            self.recovered_boot_id = Some(boot.to_owned());
+        }
         let event_pc_ns = capture_event_pc_cont_ns(&event);
+        if let Some(end) = event_pc_ns
+            && let Some(start) = self.resume_from_ns.take()
+        {
+            let gap = stream_gap(
+                start,
+                end.max(start),
+                "記録を停止後、同じ端末で再開しました".into(),
+            );
+            self.pending_events
+                .push(CaptureEvent::Discontinuity(gap.clone()));
+            self.record_live_discontinuity(&gap);
+        }
         if let Some(ts) = event_pc_ns {
             if self.session_first_event_cont_ns.is_none() {
                 self.session_first_event_cont_ns = Some(ts);
@@ -1167,15 +1220,6 @@ impl CapturePipeline {
     }
 
     fn accept_hello(&mut self, payload: &arb_adb::wire::HelloPayload) {
-        if self
-            .timeline
-            .current_boot_id()
-            .or(self.recovered_boot_id.as_deref())
-            .is_some_and(|boot| boot != payload.boot_id)
-        {
-            self.latest_video_config = None;
-            self.latest_audio_config = None;
-        }
         self.connected = true;
         self.device.model.clone_from(&payload.model);
         self.device.api_level = payload.api_level;
@@ -1377,6 +1421,11 @@ impl CapturePipeline {
             host_live: self.clock_domain == ClockDomain::HostLive,
             host_boot_ns: self.host_boot_ns,
             device_serial: self.device.serial.clone(),
+            device_boot_id: self
+                .timeline
+                .current_boot_id()
+                .or(self.recovered_boot_id.as_deref())
+                .map(str::to_owned),
             ingest_range: (
                 events
                     .iter()
@@ -1634,7 +1683,7 @@ impl CapturePipeline {
     ) -> Result<PendingSave, DaemonError> {
         let initial_flush_failed =
             self.flush_pending_chunk().is_err() || self.storage_pressure_stopped;
-        let chunk_ids = self.select_window_chunks(&window, &policy);
+        let chunk_ids = self.select_window_chunks(&window, &policy, mode);
         if chunk_ids.is_empty() {
             return Err(DaemonError::Conflict(
                 "no captured ring chunks overlap the requested save window".to_owned(),
@@ -1725,7 +1774,11 @@ impl CapturePipeline {
                     pending.params.extra_discontinuities.push(gap);
                 }
             }
-            for id in self.select_window_chunks(&pending.params.window, &pending.params.policy) {
+            for id in self.select_window_chunks(
+                &pending.params.window,
+                &pending.params.policy,
+                pending.params.mode,
+            ) {
                 if !chunk_ids.contains(&id) {
                     chunk_ids.push(id);
                 }
@@ -1917,7 +1970,12 @@ impl CapturePipeline {
     /// Ring chunks whose `[created, created + duration]` overlaps the window's ingest range
     /// widened by the pin margin, plus the nearest preceding keyframe / video-config /
     /// heartbeat chunk (R3 M2). Never the whole ring.
-    fn select_window_chunks(&self, window: &WindowSpec, policy: &SelectionPolicy) -> Vec<String> {
+    fn select_window_chunks(
+        &self,
+        window: &WindowSpec,
+        policy: &SelectionPolicy,
+        mode: SaveMode,
+    ) -> Vec<String> {
         let margin = i64::try_from(policy.unanchored_ingest_margin_ns)
             .unwrap_or(i64::MAX)
             .max(MIN_PIN_WINDOW_MARGIN_NS);
@@ -1939,8 +1997,8 @@ impl CapturePipeline {
             .filter(|c| overlaps(c))
             .map(|c| c.chunk_id.clone())
             .collect();
-        let mut need_keyframe = true;
-        let mut need_config = true;
+        let mut need_keyframe = mode == SaveMode::Full;
+        let mut need_config = mode == SaveMode::Full;
         let mut need_heartbeat = true;
         for chunk in chunks[..first_idx].iter().rev() {
             if !(need_keyframe || need_config || need_heartbeat) {
@@ -2052,8 +2110,99 @@ fn load_failed_retryable_job(
 /// Result of a successful materialization (bundle published on disk).
 struct Materialized {
     bundle_id: String,
+    summary: Option<crate::protocol::CatalogSummary>,
+    evidence: crate::protocol::SaveEvidence,
     unanchored_summary: UnanchoredSummary,
     warning: Option<String>,
+}
+
+fn window_shortfall(requested_secs: u64, actual_ms: u64) -> bool {
+    actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000)
+}
+
+fn measure_saved_evidence(
+    path: &Path,
+    params: &SaveJobMaterializeParams,
+) -> Result<
+    (
+        crate::protocol::SaveEvidence,
+        crate::protocol::CatalogSummary,
+    ),
+    DaemonError,
+> {
+    let reader = arb_storage::bundle_io::open_bundle(path)?;
+    let logs = reader.log_statistics()?;
+    let summary = crate::inspect_export::catalog_summary_with_logs(reader.as_ref(), &logs)?;
+    let manifest = reader.manifest_summary();
+    let video = summary
+        .duration_ms
+        .filter(|_| summary.has_video == Some(true));
+    let actual = if params.mode == SaveMode::LogsOnly {
+        logs.duration_ms
+    } else {
+        video.unwrap_or(0)
+    };
+    let window_shortfall = window_shortfall(params.duration_sec, actual);
+    let mut warnings = Vec::new();
+    if window_shortfall {
+        warnings.push(format!(
+            "要求 {} 秒に対し、保存できた{}は {actual} ms です",
+            params.duration_sec,
+            if params.mode == SaveMode::LogsOnly {
+                "ログ"
+            } else {
+                "映像"
+            }
+        ));
+    }
+    if manifest.unanchored_summary.truncated_count > 0
+        || manifest
+            .streams
+            .logcat
+            .as_ref()
+            .is_some_and(|l| l.overflow_events > 0)
+    {
+        warnings.push("取りこぼしまたは隔離記録の切り捨てがあります".into());
+    }
+    if params.mode == SaveMode::Full && summary.has_audio != Some(true) {
+        warnings.push("音声がありません".into());
+    }
+    if params.tail_may_be_incomplete {
+        warnings.push("保存範囲の末尾は未確認です".into());
+    }
+    Ok((
+        crate::protocol::SaveEvidence {
+            actual_video_duration_ms: Some(video.unwrap_or(0)),
+            actual_log_duration_ms: Some(logs.duration_ms),
+            video_frame_count: summary.frame_count,
+            log_count: Some(logs.count),
+            unanchored_log_count: Some(logs.unanchored),
+            truncated_unanchored_count: Some(manifest.unanchored_summary.truncated_count),
+            discontinuity_count: Some(reader.discontinuities()?.len()),
+            window_shortfall: Some(window_shortfall),
+            warnings: Some(warnings),
+        },
+        summary,
+    ))
+}
+
+fn saved_evidence(
+    path: &Path,
+    params: &SaveJobMaterializeParams,
+) -> (
+    crate::protocol::SaveEvidence,
+    Option<crate::protocol::CatalogSummary>,
+) {
+    match measure_saved_evidence(path, params) {
+        Ok((evidence, summary)) => (evidence, Some(summary)),
+        Err(e) => (
+            crate::protocol::SaveEvidence {
+                warnings: Some(vec![format!("保存済み記録の集計に失敗しました: {e}")]),
+                ..Default::default()
+            },
+            None,
+        ),
+    }
 }
 
 /// Executes Phase-2 materialization for `job_id` from its durably pinned Zone-1 chunks,
@@ -2120,6 +2269,9 @@ pub fn phase2_materialize(
         ));
     }
     let completed = registered.map_err(DaemonError::from).and_then(|_| {
+        if let Some(summary) = &materialized.summary {
+            catalog.record_bundle_summary(&materialized.bundle_id, summary)?;
+        }
         if FaultInjection::fire(&plan.faults.fail_complete_job_once) {
             return Err(DaemonError::Internal(
                 "injected complete_job failure".to_owned(),
@@ -2132,6 +2284,8 @@ pub fn phase2_materialize(
             let _ = plan.pin_journal.unpin(job_id);
             let _ = remove_job_params(&plan.data_dir, job_id);
             Ok(SaveOutcomeResponse {
+                evidence: materialized.evidence,
+                requested_duration_secs: Some(params.duration_sec),
                 job: save_job_to_view(&completed),
                 bundle_id: Some(materialized.bundle_id),
                 bundle_path: Some(dest_path),
@@ -2150,7 +2304,7 @@ pub fn phase2_materialize(
             ),
             Some(&params),
             materialized.warning,
-        ),
+        ).map(|mut outcome| { outcome.evidence = materialized.evidence; outcome }),
     }
 }
 
@@ -2163,6 +2317,8 @@ fn fail_job(
 ) -> Result<SaveOutcomeResponse, DaemonError> {
     let failed = catalog.mark_failed_retryable(job_id, message, &utc_now_iso8601())?;
     Ok(SaveOutcomeResponse {
+        evidence: crate::protocol::SaveEvidence::default(),
+        requested_duration_secs: params.map(|p| p.duration_sec),
         job: save_job_to_view(&failed),
         bundle_id: None,
         bundle_path: None,
@@ -2181,7 +2337,10 @@ fn materialize_from_chunks(
     if let Some(manifest) =
         arb_storage::bundle_io::existing_committed_manifest(dest_bundle_dir, &params.bundle_id)
     {
+        let (evidence, summary) = saved_evidence(dest_bundle_dir, params);
         return Ok(Materialized {
+            evidence,
+            summary,
             bundle_id: manifest.bundle_id,
             unanchored_summary: manifest.unanchored_summary,
             warning: None,
@@ -2201,6 +2360,15 @@ fn materialize_from_chunks(
         };
         if let Some(events) = events {
             for event in events {
+                if let CaptureEvent::LogOverflowStats { payload, .. } = &event
+                    && !(params.window.start_boottime_ns()..=params.window.end_boottime_ns())
+                        .contains(&payload.boottime_ns)
+                {
+                    continue;
+                }
+                if event_boot_id(&event).is_some_and(|boot| boot != params.window.boot_id()) {
+                    continue;
+                }
                 replayed.ingest_one(event);
             }
         } else {
@@ -2233,8 +2401,11 @@ fn materialize_from_chunks(
         )),
         Err(err) => return Err(err.into()),
     };
+    let (evidence, summary) = saved_evidence(dest_bundle_dir, params);
     Ok(Materialized {
         bundle_id,
+        summary,
+        evidence,
         unanchored_summary,
         warning,
     })
@@ -2266,7 +2437,6 @@ struct ReplayCollector {
     /// Resolution-aware `Tap` vs `Swipe` touch slop, resolved once from `params.display_width`/
     /// `display_height` at construction (`arb_core::gesture::touch_slop`).
     touch_slop_px: f64,
-    epochs_map: BTreeMap<String, (i64, i64)>,
     uid_packages: BTreeMap<u32, String>,
 }
 
@@ -2446,19 +2616,8 @@ impl ReplayCollector {
                 params.display_width.map(f64::from),
                 params.display_height.map(f64::from),
             ),
-            epochs_map: BTreeMap::new(),
             uid_packages: params.uid_packages.clone(),
         }
-    }
-
-    fn record_epoch_boottime(&mut self, boot_id: &str, boottime_ns: i64) {
-        self.epochs_map
-            .entry(boot_id.to_owned())
-            .and_modify(|(min_bt, max_bt)| {
-                *min_bt = (*min_bt).min(boottime_ns);
-                *max_bt = (*max_bt).max(boottime_ns);
-            })
-            .or_insert((boottime_ns, boottime_ns));
     }
 
     /// Consumes one event (payloads are moved, never cloned: R3 M2 memory bound).
@@ -2470,12 +2629,11 @@ impl ReplayCollector {
                 payload,
             } => {
                 let triple = DeviceClockTriple {
-                    boot_id: boot_id.clone(),
+                    boot_id,
                     boottime_ns: payload.boottime_ns,
                     monotonic_ns: payload.monotonic_ns,
                     realtime_ns: payload.realtime_ns,
                 };
-                self.record_epoch_boottime(&boot_id, payload.boottime_ns);
                 let _ = self
                     .timeline
                     .ingest_device_triple(triple.clone(), pc_cont_ns);
@@ -2483,7 +2641,6 @@ impl ReplayCollector {
                     .push(ClockAnchorRecord::DeviceTriple(triple));
             }
             CaptureEvent::SyncProbe { probe, .. } => {
-                self.record_epoch_boottime(&probe.boot_id, probe.dev_boottime_ns);
                 let _ = self.timeline.ingest_pc_sync_probe(probe.clone());
                 self.clock_anchors
                     .push(ClockAnchorRecord::PcSyncProbe(probe));
@@ -3006,24 +3163,11 @@ impl ReplayCollector {
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
         });
 
-        let epochs: Vec<EpochSpan> = if self.epochs_map.is_empty() {
-            vec![EpochSpan {
-                boot_id: params.window.boot_id().to_owned(),
-                start_boottime_ns: params.window.start_boottime_ns(),
-                end_boottime_ns: params.window.end_boottime_ns(),
-            }]
-        } else {
-            self.epochs_map
-                .into_iter()
-                .map(
-                    |(boot_id, (start_boottime_ns, end_boottime_ns))| EpochSpan {
-                        boot_id,
-                        start_boottime_ns,
-                        end_boottime_ns,
-                    },
-                )
-                .collect()
-        };
+        let epochs = vec![EpochSpan {
+            boot_id: params.window.boot_id().to_owned(),
+            start_boottime_ns: params.window.start_boottime_ns(),
+            end_boottime_ns: params.window.end_boottime_ns(),
+        }];
 
         Ok(V2BundleDraft {
             bundle_kind: media.bundle_kind,
@@ -3685,6 +3829,27 @@ fn remove_job_params(data_dir: &Path, job_id: &str) -> Result<(), std::io::Error
     }
 }
 
+fn event_boot_id(event: &CaptureEvent) -> Option<&str> {
+    match event {
+        CaptureEvent::Hello { payload, .. } => Some(&payload.boot_id),
+        CaptureEvent::SyncProbe { probe, .. } => Some(&probe.boot_id),
+        CaptureEvent::Heartbeat { boot_id, .. }
+        | CaptureEvent::VideoSession { boot_id, .. }
+        | CaptureEvent::VideoFrame { boot_id, .. }
+        | CaptureEvent::AudioConfig { boot_id, .. }
+        | CaptureEvent::AudioFrame { boot_id, .. }
+        | CaptureEvent::AudioUnavailable { boot_id, .. }
+        | CaptureEvent::LogRecord { boot_id, .. }
+        | CaptureEvent::LogOverflowStats { boot_id, .. }
+        | CaptureEvent::TouchEvent { boot_id, .. }
+        | CaptureEvent::StreamState { boot_id, .. }
+        | CaptureEvent::StaticHold { boot_id, .. }
+        | CaptureEvent::ConnectionRestored { boot_id, .. } => Some(boot_id),
+        CaptureEvent::Discontinuity(d) => d.boot_id.as_deref(),
+        _ => None,
+    }
+}
+
 const fn capture_event_pc_cont_ns(event: &CaptureEvent) -> Option<i64> {
     match event {
         CaptureEvent::Hello { pc_cont_ns, .. }
@@ -4191,6 +4356,29 @@ mod tests {
             SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn reported_evidence_shortfall_matches_shared_contract() {
+        let table: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/specs/ui-feedback-contract-table.json"
+        ))
+        .expect("table");
+        for row in table["capture_evidence_rows"].as_array().expect("rows") {
+            let actual = if row["logs_only"] == true {
+                &row["actual_log_duration_ms"]
+            } else {
+                &row["actual_video_duration_ms"]
+            };
+            assert_eq!(
+                super::window_shortfall(
+                    row["requested_duration_secs"].as_u64().expect("requested"),
+                    actual.as_u64().unwrap_or(0)
+                ),
+                row["window_shortfall"].as_bool().expect("shortfall"),
+                "row {row}"
+            );
+        }
     }
 
     #[test]
@@ -4858,7 +5046,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_secs_reports_honest_ring_span_and_resets_for_new_session() {
+    fn buffered_secs_preserves_same_device_ring_across_stop_start() {
         let tmp = TempDir::new().expect("tempdir");
         let mut pipeline = CapturePipeline::open(
             tmp.path(),
@@ -4885,7 +5073,7 @@ mod tests {
             "buffered_secs must reflect real ring span (12s), not video_frames/fps (0s)"
         );
 
-        // Starting a fresh session resets the honest buffered span to 0s until new events arrive.
+        pipeline.mark_stopped();
         let _ = pipeline.begin_session("serial-buf");
         pipeline
             .ingest_event(video_event(100_000_000_000, vec![0, 0, 0, 1, 0x65]))
@@ -4895,8 +5083,8 @@ mod tests {
             .expect("ingest s2 end");
         assert_eq!(
             pipeline.buffered_secs(),
-            3,
-            "new session must report only its own buffered span (3s)"
+            93,
+            "same-device restart retains the previous events and the intervening gap"
         );
     }
 

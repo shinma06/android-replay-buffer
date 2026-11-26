@@ -322,12 +322,18 @@ data class CaptureStartParams(
     val logcatEnabled: Boolean? = null,
     val inputEnabled: Boolean? = null,
     val heartbeatMs: Int? = null,
+    val waitConnected: Boolean? = null,
+    val waitTimeoutMs: Long? = null,
 )
 
 data class CaptureStartResponse(
     val serial: String,
     val started: Boolean,
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val connected: Boolean? = null,
+    val waitTimedOut: Boolean? = null,
+    val audioState: AudioCaptureState? = null,
+    val audioCause: AudioCause? = null,
 )
 
 data class CaptureStopResponse(
@@ -452,6 +458,16 @@ data class SaveOutcomeResponse(
     val tailMayBeIncomplete: Boolean,
     val unanchoredSummary: UnanchoredSummary? = null,
     val warning: String? = null,
+    val requestedDurationSecs: Long? = null,
+    val actualVideoDurationMs: Long? = null,
+    val actualLogDurationMs: Long? = null,
+    val videoFrameCount: Long? = null,
+    val logCount: Long? = null,
+    val unanchoredLogCount: Long? = null,
+    val truncatedUnanchoredCount: Long? = null,
+    val discontinuityCount: Long? = null,
+    val windowShortfall: Boolean? = null,
+    val warnings: List<String>? = null,
 ) {
     /**
      * The saved bundle, or `null` when the save did not complete. Same rule as `arb-cli`
@@ -459,6 +475,13 @@ data class SaveOutcomeResponse(
      */
     val savedBundleId: String?
         get() = bundleId?.takeIf { job.state != SaveJobState.FAILED_RETRYABLE }
+
+    val notificationWarning: String?
+        get() = (listOfNotNull(warning) + warnings.orEmpty())
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString("、")
+            .ifBlank { null }
 }
 
 data class SaveListJobsResponse(
@@ -536,6 +559,15 @@ data class BundleEntryView(
     val createdAtUtc: String,
     val activeLeases: Int,
     val diskState: BundleDiskState = BundleDiskState.PRESENT,
+    val createdUtc: String? = null,
+    val bundleKind: String? = null,
+    val durationMs: Long? = null,
+    val frameCount: Long? = null,
+    val hasVideo: Boolean? = null,
+    val hasAudio: Boolean? = null,
+    val logCount: Long? = null,
+    val crashMarkerCount: Long? = null,
+    val memo: String? = null,
 )
 
 data class BundleListResponse(
@@ -574,6 +606,18 @@ data class BundleGcResponse(
     val skippedInGraceBundleIds: List<String>,
     val failed: List<BundleGcFailure> = emptyList(),
     val reapedLeaseIds: List<String> = emptyList(),
+    val dryRun: Boolean = false,
+    val preview: GcPreview? = null,
+    val counts: Map<String, Int>? = null,
+)
+
+data class GcPreview(
+    val candidateBundleIds: List<String>,
+    val missingBundleIds: List<String>,
+    val legacyBundleIds: List<String>,
+    val unmanagedBundleIds: List<String>,
+    val expiredLeaseIds: List<String>,
+    val estimatedReclaimBytes: Long,
 )
 
 data class BundleForgetResponse(
@@ -846,10 +890,17 @@ data class LogRecord(
     val uid: Long? = null,
     val packageName: String? = null,
     val message: String,
+    val timestampUtc: String? = null,
+    val offsetMs: Long? = null,
+    val frameIndex: Long? = null,
 )
 
 data class TimelineLogsResponse(
     val logs: List<LogRecord>,
+    val totalMatched: Long? = null,
+    val returnedCount: Int? = null,
+    val hasMore: Boolean = false,
+    val nextCursor: String? = null,
 )
 
 /**

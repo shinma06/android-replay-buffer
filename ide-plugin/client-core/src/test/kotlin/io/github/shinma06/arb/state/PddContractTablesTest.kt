@@ -154,6 +154,24 @@ class PddContractTablesTest {
     }
 
     @Test
+    fun saveEvidenceDecodesFromSharedRows() {
+        val doc = table("ui-feedback-contract-table.json")
+        val base = doc.rows("save_rows", 7).first()["response"].asJsonObject
+        for (row in doc.rows("capture_evidence_rows", 3)) {
+            val wire = base.deepCopy()
+            for ((name, value) in row.entrySet()) wire.add(name, value)
+            val res = ProtocolJson.gson.fromJson(wire, SaveOutcomeResponse::class.java)
+            row["notification_warning"]?.let { expected ->
+                assertEquals(expected.asString, res.notificationWarning)
+            }
+            assertEquals(row["window_shortfall"].asBoolean, res.windowShortfall)
+            assertEquals(row["actual_log_duration_ms"].asLong, res.actualLogDurationMs)
+            assertEquals(row["actual_video_duration_ms"].takeUnless { it.isJsonNull }?.asLong, res.actualVideoDurationMs)
+            assertEquals(row["requested_duration_secs"].asLong, res.requestedDurationSecs)
+        }
+    }
+
+    @Test
     fun diskStateRowsProjectToCatalogItems() {
         for (row in table("ui-feedback-contract-table.json").rows("disk_state_rows", 4)) {
             val id = row["id"].asString
