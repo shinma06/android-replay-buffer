@@ -973,13 +973,19 @@ fn write_share_file(
     audio: Option<(&Mp4AudioTrack, &AudioPlan)>,
     schedule: &[ChunkRef],
 ) -> Result<u64, MediaError> {
+    let aplan = audio.map(|(_, plan)| plan);
+    // Core Audio honors the iTunes gapless metadata for an MPEG-4 video brand.
+    let brand = if aplan.is_some_and(|a| a.table.durations.first() == Some(&0)) {
+        b"M4V "
+    } else {
+        b"isom"
+    };
     let mut ftyp_payload = Vec::with_capacity(24);
-    ftyp_payload.extend_from_slice(b"isom");
+    ftyp_payload.extend_from_slice(brand);
     ftyp_payload.extend_from_slice(&0x0000_0200u32.to_be_bytes());
     ftyp_payload.extend_from_slice(b"isomiso2avc1mp41");
     let ftyp = box_wrap(*b"ftyp", &ftyp_payload)?;
 
-    let aplan = audio.map(|(_, plan)| plan);
     let total_payload = vplan
         .table
         .payload_bytes()?

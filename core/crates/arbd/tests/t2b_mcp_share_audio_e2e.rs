@@ -1701,12 +1701,9 @@ fn realtime_trim_round_trip_and_four_streams_inside_one_held_picture() {
             .pcm_frame_count,
         240
     );
-    assert!(
-        fs::read(share)
-            .unwrap()
-            .windows(8)
-            .any(|bytes| bytes == b"iTunSMPB")
-    );
+    let mp4 = fs::read(share).unwrap();
+    assert_eq!(&mp4[8..12], b"M4V ");
+    assert!(mp4.windows(8).any(|bytes| bytes == b"iTunSMPB"));
     let raw = fs::read(wav).unwrap();
     let source_pcm = fs::read(tmp.path().join("original.wav")).unwrap();
     let start_sample = usize::try_from(
