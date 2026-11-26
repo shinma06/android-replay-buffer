@@ -793,8 +793,15 @@ fn build_share_moov(
             let ticks = u128::from(a.table.total_ticks()?);
             let ts = u128::from(a.timescale);
             let scaled = (ticks * u128::from(movie_timescale)).div_ceil(ts);
-            u64::try_from(scaled)
-                .map_err(|_| MediaError::InvalidContainer("audio duration overflow".to_owned()))?
+            let duration = u64::try_from(scaled)
+                .map_err(|_| MediaError::InvalidContainer("audio duration overflow".to_owned()))?;
+            // An exact trim can retain a fractional final PCM sample. Its track
+            // presentation in the movie ends at video OUT even on a finer video clock.
+            if a.table.durations.first() == Some(&0) {
+                duration.min(video_ticks)
+            } else {
+                duration
+            }
         }
         None => 0,
     };
@@ -856,6 +863,9 @@ fn build_share_moov(
             &a_stbl,
         )?;
         moov_p.extend_from_slice(&a_trak);
+        if a.table.durations.first() == Some(&0) {
+            moov_p.extend_from_slice(&crate::audio::aac_gapless_metadata(a_ticks)?);
+        }
     }
     box_wrap(*b"moov", &moov_p)
 }

@@ -1661,6 +1661,7 @@ impl DaemonState {
 
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let dest_parent = self.resolve_output_dir(
@@ -1711,6 +1712,7 @@ impl DaemonState {
 
     fn handle_export_share_mp4(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportShareMp4Params = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 

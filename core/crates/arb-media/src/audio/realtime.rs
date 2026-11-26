@@ -41,7 +41,7 @@ pub fn trim_audio_time_range(
         return Err(absent());
     }
     let length = u64::try_from(end - start).map_err(|_| absent())?;
-    if length.div_ceil(1024) > u64::try_from(MAX_TRACK_SAMPLES).unwrap_or(u64::MAX) {
+    if length.div_ceil(1024) >= u64::try_from(MAX_TRACK_SAMPLES).unwrap_or(u64::MAX) {
         return Err(MediaError::InvalidArgument(
             "selection exceeds audio sample limit".into(),
         ));
@@ -54,6 +54,7 @@ pub fn trim_audio_time_range(
     let mut decoder = AacDecoder::with_config_bytes(&track.audio_specific_config().raw_bytes)
         .map_err(|e| MediaError::Codec(e.to_string()))?;
     let mut encoder = AacEncoder::new(AacEncoderConfig::default());
+    encoder.set_streaming(true);
     let mut packet = Vec::new();
     let mut cursor = start;
     let mut has_audio = false;
@@ -132,12 +133,15 @@ fn write_selection(
         let packet = encoder
             .next_packet()
             .map_err(|e| MediaError::Codec(e.to_string()))?;
-        if packet.pts < priming {
-            continue;
-        }
-        let duration_ticks = packet
-            .duration
-            .min(u32::try_from(remaining).unwrap_or(u32::MAX));
+        // A decoder must consume the overlap-add priming AU before presenting IN.
+        // Its zero presentation span keeps the first audible PCM sample at video time zero.
+        let duration_ticks = if packet.pts < priming {
+            0
+        } else {
+            packet
+                .duration
+                .min(u32::try_from(remaining).unwrap_or(u32::MAX))
+        };
         metas.push(AudioSampleMeta {
             size: sample_size_u32(packet.data.len())?,
             duration_ticks,

@@ -317,6 +317,59 @@ pub struct FrameRecord {
     pub mp4_sample_size: u32,
 }
 
+/// Maps device boottime records onto the video's monotonic clock across suspend gaps.
+#[derive(Debug)]
+pub struct FrameMediaClock {
+    anchors: Vec<(i64, i64)>,
+    origin_mono_ns: i64,
+}
+
+impl FrameMediaClock {
+    /// Builds a clock for one boot epoch. Unanchored frames cannot locate an event.
+    #[must_use]
+    pub fn new(frames: &[FrameRecord], boot_id: &str, origin_boot_ns: i64) -> Self {
+        let mut anchors: Vec<_> = frames
+            .iter()
+            .filter(|f| f.boot_id == boot_id)
+            .filter_map(|f| {
+                let boot = match &f.alignment {
+                    TimeAlignment::Anchored { boottime_ns, .. } => *boottime_ns,
+                    TimeAlignment::Bounded {
+                        min_boottime_ns, ..
+                    } => *min_boottime_ns,
+                    _ => return None,
+                };
+                Some((boot, f.pts_device_mono_ns))
+            })
+            .collect();
+        anchors.sort_unstable();
+        let mut clock = Self {
+            anchors,
+            origin_mono_ns: 0,
+        };
+        clock.origin_mono_ns = clock.monotonic_time(origin_boot_ns);
+        clock
+    }
+
+    fn monotonic_time(&self, boot: i64) -> i64 {
+        let next = self.anchors.partition_point(|&(t, _)| t <= boot);
+        let Some(&(bt, mono)) = self.anchors.get(next.saturating_sub(1)) else {
+            return boot;
+        };
+        let projected = mono.saturating_add(boot.saturating_sub(bt));
+        self.anchors
+            .get(next)
+            .map_or(projected, |&(_, limit)| projected.min(limit))
+    }
+
+    /// Media time relative to the cut, excluding elapsed time spent suspended.
+    #[must_use]
+    pub fn relative_time(&self, boot: i64) -> i64 {
+        self.monotonic_time(boot)
+            .saturating_sub(self.origin_mono_ns)
+    }
+}
+
 /// Logcat row in `timeline.sqlite` (`logs` table).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogRecord {

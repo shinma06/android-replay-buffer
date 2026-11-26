@@ -174,6 +174,10 @@ fn stream_decode_packets<W: Write>(
     let mut raw_au = Vec::new();
     let mut pcm_bytes = Vec::new();
 
+    let gapless_trim = track
+        .packets()
+        .first()
+        .is_some_and(|p| p.duration_ticks == 0);
     for idx in 0..packet_count {
         track.read_packet_into(idx, &mut raw_au)?;
         if raw_au.is_empty() {
@@ -218,7 +222,7 @@ fn stream_decode_packets<W: Write>(
 
         // AAC decodes a complete access unit even when the final stts entry
         // presents only the selected prefix of that unit.
-        if idx + 1 == packet_count {
+        if gapless_trim && (idx == 0 || idx + 1 == packet_count) {
             let ticks = track.packet(idx)?.duration_ticks;
             let frames = (u64::from(ticks) * u64::from(acc.sample_rate_hz))
                 .div_ceil(u64::from(track.timescale()));

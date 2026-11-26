@@ -62,6 +62,14 @@ pub struct BurnInTouchEvent {
 }
 
 impl BurnInTouchEvent {
+    /// Projects the DOWN timestamp from boottime to media time. Gesture durations
+    /// and path offsets already use the device monotonic clock.
+    pub fn rebase_on_clock(&mut self, clock: &arb_core::bundle::FrameMediaClock) {
+        let duration = self.end_t_ns.saturating_sub(self.start_t_ns);
+        self.start_t_ns = clock.relative_time(self.start_t_ns);
+        self.end_t_ns = self.start_t_ns.saturating_add(duration);
+    }
+
     /// Converts a main-timeline [`TapRecord`] into a [`BurnInTouchEvent`], returning `None` for
     /// quarantined `unanchored` records or records without finite start coordinates.
     #[must_use]
@@ -886,12 +894,11 @@ pub fn burn_in_taps_video(
 fn overlay_times(
     pts: &[u64],
     end: u64,
-    origin: i64,
     mapped: &[MappedTouchEvent],
 ) -> Result<Vec<u64>, MediaError> {
     let mut starts = std::collections::BTreeSet::from_iter(pts.iter().copied());
     let mut add = |t: i64| {
-        if let Ok(relative) = u64::try_from(t.saturating_sub(origin))
+        if let Ok(relative) = u64::try_from(t)
             && relative < end
         {
             starts.insert(relative);
@@ -903,7 +910,7 @@ fn overlay_times(
         }
         Ok(())
     };
-    let limit = origin.saturating_add(i64::try_from(end).unwrap_or(i64::MAX));
+    let limit = i64::try_from(end).unwrap_or(i64::MAX);
     for event in mapped {
         let expiry = if event.kind == GestureKind::Swipe {
             event.end_t_ns.saturating_add(SWIPE_FADE_DURATION_NS)
@@ -915,16 +922,36 @@ fn overlay_times(
         for &(_, _, offset) in &event.polyline {
             add(event.start_t_ns.saturating_add(offset))?;
         }
-        let mut t = event.start_t_ns.max(origin);
+        let mut t = event.start_t_ns.max(0);
         while t < expiry.min(limit) {
             add(t)?;
             t = t.saturating_add(33_333_333);
         }
         add(expiry)?;
     }
-    let mut starts: Vec<_> = starts.into_iter().collect();
-    starts.push(end);
-    Ok(starts)
+    // Repeat held pictures across long quiet gaps to fit nanosecond stts deltas in u32.
+    let mut bounded: Vec<u64> = Vec::with_capacity(starts.len().saturating_add(1));
+    for next in starts.into_iter().chain(std::iter::once(end)) {
+        if let Some(&prev) = bounded.last() {
+            for split in (prev.saturating_add(u64::from(u32::MAX))..next)
+                .step_by(usize::try_from(u32::MAX).unwrap_or(usize::MAX))
+            {
+                if bounded.len() >= crate::mp4::MAX_TRACK_SAMPLES {
+                    return Err(MediaError::InvalidArgument(
+                        "overlay exceeds track sample limit".into(),
+                    ));
+                }
+                bounded.push(split);
+            }
+        }
+        bounded.push(next);
+    }
+    if bounded.len() - 1 > crate::mp4::MAX_TRACK_SAMPLES {
+        return Err(MediaError::InvalidArgument(
+            "overlay exceeds track sample limit".into(),
+        ));
+    }
+    Ok(bounded)
 }
 
 /// Burns gestures on an already cut video. Split held pictures at each gesture boundary,
@@ -935,7 +962,7 @@ fn overlay_times(
 pub fn burn_in_taps_time_range(
     input: &Path,
     output: &Path,
-    origin: i64,
+    boundaries: &[u64],
     events: &[BurnInTouchEvent],
     geometry: BurnInDisplayGeometry,
     backend: &dyn VideoCodecBackend,
@@ -943,7 +970,17 @@ pub fn burn_in_taps_time_range(
     ensure_output_is_not_input(input, output)?;
     let track = Mp4VideoTrack::open(input)?;
     track.require_no_b_frames("burn_in_taps_time_range")?;
-    let (pts, end) = crate::trim::trim_timeline(&track)?;
+    let (&end, pts) = boundaries
+        .split_last()
+        .ok_or_else(|| MediaError::InvalidArgument("missing source timing".into()))?;
+    if pts.len() != track.frames().len()
+        || pts.first() != Some(&0)
+        || boundaries.windows(2).any(|w| w[0] >= w[1])
+    {
+        return Err(MediaError::InvalidArgument(
+            "source timing does not match cut pictures".into(),
+        ));
+    }
     let mapped = map_events(
         events,
         u32::from(track.width()),
@@ -967,17 +1004,15 @@ pub fn burn_in_taps_time_range(
             elst_box_count: 0,
         });
     }
-    let starts = overlay_times(&pts, end, origin, &mapped)?;
-    let durations: Vec<_> = starts.windows(2).map(|w| w[1] - w[0]).collect();
-    // Use nanosecond precision when possible. Long holds are limited by the stts u32 field.
-    let longest = durations.iter().copied().max().unwrap_or(1).max(1);
-    let scale = u32::try_from(
-        (u128::from(u32::MAX) * 1_000_000_000 / u128::from(longest)).min(1_000_000_000),
-    )
-    .unwrap_or(1)
-    .max(track.timescale());
-    let ticks = crate::timeline::quantize_durations_ns_to_ticks(&durations, scale)
-        .map_err(|e| MediaError::InvalidArgument(e.into()))?;
+    let starts = overlay_times(pts, end, &mapped)?;
+    let scale = 1_000_000_000;
+    let ticks = starts
+        .windows(2)
+        .map(|w| {
+            u32::try_from(w[1] - w[0])
+                .map_err(|_| MediaError::InvalidArgument("sample exceeds stts limit".into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut schedule = Vec::with_capacity(ticks.len());
     for (index, (&time, &ticks)) in starts.iter().zip(&ticks).enumerate() {
         let source = pts.partition_point(|&p| p <= time).saturating_sub(1);
@@ -987,11 +1022,7 @@ pub fn burn_in_taps_time_range(
             ticks,
         });
     }
-    let time = |i: u64| {
-        origin.saturating_add(
-            i64::try_from(starts[usize::try_from(i).unwrap_or(0)]).unwrap_or(i64::MAX),
-        )
-    };
+    let time = |i: u64| i64::try_from(starts[usize::try_from(i).unwrap_or(0)]).unwrap_or(i64::MAX);
     let mut burned = 0;
     let encoded = backend.reencode_overlay_samples(
         &track,

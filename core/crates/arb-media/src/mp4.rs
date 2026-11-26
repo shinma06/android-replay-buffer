@@ -187,6 +187,27 @@ impl Mp4VideoTrack {
         self.duration_ticks
     }
 
+    /// Final sample hold on the nanosecond clock shared by Studio and the trimmer.
+    /// Converting the exclusive tick boundary once preserves a carry from a fractional PTS.
+    ///
+    /// # Errors
+    /// Returns a container error if the final tick boundary cannot be represented.
+    pub fn last_presentation_duration_ns(&self) -> Result<Option<u64>, MediaError> {
+        let Some(last) = self.frames.last() else {
+            return Ok(None);
+        };
+        if last.duration_ticks == 0 {
+            return Ok(Some(0));
+        }
+        let end_ticks = last
+            .pts_ticks
+            .checked_add(i64::from(last.duration_ticks))
+            .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
+        let end_ns = ticks_to_ns_signed(end_ticks, self.timescale);
+        let hold = end_ns.saturating_sub(last.pts_ns).max(1).unsigned_abs();
+        Ok(Some(last.duration_ns.max(hold)))
+    }
+
     /// Returns the parsed `avcC` parameter-set configuration.
     pub const fn avcc(&self) -> &AvccConfig {
         &self.avcc

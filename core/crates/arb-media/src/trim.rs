@@ -95,26 +95,10 @@ pub fn trim_video(
 pub fn trim_timeline(track: &Mp4VideoTrack) -> Result<(Vec<u64>, u64), MediaError> {
     let frames = track.frames();
     let pts = crate::timeline::normalized_timestamps(frames.iter().map(|frame| frame.pts_ns));
-    // Accept both the viewport's end (truncated PTS plus truncated duration) and the end
-    // converted once from PTS ticks; either can exceed the other by one ns.
-    let tail = frames
-        .last()
-        .filter(|f| f.duration_ticks > 0)
-        .map(|f| i64::try_from(f.duration_ns.max(1)).unwrap_or(i64::MAX));
-    let mut end = crate::timeline::end_ns(&pts, tail, 1);
-    if let (Some(first), Some(last)) = (
-        frames.first(),
-        frames.last().filter(|f| f.duration_ticks > 0),
-    ) {
-        let ticks = last
-            .pts_ticks
-            .checked_add(i64::from(last.duration_ticks))
-            .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
-        let exact =
-            crate::mp4::ticks_to_ns_signed(ticks, track.timescale()).saturating_sub(first.pts_ns);
-        end = end.max(exact);
-    }
-    let end = end.unsigned_abs();
+    let tail = track
+        .last_presentation_duration_ns()?
+        .map(|d| i64::try_from(d).unwrap_or(i64::MAX));
+    let end = crate::timeline::end_ns(&pts, tail, 1).unsigned_abs();
     let pts: Vec<_> = pts.into_iter().map(i64::unsigned_abs).collect();
     Ok((pts, end))
 }

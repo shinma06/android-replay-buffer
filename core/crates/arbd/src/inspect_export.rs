@@ -342,7 +342,7 @@ fn mux_selected_media(
             .filter(|r| !r.realtime || !taps.is_empty())
             .map(|r| r.window(&frames))
             .transpose()?;
-        let events = share_touch_events(taps, window.as_ref(), range);
+        let mut events = share_touch_events(taps, window.as_ref(), range);
         let geometry = BurnInDisplayGeometry {
             display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
             display_height: summary
@@ -357,14 +357,21 @@ fn mux_selected_media(
             } else {
                 let cut = TempFileCleanup(tmp.join(format!("{job}-cut.mp4")));
                 r.trim_video(source, &cut.0, ctx.backend)?;
-                let origin = window
+                let window = window
                     .as_ref()
-                    .ok_or_else(|| DaemonError::Internal("missing trim window".into()))?
-                    .start_boottime_ns();
+                    .ok_or_else(|| DaemonError::Internal("missing trim window".into()))?;
+                let clock = arb_core::bundle::FrameMediaClock::new(
+                    &frames,
+                    window.boot_id(),
+                    window.start_boottime_ns(),
+                );
+                for event in &mut events {
+                    event.rebase_on_clock(&clock);
+                }
                 arb_media::burn_in::burn_in_taps_time_range(
                     &cut.0,
                     &guard.0,
-                    origin,
+                    &r.sample_boundaries(&Mp4VideoTrack::open(source)?)?,
                     &events,
                     geometry,
                     ctx.backend,

@@ -161,7 +161,7 @@ impl MediaEngine {
         let shm_path = self.shm_dir.join(format!("{viewport_id}.shm"));
         let shm_writer = ShmFrameRingWriter::create(&shm_path, slot_capacity)?;
 
-        let last_frame_duration_ns = track.frames().last().map(|frame| frame.duration_ns);
+        let last_frame_duration_ns = track.last_presentation_duration_ns()?;
         let frame_count = track.frame_count();
         let keyframe_count = track.keyframes().len();
         let frame_pts_ns = viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
@@ -639,7 +639,7 @@ pub fn export_trim(
     let kept_taps = select_for_trim_with_truncated([], previous_taps, 0, &frame_window, &policy);
     let log_budget = policy.after_quarantine(&kept_taps.unanchored);
     let (trimmed_logs, main_log_count, unanchored_log_count, log_truncated) =
-        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &log_budget, range)?;
+        select_trimmed_logs(reader.as_ref(), summary, &frame_window, &log_budget)?;
     let (trimmed_taps, main_tap_count, unanchored_tap_count, tap_truncated) = select_trimmed_taps(
         reader.as_ref(),
         &frame_window,
@@ -686,7 +686,7 @@ pub fn export_trim(
             SHARE_MP4_FILE
         };
         let video_for_share: std::borrow::Cow<'_, Path> = if params.burn_taps {
-            let burn_events: Vec<BurnInTouchEvent> = trimmed_taps
+            let mut burn_events: Vec<BurnInTouchEvent> = trimmed_taps
                 .iter()
                 .filter_map(BurnInTouchEvent::from_tap_record)
                 .collect();
@@ -706,10 +706,18 @@ pub fn export_trim(
             let last_trimmed = u64::try_from(trimmed_frames.len().saturating_sub(1)).unwrap_or(0);
             _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
             let burn_report = if range.realtime {
+                let clock = arb_core::bundle::FrameMediaClock::new(
+                    &trimmed_frames,
+                    frame_window.boot_id(),
+                    frame_window.start_boottime_ns(),
+                );
+                for event in &mut burn_events {
+                    event.rebase_on_clock(&clock);
+                }
                 arb_media::burn_in::burn_in_taps_time_range(
                     &tmp_trimmed_mp4,
                     &tmp_burned,
-                    frame_window.start_boottime_ns(),
+                    &range.sample_boundaries(&track)?,
                     &burn_events,
                     geom,
                     ctx.backend,
@@ -1186,7 +1194,6 @@ fn select_trimmed_logs(
     summary: &arb_storage::bundle_io::BundleManifestSummary,
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
-    range: crate::trim_range::TrimRange,
 ) -> Result<(Vec<arb_core::bundle::LogRecord>, usize, usize, usize), DaemonError> {
     let mut source_logs = reader.query_logs(None, TimeRange::all(), None)?;
     let packages = summary
@@ -1210,10 +1217,6 @@ fn select_trimmed_logs(
         .partition(|log| log.bucket == RecordBucket::Main);
     let source_truncated =
         usize::try_from(summary.unanchored_summary.truncated_count).unwrap_or(usize::MAX);
-    let source_main = source_main.into_iter().filter(|log| {
-        !range.realtime || !matches!(&log.alignment,TimeAlignment::Anchored{boot_id,boottime_ns,..} if boot_id == frame_window.boot_id() &&
-          !(frame_window.start_boottime_ns()..=frame_window.end_boottime_ns()).contains(boottime_ns))
-    });
     let part = select_for_trim_with_truncated(
         source_main,
         source_unanchored,

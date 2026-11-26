@@ -73,23 +73,34 @@ impl TrimRange {
     }
 
     pub(super) fn window(self, frames: &[FrameRecord]) -> Result<WindowSpec, DaemonError> {
-        let mut window = WindowSpec::from_frame_indices(frames, self.first, self.last)?;
-        // SelectionPolicy uses closed integer intervals. OUT - 1 is the last selected ns.
-        if self.realtime
-            && let WindowSpec::FrameRange {
-                start_boottime_ns,
-                end_boottime_ns,
-                ingest_start_cont_ns,
-                ingest_end_cont_ns,
-                ..
-            } = &mut window
-        {
-            *start_boottime_ns = start_boottime_ns.saturating_add(self.head_offset);
-            *end_boottime_ns = end_boottime_ns.saturating_add(self.tail_offset);
-            *ingest_start_cont_ns = ingest_start_cont_ns.saturating_add(self.head_offset);
-            *ingest_end_cont_ns = ingest_end_cont_ns.saturating_add(self.tail_offset);
+        let window = WindowSpec::from_frame_indices(frames, self.first, self.last)?;
+        if !self.realtime {
+            return Ok(window);
         }
-        Ok(window)
+        // SelectionPolicy uses closed integer intervals. OUT - 1 is the last selected ns.
+        Ok(WindowSpec::RealElapsed {
+            boot_id: window.boot_id().to_owned(),
+            start_boottime_ns: window.start_boottime_ns().saturating_add(self.head_offset),
+            end_boottime_ns: window.end_boottime_ns().saturating_add(self.tail_offset),
+            ingest_start_cont_ns: window
+                .ingest_start_cont_ns()
+                .saturating_add(self.head_offset),
+            ingest_end_cont_ns: window.ingest_end_cont_ns().saturating_add(self.tail_offset),
+        })
+    }
+
+    /// Exact cut boundaries for a second encoding pass, before MP4 tick rounding.
+    pub(super) fn sample_boundaries(self, track: &Mp4VideoTrack) -> Result<Vec<u64>, DaemonError> {
+        let (pts, _) = arb_media::trim::trim_timeline(track)?;
+        let mut boundaries = vec![0];
+        boundaries.extend(
+            pts.into_iter()
+                .take_while(|&t| t < self.end)
+                .skip_while(|&t| t <= self.start)
+                .map(|t| t - self.start),
+        );
+        boundaries.push(self.end - self.start);
+        Ok(boundaries)
     }
 
     pub(super) fn trim_video(

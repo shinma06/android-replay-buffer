@@ -573,14 +573,14 @@ impl V2BundleWriter {
             files.push(digest);
         }
 
-        let origin = trim_origin(draft);
-        if draft.bundle_kind == BundleKind::LogsOnly || origin.is_some() {
+        let clock = trim_clock(draft);
+        if draft.bundle_kind == BundleKind::LogsOnly || clock.is_some() {
             let logs_digest = stage_logs_jsonl(
                 &staging,
                 LOGS_JSONL_FILE,
                 &draft.logs,
                 RecordBucket::Main,
-                origin,
+                clock.as_ref(),
             )?;
             files.push(logs_digest);
             let unanchored_digest = stage_logs_jsonl(
@@ -653,7 +653,7 @@ impl V2BundleWriter {
         }
 
         // Write the chronological event summary, including an empty file for a quiet interval.
-        files.push(stage_events_jsonl(&staging, draft)?);
+        files.push(stage_events_jsonl(&staging, draft, clock.as_ref())?);
 
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
         write_timeline_sqlite(&timeline_path, draft)?;
@@ -1803,6 +1803,7 @@ fn swipe_direction_label(tap: &TapRecord) -> Option<&'static str> {
 fn stage_events_jsonl(
     staging: &AtomicStagingDir,
     draft: &V2BundleDraft,
+    clock: Option<&arb_core::bundle::FrameMediaClock>,
 ) -> Result<FileDigest, StorageError> {
     let screens = extract_screen_spans(&draft.logs, &draft.frames);
     let crashes = extract_crash_markers(&draft.logs, &draft.frames);
@@ -1826,11 +1827,11 @@ fn stage_events_jsonl(
             serde_json::json!(record_bucket_to_str(tap.bucket)),
         );
         if tap.bucket == RecordBucket::Main
-            && let Some(origin) = trim_origin(draft)
+            && let Some(clock) = clock
         {
             obj.insert(
                 "relative_time_ns".into(),
-                serde_json::json!(t_ns.saturating_sub(origin)),
+                serde_json::json!(clock.relative_time(t_ns)),
             );
         }
         if let Some(x) = tap.x {
@@ -1936,12 +1937,14 @@ fn stage_events_jsonl(
     })
 }
 
-fn trim_origin(draft: &V2BundleDraft) -> Option<i64> {
+fn trim_clock(draft: &V2BundleDraft) -> Option<arb_core::bundle::FrameMediaClock> {
     match draft.requested_window {
         RequestedWindow::TrimFrameRange {
             in_time_ns: Some(_),
             ..
-        } => draft.epochs.first().map(|e| e.start_boottime_ns),
+        } => draft.epochs.first().map(|e| {
+            arb_core::bundle::FrameMediaClock::new(&draft.frames, &e.boot_id, e.start_boottime_ns)
+        }),
         _ => None,
     }
 }
@@ -1951,7 +1954,7 @@ fn stage_logs_jsonl(
     rel_name: &str,
     logs: &[LogRecord],
     bucket: RecordBucket,
-    origin: Option<i64>,
+    clock: Option<&arb_core::bundle::FrameMediaClock>,
 ) -> Result<FileDigest, StorageError> {
     #[derive(serde::Serialize)]
     struct TimedLog<'a> {
@@ -1966,8 +1969,8 @@ fn stage_logs_jsonl(
         let row = TimedLog {
             log,
             relative_time_ns: alignment_query_timestamp(&log.alignment)
-                .zip(origin)
-                .map(|(t, origin)| t.saturating_sub(origin)),
+                .zip(clock)
+                .map(|(t, clock)| clock.relative_time(t)),
         };
         serde_json::to_writer(&mut bytes, &row)
             .map_err(|e| StorageError::json("serialize_log_jsonl", e))?;
