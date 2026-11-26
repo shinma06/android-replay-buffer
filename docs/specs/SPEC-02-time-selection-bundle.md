@@ -1,7 +1,7 @@
 ---
 id: SPEC-02
 type: spec
-name: 二層時刻モデル・3値選別エンジン・WORM バンドル v2 と旧形式読取互換
+name: 実時間窓・証跡の選別・保存物の保護
 satisfies:
   - REQ-01
   - REQ-02
@@ -13,56 +13,74 @@ satisfies:
   - REQ-12
 ---
 
-# SPEC-02: 二層時刻モデル・3値選別エンジン・WORM バンドル v2 と旧形式読取互換
+# SPEC-02 実時間窓・証跡の選別・保存物の保護
 
-## 1. 二層時刻モデル（`arb-core::time` / `arb-os::clock`）
+## どの時刻を使うか [実装済み]
 
-- **生観測と導出アライメントの分離**: 端末ネイティブ時刻・時計種別（`ClockKind`）・意味ラベル（`TimestampSemantics`）・PC 受信時刻は決して上書きしない。
-- **OS 二重時計（`arb-os::clock`）**:
-  - スリープ中停止する `PcActiveMono` とスリープ中も進行する `PcContinuousMono`、および表示用 `PcWallEpoch` を提供する。
-  - **macOS 実装契約（スパイク S2 確定）**:
-    - `PcActiveMono` → `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`（42 ns 分解能、`mach_absolute_time` と一致）
-    - `PcContinuousMono` → `clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)`（42 ns 分解能、`mach_continuous_time` と一致）
-    - `CLOCK_MONOTONIC` は NTP/adjtime 周波数調整（実測 `-4.365 s` 乖離）と 1000 ns 粒度を持つため `CLOCK_UPTIME_RAW` とのスリープ差分計算に **使用禁止** とする。
-- **時計アンカーと不連続検出**:
-  - 端末内 3 時計トリプル `{ boot_id, boottime_ns, monotonic_ns, realtime_ns }` により `DeviceReboot`（`boot_id` 変化）、`DeviceSleep`（`boottime - monotonic` 差分 > 50 ms）、`DeviceWallJump`（`|Δ(realtime - boottime)|` > 50 ms）を検出する。
-  - PC↔端末同期プローブ（1〜2 秒周期）によりオフセットと誤差半幅 `ceil(rtt_ns / 2)`、および `PcSleep` を検出する。
-- **3 段階の時刻確度（`TimeAlignment`）**: 同一 `boot_id` 内の `DeviceBoottime` を基準軸とし、`Anchored { boottime_ns, half_width_ns, semantics }` / `Bounded { min_boottime_ns, max_boottime_ns, reason }` / `Unanchored { pc_ingest_cont_ns, reason }` のいずれかに写像する。
+基準は同一 `boot_id` 内の端末起動後の経過時間（boottime、ns）。生の端末時刻、時計の種類と意味、PC 受信時刻は保存する。ホストの活動時計はスリープ中に止まり、連続時計は進む。壁時計は表示用。macOS は活動に `CLOCK_UPTIME_RAW`、連続に `CLOCK_MONOTONIC_RAW` を使う。PC と端末の同期プローブは往復時間の半分を切り上げた誤差半幅を与える。時間差を測れないときは確度を下げる（MUST）。
 
-## 2. 保存・トリム共通の 3 値選別エンジン（`arb-core::selection`）
+端末の boottime・monotonic・realtime の組で epoch を決める。boot の変化は再起動、boottime と monotonic の差の増加が既定 50 ms **超**なら端末スリープ、realtime と boottime の差の変化の絶対値が 50 ms **超**なら壁時計ジャンプ。時計の跳躍をまたいで一直線に補間してはならない。A/V とログの約 0.1 秒は実用目標。未校正・不確かなずれは表示する。[時刻変換](../../core/crates/arb-core/src/time.rs)・[REQ-12](../requirements/REQ-12.md)
 
-- **保存ウィンドウ**: トリガ時刻 `T_trigger` から実経過時間 `D` 秒前の `[W_start, W_end]` を対象とし、途中のスリープ・切断・再起動は欠損／不連続区間としてそのまま保持する。
-- **トリムウィンドウ**: 浮動小数秒ではなく必ず整数 `[in_frame_index, out_frame_index]` から元バンドルの正確な `boottime_ns` 区間を引く。
-- **共通分類関数 `classify_record(record, window) -> Membership`**:
-  - `InRange`: `Anchored` 誤差区間がウィンドウと交差、または `Bounded` 区間が完全包含。
-  - `OutOfRange`: 完全に範囲外（遅延到着の古いレコードを確実に除外）。
-  - `UncertainTime`: `Bounded` の部分交差、または `Unanchored` / 別 `boot_id`。主タイムラインへは絶対に混ぜず、PC 受信近傍 `[W_ingest_start - margin, W_ingest_end + margin]` 内のものを件数・容量上限付きで `unanchored` サイドカーへ隔離収録する（上限超過は `unanchored_truncated_count` に明記）。トリム時も元バンドルの `unanchored` を無断削除せず引き継ぐ。
-- **境界ドレイン**: 保存トリガ後、最大 `drain_timeout_ms`（初期 500 ms）または各アクティブストリームの `T_trigger` 以降ハートビート通過まで待機し、タイムアウト時は `tail_may_be_incomplete = true` を明記する。
+## 保存窓と三値選別 [実装済み]
 
-## 3. 3 ゾーンストレージと WORM バンドル v2（`arb-storage`）
+「直近 D 秒」はトリガー T で終わる閉区間 `[T−D, T]`。停止・スリープ中にも窓は進む。同じ serial **かつ**同じ boot_id で再開した場合に限り、保持予算と保存窓に残る過去の記録を引き継ぐ。停止期間は `stream_gap` として残す。別端末・再起動前の映像とログを現セッションの確定データとして接続してはならない。
 
-- **Zone 1（Live Ring Store）**: 追記専用チャンク（デフォルト上限 `1.5 GiB` / 目安 `10 min`）。ホスト空き容量が `3 GiB` を下回ったら `StoragePressureStop` を記録して新規取得のみ停止し、Pin 済みチャンク・確定バンドルは一切削除しない。保存要求時は即座に対象チャンクを `save_jobs/<job-id>.json` に Phase-1 Pin する。
-- **Zone 2（WORM Bundle v2）**: 同一ファイルシステム上の `.staging-<job-id>/` に全ファイル書き出し・`fsync` → `manifest.json`（`schema_version: 2`, `files` SHA-256, `epochs`, `streams`, `unanchored_summary`）書込 → 原子リネーム（Windows では一時ロックへの指数バックオフリトライ＋コミットマーカー検査）で確定。確定後は完全不変（`manifest.json`, `video.mp4`, 任意の `audio.m4a`, 読取専用 `timeline.sqlite`）。
-- **Zone 3（Catalog / Lease / GC）**: `catalog.sqlite`（WAL）で `bundles` / `leases` / `save_jobs` / `edit_sessions` を管理。削除は論理退避（`trashed`）のみ行い、通常の GC では管理対象の現行形式（`v2` かつ `managed_bundles_root` 配下）について最終退避から `gc_grace_secs`（既定 86,400 秒）が経過し、リース・保存ジョブともに 0 件の場合に物理削除する。ユーザーが明示的に「ゴミ箱を空にする」（`ignore_grace = true`）を実行した場合に限り猶予期間を省略して即時物理削除するが、リース保護・保存ジョブ保護・管理域外および旧形式（`legacy_ro`）の物理非削除不変条件は常に維持する。物理削除前と中断再開時には直下の通常ファイル `manifest.json` を検証し、v2 の ID（`bundle.open` の ID 衝突で別 ID 登録された行は登録時に記録したマニフェスト ID）・作成時刻・親 ID をカタログと照合する。削除用の一時名へ移動した後にも照合するため、公開パスへ後から置かれた別ディレクトリは削除しない。照合は `trashed` から `purging` へ進める前にも行い、失敗した行は `trashed` のまま保持し（すでに `purging` だった行も `trashed` へ戻し）、復元できるようにして、他の候補の処理を続ける。削除用の名前へ移動して照合に通った実体は検証済みの名前へ付け替えるため、削除が途中で止まっても再開時に manifest の有無を問わず削除を完遂する。同じトランザクションで退避時刻と状態を再確認する。リースは所有プロセスの終了または最終更新から 10 分で失効する。
-- **手動削除バンドルの整合性と非破壊登録解除**: カタログ各行の実ディスク状態は `symlink_metadata` により OS 非依存の 3 値（`present` / `missing`［親ディレクトリ存在かつ対象 `NotFound`］/ `storage_unavailable`［親不在・未接続・権限不足・通常ファイルへの置換・リンク先の確認不能］）で判定する。`storage_unavailable` は外付け媒体の一時切断等とみなし自動削除・解除対象にしない。`bundle.forget` はディスクを一切変更せず、`disk_state == missing` かつリース 0・保存ジョブ 0 のカタログ行（管理域外・旧形式を含む）のみ `edit_sessions` と `bundles` から削除する。またゴミ箱内（`trashed`）で既に `disk_state == missing` の行は、管理域外・旧形式であってもリース 0・保存ジョブ 0 であれば通常の猶予判定を経て GC 時にディスク無接触でカタログ行を掃除する。
+| 選別入力 | 主タイムライン | 不確実な記録の扱い |
+| --- | --- | --- |
+| 同じ boot の `Anchored` | 共通分類器では中心 ± 誤差半幅が窓と交差すれば `InRange`。ライブ保存の確定ログ・映像にはさらに中心時刻が窓内という制限がある | 半幅だけが交差する窓外の確定ログや映像を出力に足さない |
+| 同じ boot の `Bounded` | 区間全体が窓内なら採用、完全に外なら除外 | 部分交差は `UncertainTime` |
+| `Unanchored` または boot 不一致 | 確定時刻として採用しない | 共通分類は不確実。受信時刻による近傍条件に従い、上限付きサイドカーに隔離する |
+| フレーム指定トリム | IN・OUT とも含む。対応する映像フレームの採否はインデックスで決める | 既存の隔離記録を優先して引き継ぎ、上限超過を計上する |
 
-保存開始時に保存窓・トリガー・デコーダー設定を pin とともに永続化する。ホストの起動時刻と端末が一致するチャンクを復元し、保存時に各 SHA-256 を検証する。欠損区間は `StreamGap` に記録する。起動時には管理域とジョブの外部出力先でジョブ ID が一致する所有マーカーを確認し、未確定の作業ディレクトリだけを削除する。
+隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓外の時計アンカーや IDR は時刻変換・復号に使えるが、表示フレームの余白は 0 枚。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
 
-タッチ座標は表示寸法が既知なら物理ピクセルとして映像の各軸へ線形変換する。旧記録で両寸法が欠けている場合は両座標が 0〜1 の範囲に収まるものを変換する。
+### 要求尺と測定結果
 
-## 4. 旧保存物の読取専用互換（`LegacyBundleReader`）
+| 結果 | 読み方 |
+| --- | --- |
+| `requested_duration_secs` | 利用者の要求秒数。実際の録画尺とは独立 |
+| `actual_video_duration_ms` | MP4 の最終サンプルの表示時間まで含む再生尺。測定済みで映像なしなら 0 |
+| `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない |
+| `window_shortfall` | 映像保存は映像尺、ログ単体はログ尺について `actual_ms + 1000 < requested_secs × 1000` のときのみ true。ちょうど 1 秒の不足は false |
+| `video_frame_count`・`log_count`・`unanchored_log_count` | 映像枚数、隔離分を含むログ総数、そのうち隔離ログ数。未測定と確認済みの 0 を区別する |
+| `truncated_unanchored_count`・`discontinuity_count`・`warnings` | 全ストリームの隔離切り捨て、不連続の数、短尺・音声なし・末尾未確認などの警告。空の警告だけでは完全取得を保証しない |
 
-- 共通トレイト `BundleReader` を `V2BundleReader` と `LegacyBundleReader` で実装する。
-- `LegacyBundleReader` は元フォルダを一切変更せずに以下を読み取り、共通の `TimelineView` へ投影（および必要に応じ v2 への非破壊トリム書き出し）する:
-  - **Schema 4（`develop` 系統）**: `replay.json`（`schema: 4`）、`video.mp4`、`video-frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`、任意の `touches.jsonl`、および **ログ単体保存（`-logs`）**。
-  - **Schema 3（`main` / `v0.2.0` 系統）**: `session.json`、`video-001.mp4`、`frames.jsonl`、`logcat-device.jsonl`、`logcat-app.jsonl`。
+未発行や旧デーモンで測定値が省略され得る。発行後のカタログ登録に失敗して測定結果が返っても保存成功の判定は別に行う。一覧の `duration_ms` は映像があれば映像尺、なければ確定ログ尺。欠損時はカタログに残る集計を使う。[保存結果の型](../../core/crates/arbd/src/protocol.rs)・[共有契約表](ui-feedback-contract-table.json)
 
-## 4. トリムバンドルの共有用ファイル
+## リング・二相保存・回復 [実装済み]
 
-`export.trim` は明示された出力先、設定済みの保存先、管理バンドルディレクトリの順に保存先を選ぶ。`logcat.log` と `events.jsonl` は選択区間が空でも作成し、元の記録からアプリを特定できるログは `app-logs/<package>.log` にも出力する。`unanchored.log` は対象行がある場合に作成する。すべてのサイドカーはマニフェストに SHA-256 を記録する。
+1. リングは既定 10 分・1.5 GiB。退避対象は古い未 pin の閉じたチャンク。空き容量が既定 3 GiB 未満のときは新規取得を安全停止する。確定バンドルや再試行用 pin を空き確保に流用してはならない（REQ-04）。
+2. 保存時は対象チャンクの pin、ジョブ ID、出力先・保存窓・トリガーなど再構成に必要な情報を永続化する。`pinned` → `draining` → `materializing` と進む。
+3. 同じファイルシステムのステージングに動画・ログ・読み取り専用の `timeline.sqlite` 等を書き、SHA-256 を含む `manifest.json` を確定して原子的に公開する。確定後の内容は WORM（一度書き込んだ内容を変更しない）。編集状態・リース・論理削除は外部の `catalog.sqlite` に保存する。
+4. 正常完了は `completed`。`failed_retryable` は pin を維持し、`save.retry` で再試行、`save.retarget` で出力先を変えて再試行できる。明示破棄は `save.discard`。起動回復は残存 pin とジョブを照合し、所有を確認できた未確定作業領域を回収する。別のディレクトリを名前の類似だけで消してはならない。
 
-`include_share_mp4` は音声付きの共有動画（音声欠落時は映像のみ）を追加する。`burn_taps` が有効な場合は `share-taps.mp4` にタップ・スワイプを描画する。元のバンドルは読み取り専用として扱い、`trash_original` は書き出し成功後に管理対象の元バンドルを論理ゴミ箱へ移す。旧形式の元バンドルにこの指定を行うと書き出し前にエラーを返す。
+[状態遷移](../../core/crates/arb-core/src/state.rs)・[リング](../../core/crates/arb-storage/src/ring.rs)・[バンドル公開](../../core/crates/arb-storage/src/bundle_io.rs)・[VER-05](../verifications/VER-05-arb-storage.md)
 
-## 停止・再開と実時間保存窓
+## ゴミ箱・物理削除・登録解除 [実装済み]
 
-同じ端末・同じ Android 起動で再開した場合は、リング上限内の記録を引き継ぐ。停止期間は `stream_gap` として記録する。保存窓はトリガーの実時間で終わり、停止時間も経過する。シリアル切替と Android 起動切替は保存対象の境界になる。窓外の時計アンカーと IDR は時刻変換・先頭 GOP の復号に使える。確定して保存するログと映像フレームの中心時刻は両端を含む窓内に限る。GOP の表示フレーム余白は 0。MP4 の再生尺は最終サンプルの表示時間を含む。ログの実尺は隔離ログと時計アンカーを除いた同一 boot の確定ログだけで測る。
+`bundle.trash` は論理退避、`bundle.restore` は復元。`bundle.gc` は最終退避から `gc_grace_secs`（既定 86,400 秒）以上経過した候補を再評価する。「ゴミ箱を空にする」の `ignore_grace: true` は猶予だけを省く。現存する実体の物理削除には管理域内・現行形式・退避済み・有効リースなし・対象ジョブなし・マニフェスト同一性の全条件が必要。削除前と退避名への移動後にも同一性を確認し、別物なら停止して復元可能な状態を保つ。起動回復の削除失敗は `system.status` の回復結果で識別できる。
+
+| `disk_state` | 判定条件 | 許される操作 |
+| --- | --- | --- |
+| `present` | 登録先がディレクトリとして存在（リンク先がディレクトリの場合を含む） | 通常の閲覧・状態遷移。存在判定だけで物理削除を許可しない |
+| `missing` | 親に到達でき対象が存在しない。親ごと移動されても、欠けた構成要素の上に到達可能な管理ディレクトリがあれば該当 | `bundle.forget` は有効リース・対象ジョブが 0 の行だけを解除。管理域外・旧形式も対象。ディスクは変更しない |
+| `storage_unavailable` | 外付け媒体の切断等で親の可用性を確認できない、権限不足、通常ファイルへの置換など | 一時不在を恒久削除とみなさずカタログ行を保持 |
+
+リースは所有 PID が終了するか、最後の更新から 600 秒以上経過すると失効する。削除前にマニフェスト ID・作成時刻・親 ID をカタログと照合する。公開パスが別の実体に置換された場合はその実体を保持する。
+
+一覧は読み取り専用。ゴミ箱の `missing` は保護・猶予条件を満たせば GC がカタログ行だけを掃除する。`dry_run: true` は候補・スキップ理由・推定バイト・期限切れリースを返し、行・実体・リースを書き換えない。`preview.candidate_bundle_ids` と `counts` はその時点の予測で、実行は再判定する。CLI／MCP は同じ接続で `system.hello` の `gc_dry_run` を確認するまでプレビュー要求を送らない。[GC とディスク判定](../../core/crates/arb-storage/src/catalog.rs)
+
+旧保存形式 schema 3 は `session.json`、schema 4 は `replay.json`（ログ単体を含む）から開く。閲覧・再生・新規トリム出力で元フォルダを移行・上書き・物理削除してはならない。元を退避する指定を旧形式に付けた書き出しは拒否する。[旧形式フィクスチャ](../../fixtures)・[REQ-07](../requirements/REQ-07.md)
+
+## 仕様 vs バグ
+
+| 条件 | 正常仕様 | バグ |
+| --- | --- | --- |
+| 同じ端末・同じ boot、停止前も窓・予算内 | 再開後の保存に停止前後と間のギャップが残る | 停止ボタンだけでリングを消す |
+| 同名端末が再起動 | 再起動前後を分離 | 別 boot の映像を連結する |
+| 出力先の容量不足 | 再試行待ちと pin を保持 | 失敗を成功と通知する、または古い WORM を消す |
+| 退避直後の通常 GC | 既定 24 時間保護 | 直後に物理削除する |
+| 管理域外のドライブが外れた | 一時利用不能として保持 | `--all-missing` で登録を消す |
+| 保存窓の先頭に非 IDR がある | 復号準備用データだけ窓外から参照 | 保存映像を再生すると窓より前のフレームが現れる |
+
+根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554。K1〜K5、S2・S3、G1・G2・G4・G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
