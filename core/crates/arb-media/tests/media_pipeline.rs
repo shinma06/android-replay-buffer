@@ -1421,3 +1421,69 @@ fn legacy_arbfs001_filmstrip_cache_is_rejected_and_regenerated_as_v2() {
         assert_eq!(reloaded.cache, regenerated.cache);
     }
 }
+
+#[test]
+fn subframe_trims_preserve_vfr_hold_and_decoded_barcodes() {
+    let tmp = TempDir::new().unwrap();
+    let source = tmp.path().join("vfr.mp4");
+    let backend = OpenH264Backend::new();
+    let frames: Vec<_> = (0..8).map(synthesize_barcode_yuv420p_frame).collect();
+    let mut packets = backend
+        .encode_yuv420p_sequence(&frames, 3, FRAME_DURATION_NS, EncodeParams::default())
+        .unwrap();
+    for (packet, second) in packets.iter_mut().zip([0, 2, 4, 6, 8, 12, 22, 23]) {
+        packet.pts_ns = second * 1_000_000_000;
+    }
+    mux_raw_h264_to_mp4(&source, 448, 256, TIMESCALE, TIMESCALE, &packets).unwrap();
+    for (start, stop, first, last, encoded) in [
+        (15_500_000_000, 18_000_000_000, 5, 5, 1),
+        (10_000_000_000, 22_500_000_000, 4, 6, 2),
+        (0, 12_000_000_000, 0, 4, 0),
+        (22_000_000_000, 24_000_000_000, 6, 7, 0),
+        (21_999_999_999, 22_000_000_001, 5, 6, 1),
+    ] {
+        let output = tmp.path().join(format!("{start}.mp4"));
+        let report =
+            arb_media::trim::trim_video_time_range(&source, &output, start, stop, &backend)
+                .unwrap();
+        assert_eq!(
+            (
+                report.in_time_ns,
+                report.out_time_ns,
+                report.output_duration_ns
+            ),
+            (Some(start), Some(stop), Some(stop - start))
+        );
+        assert_eq!(
+            (
+                report.in_frame_index,
+                report.out_frame_index,
+                report.reencoded_frames
+            ),
+            (first, last, encoded)
+        );
+        let track = Mp4VideoTrack::open(&output).unwrap();
+        let atoms = inspect_mp4_atoms(&output).unwrap();
+        assert!(atoms.faststart && track.frames()[0].is_keyframe);
+        assert_eq!(
+            (
+                atoms.edts_count,
+                atoms.elst_count,
+                atoms.avc1_count,
+                atoms.stsd_entry_count
+            ),
+            (0, 0, 1, 1)
+        );
+        assert_eq!(track.frame_count(), last - first + 1);
+        assert_eq!(
+            u128::from(track.duration_ticks()) * 1_000_000_000,
+            u128::from(stop - start) * u128::from(track.timescale())
+        );
+        for i in 0..track.frame_count() {
+            let frame = backend
+                .decode_frame(&track, i, PixelFormat::Yuv420p)
+                .unwrap();
+            assert_eq!(read_barcode_from_frame(&frame), Some(first + i));
+        }
+    }
+}

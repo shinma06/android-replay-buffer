@@ -34,6 +34,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K10 | `k10_normalization`（任意の i64 PTS 3 個を正規化し終端用の余地を保存）、`k10_frame_and_trim`（3 枚、各間隔・末尾長 1〜65536 ns、全時刻で床検索・単調性・包括 OUT 逆変換）、`k10_fraction`（1 枚、D が 4 または 7 ns の全整数時刻で端点・単調性・往復） | 長尺・1 枚・静止とバーストは G3 と JVM の共通ベクトル・仮想時計でも検証 | `arb-media/src/timeline.rs`、`arb-media/src/kani_proofs.rs` |
 | K11 | `k11_g8_1_api_33_plus_is_never_api_below_min`、`k11_g8_2_unknown_api_is_never_api_below_min`、`k11_g8_4_api_28_to_32_degrades_to_video_and_logs`、`k11_g8_9_disabled_modes_ignore_every_outcome`、`k11_g8_6_fatal_audio_failure_is_sticky_until_restart`、`k11_output_compat_api_floor`、`k11_explicit_source_change_retries_audio`（PDD G8。API は `u32` 全域、モード・音声要求・ラッチ・`scrcpy-server` の音声結果 8 種はすべて記号値。G8-6 は再接続 4 回までの有界な監視モデルで、端末の起動は前進のみ・各回の前に停止→開始が入りうる。期待値はハーネス内の独立オラクルで、本番の `is_fatal` や `label_class` を使わない） | なし | `core/crates/arb-core/src/kani_proofs/k11_audio_policy.rs` |
 | K12 | `k12_frame_and_gop_byte_budget_no_overflow_and_bounded`（`u16` 全域の寸法・全 4 画素形式・任意 GOP 長と予算で溢れなし、128 MiB での GOP ストリーミング判定が `len > budget / frame` と厳密一致）、`k12_forward_window_eviction_keeps_cached_bytes_within_budget`（任意 `usize` のフレーム 3 枚・任意の確保可能予算で `cached_bytes == 保持バイト ≤ max_bytes`、窓は連続で復号位置で終わり、返すのは常に `target`）、`k12_sequential_forward_decode_avoids_idr_restart_even_over_128mib`（最大 `u32::MAX` 枚の GOP で、冷えたシークは IDR から 1 回だけ、保持 3 枚までの任意の窓から `+1` 要求は再起動なしで 1 枚だけ復号。帰納法で `k` 歩は `k` 回の復号）、`k12_backward_or_cross_gop_seek_restarts_from_target_idr_and_bounds`（逆方向・別 GOP・別形式は対象 GOP の IDR から `IDR..=target` だけ復号、窓内の逆方向は復号 0）、`k12_filmstrip_cache_rejects_mismatched_content_digest`（`ARBFS002` でファイル長・フレーム数・SHA-256 指紋の 3 つが一致したときだけ受理、指紋だけの不一致と旧 `ARBFS001` は拒否） | なし | `core/crates/arb-media/src/playback.rs`、`core/crates/arb-media/src/kani_proofs.rs` |
+| K13 | 実時間トリムの範囲と正長、ns 総尺保存、任意の相対時刻での表示フレーム同値、不正範囲の拒否、ティックの正長と総和 | VFR 3 枚の各間隔 1〜65536 ns と全有効区間。量子化は各 1〜256 ns の 3 枚、8 ns/tick で丸め・予約・表現不能の各分岐を検証する。MP4 の復号結果と timescale 切替は G3 とバーコード試験で検査する | `arb-media/src/timeline.rs`、`arb-media/src/kani_proofs.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -121,6 +122,8 @@ PDD G8 で K11 の 5 本を `arb-core` の必須集合に加えた（2026-11-25�
 
 互換方式の追加時に K11 全 7 本を再実行し、失敗 0、UNREACHABLE 0 を確認した。互換方式の下限を 30 から 31 に変更すると `k11_output_compat_api_floor` が失敗し、方式変更時の世代更新を無効にすると `k11_explicit_source_change_retries_audio` が失敗する。これらはホストの判定を検証する。OEM 端末での録音可否・消音・停止後の復帰は実機スモークで確認する。
 
+K13 の macOS arm64 実測（2026-11-26、Kani 0.68 / CBMC 6.11）。範囲と正長 1.45 秒、総尺保存 4.09 秒、表示同値 4.59 秒、不正範囲 1.89 秒、量子化 6.42 秒。6 個の cover はすべて SATISFIED、ハーネス本体の性質表明で UNREACHABLE は 0 件。区間の証明では本番の `trim_intervals` が返す列を直接走査する。`Vec` の確保、MP4 の読み書き、コーデックは証明範囲の外にある。
+
 K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10・K11 追加前の比較記録。
 
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
@@ -153,6 +156,8 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | K12 | `playback.rs` `advance_forward_window`: 退避条件 `cached_bytes.saturating_add(frame.bytes()) > max_bytes` → `*cached_bytes > max_bytes` | `k12_forward_window_eviction_keeps_cached_bytes_within_budget` | `cached_bytes <= max_bytes`、`window is contiguous` |
 | K12 | `playback.rs` `full_gop_exceeds_budget`: `estimate > max_bytes` → `>=` | `k12_frame_and_gop_byte_budget_no_overflow_and_bounded` | `exact 128 MiB decision` |
 | K12 | `playback.rs` `from_bytes`: 指紋比較から `&source_digest != expected_source_digest` を削除 | `k12_filmstrip_cache_rejects_mismatched_content_digest` | `accepted exactly on ARBFS002 with a full fingerprint match` |
+| K13 | OUT の二分探索で `p < out_time_ns` を `p <= out_time_ns` に変更 | `k13_time_range_trim_valid_bounds_and_positive_durations` | OUT が第 2 フレームの開始 48870 ns と一致すると、末尾に 0 ns のフレームを含む |
+| K13 | 不正範囲判定で `in_time_ns >= out_time_ns` を `in_time_ns > out_time_ns` に変更 | `k13_time_range_trim_rejects_invalid_ranges` | IN = OUT = 70816 ns の空区間を受理する。両変異とも concrete playback で反例を取得し、復元済み |
 | K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
