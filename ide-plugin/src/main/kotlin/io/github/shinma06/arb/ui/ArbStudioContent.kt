@@ -1495,7 +1495,7 @@ private fun TimelineTracks(
                         val y = down.position.y
 
                         // Track 2 click: check Activity Screen Span or Tap/Crash marker pin snap
-                        if (y in markerTopPx..(markerTopPx + markerHeightPx)) {
+                        if (y in markerTopPx..(markerTopPx + markerHeightPx) && g.markerHittable(x)) {
                             val spanHit = s.screens.firstOrNull { span ->
                                 val x1 = g.screen(span) ?: return@firstOrNull false
                                 // Keep short or clipped spans clickable (same 8px floor as before the time axis).
@@ -1512,32 +1512,16 @@ private fun TimelineTracks(
                             }
                             // Snap to nearest tap or crash marker pin within 7dp
                             val pinSnapRadiusPx = 7.dp.toPx()
-                            val markerTimes = buildList<Pair<Float, Long>> {
-                                for (tap in s.mainTaps) {
-                                    val time = s.tapTime(tap) ?: continue
-                                    add(g.at(time) to time)
-                                }
-                                for (crash in s.crashes) {
-                                    val time = s.crashTime(crash) ?: continue
-                                    add(g.at(time) to time)
-                                }
-                            }
-                            val nearestPin = markerTimes.minByOrNull { abs(it.first - x) }
-                            if (nearestPin != null && abs(nearestPin.first - x) <= pinSnapRadiusPx) {
-                                controller.seekTime(nearestPin.second)
+                            val pinTime = g.pinAt(x, pinSnapRadiusPx, s.mainTaps.mapNotNull(s::tapTime) + s.crashes.mapNotNull(s::crashTime))
+                            if (pinTime != null) {
+                                controller.seekTime(pinTime)
                                 down.consume()
                                 return@awaitEachGesture
                             }
                         }
 
                         val onFilmstrip = y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f)
-                        val inDistance = abs(x - g.inX)
-                        val outDistance = abs(x - g.outX)
-                        val edge = when {
-                            !onFilmstrip || minOf(inDistance, outDistance) > handleHitPx -> null
-                            inDistance < outDistance || (inDistance == outDistance && x <= g.inX) -> TrimEdge.IN
-                            else -> TrimEdge.OUT
-                        }
+                        val edge = if (onFilmstrip) g.trimEdgeAt(x, handleHitPx) else null
 
                         fun dispatch(posX: Float, settled: Boolean) {
                             val view = latestGeometry ?: return
@@ -1601,13 +1585,15 @@ private fun TimelineTracks(
                 clipRect(padHPx, filmstripTopPx, padHPx + trackW, filmstripTopPx + filmstripHeightPx) {
                     val slotCount = s.filmstrip.size.coerceIn(6, 20)
                     val slotW = trackW / slotCount.toFloat()
+                    // Zoomed slots stay anchored to timeline time so they pan with every other layer.
+                    fun slotX(i: Int) = if (g.zoom == 1f) padHPx + i * slotW else g.at(s.axis.endNs * i / slotCount)
                     for (i in 0 until slotCount) {
-                        val sx = padHPx + i * slotW
+                        val sx = slotX(i)
                         if (i % 2 == 0) {
                             drawRect(
                                 color = Color.White.copy(alpha = 0.03f),
                                 topLeft = Offset(sx, filmstripTopPx),
-                                size = Size(slotW, filmstripHeightPx),
+                                size = Size(slotX(i + 1) - sx, filmstripHeightPx),
                             )
                         }
                         if (i > 0) {
@@ -1643,15 +1629,17 @@ private fun TimelineTracks(
 
                 // QuickTime-inspired soft rounded warm gold dual In/Out trim frame & handles
                 val borderW = 2.5.dp.toPx()
-                drawRoundRect(
-                    color = trimAccent,
-                    topLeft = Offset(inX, filmstripTopPx),
-                    size = Size((outX - inX).coerceAtLeast(2f), filmstripHeightPx),
-                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-                    style = Stroke(width = borderW),
-                )
+                clipRect(padHPx - borderW, filmstripTopPx - borderW, padHPx + trackW + borderW, filmstripTopPx + filmstripHeightPx + borderW) {
+                    drawRoundRect(
+                        color = trimAccent,
+                        topLeft = Offset(inX, filmstripTopPx),
+                        size = Size((outX - inX).coerceAtLeast(2f), filmstripHeightPx),
+                        cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                        style = Stroke(width = borderW),
+                    )
+                }
                 fun drawHandle(centerX: Float) {
-                    if (centerX !in padHPx..(padHPx + trackW)) return
+                    if (!g.visible(centerX)) return
                     val hx = (centerX - handleWidthPx / 2f).coerceIn(padHPx - handleWidthPx / 2f, padHPx + trackW - handleWidthPx / 2f)
                     drawRoundRect(
                         color = trimAccent,
@@ -1743,7 +1731,7 @@ private fun TimelineTracks(
                 val dashEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                 val crashR = 4.5.dp.toPx()
                 for (crash in s.crashes) {
-                    val cx = g.crash(crash) ?: continue
+                    val cx = g.crash(crash)?.takeIf(g::visible) ?: continue
                     drawLine(
                         color = red,
                         start = Offset(cx, filmstripTopPx),
@@ -1763,25 +1751,27 @@ private fun TimelineTracks(
 
                 // 4. Unified crisp full-height playhead across ruler + tracks
                 val px = g.playhead(controller.playheadTimeNs)
-                drawLine(
-                    color = playheadOutline,
-                    start = Offset(px, rulerHeightPx - 4.dp.toPx()),
-                    end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
-                    strokeWidth = 4.dp.toPx(),
-                )
-                drawLine(
-                    color = playheadColor,
-                    start = Offset(px, rulerHeightPx - 4.dp.toPx()),
-                    end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
-                    strokeWidth = 2.dp.toPx(),
-                )
-                val cap = Path().apply {
-                    moveTo(px - 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
-                    lineTo(px + 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
-                    lineTo(px, rulerHeightPx - 2.dp.toPx())
-                    close()
+                if (g.visible(px)) {
+                    drawLine(
+                        color = playheadOutline,
+                        start = Offset(px, rulerHeightPx - 4.dp.toPx()),
+                        end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
+                        strokeWidth = 4.dp.toPx(),
+                    )
+                    drawLine(
+                        color = playheadColor,
+                        start = Offset(px, rulerHeightPx - 4.dp.toPx()),
+                        end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                    val cap = Path().apply {
+                        moveTo(px - 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
+                        lineTo(px + 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
+                        lineTo(px, rulerHeightPx - 2.dp.toPx())
+                        close()
+                    }
+                    drawPath(cap, color = playheadColor)
                 }
-                drawPath(cap, color = playheadColor)
             }
         }
 

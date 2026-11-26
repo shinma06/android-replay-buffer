@@ -229,6 +229,57 @@ class ArbUiComponentsTest {
     }
 
     @Test
+    fun zoomedTimelineNeitherDrawsNorHitsItemsPannedOutOfTheViewport() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(100, (0 until 100).map { it * 10_000_000L })
+        val state = videoState().copy(axis = axis, frameCount = 100, inFrameIndex = 50, outFrameIndex = 60)
+        // 8x over 1s spans 125ms; IN (500ms) is panned 1ms off the left edge, i.e. 8px into the gutter.
+        val geo = StudioTimelineGeometry(state, 14f, 1000f, zoom = 8f, viewportStartNs = 501_000_000)
+        assertEquals(6f, geo.inX)
+        assertFalse(geo.visible(geo.inX))
+        assertFalse(geo.visible(geo.playhead(500_000_000)))
+        assertTrue(geo.visible(geo.outX))
+        // A press on the visible track must not grab (or snap to) something drawn nowhere.
+        assertEquals(null, geo.trimEdgeAt(16f, 12f))
+        assertEquals(null, geo.pinAt(14f, 10f, listOf(500_000_000L)))
+        assertEquals(600_000_000L, geo.pinAt(geo.at(600_000_000) + 3f, 10f, listOf(500_000_000L, 600_000_000L)))
+        assertFalse(geo.markerHittable(10f))
+        assertFalse(geo.markerHittable(1016f))
+        assertTrue(geo.markerHittable(500f))
+        // 1x keeps the original gutter behaviour: everything is on-track and the gutters still hit.
+        val full = StudioTimelineGeometry(state.copy(inFrameIndex = 0, outFrameIndex = 99), 14f, 1000f)
+        for (time in listOf(0L, 1L, 500_000_000L, axis.endNs)) assertTrue(full.visible(full.at(time)))
+        assertEquals(TrimEdge.IN, full.trimEdgeAt(6f, 12f))
+        assertEquals(0L, full.pinAt(8f, 10f, listOf(0L)))
+        assertTrue(full.markerHittable(10f))
+    }
+
+    @Test
+    fun markingDuringPlaybackSetsTheRangeWithoutSeekingThePlayingClock() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(4,
+            listOf(0, 10_000_000, 510_000_000, 520_000_000))
+        val seeks = mutableListOf<Pair<Long, Boolean>>()
+        val ranges = mutableListOf<LongRange>()
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
+            onRangeChanged = { i, o, _ -> ranges += i..o }, onTimeSeek = { t, settled -> seeks += t to settled })
+        studio.renderState(videoState().copy(axis = axis, frameCount = 4, outFrameIndex = 3), null)
+        studio.seekTime(220_000_000)
+        studio.renderPlaybackState(io.github.shinma06.arb.playback.PlaybackState(
+            mode = io.github.shinma06.arb.playback.PlaybackMode.PLAYING, currentFrameIndex = 1, totalFrames = 4, outFrameIndex = 3))
+        seeks.clear()
+        ranges.clear()
+        val playhead = studio.playheadTimeNs
+        studio.markInAtPlayhead()
+        studio.markOutAtPlayhead()
+        assertEquals(emptyList(), seeks)
+        assertEquals(listOf(1L..3L, 1L..1L), ranges)
+        assertEquals(playhead, studio.playheadTimeNs)
+        // Paused marks still seek the inclusive frame so the preview shows what was marked.
+        studio.renderPlaybackState(io.github.shinma06.arb.playback.PlaybackState(currentFrameIndex = 1, totalFrames = 4))
+        studio.markInAtPlayhead()
+        assertEquals(listOf(10_000_000L to true), seeks)
+    }
+
+    @Test
     fun studioHeaderSubtitleNeverFallsBackToTheWireFormatName() {
         fun subtitleFor(format: BundleFormat, device: io.github.shinma06.arb.model.DeviceInfo?): String {
             val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })

@@ -631,7 +631,7 @@ class ArbStudioController(
         }
     }
 
-    private fun commitTrim(edge: TrimEdge, requested: Long) {
+    private fun commitTrim(edge: TrimEdge, requested: Long, seek: Boolean = true) {
         val s = viewerState ?: return
         if (s.frameCount <= 0) return
         val frame = when (edge) {
@@ -639,7 +639,11 @@ class ArbStudioController(
             TrimEdge.OUT -> requested.coerceIn(s.inFrameIndex, s.frameCount - 1)
         }
         val next = if (edge == TrimEdge.IN) s.copy(inFrameIndex = frame) else s.copy(outFrameIndex = frame)
-        finishSeek(next, frame, s.axis.start(frame))
+        if (seek) return finishSeek(next, frame, s.axis.start(frame))
+        clearDrag()
+        viewerState = next
+        if (s.inFrameIndex != next.inFrameIndex || s.outFrameIndex != next.outFrameIndex) rebuildSyncedRows(next)
+        onRangeChanged(next.inFrameIndex, next.outFrameIndex, next.currentFrameIndex)
     }
 
     internal fun nudge(edge: TrimEdge, direction: Int, byTime: Boolean) {
@@ -698,11 +702,12 @@ class ArbStudioController(
     }
 
     fun markInAtPlayhead() {
-        viewerState?.let { commitTrim(TrimEdge.IN, it.axis.frameAt(playheadTimeNs)) }
+        // While playing, marking must not seek the clock back to the marked frame's start.
+        viewerState?.let { commitTrim(TrimEdge.IN, it.axis.frameAt(playheadTimeNs), seek = !isPlaying) }
     }
 
     fun markOutAtPlayhead() {
-        viewerState?.let { commitTrim(TrimEdge.OUT, it.axis.frameAt(playheadTimeNs)) }
+        viewerState?.let { commitTrim(TrimEdge.OUT, it.axis.frameAt(playheadTimeNs), seek = !isPlaying) }
     }
 
     fun selectTapRange() {

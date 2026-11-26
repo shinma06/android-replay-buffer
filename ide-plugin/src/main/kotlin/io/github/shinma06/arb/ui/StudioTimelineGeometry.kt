@@ -5,6 +5,7 @@ import io.github.shinma06.arb.model.GestureKind
 import io.github.shinma06.arb.model.ScreenSpan
 import io.github.shinma06.arb.model.TapRecord
 import io.github.shinma06.arb.state.TimelineViewerState
+import kotlin.math.abs
 import kotlin.math.roundToLong
 
 /** Geometry shared by drawing and pointer hit tests. Coordinates are physical pixels. */
@@ -31,6 +32,26 @@ internal class StudioTimelineGeometry(
     fun timeAt(x: Float) = if (zoom == 1f) axis.timeAtPixel(x, left, width) else
         start + (((x.toDouble() - left) / width.coerceAtLeast(1f)).coerceIn(0.0, 1.0) * span).roundToLong().coerceAtMost(span)
     fun playhead(time: Long) = at(time)
+
+    /** Whether [x] lies on the track; panned-out items are neither drawn nor hit. */
+    fun visible(x: Float) = x in left..(left + width)
+
+    /** Marker-track hits; the gutters only hit at 1x, where nothing lies outside the track. */
+    fun markerHittable(x: Float) = zoom == 1f || visible(x)
+
+    fun trimEdgeAt(x: Float, hitPx: Float): TrimEdge? {
+        val inDistance = inX.takeIf(::visible)?.let { abs(x - it) } ?: Float.POSITIVE_INFINITY
+        val outDistance = outX.takeIf(::visible)?.let { abs(x - it) } ?: Float.POSITIVE_INFINITY
+        return when {
+            minOf(inDistance, outDistance) > hitPx -> null
+            inDistance < outDistance || (inDistance == outDistance && x <= inX) -> TrimEdge.IN
+            else -> TrimEdge.OUT
+        }
+    }
+
+    /** Nearest pin time within [radius] of [x]. */
+    fun pinAt(x: Float, radius: Float, times: List<Long>): Long? =
+        times.map { at(it) to it }.filter { visible(it.first) }.minByOrNull { abs(it.first - x) }?.takeIf { abs(it.first - x) <= radius }?.second
     fun frame(index: Long) = at(axis.start(index))
     fun tickTime(index: Int, ticks: Int) = start + (span * (index.toDouble() / ticks)).roundToLong().coerceAtMost(span)
     fun tick(index: Int, ticks: Int) = at(tickTime(index, ticks))
