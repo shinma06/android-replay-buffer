@@ -3233,6 +3233,8 @@ impl ReplayCollector {
         } else {
             (params.display_width, params.display_height)
         };
+        let (log_completeness, dropped_count) =
+            saved_log_completeness(self.log_completeness, self.dropped_count, &discontinuities);
         let streams = build_streams_summary(&StreamSummaryCounts {
             frame_count,
             video_status: media.video_status,
@@ -3240,11 +3242,9 @@ impl ReplayCollector {
             display_height,
             audio_status: media.audio_status,
             logs_count: final_logs.len(),
-            log_completeness: self.log_completeness,
+            log_completeness,
             log_overflow_events: self.log_overflow_events,
-            dropped_count: self
-                .dropped_count
-                .filter(|_| self.log_completeness != LogCompleteness::Unverified),
+            dropped_count,
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -3415,6 +3415,30 @@ struct StreamSummaryCounts {
     taps_count: usize,
     tail_may_be_incomplete: bool,
     av_lead_in_offset_ns: i64,
+}
+
+fn saved_log_completeness(
+    device_completeness: LogCompleteness,
+    device_dropped_count: Option<u64>,
+    discontinuities: &[DiscontinuityEvent],
+) -> (LogCompleteness, Option<u64>) {
+    // A device probe cannot account for data lost between the device and this bundle.
+    let log_gap = discontinuities.iter().any(|d| {
+        matches!(d.stream, None | Some(StreamKind::Logcat))
+            && matches!(
+                d.kind,
+                DiscontinuityKind::StreamGap
+                    | DiscontinuityKind::ConnectionLost
+                    | DiscontinuityKind::StoragePressureStop
+            )
+    });
+    let dropped_count = device_dropped_count
+        .filter(|_| !log_gap && device_completeness != LogCompleteness::Unverified);
+    let log_completeness = match (device_completeness, dropped_count) {
+        (LogCompleteness::VerifiedNoOverflow, None) => LogCompleteness::Unverified,
+        (completeness, _) => completeness,
+    };
+    (log_completeness, dropped_count)
 }
 
 fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
@@ -4818,6 +4842,19 @@ mod tests {
         cap.begin_session("A");
         cap.ingest_event(heartbeat_at(100)).unwrap();
         cap.ingest_event(heartbeat_at(200)).unwrap();
+        cap.ingest_event(CaptureEvent::LogOverflowStats {
+            pc_cont_ns: 200,
+            boot_id: "boot-t".into(),
+            payload: arb_adb::wire::LogOverflowStatsPayload {
+                boottime_ns: 200,
+                completeness: arb_adb::wire::WireLogCompleteness::Verified,
+                buffers_count: 4,
+                pruned_delta: 0,
+                pruned_cumulative: 0,
+                detail: "zero_pruned_delta".into(),
+            },
+        })
+        .unwrap();
         let mut pending = cap
             .pin_request(
                 10,
@@ -4848,6 +4885,8 @@ mod tests {
             .unwrap();
         let manifest = arb_storage::bundle_io::read_bundle_manifest(&path).unwrap();
         assert_eq!(manifest["memo"], "保存メモ");
+        assert_eq!(manifest["streams"]["logcat"]["completeness"], "unverified");
+        assert!(manifest["streams"]["logcat"]["dropped_count"].is_null());
         let saved = arb_storage::bundle_io::V2BundleReader::open(path).unwrap();
         assert_eq!(saved.clock_anchors().unwrap().len(), 1);
         assert!(

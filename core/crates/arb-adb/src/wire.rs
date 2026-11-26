@@ -1042,10 +1042,11 @@ impl LogOverflowStatsPayload {
             WireLogCompleteness::Unverified => None,
             WireLogCompleteness::OverflowDetected => {
                 let evidence = self.detail.split_whitespace().next()?;
-                let count = evidence
-                    .strip_prefix("writer_queue_overflow:dropped=")
-                    .or_else(|| evidence.strip_prefix("explicit_dropped_delta="))?;
-                count.parse().ok()
+                // The writer queue carries both log rows and statistics frames.
+                evidence
+                    .strip_prefix("explicit_dropped_delta=")?
+                    .parse()
+                    .ok()
             }
         }
     }
@@ -1817,7 +1818,7 @@ mod tests {
             (
                 WireLogCompleteness::OverflowDetected,
                 "writer_queue_overflow:dropped=12",
-                Some(12),
+                None,
             ),
             (
                 WireLogCompleteness::OverflowDetected,
