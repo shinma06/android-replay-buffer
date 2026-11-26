@@ -357,6 +357,7 @@ fn streams_summary(frames: u64) -> StreamsSummary {
             tail_may_be_incomplete: false,
         }),
         logcat: Some(LogcatStreamMeta {
+            dropped_count: None,
             status: StreamStatus::Present,
             completeness: LogCompleteness::VerifiedNoOverflow,
             overflow_events: 0,
@@ -479,6 +480,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frame_records = frame_records_for(&video_src, frames)?;
 
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: bundle_id.clone(),
         created_at_utc: "2026-11-24T09:00:00Z".to_owned(),

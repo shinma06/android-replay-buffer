@@ -40,6 +40,9 @@ pub struct AppLogSummary {
 /// Top-level `manifest.json` schema for ARB immutable saved bundles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestV2 {
+    /// User note captured with the save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
     /// Bundle manifest schema version; must equal [`BUNDLE_SCHEMA_VERSION`] (`2`).
     pub schema_version: u32,
     /// High-level bundle payload category (`full` or `logs_only`; defaults to `full`).
@@ -230,6 +233,9 @@ pub enum LogCompleteness {
 /// Logcat stream summary metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LogcatStreamMeta {
+    /// Lost log records when every observed interval has an exact count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_count: Option<u64>,
     /// Presence state of the logcat stream.
     pub status: StreamStatus,
     /// Honest completeness status.
@@ -718,6 +724,7 @@ mod tests {
 
     fn valid_manifest() -> ManifestV2 {
         ManifestV2 {
+            memo: None,
             schema_version: 2,
             bundle_kind: BundleKind::Full,
             bundle_id: "01JARB00000000000000000001".into(),
@@ -755,6 +762,7 @@ mod tests {
                     tail_may_be_incomplete: false,
                 }),
                 logcat: Some(LogcatStreamMeta {
+                    dropped_count: None,
                     status: StreamStatus::Present,
                     completeness: LogCompleteness::Unverified,
                     overflow_events: 0,

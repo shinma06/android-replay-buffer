@@ -78,10 +78,10 @@ impl TouchCalibration {
         if event.ev_type != 3 {
             return None;
         }
-        self.devices
-            .get(&event.device_path)?
-            .get(&event.ev_code)?
-            .project(event.ev_value)
+        let axis = self.devices.get(&event.device_path)?.get(&event.ev_code)?;
+        // Emulator console injections can exceed the advertised evdev range. Keep known axes
+        // in display space even then; None is reserved for axes with no calibration.
+        axis.project(event.ev_value.clamp(axis.min, axis.max))
     }
 }
 

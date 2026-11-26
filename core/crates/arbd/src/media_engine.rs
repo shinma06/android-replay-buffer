@@ -620,8 +620,14 @@ pub fn export_trim(
     )?;
 
     // W11: cut the source `audio.m4a` (if any) to the trimmed video's time range.
-    let (trimmed_audio, _tmp_audio_guard) =
-        trim_source_audio(reader.as_ref(), &video_path, params, &tmp_dir, &trim_job_id)?.unzip();
+    let (trimmed_audio, _tmp_audio_guard) = trim_source_audio(
+        reader.as_ref(),
+        &video_path,
+        (params.in_frame_index, params.out_frame_index),
+        &tmp_dir,
+        &trim_job_id,
+    )?
+    .unzip();
 
     let trimmed_track = Mp4VideoTrack::open(&tmp_trimmed_mp4)?;
     let trimmed_frames =
@@ -932,11 +938,11 @@ struct TrimmedVideo {
 }
 
 /// Trimmed `audio.m4a` payload for [`build_trimmed_bundle_draft`].
-struct TrimmedAudio {
-    tmp_m4a: PathBuf,
+pub(super) struct TrimmedAudio {
+    pub(super) tmp_m4a: PathBuf,
     /// Lead-in skew of the *trimmed* bundle: `D' = a0_sel + D - video_start_ns`
     /// (first selected packet's source audio pts + save-time skew − new video origin).
-    lead_in_offset_ns: i64,
+    pub(super) lead_in_offset_ns: i64,
 }
 
 /// Cuts the source bundle's `audio.m4a` (when it has one) to the trimmed video's time range
@@ -951,10 +957,10 @@ struct TrimmedAudio {
 /// only [`MediaError::NoAudioInRange`] maps to `None` — real `InvalidArgument` bugs and every
 /// other error propagate so a corrupt source audio track can never silently produce a bundle
 /// that claims trimmed audio (R3 M3, R4 S10).
-fn trim_source_audio(
+pub(super) fn trim_source_audio(
     reader: &dyn BundleReader,
     video_path: &Path,
-    params: &ExportTrimParams,
+    range: (u64, u64),
     tmp_dir: &Path,
     trim_job_id: &str,
 ) -> Result<Option<(TrimmedAudio, FileCleanupGuard)>, DaemonError> {
@@ -971,8 +977,8 @@ fn trim_source_audio(
         .map_or(0, |audio| audio.audio_lead_in_offset_ns);
 
     let src_track = Mp4VideoTrack::open(video_path)?;
-    let video_start_ns = src_track.frame(params.in_frame_index)?.pts_ns.max(0);
-    let out_frame = src_track.frame(params.out_frame_index)?;
+    let video_start_ns = src_track.frame(range.0)?.pts_ns.max(0);
+    let out_frame = src_track.frame(range.1)?;
     let video_end_ns = out_frame
         .pts_ns
         .saturating_add(i64::try_from(out_frame.duration_ns).unwrap_or(i64::MAX))
@@ -1029,6 +1035,7 @@ fn build_trimmed_bundle_draft(
         is_emulator: false,
     });
     V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: new_bundle_id.to_owned(),
         created_at_utc: now_utc.to_owned(),

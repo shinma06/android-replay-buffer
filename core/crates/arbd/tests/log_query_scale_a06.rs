@@ -313,6 +313,7 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
     }
 
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::LogsOnly,
         bundle_id: bundle_id.to_owned(),
         created_at_utc: "2026-11-25T00:00:00Z".to_owned(),
@@ -336,6 +337,7 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
             video: None,
             audio: None,
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Present,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,
@@ -554,6 +556,7 @@ fn write_small_log_bundle(dir: &Path, pkg: &str, extra_msg: &str) {
         }),
     ];
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::LogsOnly,
         bundle_id: "same-id-slot".to_owned(),
         created_at_utc: "2026-11-25T00:00:00Z".to_owned(),
@@ -577,6 +580,7 @@ fn write_small_log_bundle(dir: &Path, pkg: &str, extra_msg: &str) {
             video: None,
             audio: None,
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Present,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,

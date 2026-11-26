@@ -1032,6 +1032,26 @@ pub struct LogOverflowStatsPayload {
     pub detail: String,
 }
 
+impl LogOverflowStatsPayload {
+    /// Number of dropped records established by this observation. Ring pruning alone cannot
+    /// establish how many records the streaming reader missed.
+    #[must_use]
+    pub fn dropped_records(&self) -> Option<u64> {
+        match self.completeness {
+            WireLogCompleteness::Verified => Some(0),
+            WireLogCompleteness::Unverified => None,
+            WireLogCompleteness::OverflowDetected => {
+                let evidence = self.detail.split_whitespace().next()?;
+                // The writer queue carries both log rows and statistics frames.
+                evidence
+                    .strip_prefix("explicit_dropped_delta=")?
+                    .parse()
+                    .ok()
+            }
+        }
+    }
+}
+
 /// `0x20 TouchEvent` payload carrying one `getevent -lt` input event.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TouchEventPayload {
@@ -1772,6 +1792,49 @@ mod tests {
         encode_heartbeat, encode_hello, encode_log_overflow_stats, encode_log_record, encode_ping,
         encode_pong, encode_shutdown, encode_stream_state, encode_touch_event,
     };
+
+    #[test]
+    fn log_loss_counts_require_explicit_evidence() {
+        let stats = LogOverflowStatsPayload {
+            boottime_ns: 777_777,
+            completeness: WireLogCompleteness::Verified,
+            buffers_count: 4,
+            pruned_delta: 0,
+            pruned_cumulative: 12,
+            detail: "main:12 system:0".into(),
+        };
+        assert_eq!(stats.dropped_records(), Some(0));
+        for (status, detail, expected) in [
+            (
+                WireLogCompleteness::Unverified,
+                "ring_pruned_delta=17",
+                None,
+            ),
+            (
+                WireLogCompleteness::OverflowDetected,
+                "reader_gap_detected",
+                None,
+            ),
+            (
+                WireLogCompleteness::OverflowDetected,
+                "writer_queue_overflow:dropped=12",
+                None,
+            ),
+            (
+                WireLogCompleteness::OverflowDetected,
+                "explicit_dropped_delta=4 main",
+                Some(4),
+            ),
+        ] {
+            let probe = LogOverflowStatsPayload {
+                completeness: status,
+                detail: detail.to_owned(),
+                pruned_delta: 17,
+                ..stats.clone()
+            };
+            assert_eq!(probe.dropped_records(), expected, "{detail}");
+        }
+    }
 
     #[test]
     fn wire_frame_header_matches_java_protocol_test_bit_for_bit() {

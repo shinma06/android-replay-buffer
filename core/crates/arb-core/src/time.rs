@@ -1284,6 +1284,14 @@ pub fn format_unix_secs_iso8601(unix_secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// Formats Unix milliseconds as UTC, retaining three fractional digits before and after 1970.
+#[must_use]
+pub fn format_unix_ms_iso8601(unix_ms: i64) -> String {
+    let mut stamp = format_unix_secs_iso8601(unix_ms.div_euclid(1000));
+    stamp.pop();
+    format!("{stamp}.{:03}Z", unix_ms.rem_euclid(1000))
+}
+
 /// Converts days since `1970-01-01` into proleptic Gregorian `(year, month, day)`.
 ///
 /// Algorithm due to Howard Hinnant (`civil_from_days`).
@@ -1307,6 +1315,16 @@ mod tests {
         ClockError, ClockTimeline, ClockTimelineConfig, DeviceClockTriple, DiscontinuityKind,
         PcSyncProbe, RawTimestampObservation, TimeAlignment, TimestampSemantics, UncertaintyReason,
     };
+
+    #[test]
+    fn formats_millisecond_boundaries() {
+        use super::format_unix_ms_iso8601 as stamp;
+        assert_eq!(stamp(-1), "1969-12-31T23:59:59.999Z");
+        assert_eq!(stamp(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(stamp(123), "1970-01-01T00:00:00.123Z");
+        assert_eq!(stamp(i64::MIN), "-292275055-05-16T16:47:04.192Z");
+        assert_eq!(stamp(i64::MAX), "292278994-08-17T07:12:55.807Z");
+    }
 
     #[test]
     fn detects_reboot_and_forbids_cross_boot_interpolation() {

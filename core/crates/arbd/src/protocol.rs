@@ -110,6 +110,9 @@ impl RpcResponse {
 /// Response payload for `system.hello`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemHelloResponse {
+    /// Ranged share exports only create a bundle on explicit request.
+    #[serde(default)]
+    pub standalone_share_trim: bool,
     /// The connected daemon safely supports preview-only garbage collection.
     #[serde(default)]
     pub gc_dry_run: bool,
@@ -395,6 +398,9 @@ pub enum SaveMode {
 /// Request parameters for `save.trigger`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SaveTriggerParams {
+    /// User note retained across catalog retries.
+    #[serde(alias = "memo")]
+    pub note: Option<String>,
     /// Requested lookback duration in real elapsed seconds (defaults to `config.save_window_secs`).
     #[serde(alias = "window_secs")]
     pub duration_sec: Option<u64>,
@@ -412,6 +418,9 @@ pub struct SaveTriggerParams {
 /// Request parameters for `save.logs` (dedicated log-only WORM bundle save).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SaveLogsParams {
+    /// User note retained across catalog retries.
+    #[serde(alias = "memo")]
+    pub note: Option<String>,
     /// Requested lookback duration in real elapsed seconds (defaults to `config.save_window_secs`).
     #[serde(alias = "duration_sec")]
     pub window_secs: Option<u64>,
@@ -503,9 +512,53 @@ pub struct SaveOutcomeResponse {
     pub warning: Option<String>,
 }
 
+/// Measurable log loss and quarantine evidence from a committed manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogcatEvidence {
+    /// Observation reported by logcat.
+    pub status: Option<LogCompleteness>,
+    /// Observed loss events, independent of quarantine limits.
+    pub overflow_events: u64,
+    /// Number of lost lines when known; overflow alone gives no count.
+    pub dropped_count: Option<u64>,
+    /// Retained uncertain records (logs and taps).
+    pub unanchored_count: u64,
+    /// Uncertain records omitted by quarantine limits.
+    pub unanchored_truncated_count: u64,
+}
+
+impl From<&arb_storage::bundle_io::BundleManifestSummary> for LogcatEvidence {
+    fn from(manifest: &arb_storage::bundle_io::BundleManifestSummary) -> Self {
+        let stream = manifest.streams.logcat.as_ref();
+        let status = stream.map(|s| s.completeness);
+        Self {
+            status,
+            overflow_events: stream.map_or(0, |s| s.overflow_events),
+            dropped_count: stream.and_then(|s| s.dropped_count),
+            unanchored_count: manifest.unanchored_summary.included_count,
+            unanchored_truncated_count: manifest.unanchored_summary.truncated_count,
+        }
+    }
+}
+
 /// Optional evidence measurements from the published bundle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveEvidence {
+    /// Stable machine-readable quality warnings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_codes: Option<Vec<String>>,
+    /// Independently measured stream shortfalls when evidence was available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_shortfall: Option<bool>,
+    /// Whether the anchored log window falls short.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_shortfall: Option<bool>,
+    /// Logcat loss observations and quarantine counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logcat_completeness: Option<LogcatEvidence>,
+    /// User note stored in the catalog with this save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Encoded MP4 duration in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual_video_duration_ms: Option<u64>,
@@ -874,6 +927,9 @@ pub struct TimelineSummaryResponse {
 /// Response payload for `timeline.query_logs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineLogsResponse {
+    /// Number of quarantined log rows across the bundle.
+    #[serde(default)]
+    pub unanchored_count: usize,
     /// Matching log records.
     pub logs: Vec<QueryLogRow>,
     /// Count matching the filters across all pages.
@@ -1250,7 +1306,10 @@ pub struct ExportShareMp4Params {
     /// output bundle & `share.mp4` are fsynced, verified, and committed (refused for `LegacyRo`).
     #[serde(default)]
     pub trash_original: bool,
-    /// Optional destination parent directory for a trimmed WORM bundle (when trimming).
+    /// Also publish and catalog the selected range as an editable bundle.
+    #[serde(default)]
+    pub keep_bundle: bool,
+    /// Parent for generated MP4 names and explicitly requested bundles.
     pub dest_dir: Option<PathBuf>,
     /// Optional client PID for the temporary `ExportJob` lease.
     pub holder_pid: Option<u32>,
@@ -1305,6 +1364,13 @@ pub struct TimelineOverviewParams {
     pub bundle_id: String,
     /// Optional cap on `error_log_highlights` (default `50`, capped at `200`).
     pub max_error_logs: Option<usize>,
+    /// Exact Android package, resolved with the log search's PID timeline.
+    pub package: Option<String>,
+    /// Case-insensitive tag substring.
+    pub tag: Option<String>,
+    /// Excluded exact tag names, case-insensitive.
+    #[serde(default)]
+    pub exclude_tags: Vec<String>,
 }
 
 /// Compact tap summary entry returned inside [`TimelineOverviewResponse`].
@@ -1339,9 +1405,22 @@ pub struct OverviewTapItem {
     pub end_t_ms: Option<i64>,
 }
 
+const fn one_occurrence() -> usize {
+    1
+}
+
 /// Compact `E`/`F` error log highlight returned inside [`TimelineOverviewResponse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorLogHighlight {
+    /// Number of raw rows represented by this signature.
+    #[serde(default = "one_occurrence")]
+    pub repeat_count: usize,
+    /// Timeline offsets of the first and last occurrences in log sequence order.
+    pub first_offset_ms: Option<i64>,
+    /// Last occurrence in log sequence order.
+    pub last_offset_ms: Option<i64>,
+    /// UTC time from the log header, with millisecond precision when known.
+    pub timestamp_utc: Option<String>,
     /// Source `LogRecord::seq` in `timeline.sqlite`.
     pub seq: u64,
     /// Priority level (`"E"` or `"F"`).
@@ -1398,7 +1477,18 @@ pub struct TimelineOverviewResponse {
     pub crashes: Vec<CrashMarker>,
     /// Recorded timeline discontinuities (gaps, reboots, sleep).
     pub discontinuities: Vec<DiscontinuityEvent>,
-    /// Bounded `E`/`F` error/fatal log highlights.
+    /// Filtered highlight count before applying the limit.
+    #[serde(default)]
+    pub total_error_logs: usize,
+    /// Distinct matching signatures before the display cap.
+    #[serde(default)]
+    pub unique_error_logs: usize,
+    /// Whether matching rows were omitted by the highlight limit.
+    #[serde(default)]
+    pub error_logs_truncated: bool,
+    /// Detailed completeness, in the same shape as save evidence.
+    pub logcat_completeness_detail: Option<LogcatEvidence>,
+    /// Bounded E/F error/fatal log highlights.
     pub error_log_highlights: Vec<ErrorLogHighlight>,
     /// Count of quarantined `unanchored` records included in the bundle.
     pub unanchored_count: u64,

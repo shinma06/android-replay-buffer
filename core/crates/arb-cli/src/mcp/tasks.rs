@@ -69,7 +69,9 @@ impl Activity {
                 json!({"progressToken":token,"progress":self.progress,"message":phase}),
             );
         }
-        self.log(s, 1, phase);
+        if self.token.is_none() {
+            self.log(s, 0, phase);
+        }
     }
     fn log(&self, s: &Session, level: u8, phase: &str) {
         if !self.tool.is_empty() && level >= s.level.load(Ordering::Relaxed) {
@@ -176,7 +178,13 @@ impl Session {
                 &json!({"tasks":tasks.values().map(|t|&t.view).collect::<Vec<_>>()}),
             ));
         }
-        let Some(t) = p["taskId"].as_str().and_then(|k| tasks.get_mut(k)) else {
+        let Some(key) = p.get("taskId") else {
+            return Some(rpc_error(id, -32602, "taskId は必須です"));
+        };
+        let Some(key) = key.as_str() else {
+            return Some(rpc_error(id, -32602, "taskId は文字列で指定してください"));
+        };
+        let Some(t) = tasks.get_mut(key) else {
             return Some(rpc_error(id, -32602, "未知または期限切れの taskId です"));
         };
         Some(match method {

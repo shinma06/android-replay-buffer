@@ -54,6 +54,7 @@ enum OutputFormat {
 struct CliError {
     exit_code: u8,
     rpc_code: Option<i32>,
+    error_code: Option<String>,
     message: String,
     already_emitted: bool,
 }
@@ -63,6 +64,7 @@ impl CliError {
         Self {
             exit_code: EXIT_USAGE_ERROR,
             rpc_code: None,
+            error_code: None,
             message: message.into(),
             already_emitted: false,
         }
@@ -72,6 +74,7 @@ impl CliError {
         Self {
             exit_code: EXIT_GENERAL_ERROR,
             rpc_code: None,
+            error_code: None,
             message: message.into(),
             already_emitted: false,
         }
@@ -81,22 +84,28 @@ impl CliError {
         Self {
             exit_code: EXIT_SAVE_FAILED_RETRYABLE,
             rpc_code: None,
+            error_code: None,
             message: "save failed (retryable); see emitted job status".to_owned(),
             already_emitted: true,
         }
     }
 
     fn from_rpc(err: RpcClientError) -> Self {
-        match err {
-            RpcClientError::Rpc { code, message } | RpcClientError::Rejected { code, message } => {
-                Self {
-                    exit_code: exit_code_for_rpc(code),
-                    rpc_code: Some(code),
-                    message,
-                    already_emitted: false,
-                }
-            }
-            other => Self::general(other.to_string()),
+        let (code, message, error_code) = match err {
+            RpcClientError::Rpc {
+                code,
+                message,
+                error_code,
+            } => (code, message, error_code),
+            RpcClientError::Rejected { code, message } => (code, message, None),
+            other => return Self::general(other.to_string()),
+        };
+        Self {
+            exit_code: exit_code_for_rpc(code),
+            rpc_code: Some(code),
+            error_code: Some(error_code.unwrap_or_else(|| arb_os::rpc::error_label(code).into())),
+            message,
+            already_emitted: false,
         }
     }
 }
@@ -235,6 +244,7 @@ enum CommandSpec {
         drain_timeout_ms: Option<u64>,
     },
     SaveLogs {
+        note: Option<String>,
         window_secs: Option<u64>,
         dest: Option<PathBuf>,
         drain_timeout_ms: Option<u64>,
@@ -305,6 +315,7 @@ enum CommandSpec {
         out_frame: Option<u64>,
         out: Option<PathBuf>,
         dest: Option<PathBuf>,
+        keep_bundle: bool,
         burn_taps: bool,
         trash_original: bool,
     },
@@ -322,14 +333,19 @@ enum CommandSpec {
 
 fn format_error(output: OutputFormat, err: &CliError) -> String {
     match output {
-        OutputFormat::Json => serde_json::to_string(&json!({
-            "error": {
-                "code": err.rpc_code,
-                "exit_code": err.exit_code,
-                "message": err.message,
+        OutputFormat::Json => {
+            let mut data =
+                json!({"code":err.rpc_code,"exit_code":err.exit_code,"message":err.message});
+            if let Some(label) = &err.error_code {
+                let (kind, hint, retryable) = arb_os::rpc::error_guidance(label);
+                data["rpc_code"] = json!(err.rpc_code);
+                data["error_code"] = json!(label);
+                data["kind"] = json!(kind);
+                data["hint"] = json!(hint);
+                data["retryable"] = json!(retryable);
             }
-        }))
-        .unwrap_or_else(|_| format!("{{\"error\":{{\"message\":\"{}\"}}}}", err.message)),
+            json!({"error":data}).to_string()
+        }
         OutputFormat::Human => format!("error: {}", err.message),
     }
 }
@@ -633,6 +649,7 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 }
 
 fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut note = None;
     let mut window_secs = None;
     let mut dest = None;
     let mut drain_timeout_ms = None;
@@ -643,6 +660,10 @@ fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
             "--seconds" | "--window-secs" => {
                 let flag = args[i].as_str();
                 window_secs = Some(parse_u64(require_val(args, i, flag)?, flag)?);
+                i += 2;
+            }
+            "--note" | "--memo" => {
+                note = Some(require_val(args, i, &args[i])?.to_owned());
                 i += 2;
             }
             "--dest" => {
@@ -665,6 +686,7 @@ fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 
     Ok(CommandSpec::SaveLogs {
+        note,
         window_secs,
         dest,
         drain_timeout_ms,
@@ -897,7 +919,7 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
     let target = args
         .first()
         .ok_or_else(|| CliError::usage("logs <bundle-id-or-path>"))?;
-    let mut params = json!({"bundle_id_or_path": absolutize_bundle_target(target)?, "limit":100});
+    let mut params = json!({"bundle_id_or_path": absolutize_bundle_target(target)?, "limit":100, "bucket":"main"});
     let mut i = 1;
     while i < args.len() {
         let flag = args[i].as_str();
@@ -914,7 +936,7 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
                 params["limit"] = json!(limit);
                 i += 2;
             }
-            "--cursor" | "--keyword" | "--tag" | "--level" | "--package" => {
+            "--bucket" | "--cursor" | "--keyword" | "--tag" | "--level" | "--package" => {
                 params[&flag[2..]] = json!(require_val(args, i, flag)?);
                 i += 2;
             }
@@ -1100,7 +1122,7 @@ fn parse_trim_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
         CliError::usage(
-            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--burn-taps] [--trash-original]",
+            "usage: arb-cli share-mp4 <bundle-id-or-path> [--in-frame <n> --out-frame <m>] [--out <file.mp4>] [--dest <dir>] [--keep-bundle] [--burn-taps] [--trash-original]",
         )
     })?;
     let target = absolutize_bundle_target(raw)?;
@@ -1108,6 +1130,7 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut out_frame = None;
     let mut out = None;
     let mut dest = None;
+    let mut keep_bundle = false;
     let mut burn_taps = false;
     let mut trash_original = false;
     let mut i = 1_usize;
@@ -1135,6 +1158,10 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
             "--dest" => {
                 dest = Some(absolutize_path(Path::new(require_val(args, i, "--dest")?))?);
                 i += 2;
+            }
+            "--keep-bundle" => {
+                keep_bundle = true;
+                i += 1;
             }
             "--burn-taps" => {
                 burn_taps = true;
@@ -1164,6 +1191,7 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         out_frame,
         out,
         dest,
+        keep_bundle,
         burn_taps,
         trash_original,
     })
@@ -1359,12 +1387,13 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "save result",
         ),
         CommandSpec::SaveLogs {
+            note,
             window_secs,
             dest,
             drain_timeout_ms,
         } => (
             "save.logs",
-            json!({ "window_secs": window_secs, "dest_dir": dest, "drain_timeout_ms": drain_timeout_ms }),
+            json!({ "note": note, "window_secs": window_secs, "dest_dir": dest, "drain_timeout_ms": drain_timeout_ms }),
             "log-only save result",
         ),
         CommandSpec::Screenshot {
@@ -1486,6 +1515,7 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         out_frame,
         out,
         dest,
+        keep_bundle,
         burn_taps,
         trash_original,
     } = cmd
@@ -1500,6 +1530,7 @@ fn share_mp4_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "out_frame_index": out_frame,
             "output_path": out,
             "dest_dir": dest,
+            "keep_bundle": keep_bundle,
             "burn_taps": burn_taps,
             "trash_original": trash_original,
             "holder_pid": std::process::id(),
@@ -1810,17 +1841,17 @@ COMMANDS:\n  \
   capture-start [--serial <S>] [--mode <video_and_logs|logs_only>] ...  (alias for `capture start`)\n  \
   capture stop\n  \
   save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
-  save-logs [--window-secs <N>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
+  save-logs [--window-secs <N>] [--note <TEXT>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   screenshot [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
   config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  gc [--now] [--dry-run]\n  logs <ID> [--limit N] [--cursor CURSOR] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
-  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
+  share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
   png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
   mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n  \
@@ -2189,18 +2220,26 @@ mod tests {
     #[test]
     fn r3_s17_maps_rpc_errors_and_failed_save_to_distinct_exit_codes_and_json_errors() {
         let not_found = CliError::from_rpc(RpcClientError::Rpc {
+            error_code: None,
             code: RPC_ERR_NOT_FOUND,
             message: "missing".to_owned(),
         });
         assert_eq!(not_found.exit_code, EXIT_NOT_FOUND, "not found exit code");
 
         let conflict = CliError::from_rpc(RpcClientError::Rpc {
+            error_code: Some("ALREADY_TRASHED".into()),
             code: RPC_ERR_CONFLICT,
             message: "busy".to_owned(),
         });
         assert_eq!(conflict.exit_code, EXIT_CONFLICT, "conflict exit code");
 
+        let structured: Value =
+            serde_json::from_str(&format_error(OutputFormat::Json, &conflict)).unwrap();
+        assert_eq!(structured["error"]["error_code"], "ALREADY_TRASHED");
+        assert_eq!(structured["error"]["retryable"], false);
+
         let invalid = CliError::from_rpc(RpcClientError::Rpc {
+            error_code: None,
             code: RPC_ERR_INVALID_PARAMS,
             message: "bad path".to_owned(),
         });
@@ -2287,6 +2326,7 @@ mod tests {
         assert_eq!(
             save_logs,
             CommandSpec::SaveLogs {
+                note: None,
                 window_secs: Some(90),
                 dest: Some(cwd.join("logs-out")),
                 drain_timeout_ms: None,
@@ -2356,14 +2396,20 @@ mod tests {
                 out_frame: Some(20),
                 out: Some(cwd.join("clips/out.mp4")),
                 dest: None,
+                keep_bundle: false,
                 burn_taps: false,
                 trash_original: true,
             },
             "share-mp4 command must match"
         );
 
-        let (_, share_burn) = parse_args(&vec_str(&["share-mp4", "bundle-7", "--burn-taps"]))
-            .expect("share-mp4 burn");
+        let (_, share_burn) = parse_args(&vec_str(&[
+            "share-mp4",
+            "bundle-7",
+            "--keep-bundle",
+            "--burn-taps",
+        ]))
+        .expect("share-mp4 burn");
         assert_eq!(
             share_burn,
             CommandSpec::ShareMp4 {
@@ -2372,6 +2418,7 @@ mod tests {
                 out_frame: None,
                 out: None,
                 dest: None,
+                keep_bundle: true,
                 burn_taps: true,
                 trash_original: false,
             },

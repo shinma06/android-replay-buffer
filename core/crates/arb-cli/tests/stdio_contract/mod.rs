@@ -138,6 +138,24 @@ fn assert_rejected(c: &mut Client, name: &str, args: &Value) {
         "{name} {args}: {r}"
     );
     assert_eq!(r["structuredContent"]["rpc_code"], -32602);
+    assert_eq!(r["structuredContent"]["retryable"], false);
+    assert_eq!(r["structuredContent"]["kind"], "invalid_params");
+    assert!(
+        r["structuredContent"]["hint"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    for (key, val) in args.as_object().into_iter().flatten() {
+        if val.get("wrong").is_some() || key == "unexpected" {
+            assert!(
+                r["structuredContent"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(key),
+                "{name}: {r}"
+            );
+        }
+    }
 }
 
 fn registry(c: &mut Client) {
@@ -177,10 +195,8 @@ fn registry(c: &mut Client) {
             let legacy = version < "2025-11-25";
             assert_eq!(tool["annotations"]["destructiveHint"], legacy);
             assert_eq!(
-                tool["inputSchema"]["properties"][flag]
-                    .get("const")
-                    .is_some(),
-                !legacy
+                tool["inputSchema"]["properties"].get(flag).is_some(),
+                legacy
             );
             if !legacy {
                 let mut args = json!({});
@@ -324,6 +340,31 @@ fn resources_and_prompts(c: &mut Client, id: &str) {
                 .is_string()
         );
     }
+    for (name, args, expected) in [
+        (
+            "investigate_crash",
+            json!({"bundle_id":"fixture"}),
+            "arb://bundles/fixture/crashes",
+        ),
+        (
+            "triage_recent_bug",
+            json!({"duration_secs":"15","keyword":"DOGFOOD_ERR_001"}),
+            "arb_save_and_inspect({\"duration_secs\":15})",
+        ),
+        (
+            "safe_cleanup_review",
+            json!({"ignore_grace":"true"}),
+            "\"ignore_grace\":true",
+        ),
+    ] {
+        let prompt = c.result("prompts/get", json!({"name":name,"arguments":args}));
+        let text = prompt["messages"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains(expected), "{text}");
+        if name == "triage_recent_bug" {
+            assert!(text.contains("\"keyword\":\"DOGFOOD_ERR_001\""));
+        }
+        assert!(!text.contains("指定値"));
+    }
     for reference in [
         json!({"type":"ref/resource","uri":"arb://bundles/{bundle_id}/manifest"}),
         json!({"type":"ref/prompt","name":"investigate_crash"}),
@@ -447,7 +488,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     for name in ["arb_save", "arb_save_logs"] {
         let r = c.result(
             "tools/call",
-            json!({"name":name,"arguments":{"window_secs":5}}),
+            json!({"name":name,"arguments":{"window_secs":5,"note":"調査記録"}}),
         );
         assert_eq!(
             r["content"]
@@ -458,7 +499,18 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
                 .count(),
             3
         );
-        assert_eq!(c.check_tool(name, r)["requested_duration_secs"], 5);
+        let saved = c.check_tool(name, r);
+        assert_eq!(saved["requested_duration_secs"], 5);
+        assert_eq!(saved["note"], "調査記録");
+        assert!(saved["warning_codes"].is_array());
+        let entries = c.tool("arb_list_bundles", json!({}));
+        let entry = entries["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["bundle_id"] == saved["bundle_id"])
+            .unwrap();
+        assert_eq!(entry["memo"], "調査記録");
     }
     let adb_dir = std::path::PathBuf::from(std::env::var_os("FAKE_DEVICE_STATE").unwrap());
     fs::write(
@@ -467,12 +519,34 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     )
     .unwrap();
     fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
-    c.tool(
-        "arb_screenshot",
-        json!({"serial":"contract-device","output_path":root.path().join("shot.png")}),
-    );
+    for (version, inline, expected) in [
+        ("2024-11-05", None, true),
+        ("2025-06-18", None, true),
+        ("2025-11-25", None, false),
+        ("2025-11-25", Some(true), true),
+    ] {
+        c.init(version);
+        let out = root.path().join(format!("shot-{version}-{expected}.png"));
+        let mut args = json!({"serial":"contract-device","output_path":out});
+        if let Some(flag) = inline {
+            args["include_image"] = json!(flag);
+        }
+        let result = c.result(
+            "tools/call",
+            json!({"name":"arb_screenshot","arguments":args}),
+        );
+        let image = result["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "image");
+        assert_eq!(image, expected);
+        c.check_tool("arb_screenshot", result);
+        assert!(out.is_file());
+    }
     fs::remove_file(adb_dir.join("devices")).unwrap();
-    c.tool("arb_timeline_overview", target.clone());
+    let overview = c.tool("arb_timeline_overview", target.clone());
+    assert!(overview["logcat_completeness"].is_object());
     c.tool(
         "arb_query_logs",
         json!({"bundle_id":id,"level":"eRrOr","whole_word":true,"keyword":"failed","limit":1}),
@@ -506,13 +580,37 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         "arb_export_frame_png",
         json!({"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}),
     );
+    let collision=c.result("tools/call",json!({"name":"arb_export_frame_png","arguments":{"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}}));
+    assert_eq!(collision["structuredContent"]["rpc_code"], -32002);
+    let reversed=c.result("tools/call",json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"contact_sheet","start_frame":12,"end_frame":4}}));
+    assert_eq!(reversed["structuredContent"]["rpc_code"], -32602);
     resources_and_prompts(&mut c, id);
-    c.tool("arb_trash_bundle", target.clone());
+    let trashed = c.tool("arb_trash_bundle", target.clone());
+    assert_eq!(trashed["frame_count"], 18);
+    assert!(trashed.get("created_utc").is_none());
+    let duplicate = c.result(
+        "tools/call",
+        json!({"name":"arb_trash_bundle","arguments":target}),
+    );
+    assert_eq!(
+        duplicate["structuredContent"]["error_code"],
+        "ALREADY_TRASHED"
+    );
+    assert_eq!(duplicate["structuredContent"]["retryable"], false);
     c.tool(
         "arb_gc_bundles",
         json!({"dry_run":true,"ignore_grace":true}),
     );
-    c.tool("arb_restore_bundle", target.clone());
+    let restored = c.tool("arb_restore_bundle", target.clone());
+    assert_eq!(restored["frame_count"], trashed["frame_count"]);
+    let duplicate = c.result(
+        "tools/call",
+        json!({"name":"arb_restore_bundle","arguments":target}),
+    );
+    assert_eq!(
+        duplicate["structuredContent"]["error_code"],
+        "ALREADY_ACTIVE"
+    );
     c.tool("arb_forget_bundle", target);
     tasks(&mut c);
     assert_eq!(c.covered, c.schemas.keys().cloned().collect());
@@ -526,6 +624,25 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
 
 fn tasks(c: &mut Client) {
     c.result("logging/setLevel", json!({"level":"info"}));
+    for method in ["tasks/get", "tasks/result", "tasks/cancel"] {
+        for (params, message) in [
+            (json!({}), "必須"),
+            (json!({"taskId":123}), "文字列"),
+            (json!({"taskId":"absent"}), "期限切れ"),
+        ] {
+            let reply = c.request(method, params);
+            assert_eq!(reply["error"]["code"], -32602);
+            assert!(
+                reply["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+        }
+    }
+    let unsupported = c.request("tools/call", json!({"name":"arb_status","task":{}}));
+    assert_eq!(unsupported["error"]["code"], -32602);
+    c.events.clear();
     let call = json!({"name":"arb_save_and_inspect","arguments":{"logs_only":true,"memo":"調査"},"task":{"ttl":60000},"_meta":{"progressToken":"save"}});
     let task = c.result("tools/call", call)["task"].clone();
     assert_eq!(task["status"], "working");
@@ -556,7 +673,7 @@ fn tasks(c: &mut Client) {
     }
     assert!(progress >= 6);
     assert!(
-        c.events
+        !c.events
             .iter()
             .any(|n| n["method"] == "notifications/message")
     );
