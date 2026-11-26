@@ -94,7 +94,7 @@ enum class StudioRightTab {
 class ArbStudioController(
     private val onScrub: (frameIndex: Long) -> Unit,
     private val onSeekExact: (frameIndex: Long) -> Unit,
-    private val onTrimExport: (inFrameIndex: Long, outFrameIndex: Long) -> Unit,
+    private val onTrimExport: (inFrameIndex: Long, outFrameIndex: Long) -> Unit = { _, _ -> },
     private val onPngExport: (frameIndex: Long, outputPath: Path) -> Unit,
     private val onRangeChanged: (inFrameIndex: Long, outFrameIndex: Long, playhead: Long) -> Unit = { _, _, _ -> },
     private val onPlayPauseToggle: () -> Unit = {},

@@ -19,6 +19,7 @@ pub mod protocol;
 pub mod screenshot;
 pub mod time_util;
 mod touch_calibration;
+mod trim_range;
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
@@ -517,6 +518,24 @@ impl DaemonState {
         )))
     }
 
+    fn handle_system_hello(&self) -> Result<Value, DaemonError> {
+        Ok(serde_json::to_value(SystemHelloResponse {
+            protocol_version: IPC_PROTOCOL_VERSION,
+            gc_dry_run: true,
+            standalone_share_trim: true,
+            realtime_trim: true,
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            pid: std::process::id(),
+            data_dir: self.paths.data_dir.clone(),
+            cache_dir: self.paths.cache_dir.clone(),
+            runtime_dir: self.paths.runtime_dir.clone(),
+            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            build_id: self.build_id.clone(),
+            binary_mtime_secs: self.binary_mtime_secs,
+            parent_bound: self.parent_bound,
+        })?)
+    }
+
     fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, DaemonError> {
         if !params.is_null() && !params.is_object() {
             return Err(DaemonError::InvalidParams(
@@ -558,20 +577,7 @@ impl DaemonState {
             )));
         }
         match method {
-            "system.hello" => Ok(serde_json::to_value(SystemHelloResponse {
-                protocol_version: IPC_PROTOCOL_VERSION,
-                gc_dry_run: true,
-                standalone_share_trim: true,
-                schema_version: BUNDLE_SCHEMA_VERSION,
-                pid: std::process::id(),
-                data_dir: self.paths.data_dir.clone(),
-                cache_dir: self.paths.cache_dir.clone(),
-                runtime_dir: self.paths.runtime_dir.clone(),
-                daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-                build_id: self.build_id.clone(),
-                binary_mtime_secs: self.binary_mtime_secs,
-                parent_bound: self.parent_bound,
-            })?),
+            "system.hello" => self.handle_system_hello(),
             "system.status" => self.handle_system_status(),
             "system.shutdown" => Ok(json!({ "ok": true })),
             "config.get" => self.handle_config_get(),
@@ -1584,6 +1590,8 @@ impl DaemonState {
                 session_id: s.session_id,
                 bundle_id: s.bundle_id,
                 in_frame_index: s.in_frame_index,
+                in_time_ns: s.in_time_ns,
+                out_time_ns: s.out_time_ns,
                 out_frame_index: s.out_frame_index,
                 playhead_frame_index: s.playhead_frame_index,
                 av_offset_override_ms: s.av_offset_override_ms,
@@ -1593,12 +1601,25 @@ impl DaemonState {
     }
 
     fn handle_edit_update_session(&self, params: Value) -> Result<Value, DaemonError> {
-        let parsed: EditUpdateSessionParams = parse_params(params)?;
+        let mut parsed: EditUpdateSessionParams = parse_params(params)?;
+        if let Some(times) = trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)? {
+            let (path, _) = self.resolve_bundle_path(&parsed.bundle_id)?;
+            let reader = arb_storage::bundle_io::open_bundle(path)?;
+            let video = reader.video_path().ok_or_else(|| {
+                DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into())
+            })?;
+            let track = arb_media::mp4::Mp4VideoTrack::open(video)?;
+            let range = trim_range::TrimRange::resolve(&track, (None, None), Some(times))?;
+            parsed.in_frame_index = Some(range.first);
+            parsed.out_frame_index = Some(range.last);
+        }
         let now_utc = utc_now_iso8601();
         let session = EditSession {
             session_id: parsed.session_id,
             bundle_id: parsed.bundle_id,
             in_frame_index: parsed.in_frame_index,
+            in_time_ns: parsed.in_time_ns,
+            out_time_ns: parsed.out_time_ns,
             out_frame_index: parsed.out_frame_index,
             playhead_frame_index: parsed.playhead_frame_index,
             av_offset_override_ms: parsed.av_offset_override_ms,
@@ -1610,6 +1631,8 @@ impl DaemonState {
                 session_id: session.session_id,
                 bundle_id: session.bundle_id,
                 in_frame_index: session.in_frame_index,
+                in_time_ns: session.in_time_ns,
+                out_time_ns: session.out_time_ns,
                 out_frame_index: session.out_frame_index,
                 playhead_frame_index: session.playhead_frame_index,
                 av_offset_override_ms: session.av_offset_override_ms,
@@ -1638,6 +1661,7 @@ impl DaemonState {
 
     fn handle_export_trim(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportTrimParams = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let dest_parent = self.resolve_output_dir(
@@ -1688,6 +1712,7 @@ impl DaemonState {
 
     fn handle_export_share_mp4(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: ExportShareMp4Params = parse_params(params)?;
+        trim_range::time_pair(parsed.in_time_ns, parsed.out_time_ns)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 

@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS pending_staging (
 CREATE TABLE IF NOT EXISTS edit_sessions (
   session_id TEXT PRIMARY KEY,
   bundle_id TEXT NOT NULL REFERENCES bundles(bundle_id),
+  in_time_ns INTEGER,
+  out_time_ns INTEGER,
   in_frame_index INTEGER,
   out_frame_index INTEGER,
   playhead_frame_index INTEGER,
@@ -228,6 +230,10 @@ pub struct CatalogSaveJob {
 /// Non-destructive editor state stored outside immutable Zone-2 bundles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditSession {
+    /// Inclusive start on the bundle media clock.
+    pub in_time_ns: Option<u64>,
+    /// Exclusive end on the bundle media clock.
+    pub out_time_ns: Option<u64>,
     /// Unique edit session identifier.
     pub session_id: String,
     /// Referenced immutable bundle identifier.
@@ -465,13 +471,14 @@ impl Catalog {
         let canonical_root =
             fs::canonicalize(managed_root).unwrap_or_else(|_| normalize_lexical(managed_root));
 
-        let conn = Connection::open(db_path)
+        let mut conn = Connection::open(db_path)
             .map_err(|source| StorageError::sqlite("open_catalog_db", source))?;
         conn.execute_batch(CATALOG_PRAGMAS)
             .map_err(|source| StorageError::sqlite("configure_catalog_pragmas", source))?;
         conn.execute_batch(CATALOG_DDL)
             .map_err(|source| StorageError::sqlite("create_catalog_schema", source))?;
         ensure_save_jobs_trigger_column(&conn)?;
+        migrate_edit_times(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -2044,6 +2051,17 @@ impl Catalog {
             });
         }
 
+        match (session.in_time_ns, session.out_time_ns) {
+            (None, None) => {}
+            (Some(start), Some(end)) if start < end => {}
+            _ => {
+                return Err(StorageError::InvalidArgument {
+                    name: "in_time_ns",
+                    reason: "expected a nonempty half-open time range".into(),
+                });
+            }
+        }
+
         let in_frame = opt_u64_to_i64(session.in_frame_index, "in_frame_index")?;
         let out_frame = opt_u64_to_i64(session.out_frame_index, "out_frame_index")?;
         let playhead = opt_u64_to_i64(session.playhead_frame_index, "playhead_frame_index")?;
@@ -2058,10 +2076,12 @@ impl Catalog {
         conn.execute(
             "INSERT INTO edit_sessions (
                 session_id, bundle_id, in_frame_index, out_frame_index,
-                playhead_frame_index, av_offset_override_ms, updated_at_utc
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                playhead_frame_index, av_offset_override_ms, updated_at_utc, in_time_ns, out_time_ns
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(session_id) DO UPDATE SET
                 bundle_id = excluded.bundle_id,
+                in_time_ns = excluded.in_time_ns,
+                out_time_ns = excluded.out_time_ns,
                 in_frame_index = excluded.in_frame_index,
                 out_frame_index = excluded.out_frame_index,
                 playhead_frame_index = excluded.playhead_frame_index,
@@ -2075,6 +2095,8 @@ impl Catalog {
                 playhead,
                 session.av_offset_override_ms,
                 session.updated_at_utc,
+                opt_u64_to_i64(session.in_time_ns, "in_time_ns")?,
+                opt_u64_to_i64(session.out_time_ns, "out_time_ns")?,
             ],
         )
         .map_err(|source| StorageError::sqlite("upsert_edit_session", source))?;
@@ -2091,7 +2113,7 @@ impl Catalog {
         let raw = conn
             .query_row(
                 "SELECT session_id, bundle_id, in_frame_index, out_frame_index,
-                        playhead_frame_index, av_offset_override_ms, updated_at_utc
+                        playhead_frame_index, av_offset_override_ms, updated_at_utc, in_time_ns, out_time_ns
                  FROM edit_sessions
                  WHERE session_id = ?1",
                 params![session_id],
@@ -2104,6 +2126,8 @@ impl Catalog {
                         playhead_frame_index: row.get(4)?,
                         av_offset_override_ms: row.get(5)?,
                         updated_at_utc: row.get(6)?,
+                        in_time_ns: row.get(7)?,
+                        out_time_ns: row.get(8)?,
                     })
                 },
             )
@@ -2582,6 +2606,8 @@ fn fetch_interrupted_save_jobs(conn: &Connection) -> Result<Vec<CatalogSaveJob>,
 }
 
 struct RawEditSessionRow {
+    in_time_ns: Option<i64>,
+    out_time_ns: Option<i64>,
     session_id: String,
     bundle_id: String,
     in_frame_index: Option<i64>,
@@ -2593,6 +2619,8 @@ struct RawEditSessionRow {
 
 fn decode_edit_session_row(raw: RawEditSessionRow) -> Result<EditSession, StorageError> {
     Ok(EditSession {
+        in_time_ns: opt_i64_to_u64(raw.in_time_ns, "in_time_ns")?,
+        out_time_ns: opt_i64_to_u64(raw.out_time_ns, "out_time_ns")?,
         session_id: raw.session_id,
         bundle_id: raw.bundle_id,
         in_frame_index: opt_i64_to_u64(raw.in_frame_index, "in_frame_index")?,
@@ -2742,6 +2770,24 @@ fn parse_bundle_state(value: &str) -> Result<BundleLifecycleState, StorageError>
     }
 }
 
+fn migrate_edit_times(conn: &mut Connection) -> Result<(), StorageError> {
+    let mut migrate = || -> rusqlite::Result<()> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('edit_sessions') WHERE name='in_time_ns')",
+            [], |row| row.get(0),
+        )?;
+        if !exists {
+            tx.execute_batch(
+                "ALTER TABLE edit_sessions ADD COLUMN in_time_ns INTEGER;
+                              ALTER TABLE edit_sessions ADD COLUMN out_time_ns INTEGER;",
+            )?;
+        }
+        tx.commit()
+    };
+    migrate().map_err(|e| StorageError::sqlite("migrate_edit_times", e))
+}
+
 fn ensure_save_jobs_trigger_column(conn: &Connection) -> Result<(), StorageError> {
     let mut stmt = conn
         .prepare("PRAGMA table_info(save_jobs)")
@@ -2842,6 +2888,32 @@ mod tests {
     use super::{Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry};
 
     #[test]
+    fn migrates_frame_only_edit_session_without_changing_its_bounds() {
+        let tmp = TempDir::new().expect("tempdir");
+        let db = tmp.path().join("catalog.sqlite");
+        let old = rusqlite::Connection::open(&db).expect("create legacy database");
+        old.execute_batch(
+            "CREATE TABLE edit_sessions (
+            session_id TEXT PRIMARY KEY, bundle_id TEXT NOT NULL, in_frame_index INTEGER,
+            out_frame_index INTEGER, playhead_frame_index INTEGER, av_offset_override_ms INTEGER,
+            updated_at_utc TEXT NOT NULL
+        ); INSERT INTO edit_sessions VALUES ('edit', 'source', 2, 5, 3, NULL, 'now');",
+        )
+        .expect("seed frame-only table");
+        drop(old);
+        let catalog = Catalog::open(&db, tmp.path().join("bundles")).expect("upgrade");
+        let session = catalog
+            .get_edit_session("edit")
+            .expect("read")
+            .expect("session");
+        assert_eq!((session.in_time_ns, session.out_time_ns), (None, None));
+        assert_eq!(
+            (session.in_frame_index, session.out_frame_index),
+            (Some(2), Some(5))
+        );
+    }
+
+    #[test]
     fn edit_sessions_and_save_job_lifecycle_persist_in_wal_catalog() {
         let tmp = TempDir::new().expect("temp dir must be created");
         let managed_root = tmp.path().join("bundles");
@@ -2861,6 +2933,8 @@ mod tests {
             .expect("register_bundle must succeed");
 
         let session = EditSession {
+            in_time_ns: None,
+            out_time_ns: None,
             session_id: "ed-1".to_owned(),
             bundle_id: "b-1".to_owned(),
             in_frame_index: Some(10),

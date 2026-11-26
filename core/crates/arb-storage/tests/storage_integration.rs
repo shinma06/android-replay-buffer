@@ -528,6 +528,8 @@ fn register_v2_bundle(catalog: &Catalog, bundle_id: &str, dir: &Path, job_id: &s
 
 fn assert_edit_session_and_leased_trash(catalog: &Catalog, managed_dir: &Path) -> String {
     let edit = EditSession {
+        in_time_ns: None,
+        out_time_ns: None,
         session_id: "edit-1".to_owned(),
         bundle_id: "bundle-managed-1".to_owned(),
         in_frame_index: Some(0),
@@ -2210,6 +2212,8 @@ fn forget_missing_bundles_is_nondestructive_and_enforces_all_guards() {
 
     catalog
         .upsert_edit_session(&EditSession {
+            in_time_ns: None,
+            out_time_ns: None,
             session_id: "sess-missing-ext".to_owned(),
             bundle_id: "b-missing-ext".to_owned(),
             in_frame_index: Some(1),

@@ -194,18 +194,25 @@ pub fn export_share_mp4(
         crate::media_engine::validate_trash_source(reader.as_ref(), source_entry)?;
     }
 
+    let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
     let source_video = reader.video_path().ok_or_else(|| {
+        if times.is_some() {
+            return DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into());
+        }
         DaemonError::NotFound(format!(
             "source bundle `{}` has no video.mp4 track",
             source_catalog_id.unwrap_or(&summary.bundle_id)
         ))
     })?;
     let src_track = Mp4VideoTrack::open(&source_video)?;
-    let requested_trim = resolve_share_trim_range(
-        params.in_frame_index,
-        params.out_frame_index,
-        src_track.frame_count(),
+    let range = crate::trim_range::TrimRange::resolve(
+        &src_track,
+        (params.in_frame_index, params.out_frame_index),
+        times,
     )?;
+    let requested_trim =
+        (range.realtime || range.first != 0 || range.last + 1 != src_track.frame_count())
+            .then_some(range);
 
     // Refuse an existing output before any trimmed WORM bundle is committed, so a doomed
     // export never leaves an orphan trimmed bundle in the catalog.
@@ -224,7 +231,6 @@ pub fn export_share_mp4(
     }
 
     let (av_mux_report, trimmed_bundle) = if params.keep_bundle {
-        let (first, last) = requested_trim.unwrap_or((0, src_track.frame_count() - 1));
         let trim = export_trim(
             ctx,
             source_bundle_dir,
@@ -232,8 +238,10 @@ pub fn export_share_mp4(
             dest_parent,
             &ExportTrimParams {
                 bundle_id_or_path: params.bundle_id.clone(),
-                in_frame_index: first,
-                out_frame_index: last,
+                in_frame_index: Some(range.first),
+                out_frame_index: Some(range.last),
+                in_time_ns: params.in_time_ns,
+                out_time_ns: params.out_time_ns,
                 dest_dir: params.dest_dir.clone(),
                 holder_pid: params.holder_pid,
                 burn_taps: params.burn_taps,
@@ -272,6 +280,8 @@ pub fn export_share_mp4(
     );
 
     Ok(ExportShareMp4Response {
+        in_time_ns: Some(range.start),
+        out_time_ns: Some(range.end),
         share_mp4_path: share_mp4_path.to_path_buf(),
         trimmed_bundle_id,
         trimmed_bundle_path,
@@ -288,40 +298,31 @@ pub fn export_share_mp4(
 
 use crate::capture::TempFileGuard as TempFileCleanup;
 
-fn resolve_share_trim_range(
-    in_frame_index: Option<u64>,
-    out_frame_index: Option<u64>,
-    src_frame_count: u64,
-) -> Result<Option<(u64, u64)>, DaemonError> {
-    if src_frame_count == 0 {
-        return Err(DaemonError::InvalidParams(
-            "source bundle video track contains 0 frames".to_owned(),
-        ));
-    }
-    match (in_frame_index, out_frame_index) {
-        (Some(in_f), Some(out_f)) => {
-            if in_f > out_f || out_f >= src_frame_count {
-                return Err(MediaError::InvalidFrameRange {
-                    in_frame_index: in_f,
-                    out_frame_index: out_f,
-                    frame_count: src_frame_count,
-                }
-                .into());
+fn share_touch_events(
+    taps: Vec<arb_core::bundle::TapRecord>,
+    window: Option<&arb_core::selection::WindowSpec>,
+    range: Option<crate::trim_range::TrimRange>,
+) -> Vec<BurnInTouchEvent> {
+    taps.into_iter()
+        .filter(|tap| window.is_none_or(|w| tap_boot_id(tap) == Some(w.boot_id())))
+        .filter_map(|mut tap| {
+            if let Some(w) = window.filter(|_| range.is_some_and(|r| r.realtime))
+                && (!crate::trim_range::clip_tap(&mut tap, w)
+                    || arb_core::selection::classify_record(&tap, w)
+                        != arb_core::selection::Membership::InRange)
+            {
+                return None;
             }
-            Ok((in_f > 0 || out_f + 1 < src_frame_count).then_some((in_f, out_f)))
-        }
-        (None, None) => Ok(None),
-        _ => Err(DaemonError::InvalidParams(
-            "開始と終了のフレーム番号を両方指定してください".into(),
-        )),
-    }
+            BurnInTouchEvent::from_tap_record(&tap)
+        })
+        .collect()
 }
 
 fn mux_selected_media(
     ctx: &ExportContext<'_>,
     reader: &dyn BundleReader,
     source: &Path,
-    range: Option<(u64, u64)>,
+    range: Option<crate::trim_range::TrimRange>,
     params: &ExportShareMp4Params,
     output: &Path,
 ) -> Result<arb_media::AvMuxReport, DaemonError> {
@@ -338,38 +339,53 @@ fn mux_selected_media(
         let guard = TempFileCleanup(tmp.join(format!("{job}.mp4")));
         let frames = reader.frames()?;
         let window = range
-            .map(|(first, last)| {
-                arb_core::selection::WindowSpec::from_frame_indices(&frames, first, last)
-            })
+            .filter(|r| !r.realtime || !taps.is_empty())
+            .map(|r| r.window(&frames))
             .transpose()?;
-        let events = taps
-            .iter()
-            .filter(|tap| {
-                window
-                    .as_ref()
-                    .is_none_or(|w| tap_boot_id(tap) == Some(w.boot_id()))
-            })
-            .filter_map(BurnInTouchEvent::from_tap_record)
-            .collect::<Vec<_>>();
-        let (first, last) = match range {
-            Some(bounds) => bounds,
-            None => (0, Mp4VideoTrack::open(source)?.frame_count() - 1),
+        let mut events = share_touch_events(taps, window.as_ref(), range);
+        let geometry = BurnInDisplayGeometry {
+            display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
+            display_height: summary
+                .streams
+                .video
+                .as_ref()
+                .and_then(|v| v.display_height),
         };
-        if events.is_empty() {
-            arb_media::trim::trim_video(source, &guard.0, first, last, ctx.backend)?;
+        if let Some(r) = range.filter(|r| r.realtime) {
+            if events.is_empty() {
+                r.trim_video(source, &guard.0, ctx.backend)?;
+            } else {
+                let cut = TempFileCleanup(tmp.join(format!("{job}-cut.mp4")));
+                r.trim_video(source, &cut.0, ctx.backend)?;
+                let window = window
+                    .as_ref()
+                    .ok_or_else(|| DaemonError::Internal("missing trim window".into()))?;
+                let clock = arb_core::bundle::FrameMediaClock::new(
+                    &frames,
+                    window.boot_id(),
+                    window.start_boottime_ns(),
+                );
+                for event in &mut events {
+                    event.rebase_on_clock(&clock);
+                }
+                arb_media::burn_in::burn_in_taps_time_range(
+                    &cut.0,
+                    &guard.0,
+                    &r.sample_boundaries(&Mp4VideoTrack::open(source)?)?,
+                    &events,
+                    geometry,
+                    ctx.backend,
+                )?;
+            }
         } else {
+            let (first, last) = range.map_or_else(
+                || Ok::<_, DaemonError>((0, Mp4VideoTrack::open(source)?.frame_count() - 1)),
+                |r| Ok((r.first, r.last)),
+            )?;
             let timestamps = frames
                 .iter()
                 .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
                 .collect::<Vec<_>>();
-            let geometry = BurnInDisplayGeometry {
-                display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
-                display_height: summary
-                    .streams
-                    .video
-                    .as_ref()
-                    .and_then(|v| v.display_height),
-            };
             burn_in_taps_video(
                 source,
                 &guard.0,
@@ -387,7 +403,7 @@ fn mux_selected_media(
     };
     let selected = video_guard.as_ref().map_or(source, |g| g.0.as_path());
     let audio = range
-        .map(|bounds| crate::media_engine::trim_source_audio(reader, source, bounds, &tmp, &job))
+        .map(|bounds| crate::media_engine::trim_source_audio(reader, bounds, &tmp, &job))
         .transpose()?
         .flatten();
     let (audio_path, offset) = match range {

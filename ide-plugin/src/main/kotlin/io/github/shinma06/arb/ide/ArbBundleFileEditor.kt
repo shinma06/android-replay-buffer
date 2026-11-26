@@ -44,6 +44,7 @@ import io.github.shinma06.arb.state.TrimCloseState
 import io.github.shinma06.arb.ui.ArbStudioContent
 import io.github.shinma06.arb.ui.ArbStudioController
 import io.github.shinma06.arb.ui.LatestValueMailbox
+import io.github.shinma06.arb.ui.StudioTrimRange
 import io.github.shinma06.arb.ui.StudioExportFormat
 import org.jetbrains.jewel.bridge.JewelComposePanel
 import java.awt.BorderLayout
@@ -141,14 +142,13 @@ class ArbBundleFileEditor internal constructor(
         onTimeSeek = { time, settled -> performTimeSeek(time, settled) },
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
-        onTrimExport = { inFrame, outFrame -> performExport(inFrame, outFrame, StudioExportFormat.SHARE_MP4) },
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onTrimPreviewFrame = ::requestTrimPreview,
         onTrimPreviewEnded = ::endTrimPreview,
         onTimeRangeChanged = { range, playhead ->
             trimCloseState.onRangeAdjusted(range.inTimeNs, range.outTimeNs)
-            submitWork { currentPlaybackController()?.setStudioRange(range.inFrameIndex..range.outFrameIndex) }
-            persistEditSession(range.inFrameIndex, range.outFrameIndex, playhead)
+            currentPlaybackController()?.setStudioRange(range.inTimeNs, range.outTimeNs)
+            persistEditSession(range, playhead)
         },
         onPlayPauseToggle = {
             submitWork {
@@ -208,7 +208,7 @@ class ArbBundleFileEditor internal constructor(
             }
         },
         onTimeRangeExport = { range, format ->
-            performExport(range.inFrameIndex, range.outFrameIndex, format)
+            performExport(range, format)
         },
         onChoosePngOutputPath = { bundleId, frameIndex, onChosen ->
             // Default the native IntelliJ save dialog to the same screenshot destination as the
@@ -461,7 +461,14 @@ class ArbBundleFileEditor internal constructor(
                     }
                 }
 
-                initialState = TimelineViewerReducer.setRange(initialState, initialState.axis.start(initialIn), initialState.axis.outTime(initialOut))
+                val savedStart = existingSession?.inTimeNs
+                val savedEnd = existingSession?.outTimeNs
+                initialState = if (savedStart != null && savedEnd != null && savedStart >= 0 && savedStart < savedEnd && savedEnd <= initialState.axis.endNs) {
+                    initialState.copy(inTimeNs = savedStart, outTimeNs = savedEnd)
+                } else {
+                    TimelineViewerReducer.setRange(initialState, initialState.axis.start(initialIn), initialState.axis.outTime(initialOut))
+                }
+                activeCtrl?.setStudioRange(initialState.inTimeNs, initialState.outTimeNs)
                 trimCloseState.initializeTimeRange(initialState.axis.endNs, initialState.inTimeNs, initialState.outTimeNs)
                 publishEdt {
                     if (!disposed) {
@@ -907,8 +914,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     private fun performExport(
-        inFrameIndex: Long,
-        outFrameIndex: Long,
+        range: StudioTrimRange,
         format: StudioExportFormat,
     ) {
         val current = viewerState ?: return
@@ -925,8 +931,10 @@ class ArbBundleFileEditor internal constructor(
                     it.exportTrim(
                         ExportTrimParams(
                             bundleIdOrPath = current.bundleId,
-                            inFrameIndex = inFrameIndex,
-                            outFrameIndex = outFrameIndex,
+                            inFrameIndex = range.inFrameIndex,
+                            outFrameIndex = range.outFrameIndex,
+                            inTimeNs = range.inTimeNs,
+                            outTimeNs = range.outTimeNs,
                             burnTaps = burnTapsEnabled,
                             includeShareMp4 = includeShareMp4,
                             trashOriginal = shouldTrashOriginal,
@@ -934,7 +942,7 @@ class ArbBundleFileEditor internal constructor(
                         ),
                     )
                 }
-                trimCloseState.markExported(current.inTimeNs, current.outTimeNs)
+                trimCloseState.markExported(range.inTimeNs, range.outTimeNs)
                 daemonService.notifyCatalogChanged()
 
                 val shareName = res.shareMp4Path
@@ -964,14 +972,14 @@ class ArbBundleFileEditor internal constructor(
                 publishEdt {
                     if (!disposed) studioController.setExporting(false)
                 }
-                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                updateViewerState { it.copy(exportCompletion = completion, lastActionMessage = completion.summaryText) }
                 ArbNotifications.notifyExportCompleted(
                     project = project,
                     daemonService = daemonService,
-                    summaryText = summaryText,
-                    outputPath = res.bundlePath,
-                    trimmedBundleId = res.bundleId,
-                    originalTrashedBundleId = trashedBundleId,
+                    summaryText = completion.summaryText,
+                    outputPath = completion.outputPath,
+                    trimmedBundleId = completion.bundleId,
+                    originalTrashedBundleId = completion.originalTrashedBundleId,
                 )
             } catch (t: Throwable) {
                 logger.warn("ARB export failed (format=$format)", t)
@@ -1027,7 +1035,7 @@ class ArbBundleFileEditor internal constructor(
     }
 
     /** The newest IN/OUT/playhead the user chose; stays set until `edit.update_session` accepted it. */
-    private class PendingEdit(val revision: Long, val bundleId: String, val inFrame: Long, val outFrame: Long, val playhead: Long)
+    private class PendingEdit(val revision: Long, val bundleId: String, val range: StudioTrimRange, val playhead: Long)
 
     private val editPersistLock = Any()
     private var pendingEdit: PendingEdit? = null
@@ -1037,11 +1045,11 @@ class ArbBundleFileEditor internal constructor(
         var lastSubmitted = 0L
     }
 
-    private fun persistEditSession(inFrame: Long, outFrame: Long, playhead: Long) {
+    private fun persistEditSession(range: StudioTrimRange, playhead: Long) {
         val current = viewerState ?: return
         val session = editSession ?: return
         synchronized(editPersistLock) {
-            pendingEdit = PendingEdit(session.revision.incrementAndGet(), current.bundleId, inFrame, outFrame, playhead)
+            pendingEdit = PendingEdit(session.revision.incrementAndGet(), current.bundleId, range, playhead)
         }
         flushEditSessionAsync()
     }
@@ -1087,8 +1095,10 @@ class ArbBundleFileEditor internal constructor(
                         EditUpdateSessionParams(
                             sessionId = session.id,
                             bundleId = edit.bundleId,
-                            inFrameIndex = edit.inFrame,
-                            outFrameIndex = edit.outFrame,
+                            inFrameIndex = edit.range.inFrameIndex,
+                            outFrameIndex = edit.range.outFrameIndex,
+                            inTimeNs = edit.range.inTimeNs,
+                            outTimeNs = edit.range.outTimeNs,
                             playheadFrameIndex = edit.playhead,
                         ),
                     )

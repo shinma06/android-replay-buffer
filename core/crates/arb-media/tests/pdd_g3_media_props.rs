@@ -340,6 +340,12 @@ fn complete_90khz_clock_range_can_be_trimmed_again_at_reported_end() {
     mux_raw_h264_to_mp4(&src, 64, 48, 90_000, 3_000, &packets).unwrap();
     let trim =
         |src, dst, end| arb_media::trim::trim_video_time_range(src, dst, 0, end, &backend).unwrap();
+    let input = Mp4VideoTrack::open(&src).unwrap();
+    assert_eq!(input.frame(2).unwrap().pts_ns, 66_666_666);
+    assert_eq!(
+        input.last_presentation_duration_ns().unwrap(),
+        Some(33_333_334)
+    );
     let report = trim(&src, &first, 100_000_000);
     assert_eq!(report.output_duration_ns, Some(100_000_000));
     let repeated = trim(&first, &second, report.output_duration_ns.unwrap());

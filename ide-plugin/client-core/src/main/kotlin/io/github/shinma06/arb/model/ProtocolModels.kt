@@ -56,6 +56,7 @@ data class SystemHelloResponse(
      */
     val parentBound: Boolean = false,
     val standaloneShareTrim: Boolean = false,
+    val realtimeTrim: Boolean = false,
 )
 
 enum class AudioCaptureMode(val wire: String, val minApi: Int) {
@@ -1031,6 +1032,8 @@ data class EditSessionView(
     val playheadFrameIndex: Long? = null,
     val avOffsetOverrideMs: Long? = null,
     val updatedAtUtc: String,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class EditSessionEnvelope(
@@ -1044,19 +1047,23 @@ data class EditUpdateSessionParams(
     val outFrameIndex: Long? = null,
     val playheadFrameIndex: Long? = null,
     val avOffsetOverrideMs: Long? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 // ---------------- Export (Trim & PNG) ----------------
 
 data class ExportTrimParams(
     val bundleIdOrPath: String,
-    val inFrameIndex: Long,
-    val outFrameIndex: Long,
+    val inFrameIndex: Long? = null,
+    val outFrameIndex: Long? = null,
     val destDir: String? = null,
     val holderPid: Long? = null,
     val burnTaps: Boolean = false,
     val includeShareMp4: Boolean = false,
     val trashOriginal: Boolean = false,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class TrimReport(
@@ -1085,6 +1092,8 @@ data class ExportTrimResponse(
     val originalTrashed: Boolean = false,
     val burnTapsApplied: Boolean = false,
     val warning: String? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 // T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
@@ -1098,6 +1107,8 @@ data class ExportShareMp4Params(
     val destDir: String? = null,
     val holderPid: Long? = null,
     val keepBundle: Boolean = false,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class ExportShareMp4Response(
@@ -1111,6 +1122,8 @@ data class ExportShareMp4Response(
     val outputBytes: Long = 0L,
     val originalTrashed: Boolean = false,
     val warning: String? = null,
+    val inTimeNs: Long? = null,
+    val outTimeNs: Long? = null,
 )
 
 data class MediaDecodeAudioPcmParams(

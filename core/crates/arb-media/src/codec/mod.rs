@@ -474,6 +474,17 @@ impl std::fmt::Debug for dyn SequentialDecoder {
     }
 }
 
+/// An output sample displaying a source picture for the given number of output ticks.
+#[derive(Clone, Copy, Debug)]
+pub struct OverlaySample {
+    /// Input picture to decode. Multiple output samples may share a picture.
+    pub source: u64,
+    /// Index supplied to the painter.
+    pub index: u64,
+    /// Positive duration on the output clock.
+    pub ticks: u32,
+}
+
 /// GPL-free H.264 video decode and head-GOP re-encode backend abstraction.
 pub trait VideoCodecBackend: Debug + Send + Sync {
     /// Returns a stable human-readable identifier for this codec backend.
@@ -564,6 +575,51 @@ pub trait VideoCodecBackend: Debug + Send + Sync {
         track: &Mp4VideoTrack,
         start_frame: u64,
         end_frame_exclusive: u64,
+        params: EncodeParams,
+        keyframe_interval: u64,
+        has_overlay: &dyn Fn(u64) -> bool,
+        apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
+    ) -> Result<EncodedGop, MediaError> {
+        if start_frame >= end_frame_exclusive || end_frame_exclusive > track.frame_count() {
+            return Err(MediaError::InvalidFrameRange {
+                in_frame_index: start_frame,
+                out_frame_index: end_frame_exclusive.saturating_sub(1),
+                frame_count: track.frame_count(),
+            });
+        }
+        let samples = (start_frame..end_frame_exclusive)
+            .map(|i| {
+                Ok(OverlaySample {
+                    source: i,
+                    index: i,
+                    ticks: track.frame(i)?.duration_ticks,
+                })
+            })
+            .collect::<Result<Vec<_>, MediaError>>()?;
+        self.reencode_overlay_samples(
+            track,
+            &samples,
+            track.timescale(),
+            params,
+            keyframe_interval,
+            has_overlay,
+            apply_overlay,
+        )
+    }
+
+    /// Encodes a presentation schedule, decoding each source picture once.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid schedule, unreadable samples or a codec failure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit schedule, clock, and overlay callbacks"
+    )]
+    fn reencode_overlay_samples(
+        &self,
+        track: &Mp4VideoTrack,
+        schedule: &[OverlaySample],
+        timescale: u32,
         params: EncodeParams,
         keyframe_interval: u64,
         has_overlay: &dyn Fn(u64) -> bool,

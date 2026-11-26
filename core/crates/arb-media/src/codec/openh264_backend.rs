@@ -548,27 +548,25 @@ impl VideoCodecBackend for OpenH264Backend {
         clippy::too_many_lines,
         reason = "streaming frame-by-frame decode, overlay paint, and H.264 re-encode loop"
     )]
-    fn reencode_frame_range_with_overlay(
+    fn reencode_overlay_samples(
         &self,
         track: &Mp4VideoTrack,
-        start_frame: u64,
-        end_frame_exclusive: u64,
+        schedule: &[super::OverlaySample],
+        _timescale: u32,
         params: EncodeParams,
         keyframe_interval: u64,
         has_overlay: &dyn Fn(u64) -> bool,
         apply_overlay: &mut dyn FnMut(u64, &mut MutableYuvFrame<'_>),
     ) -> Result<EncodedGop, MediaError> {
-        let frame_count = track.frame_count();
-        if start_frame >= end_frame_exclusive || end_frame_exclusive > frame_count {
-            return Err(MediaError::InvalidFrameRange {
-                in_frame_index: start_frame,
-                out_frame_index: end_frame_exclusive.saturating_sub(1),
-                frame_count,
-            });
-        }
+        let start_frame = schedule
+            .first()
+            .ok_or_else(|| MediaError::InvalidArgument("empty overlay schedule".into()))?
+            .source;
+        let end_frame_exclusive = schedule.last().map_or(0, |s| s.source.saturating_add(1));
+        let mut pending = schedule.iter().peekable();
         let interval = keyframe_interval.max(1);
         let end_inclusive = end_frame_exclusive - 1;
-        let expected_encoded = usize::try_from(end_frame_exclusive - start_frame).unwrap_or(0);
+        let expected_encoded = schedule.len();
 
         let mut enc = make_encoder(params)?;
         let mut seq_param_set: Option<Vec<u8>> = None;
@@ -578,7 +576,7 @@ impl VideoCodecBackend for OpenH264Backend {
         let mut decoded_frames = 0u64;
 
         let gop_start = track.decodable_gop_start(start_frame)?;
-        visit_range_yuv420p(track, gop_start, end_inclusive, gop_start, |mut frame| {
+        visit_range_yuv420p(track, gop_start, end_inclusive, gop_start, |frame| {
             decoded_frames += 1;
             let frame_idx = frame.frame_index;
             if frame_idx < start_frame {
@@ -590,67 +588,70 @@ impl VideoCodecBackend for OpenH264Backend {
                 .map_err(|_| MediaError::Codec("frame height exceeds usize".to_owned()))?;
             require_even_encode_dims(width, height)?;
 
-            if has_overlay(frame_idx) {
-                let y_len = width.saturating_mul(height);
-                let cw = width.div_ceil(2);
-                let ch = height.div_ceil(2);
-                let uv_len = cw.saturating_mul(ch);
-                if frame.yuv420p.len() >= y_len + uv_len * 2 {
-                    let (y_slice, uv_rest) = frame.yuv420p.split_at_mut(y_len);
-                    let (u_slice, v_slice) = uv_rest.split_at_mut(uv_len);
-                    let mut yuv_view = MutableYuvFrame::Yuv420p {
-                        width,
-                        height,
-                        y: y_slice,
-                        u: u_slice,
-                        v: &mut v_slice[..uv_len],
-                        y_stride: width,
-                        u_stride: cw,
-                        v_stride: cw,
-                    };
-                    apply_overlay(frame_idx, &mut yuv_view);
+            while let Some(sample) = pending.next_if(|s| s.source == frame_idx) {
+                let mut pixels = std::borrow::Cow::Borrowed(frame.yuv420p.as_slice());
+                if has_overlay(sample.index) {
+                    let y_len = width.saturating_mul(height);
+                    let cw = width.div_ceil(2);
+                    let ch = height.div_ceil(2);
+                    let uv_len = cw.saturating_mul(ch);
+                    if frame.yuv420p.len() >= y_len + uv_len * 2 {
+                        let (y_slice, uv_rest) = pixels.to_mut().split_at_mut(y_len);
+                        let (u_slice, v_slice) = uv_rest.split_at_mut(uv_len);
+                        let mut yuv_view = MutableYuvFrame::Yuv420p {
+                            width,
+                            height,
+                            y: y_slice,
+                            u: u_slice,
+                            v: &mut v_slice[..uv_len],
+                            y_stride: width,
+                            u_stride: cw,
+                            v_stride: cw,
+                        };
+                        apply_overlay(sample.index, &mut yuv_view);
+                    }
                 }
-            }
 
-            let planes = split_yuv420p_planes(&frame.yuv420p, width, height)?;
-            let rel_idx = frame_idx.saturating_sub(start_frame);
-            if rel_idx % interval == 0 {
-                enc.force_intra_frame();
-            }
+                let planes = split_yuv420p_planes(&pixels, width, height)?;
+                let rel_idx = u64::try_from(samples.len()).unwrap_or(u64::MAX);
+                if rel_idx % interval == 0 {
+                    enc.force_intra_frame();
+                }
 
-            let slices = YUVSlices::new(
-                (planes.y, planes.u, planes.v),
-                (width, height),
-                (width, width / 2, width / 2),
-            );
-            let bs = enc.encode(&slices).map_err(|err| {
-                MediaError::Codec(format!(
-                    "openh264 overlay encode frame {frame_idx}: {err:?}"
-                ))
-            })?;
-            if matches!(bs.frame_type(), FrameType::Skip) {
-                return Err(MediaError::Codec(format!(
-                    "openh264 unexpectedly skipped frame {frame_idx}"
-                )));
-            }
-            let is_idr = matches!(bs.frame_type(), FrameType::IDR | FrameType::I);
-            if frame_idx == start_frame && !is_idr {
-                return Err(MediaError::Codec(format!(
-                    "first overlay-encoded frame {frame_idx} was not IDR: {:?}",
-                    bs.frame_type()
-                )));
-            }
+                let slices = YUVSlices::new(
+                    (planes.y, planes.u, planes.v),
+                    (width, height),
+                    (width, width / 2, width / 2),
+                );
+                let bs = enc.encode(&slices).map_err(|err| {
+                    MediaError::Codec(format!(
+                        "openh264 overlay encode frame {frame_idx}: {err:?}"
+                    ))
+                })?;
+                if matches!(bs.frame_type(), FrameType::Skip) {
+                    return Err(MediaError::Codec(format!(
+                        "openh264 unexpectedly skipped frame {frame_idx}"
+                    )));
+                }
+                let is_idr = matches!(bs.frame_type(), FrameType::IDR | FrameType::I);
+                if samples.is_empty() && !is_idr {
+                    return Err(MediaError::Codec(format!(
+                        "first overlay-encoded frame {frame_idx} was not IDR: {:?}",
+                        bs.frame_type()
+                    )));
+                }
 
-            bs_buf.clear();
-            bs.write_vec(&mut bs_buf);
-            let avcc_data = annexb_to_avcc_sample(&bs_buf, &mut seq_param_set, &mut pic_param_set)?;
-            let duration_ticks = track.frame(frame_idx)?.duration_ticks;
-            samples.push(EncodedSample {
-                frame_index: frame_idx,
-                avcc_data,
-                duration_ticks,
-                is_keyframe: is_idr,
-            });
+                bs_buf.clear();
+                bs.write_vec(&mut bs_buf);
+                let avcc_data =
+                    annexb_to_avcc_sample(&bs_buf, &mut seq_param_set, &mut pic_param_set)?;
+                samples.push(EncodedSample {
+                    frame_index: sample.index,
+                    avcc_data,
+                    duration_ticks: sample.ticks,
+                    is_keyframe: is_idr,
+                });
+            }
             Ok(())
         })?;
 

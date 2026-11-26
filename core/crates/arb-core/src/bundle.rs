@@ -116,6 +116,12 @@ pub enum RequestedWindow {
     },
     /// Exact integer frame range requested during trim.
     TrimFrameRange {
+        /// Optional half-open bounds on the parent media timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_time_ns: Option<u64>,
+        /// Exclusive end on the parent media timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        out_time_ns: Option<u64>,
         /// Inclusive starting frame index.
         in_frame_index: u64,
         /// Inclusive ending frame index.
@@ -311,6 +317,59 @@ pub struct FrameRecord {
     pub mp4_sample_size: u32,
 }
 
+/// Maps device boottime records onto the video's monotonic clock across suspend gaps.
+#[derive(Debug)]
+pub struct FrameMediaClock {
+    anchors: Vec<(i64, i64)>,
+    origin_mono_ns: i64,
+}
+
+impl FrameMediaClock {
+    /// Builds a clock for one boot epoch. Unanchored frames cannot locate an event.
+    #[must_use]
+    pub fn new(frames: &[FrameRecord], boot_id: &str, origin_boot_ns: i64) -> Self {
+        let mut anchors: Vec<_> = frames
+            .iter()
+            .filter(|f| f.boot_id == boot_id)
+            .filter_map(|f| {
+                let boot = match &f.alignment {
+                    TimeAlignment::Anchored { boottime_ns, .. } => *boottime_ns,
+                    TimeAlignment::Bounded {
+                        min_boottime_ns, ..
+                    } => *min_boottime_ns,
+                    _ => return None,
+                };
+                Some((boot, f.pts_device_mono_ns))
+            })
+            .collect();
+        anchors.sort_unstable();
+        let mut clock = Self {
+            anchors,
+            origin_mono_ns: 0,
+        };
+        clock.origin_mono_ns = clock.monotonic_time(origin_boot_ns);
+        clock
+    }
+
+    fn monotonic_time(&self, boot: i64) -> i64 {
+        let next = self.anchors.partition_point(|&(t, _)| t <= boot);
+        let Some(&(bt, mono)) = self.anchors.get(next.saturating_sub(1)) else {
+            return boot;
+        };
+        let projected = mono.saturating_add(boot.saturating_sub(bt));
+        self.anchors
+            .get(next)
+            .map_or(projected, |&(_, limit)| projected.min(limit))
+    }
+
+    /// Media time relative to the cut, excluding elapsed time spent suspended.
+    #[must_use]
+    pub fn relative_time(&self, boot: i64) -> i64 {
+        self.monotonic_time(boot)
+            .saturating_sub(self.origin_mono_ns)
+    }
+}
+
 /// Logcat row in `timeline.sqlite` (`logs` table).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogRecord {
@@ -395,6 +454,9 @@ pub struct TapRecord {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ValidationError {
+    /// The optional trim times are incomplete or empty.
+    #[error("expected both trim times and a positive duration")]
+    InvalidTrimTimes,
     /// `schema_version` was not `2`.
     #[error("unsupported manifest schema_version {found}; expected {BUNDLE_SCHEMA_VERSION}")]
     UnsupportedSchemaVersion {
@@ -541,9 +603,16 @@ impl ManifestV2 {
                 }
             }
             RequestedWindow::TrimFrameRange {
+                in_time_ns,
+                out_time_ns,
                 in_frame_index,
                 out_frame_index,
             } => {
+                if !matches!((in_time_ns, out_time_ns), (None, None))
+                    && !matches!((in_time_ns,out_time_ns),(Some(a),Some(b)) if a<b)
+                {
+                    return Err(ValidationError::InvalidTrimTimes);
+                }
                 if in_frame_index > out_frame_index {
                     return Err(ValidationError::InvalidFrameRange {
                         in_frame_index: *in_frame_index,

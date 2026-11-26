@@ -57,6 +57,55 @@ class ArbStudioControllerOrderingTest {
         return editor to daemon
     }
 
+    @Test
+    fun exactSelectionSurvivesEditorCloseAndBothExports(@TempDir tmp: Path) {
+        val edt = ManualEdt()
+        val (first, daemon) = readyEditor(tmp, edt)
+        val start = 12_345_678L
+        val end = 26_789_012L
+        try {
+            first.studioController.selectRange(start, end)
+        } finally {
+            first.dispose()
+        }
+        awaitTrue { daemon.storedSession.get() != null }
+        val (reopened, _) = readyEditor(tmp, edt, daemon)
+        try {
+            val ctrl = reopened.studioController
+            assertEquals(start, ctrl.viewerState?.inTimeNs)
+            assertEquals(end, ctrl.viewerState?.outTimeNs)
+            assertEquals(start, reopened.playbackControllerForTest()?.state?.inTimeNs)
+            assertEquals(StudioExportFormat.SHARE_MP4, ctrl.selectedExportFormat)
+            ctrl.toggleBurnTapsOnExport(true)
+            for ((index, format) in StudioExportFormat.entries.withIndex()) {
+                val previousCompletion = ctrl.viewerState?.exportCompletion
+                val catalogChangesBefore = daemon.catalogChanges.get()
+                ctrl.selectExportFormat(format)
+                ctrl.triggerExport()
+                awaitTrue {
+                    edt.drain()
+                    !ctrl.isExporting && ctrl.viewerState?.exportCompletion !== previousCompletion
+                }
+                val call = daemon.transport.calls.filter { it.method.startsWith("export.") }[index]
+                assertEquals("export.trim", call.method)
+                val share = format == StudioExportFormat.SHARE_MP4
+                assertEquals(share, call.params["include_share_mp4"].asBoolean)
+                assertEquals(share, call.params["burn_taps"].asBoolean)
+                assertEquals(start, call.params["in_time_ns"].asLong)
+                assertEquals(end, call.params["out_time_ns"].asLong)
+                val result = assertNotNull(ctrl.viewerState?.exportCompletion)
+                assertEquals(catalogChangesBefore + 1, daemon.catalogChanges.get())
+                assertTrue(result.isTrimBundle)
+                assertEquals("trimmed", result.bundleId)
+                assertEquals("/tmp/trimmed", result.outputPath)
+                assertEquals(if (share) "/tmp/trimmed/share-taps.mp4" else null, result.shareMp4Path)
+                assertEquals(share, result.burnTapsApplied)
+            }
+        } finally {
+            reopened.dispose()
+        }
+    }
+
     // ---------------- double export ----------------
 
     @Test

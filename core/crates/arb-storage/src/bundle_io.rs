@@ -573,15 +573,22 @@ impl V2BundleWriter {
             files.push(digest);
         }
 
-        if draft.bundle_kind == BundleKind::LogsOnly {
-            let logs_digest =
-                stage_logs_jsonl(&staging, LOGS_JSONL_FILE, &draft.logs, RecordBucket::Main)?;
+        let clock = trim_clock(draft);
+        if draft.bundle_kind == BundleKind::LogsOnly || clock.is_some() {
+            let logs_digest = stage_logs_jsonl(
+                &staging,
+                LOGS_JSONL_FILE,
+                &draft.logs,
+                RecordBucket::Main,
+                clock.as_ref(),
+            )?;
             files.push(logs_digest);
             let unanchored_digest = stage_logs_jsonl(
                 &staging,
                 UNANCHORED_JSONL_FILE,
                 &draft.logs,
                 RecordBucket::Unanchored,
+                None,
             )?;
             files.push(unanchored_digest);
         }
@@ -646,7 +653,7 @@ impl V2BundleWriter {
         }
 
         // Write the chronological event summary, including an empty file for a quiet interval.
-        files.push(stage_events_jsonl(&staging, draft)?);
+        files.push(stage_events_jsonl(&staging, draft, clock.as_ref())?);
 
         let timeline_path = staging.staging_path().join(TIMELINE_DB_FILE);
         write_timeline_sqlite(&timeline_path, draft)?;
@@ -1796,6 +1803,7 @@ fn swipe_direction_label(tap: &TapRecord) -> Option<&'static str> {
 fn stage_events_jsonl(
     staging: &AtomicStagingDir,
     draft: &V2BundleDraft,
+    clock: Option<&arb_core::bundle::FrameMediaClock>,
 ) -> Result<FileDigest, StorageError> {
     let screens = extract_screen_spans(&draft.logs, &draft.frames);
     let crashes = extract_crash_markers(&draft.logs, &draft.frames);
@@ -1818,6 +1826,14 @@ fn stage_events_jsonl(
             "bucket".to_owned(),
             serde_json::json!(record_bucket_to_str(tap.bucket)),
         );
+        if tap.bucket == RecordBucket::Main
+            && let Some(clock) = clock
+        {
+            obj.insert(
+                "relative_time_ns".into(),
+                serde_json::json!(clock.relative_time(t_ns)),
+            );
+        }
         if let Some(x) = tap.x {
             obj.insert("x".to_owned(), serde_json::json!(x));
         }
@@ -1921,30 +1937,43 @@ fn stage_events_jsonl(
     })
 }
 
+fn trim_clock(draft: &V2BundleDraft) -> Option<arb_core::bundle::FrameMediaClock> {
+    match draft.requested_window {
+        RequestedWindow::TrimFrameRange {
+            in_time_ns: Some(_),
+            ..
+        } => draft.epochs.first().map(|e| {
+            arb_core::bundle::FrameMediaClock::new(&draft.frames, &e.boot_id, e.start_boottime_ns)
+        }),
+        _ => None,
+    }
+}
+
 fn stage_logs_jsonl(
     staging: &AtomicStagingDir,
     rel_name: &str,
     logs: &[LogRecord],
     bucket: RecordBucket,
+    clock: Option<&arb_core::bundle::FrameMediaClock>,
 ) -> Result<FileDigest, StorageError> {
-    let filtered: Vec<LogRecord> = logs
-        .iter()
-        .filter(|l| l.bucket == bucket)
-        .cloned()
-        .collect();
-    stage_log_slice_jsonl(staging, rel_name, &filtered)
-}
+    #[derive(serde::Serialize)]
+    struct TimedLog<'a> {
+        #[serde(flatten)]
+        log: &'a LogRecord,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        relative_time_ns: Option<i64>,
+    }
 
-fn stage_log_slice_jsonl(
-    staging: &AtomicStagingDir,
-    rel_name: &str,
-    logs: &[LogRecord],
-) -> Result<FileDigest, StorageError> {
     let mut bytes = Vec::new();
-    for log in logs {
-        let line = serde_json::to_string(log)
-            .map_err(|source| StorageError::json("serialize_log_jsonl", source))?;
-        bytes.extend_from_slice(line.as_bytes());
+    for log in logs.iter().filter(|log| log.bucket == bucket) {
+        let row = TimedLog {
+            log,
+            relative_time_ns: alignment_query_timestamp(&log.alignment)
+                .zip(clock)
+                .map(|(t, clock)| clock.relative_time(t)),
+        };
+        serde_json::to_writer(&mut bytes, &row)
+            .map_err(|e| StorageError::json("serialize_log_jsonl", e))?;
         bytes.push(b'\n');
     }
     let _staged_path = staging.write_file_synced(rel_name, &bytes)?;

@@ -170,6 +170,8 @@ fn verify_legacy_share_and_trash_refusal(
         export_dest_dir,
         share_out_path,
         &ExportShareMp4Params {
+            in_time_ns: None,
+            out_time_ns: None,
             keep_bundle: false,
             bundle_id: bundle_dir.to_string_lossy().into_owned(),
             in_frame_index: None,
@@ -194,6 +196,8 @@ fn verify_legacy_share_and_trash_refusal(
         export_dest_dir,
         &export_dest_dir.join("must-not-be-created.mp4"),
         &ExportShareMp4Params {
+            in_time_ns: None,
+            out_time_ns: None,
             keep_bundle: false,
             bundle_id: bundle_dir.to_string_lossy().into_owned(),
             in_frame_index: None,
@@ -275,9 +279,11 @@ fn exercise_legacy_open_seek_and_export(
         None,
         export_dest_dir,
         &ExportTrimParams {
+            in_time_ns: None,
+            out_time_ns: None,
             bundle_id_or_path: bundle_dir.to_string_lossy().into_owned(),
-            in_frame_index: 2,
-            out_frame_index: trim_out_idx,
+            in_frame_index: Some(2),
+            out_frame_index: Some(trim_out_idx),
             dest_dir: Some(export_dest_dir.to_path_buf()),
             holder_pid: None,
             burn_taps: false,
