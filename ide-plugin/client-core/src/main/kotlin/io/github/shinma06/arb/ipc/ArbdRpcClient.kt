@@ -360,8 +360,18 @@ class ArbdRpcClient(
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
 
-    fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response =
-        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+    fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response {
+        val needsOutputPolicy = params.inFrameIndex != null || params.keepBundle ||
+            (params.destDir != null && params.outputPath == null)
+        if (needsOutputPolicy && !systemHello().standaloneShareTrim) {
+            throw ArbdRpcException(
+                code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+                message = "共有 MP4 の出力方式を選ぶには arbd の更新が必要です",
+                method = "export.share_mp4",
+            )
+        }
+        return call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+    }
 
     /**
      * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected

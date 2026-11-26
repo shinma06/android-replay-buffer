@@ -390,7 +390,8 @@ impl McpServer {
             }
             "arb_capture_start" => self.tool_capture_start(args),
             "arb_capture_stop" => {
-                let resp = self.call_daemon("capture.stop", &json!({}))?;
+                let mut resp = self.call_daemon("capture.stop", &json!({}))?;
+                summarize_audio_reason(&mut resp);
                 Ok(ToolOutput::new(resp))
             }
             "arb_config_get" => {
@@ -406,33 +407,22 @@ impl McpServer {
                 let state = args.get("state").cloned().unwrap_or(Value::Null);
                 let mut resp = self.call_daemon("bundle.list", &json!({ "state": state }))?;
                 for row in resp["bundles"].as_array_mut().into_iter().flatten() {
-                    fill_missing(
-                        row,
-                        &[
-                            "bundle_kind",
-                            "duration_ms",
-                            "frame_count",
-                            "has_video",
-                            "has_audio",
-                            "log_count",
-                            "crash_marker_count",
-                            "memo",
-                            "created_utc",
-                            "disk_state",
-                        ],
-                    );
+                    self.catalog_row(row);
                 }
                 Ok(ToolOutput::new(resp))
             }
             "arb_trash_bundle" => {
                 let bundle_id = require_str(args, "bundle_id")?;
-                let resp = self.call_daemon("bundle.trash", &json!({ "bundle_id": bundle_id }))?;
+                let mut resp =
+                    self.call_daemon("bundle.trash", &json!({ "bundle_id": bundle_id }))?;
+                self.catalog_row(&mut resp);
                 Ok(ToolOutput::new(resp))
             }
             "arb_restore_bundle" => {
                 let bundle_id = require_str(args, "bundle_id")?;
-                let resp =
+                let mut resp =
                     self.call_daemon("bundle.restore", &json!({ "bundle_id": bundle_id }))?;
+                self.catalog_row(&mut resp);
                 Ok(ToolOutput::new(resp))
             }
             "arb_gc_bundles" => {
@@ -452,12 +442,37 @@ impl McpServer {
         }
     }
 
+    fn catalog_row(&self, row: &mut Value) {
+        fill_missing(
+            row,
+            &[
+                "bundle_kind",
+                "duration_ms",
+                "frame_count",
+                "has_video",
+                "has_audio",
+                "log_count",
+                "crash_marker_count",
+                "memo",
+                "disk_state",
+            ],
+        );
+        if self.version == MCP_PROTOCOL_LATEST {
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove("created_utc");
+            }
+        } else {
+            fill_missing(row, &["created_utc"]);
+        }
+    }
+
     fn tool_status(&mut self) -> Result<ToolOutput, Failure> {
         let mut hello = self.call_daemon("system.hello", &json!({}))?;
         if hello.get("gc_dry_run").is_none() {
             hello["gc_dry_run"] = json!(false);
         }
-        let status = self.call_daemon("system.status", &json!({}))?;
+        let mut status = self.call_daemon("system.status", &json!({}))?;
+        summarize_audio_reason(&mut status);
         Ok(ToolOutput::new(json!({"hello":hello,"status":status})))
     }
 
@@ -516,12 +531,10 @@ impl McpServer {
         if let Some(drain) = args.get("drain_timeout_ms") {
             params.insert("drain_timeout_ms".to_owned(), drain.clone());
         }
-        let mut resp = self.call_daemon("save.trigger", &Value::Object(params))?;
-        if let Some(note) = args.get("note").and_then(Value::as_str)
-            && let Some(obj) = resp.as_object_mut()
-        {
-            obj.insert("note".to_owned(), Value::String(note.to_owned()));
+        if let Some(note) = args.get("note") {
+            params.insert("note".into(), note.clone());
         }
+        let resp = self.call_daemon("save.trigger", &Value::Object(params))?;
         save_content(resp)
     }
 
@@ -572,6 +585,9 @@ impl McpServer {
         if let Some(drain) = args.get("drain_timeout_ms") {
             params.insert("drain_timeout_ms".to_owned(), drain.clone());
         }
+        if let Some(note) = args.get("note").or_else(|| args.get("memo")) {
+            params.insert("note".into(), note.clone());
+        }
         let resp = self.call_daemon("save.logs", &Value::Object(params))?;
         save_content(resp)
     }
@@ -580,10 +596,18 @@ impl McpServer {
         let bundle_id = require_bundle_target(args)?;
         let mut params = Map::new();
         params.insert("bundle_id".to_owned(), Value::String(bundle_id));
-        if let Some(max_err) = args.get("max_error_logs") {
-            params.insert("max_error_logs".to_owned(), max_err.clone());
+        for key in ["max_error_logs", "package", "tag", "exclude_tags"] {
+            if let Some(value) = args.get(key) {
+                params.insert(key.to_owned(), value.clone());
+            }
         }
-        let resp = self.call_daemon("timeline.overview", &Value::Object(params))?;
+        let mut resp = self.call_daemon("timeline.overview", &Value::Object(params))?;
+        if self.version == MCP_PROTOCOL_LATEST
+            && let Some(obj) = resp.as_object_mut()
+            && let Some(detail) = obj.remove("logcat_completeness_detail")
+        {
+            obj.insert("logcat_completeness".into(), detail);
+        }
         Ok(ToolOutput::new(resp))
     }
 
@@ -601,6 +625,7 @@ impl McpServer {
             params.insert("level".into(), Value::String("F".into()));
         }
         params.entry("limit").or_insert(json!(100));
+        params.entry("bucket").or_insert(json!("main"));
         let resp = self.call_daemon("bundle.query_logs", &Value::Object(params))?;
         Ok(ToolOutput::new(resp))
     }
@@ -644,6 +669,9 @@ impl McpServer {
         let mut save_args = Map::new();
         if let Some(v) = args.get("duration_secs") {
             save_args.insert("window_secs".into(), v.clone());
+        }
+        if let Some(memo) = args.get("memo") {
+            save_args.insert("note".into(), memo.clone());
         }
         let mut result = if args.get("logs_only") == Some(&Value::Bool(true)) {
             self.tool_save_logs(&save_args)?
@@ -702,7 +730,7 @@ impl McpServer {
         let include_share_mp4 = args
             .get("include_share_mp4")
             .and_then(Value::as_bool)
-            .unwrap_or(burn_taps);
+            .unwrap_or(true);
 
         match format {
             "share_mp4" => {
@@ -730,6 +758,7 @@ impl McpServer {
                         "out_frame_index": out_f,
                         "output_path": optional_abs_path(args, "output_path")?,
                         "dest_dir": optional_abs_path(args, "dest_dir")?,
+                        "keep_bundle": args.get("keep_bundle").and_then(Value::as_bool).unwrap_or(false),
                         "burn_taps": burn_taps,
                         "trash_original": trash_original,
                         "holder_pid": std::process::id(),
@@ -753,6 +782,7 @@ impl McpServer {
                         "in_frame_index": first,
                         "out_frame_index": last,
                         "include_share_mp4": include_share_mp4,
+                        "share_output_path": optional_abs_path(args, "output_path")?,
                         "burn_taps": burn_taps,
                         "dest_dir": optional_abs_path(args, "dest_dir")?,
                         "trash_original": trash_original,
@@ -930,6 +960,23 @@ impl ToolOutput {
     }
 }
 
+fn summarize_audio_reason(response: &mut Value) {
+    if let Some(reason) = response.pointer_mut("/capture/audio_reason")
+        && let Some(detail) = reason.as_str()
+    {
+        let message = detail.split("; scrcpy stderr:").next().unwrap_or(detail);
+        *reason = Value::String(
+            message
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(256)
+                .collect(),
+        );
+    }
+}
+
 fn fill_missing(body: &mut Value, names: &[&str]) {
     if let Some(obj) = body.as_object_mut() {
         for &key in names {
@@ -939,9 +986,15 @@ fn fill_missing(body: &mut Value, names: &[&str]) {
 }
 
 pub(super) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
+    if let Some(obj) = response.as_object_mut() {
+        obj.entry("warning_codes").or_insert_with(|| json!([]));
+    }
     fill_missing(
         &mut response,
         &[
+            "video_shortfall",
+            "log_shortfall",
+            "logcat_completeness",
             "requested_duration_secs",
             "actual_video_duration_ms",
             "actual_log_duration_ms",
@@ -995,14 +1048,16 @@ impl Failure {
     }
     pub(super) fn from_rpc(e: RpcClientError) -> Self {
         match e {
-            RpcClientError::Rpc { code, message } => Self::new(
+            RpcClientError::Rpc {
                 code,
-                match code {
-                    -32602 => "INVALID_PARAMS",
-                    -32001 => "BUNDLE_NOT_FOUND",
-                    -32002 => "CONFLICT",
-                    -32601 => "DAEMON_UNAVAILABLE",
-                    _ => "OPERATION_FAILED",
+                message,
+                error_code,
+            } => Self::new(
+                code,
+                match (code, error_code.as_deref()) {
+                    (-32002, Some("ALREADY_ACTIVE")) => "ALREADY_ACTIVE",
+                    (-32002, Some("ALREADY_TRASHED")) => "ALREADY_TRASHED",
+                    _ => arb_os::rpc::error_label(code),
                 },
                 message,
             ),
@@ -1011,6 +1066,10 @@ impl Failure {
     }
     pub(super) fn result(&self) -> Value {
         let mut body = self.detail.clone().unwrap_or_else(|| json!({}));
+        let (kind, hint, retryable) = arb_os::rpc::error_guidance(self.label);
+        body["kind"] = json!(kind);
+        body["hint"] = json!(hint);
+        body["retryable"] = json!(retryable);
         body["error_code"] = json!(self.label);
         body["rpc_code"] = json!(self.rpc_code);
         body["message"] = json!(self.message);
@@ -1199,6 +1258,14 @@ mod tests {
             unknown_tool["error"]["code"], -32_602,
             "unknown tool must return invalid params"
         );
+    }
+
+    #[test]
+    fn mcp_audio_reason_omits_stack_without_losing_cause() {
+        let mut response = json!({"capture":{"audio_cause":"encoder_fatal","audio_reason":format!("録音に失敗; scrcpy stderr: {}","スタック\n".repeat(500))}});
+        super::summarize_audio_reason(&mut response);
+        assert_eq!(response["capture"]["audio_reason"], "録音に失敗");
+        assert_eq!(response["capture"]["audio_cause"], "encoder_fatal");
     }
 
     #[test]

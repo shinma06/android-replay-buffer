@@ -743,6 +743,7 @@ class ArbdRealIntegrationTest {
                             inFrameIndex = 2L,
                             outFrameIndex = 18L,
                             outputPath = shareOut.toString(),
+                            keepBundle = true,
                             trashOriginal = true,
                             holderPid = ProcessHandle.current().pid(),
                         ),

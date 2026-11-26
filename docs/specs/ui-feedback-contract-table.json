@@ -1080,6 +1080,42 @@
         "ide_action_error_notified": true,
         "mcp_error_code": "DAEMON_UNAVAILABLE"
       }
+    },
+    {
+      "id": "ER-L1",
+      "description": "ALREADY_TRASHED → 接続維持・再試行不要",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32002,
+        "error_code": "ALREADY_TRASHED"
+      },
+      "expected": {
+        "cli_exit_code": 5,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "ALREADY_TRASHED",
+        "retryable": false
+      }
+    },
+    {
+      "id": "ER-L2",
+      "description": "ALREADY_ACTIVE → 接続維持・再試行不要",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32002,
+        "error_code": "ALREADY_ACTIVE"
+      },
+      "expected": {
+        "cli_exit_code": 5,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "ALREADY_ACTIVE",
+        "retryable": false
+      }
     }
   ],
   "capture_evidence_rows": [
@@ -1095,7 +1131,13 @@
       "actual_video_duration_ms": 50000,
       "actual_log_duration_ms": 90000,
       "logs_only": false,
-      "window_shortfall": true
+      "window_shortfall": true,
+      "video_shortfall": true,
+      "log_shortfall": false,
+      "warning_codes": [
+        "video_shortfall",
+        "window_shortfall"
+      ]
     },
     {
       "id": "CE-02",
@@ -1103,7 +1145,10 @@
       "actual_video_duration_ms": null,
       "actual_log_duration_ms": 59500,
       "logs_only": true,
-      "window_shortfall": false
+      "window_shortfall": false,
+      "video_shortfall": false,
+      "log_shortfall": false,
+      "warning_codes": []
     },
     {
       "id": "CE-03",
@@ -1111,7 +1156,35 @@
       "actual_video_duration_ms": null,
       "actual_log_duration_ms": 0,
       "logs_only": true,
-      "window_shortfall": true
+      "window_shortfall": true,
+      "video_shortfall": false,
+      "log_shortfall": true,
+      "warning_codes": [
+        "log_shortfall",
+        "window_shortfall"
+      ]
+    },
+    {
+      "id": "CE-04",
+      "requested_duration_secs": 60,
+      "actual_video_duration_ms": 60000,
+      "actual_log_duration_ms": 55000,
+      "logs_only": false,
+      "window_shortfall": true,
+      "video_shortfall": false,
+      "log_shortfall": true,
+      "warning_codes": [
+        "log_shortfall",
+        "window_shortfall",
+        "logcat_overflow"
+      ],
+      "logcat_completeness": {
+        "status": "overflow_detected",
+        "overflow_events": 2,
+        "dropped_count": 7,
+        "unanchored_count": 3,
+        "unanchored_truncated_count": 0
+      }
     }
   ],
   "rpc_parameter_rows": [

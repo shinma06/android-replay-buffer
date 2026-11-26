@@ -447,6 +447,8 @@ pub enum ClockAnchorRecord {
 /// Complete input draft materialized atomically by [`V2BundleWriter`].
 #[derive(Debug, Clone)]
 pub struct V2BundleDraft {
+    /// User note stored alongside immutable save metadata.
+    pub memo: Option<String>,
     /// High-level bundle payload category (`Full` or `LogsOnly`).
     pub bundle_kind: BundleKind,
     /// Globally unique bundle identifier.
@@ -654,6 +656,7 @@ impl V2BundleWriter {
         files.sort_by(|a, b| a.path.cmp(&b.path));
 
         let manifest = ManifestV2 {
+            memo: draft.memo.clone(),
             schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_kind: draft.bundle_kind,
             bundle_id: draft.bundle_id.clone(),
@@ -3087,6 +3090,7 @@ fn build_legacy_summary(
         }),
         audio: None,
         logcat: Some(LogcatStreamMeta {
+            dropped_count: None,
             status: if logs.is_empty() {
                 StreamStatus::Absent
             } else {
@@ -3285,6 +3289,7 @@ mod tests {
     )]
     fn sample_draft() -> V2BundleDraft {
         V2BundleDraft {
+            memo: None,
             bundle_kind: BundleKind::Full,
             bundle_id: "01JTEST0000000000000000001".to_owned(),
             created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
@@ -3315,6 +3320,7 @@ mod tests {
                 }),
                 audio: None,
                 logcat: Some(LogcatStreamMeta {
+                    dropped_count: None,
                     status: StreamStatus::Present,
                     completeness: LogCompleteness::Unverified,
                     overflow_events: 0,

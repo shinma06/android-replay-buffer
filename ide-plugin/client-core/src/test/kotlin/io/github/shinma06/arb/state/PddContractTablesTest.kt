@@ -164,6 +164,13 @@ class PddContractTablesTest {
             row["notification_warning"]?.let { expected ->
                 assertEquals(expected.asString, res.notificationWarning)
             }
+            assertEquals(row["warning_codes"].asJsonArray.map { it.asString }, res.warningCodes)
+            row["logcat_completeness"]?.asJsonObject?.let { evidence ->
+                assertEquals(evidence["overflow_events"].asLong, res.logcatCompleteness?.overflowEvents)
+                assertEquals(evidence["dropped_count"].asLong, res.logcatCompleteness?.droppedCount)
+            }
+            assertEquals(row["video_shortfall"].asBoolean, res.videoShortfall)
+            assertEquals(row["log_shortfall"].asBoolean, res.logShortfall)
             assertEquals(row["window_shortfall"].asBoolean, res.windowShortfall)
             assertEquals(row["actual_log_duration_ms"].asLong, res.actualLogDurationMs)
             assertEquals(row["actual_video_duration_ms"].takeUnless { it.isJsonNull }?.asLong, res.actualVideoDurationMs)

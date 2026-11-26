@@ -242,7 +242,7 @@ impl McpServer {
                             Ok(frame) => frame,
                             Err(error) => {
                                 // Legacy media RPCs use a single code for out-of-range and codec errors.
-                                if error.rpc_code == -32004
+                                if matches!(error.rpc_code, -32004 | -32602)
                                     && self.call_daemon("timeline.summary", &target)?["frame_count"]
                                         .as_u64()
                                         .is_some_and(|n| i >= n)

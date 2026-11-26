@@ -141,6 +141,8 @@ fn validate_object(schema: &Value, v: &Value, path: &str) -> Result<(), String> 
             } else if schema["additionalProperties"].is_object() {
                 validate(&schema["additionalProperties"], x, &format!("{path}.{k}"))?;
             }
+        }
+        for k in obj.keys() {
             if let Some(keys) = schema["dependentRequired"][k].as_array() {
                 for dep in keys.iter().filter_map(Value::as_str) {
                     if !obj.contains_key(dep) {

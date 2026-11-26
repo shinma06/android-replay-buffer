@@ -138,6 +138,24 @@ fn assert_rejected(c: &mut Client, name: &str, args: &Value) {
         "{name} {args}: {r}"
     );
     assert_eq!(r["structuredContent"]["rpc_code"], -32602);
+    assert_eq!(r["structuredContent"]["retryable"], false);
+    assert_eq!(r["structuredContent"]["kind"], "invalid_params");
+    assert!(
+        r["structuredContent"]["hint"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    for (key, val) in args.as_object().into_iter().flatten() {
+        if val.get("wrong").is_some() || key == "unexpected" {
+            assert!(
+                r["structuredContent"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(key),
+                "{name}: {r}"
+            );
+        }
+    }
 }
 
 fn registry(c: &mut Client) {
@@ -447,7 +465,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     for name in ["arb_save", "arb_save_logs"] {
         let r = c.result(
             "tools/call",
-            json!({"name":name,"arguments":{"window_secs":5}}),
+            json!({"name":name,"arguments":{"window_secs":5,"note":"調査記録"}}),
         );
         assert_eq!(
             r["content"]
@@ -458,7 +476,18 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
                 .count(),
             3
         );
-        assert_eq!(c.check_tool(name, r)["requested_duration_secs"], 5);
+        let saved = c.check_tool(name, r);
+        assert_eq!(saved["requested_duration_secs"], 5);
+        assert_eq!(saved["note"], "調査記録");
+        assert!(saved["warning_codes"].is_array());
+        let entries = c.tool("arb_list_bundles", json!({}));
+        let entry = entries["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["bundle_id"] == saved["bundle_id"])
+            .unwrap();
+        assert_eq!(entry["memo"], "調査記録");
     }
     let adb_dir = std::path::PathBuf::from(std::env::var_os("FAKE_DEVICE_STATE").unwrap());
     fs::write(
@@ -472,7 +501,8 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         json!({"serial":"contract-device","output_path":root.path().join("shot.png")}),
     );
     fs::remove_file(adb_dir.join("devices")).unwrap();
-    c.tool("arb_timeline_overview", target.clone());
+    let overview = c.tool("arb_timeline_overview", target.clone());
+    assert!(overview["logcat_completeness"].is_object());
     c.tool(
         "arb_query_logs",
         json!({"bundle_id":id,"level":"eRrOr","whole_word":true,"keyword":"failed","limit":1}),
@@ -506,13 +536,37 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         "arb_export_frame_png",
         json!({"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}),
     );
+    let collision=c.result("tools/call",json!({"name":"arb_export_frame_png","arguments":{"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}}));
+    assert_eq!(collision["structuredContent"]["rpc_code"], -32002);
+    let reversed=c.result("tools/call",json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"contact_sheet","start_frame":12,"end_frame":4}}));
+    assert_eq!(reversed["structuredContent"]["rpc_code"], -32602);
     resources_and_prompts(&mut c, id);
-    c.tool("arb_trash_bundle", target.clone());
+    let trashed = c.tool("arb_trash_bundle", target.clone());
+    assert_eq!(trashed["frame_count"], 18);
+    assert!(trashed.get("created_utc").is_none());
+    let duplicate = c.result(
+        "tools/call",
+        json!({"name":"arb_trash_bundle","arguments":target}),
+    );
+    assert_eq!(
+        duplicate["structuredContent"]["error_code"],
+        "ALREADY_TRASHED"
+    );
+    assert_eq!(duplicate["structuredContent"]["retryable"], false);
     c.tool(
         "arb_gc_bundles",
         json!({"dry_run":true,"ignore_grace":true}),
     );
-    c.tool("arb_restore_bundle", target.clone());
+    let restored = c.tool("arb_restore_bundle", target.clone());
+    assert_eq!(restored["frame_count"], trashed["frame_count"]);
+    let duplicate = c.result(
+        "tools/call",
+        json!({"name":"arb_restore_bundle","arguments":target}),
+    );
+    assert_eq!(
+        duplicate["structuredContent"]["error_code"],
+        "ALREADY_ACTIVE"
+    );
     c.tool("arb_forget_bundle", target);
     tasks(&mut c);
     assert_eq!(c.covered, c.schemas.keys().cloned().collect());

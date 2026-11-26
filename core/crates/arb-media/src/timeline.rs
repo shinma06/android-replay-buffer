@@ -36,9 +36,12 @@ pub fn end_ns(pts: &[i64], last_duration: Option<i64>, fallback: i64) -> i64 {
 }
 
 /// Frame displayed at a media time; the exclusive endpoint displays the last frame.
-pub fn frame_at_time(pts: &[i64], time: i64) -> Option<usize> {
+pub fn frame_at_time_ns(pts: &[i64], time: i64) -> Option<usize> {
     frame_at_time_by(pts, time, |p| *p)
 }
+
+/// Compatibility name for the displayed-frame lookup.
+pub use frame_at_time_ns as frame_at_time;
 
 pub(crate) fn frame_at_time_by<T>(
     samples: &[T],

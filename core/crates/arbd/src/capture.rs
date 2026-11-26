@@ -298,6 +298,8 @@ pub struct CrashAutoSaveNotice {
 struct SaveJobMaterializeParams {
     bundle_id: String,
     #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
     mode: SaveMode,
     duration_sec: u64,
     trigger_utc: String,
@@ -418,6 +420,11 @@ pub struct PendingSave {
 }
 
 impl PendingSave {
+    pub(super) fn with_note(mut self, note: Option<String>) -> Self {
+        self.params.note = note;
+        self
+    }
+
     /// Returns the save job identifier reserved for this pending save.
     #[must_use]
     pub fn job_id(&self) -> &str {
@@ -1710,6 +1717,7 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
+            note: None,
             bundle_id,
             mode,
             duration_sec,
@@ -2116,8 +2124,18 @@ struct Materialized {
     warning: Option<String>,
 }
 
-fn window_shortfall(requested_secs: u64, actual_ms: u64) -> bool {
-    actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000)
+fn stream_shortfalls(
+    mode: SaveMode,
+    requested_secs: u64,
+    video_ms: Option<u64>,
+    logs_ms: u64,
+) -> (bool, bool) {
+    let short =
+        |actual_ms: u64| actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000);
+    (
+        mode == SaveMode::Full && short(video_ms.unwrap_or(0)),
+        short(logs_ms),
+    )
 }
 
 fn measure_saved_evidence(
@@ -2137,48 +2155,73 @@ fn measure_saved_evidence(
     let video = summary
         .duration_ms
         .filter(|_| summary.has_video == Some(true));
-    let actual = if params.mode == SaveMode::LogsOnly {
-        logs.duration_ms
-    } else {
-        video.unwrap_or(0)
-    };
-    let window_shortfall = window_shortfall(params.duration_sec, actual);
+    let (video_shortfall, log_shortfall) =
+        stream_shortfalls(params.mode, params.duration_sec, video, logs.duration_ms);
+    let window_shortfall = video_shortfall || log_shortfall;
+    let completeness = crate::protocol::LogcatEvidence::from(manifest);
+    let discontinuity_count = reader.discontinuities()?.len();
     let mut warnings = Vec::new();
+    let mut warning_codes = Vec::new();
+    for (flag, code, message) in [
+        (
+            video_shortfall,
+            "video_shortfall",
+            "映像が要求した保存時間に達していません",
+        ),
+        (
+            log_shortfall,
+            "log_shortfall",
+            "ログが要求した保存時間に達していません",
+        ),
+        (
+            completeness.overflow_events > 0
+                || completeness.status == Some(LogCompleteness::OverflowDetected),
+            "logcat_overflow",
+            "logcat のオーバーフローを検出しました",
+        ),
+        (
+            completeness.unanchored_truncated_count > 0,
+            "unanchored_truncated",
+            "時刻未確定の記録を件数・容量制限で切り捨てました",
+        ),
+        (
+            params.mode == SaveMode::Full && summary.has_audio != Some(true),
+            "audio_absent",
+            "音声がありません",
+        ),
+        (
+            discontinuity_count > 0,
+            "stream_discontinuity",
+            "記録に不連続箇所があります",
+        ),
+        (
+            params.tail_may_be_incomplete,
+            "tail_unconfirmed",
+            "保存範囲の末尾は未確認です",
+        ),
+    ] {
+        if flag {
+            warning_codes.push(code.to_owned());
+            warnings.push(message.to_owned());
+        }
+    }
     if window_shortfall {
-        warnings.push(format!(
-            "要求 {} 秒に対し、保存できた{}は {actual} ms です",
-            params.duration_sec,
-            if params.mode == SaveMode::LogsOnly {
-                "ログ"
-            } else {
-                "映像"
-            }
-        ));
-    }
-    if manifest.unanchored_summary.truncated_count > 0
-        || manifest
-            .streams
-            .logcat
-            .as_ref()
-            .is_some_and(|l| l.overflow_events > 0)
-    {
-        warnings.push("取りこぼしまたは隔離記録の切り捨てがあります".into());
-    }
-    if params.mode == SaveMode::Full && summary.has_audio != Some(true) {
-        warnings.push("音声がありません".into());
-    }
-    if params.tail_may_be_incomplete {
-        warnings.push("保存範囲の末尾は未確認です".into());
+        warning_codes.push("window_shortfall".into());
     }
     Ok((
         crate::protocol::SaveEvidence {
+            video_shortfall: Some(video_shortfall),
+            log_shortfall: Some(log_shortfall),
+            warning_codes: Some(warning_codes),
+            logcat_completeness: Some(completeness),
+            note: params.note.clone(),
             actual_video_duration_ms: Some(video.unwrap_or(0)),
             actual_log_duration_ms: Some(logs.duration_ms),
             video_frame_count: summary.frame_count,
             log_count: Some(logs.count),
             unanchored_log_count: Some(logs.unanchored),
             truncated_unanchored_count: Some(manifest.unanchored_summary.truncated_count),
-            discontinuity_count: Some(reader.discontinuities()?.len()),
+            discontinuity_count: Some(discontinuity_count),
             window_shortfall: Some(window_shortfall),
             warnings: Some(warnings),
         },
@@ -2197,6 +2240,8 @@ fn saved_evidence(
         Ok((evidence, summary)) => (evidence, Some(summary)),
         Err(e) => (
             crate::protocol::SaveEvidence {
+                note: params.note.clone(),
+                warning_codes: Some(vec!["evidence_unavailable".into()]),
                 warnings: Some(vec![format!("保存済み記録の集計に失敗しました: {e}")]),
                 ..Default::default()
             },
@@ -2317,7 +2362,10 @@ fn fail_job(
 ) -> Result<SaveOutcomeResponse, DaemonError> {
     let failed = catalog.mark_failed_retryable(job_id, message, &utc_now_iso8601())?;
     Ok(SaveOutcomeResponse {
-        evidence: crate::protocol::SaveEvidence::default(),
+        evidence: crate::protocol::SaveEvidence {
+            note: params.and_then(|p| p.note.clone()),
+            ..Default::default()
+        },
         requested_duration_secs: params.map(|p| p.duration_sec),
         job: save_job_to_view(&failed),
         bundle_id: None,
@@ -2429,6 +2477,7 @@ struct ReplayCollector {
     discontinuities: Vec<DiscontinuityEvent>,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
+    dropped_count: Option<u64>,
     touch_normalizer: TouchNormalizer,
     /// In-progress touch strokes keyed by pointer id (T-6H item 2 gesture classifier), flushed
     /// into `raw_taps` on `UP`/`CANCEL` or, for any still-active stroke, in [`Self::build_draft`]
@@ -2610,6 +2659,7 @@ impl ReplayCollector {
             discontinuities: params.extra_discontinuities.clone(),
             log_completeness: LogCompleteness::Unverified,
             log_overflow_events: 0,
+            dropped_count: None,
             touch_normalizer: TouchNormalizer::default(),
             active_strokes: BTreeMap::new(),
             touch_slop_px: touch_slop(
@@ -2734,6 +2784,10 @@ impl ReplayCollector {
             }
             CaptureEvent::LogOverflowStats { payload, .. } => {
                 let next_comp = payload.completeness.to_core_completeness();
+                if let Ok(delta) = u64::try_from(payload.pruned_delta) {
+                    self.dropped_count =
+                        Some(self.dropped_count.unwrap_or(0).saturating_add(delta));
+                }
                 if next_comp == LogCompleteness::OverflowDetected {
                     self.log_completeness = LogCompleteness::OverflowDetected;
                     self.log_overflow_events = self.log_overflow_events.saturating_add(1);
@@ -3158,6 +3212,7 @@ impl ReplayCollector {
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
             log_overflow_events: self.log_overflow_events,
+            dropped_count: self.dropped_count,
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -3170,6 +3225,7 @@ impl ReplayCollector {
         }];
 
         Ok(V2BundleDraft {
+            memo: params.note.clone(),
             bundle_kind: media.bundle_kind,
             bundle_id: params.bundle_id.clone(),
             created_at_utc: params.trigger_utc.clone(),
@@ -3323,6 +3379,7 @@ struct StreamSummaryCounts {
     logs_count: usize,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
+    dropped_count: Option<u64>,
     taps_count: usize,
     tail_may_be_incomplete: bool,
     av_lead_in_offset_ns: i64,
@@ -3359,6 +3416,7 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             tail_may_be_incomplete,
         }),
         logcat: Some(LogcatStreamMeta {
+            dropped_count: counts.dropped_count,
             status: if counts.logs_count == 0 {
                 StreamStatus::Absent
             } else if counts.log_completeness == LogCompleteness::OverflowDetected {
@@ -4365,16 +4423,21 @@ mod tests {
         ))
         .expect("table");
         for row in table["capture_evidence_rows"].as_array().expect("rows") {
-            let actual = if row["logs_only"] == true {
-                &row["actual_log_duration_ms"]
+            let mode = if row["logs_only"] == true {
+                SaveMode::LogsOnly
             } else {
-                &row["actual_video_duration_ms"]
+                SaveMode::Full
             };
+            let (v, l) = super::stream_shortfalls(
+                mode,
+                row["requested_duration_secs"].as_u64().unwrap(),
+                row["actual_video_duration_ms"].as_u64(),
+                row["actual_log_duration_ms"].as_u64().unwrap(),
+            );
+            assert_eq!(row["video_shortfall"], v);
+            assert_eq!(row["log_shortfall"], l);
             assert_eq!(
-                super::window_shortfall(
-                    row["requested_duration_secs"].as_u64().expect("requested"),
-                    actual.as_u64().unwrap_or(0)
-                ),
+                v || l,
                 row["window_shortfall"].as_bool().expect("shortfall"),
                 "row {row}"
             );
@@ -5325,6 +5388,7 @@ mod tests {
         display_height: Option<u32>,
     ) -> SaveJobMaterializeParams {
         SaveJobMaterializeParams {
+            note: None,
             bundle_id: "01JT6HGESTURE00000000000001".to_owned(),
             mode: SaveMode::Full,
             duration_sec: 10,

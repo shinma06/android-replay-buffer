@@ -351,6 +351,7 @@ fn seed_rich_v2_bundle(
     };
 
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: bundle_id.to_owned(),
         created_at_utc: "2026-11-23T09:00:00Z".to_owned(),
@@ -381,6 +382,7 @@ fn seed_rich_v2_bundle(
             }),
             audio: audio_meta,
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Present,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,
@@ -648,6 +650,15 @@ fn t2b_export_share_mp4_full_trimmed_trash_original_and_legacy_refusal() {
     );
 
     // 3. Mid-GOP trimmed export (frames 4..=22 = 19 frames) with `trash_original: true`!
+    let dest = tmp.path().join("requested-exports");
+    let standalone = rpc.call(
+        "export.share_mp4",
+        &json!({"bundle_id":src_id,"in_frame_index":4,"out_frame_index":22,"dest_dir":dest}),
+    );
+    let path = PathBuf::from(standalone["share_mp4_path"].as_str().unwrap());
+    assert_eq!(path.parent(), Some(dest.as_path()));
+    assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
+    assert_eq!(Mp4VideoTrack::open(path).unwrap().frame_count(), 19);
     let trimmed_mp4 = tmp.path().join("trimmed-share.mp4");
     let trim_resp = rpc.call(
         "export.share_mp4",
@@ -655,7 +666,9 @@ fn t2b_export_share_mp4_full_trimmed_trash_original_and_legacy_refusal() {
             "bundle_id": src_id,
             "in_frame_index": 4,
             "out_frame_index": 22,
+            "dest_dir": dest,
             "output_path": trimmed_mp4,
+            "keep_bundle": true,
             "trash_original": true,
         }),
     );
@@ -677,6 +690,10 @@ fn t2b_export_share_mp4_full_trimmed_trash_original_and_legacy_refusal() {
         .as_str()
         .expect("trimmed_bundle_id must be present");
     assert!(!trimmed_id.is_empty(), "trimmed_bundle_id non-empty");
+    assert_eq!(
+        Path::new(trim_resp["trimmed_bundle_path"].as_str().unwrap()).parent(),
+        Some(dest.as_path())
+    );
     assert!(
         src_dir.join("manifest.json").is_file(),
         "source bundle files MUST remain intact on disk (non-destructive Trash!)"
@@ -800,6 +817,29 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
         2,
         "2 E/F error log highlights"
     );
+
+    let highlights = rpc.call(
+        "timeline.overview",
+        &json!({"bundle_id":bundle_id,"tag":"PAY","package":"com.example.shop","max_error_logs":0}),
+    );
+    assert_eq!(highlights["total_error_logs"], 1);
+    assert_eq!(highlights["error_logs_truncated"], true);
+    let excluded = rpc.call(
+        "timeline.overview",
+        &json!({"bundle_id":bundle_id,"exclude_tags":["paymentrepo"]}),
+    );
+    assert_eq!(excluded["total_error_logs"], 1);
+    assert_eq!(excluded["error_logs_truncated"], false);
+    let page = rpc.call("bundle.query_logs", &json!({"bundle_id":bundle_id}));
+    for highlight in ov["error_log_highlights"].as_array().unwrap() {
+        let log = page["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|log| log["seq"] == highlight["seq"])
+            .unwrap();
+        assert_eq!(log["frame_index"], highlight["frame_index_hint"]);
+    }
 
     // 2. `timeline.query_logs` with `level`, `tag`, `keyword`, `start_frame`/`end_frame`.
     let filtered = rpc.call(
@@ -975,6 +1015,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     }];
 
     let draft = V2BundleDraft {
+        memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: "01JT6ASCALETEST00000000001".to_owned(),
         created_at_utc: "2026-11-23T12:00:00Z".to_owned(),
@@ -1012,6 +1053,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             }),
             audio: None,
             logcat: Some(LogcatStreamMeta {
+                dropped_count: None,
                 status: StreamStatus::Absent,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,

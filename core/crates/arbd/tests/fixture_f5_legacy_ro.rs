@@ -170,6 +170,7 @@ fn verify_legacy_share_and_trash_refusal(
         export_dest_dir,
         share_out_path,
         &ExportShareMp4Params {
+            keep_bundle: false,
             bundle_id: bundle_dir.to_string_lossy().into_owned(),
             in_frame_index: None,
             out_frame_index: None,
@@ -193,6 +194,7 @@ fn verify_legacy_share_and_trash_refusal(
         export_dest_dir,
         &export_dest_dir.join("must-not-be-created.mp4"),
         &ExportShareMp4Params {
+            keep_bundle: false,
             bundle_id: bundle_dir.to_string_lossy().into_owned(),
             in_frame_index: None,
             out_frame_index: None,

@@ -1123,6 +1123,7 @@ impl TrayController {
             && response["ok"] != true
         {
             return Err(RpcClientError::Rpc {
+                error_code: None,
                 code: -32009,
                 message: "Android Studio が管理中、または保存処理中のため終了を延期しました。"
                     .into(),

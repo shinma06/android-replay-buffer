@@ -1,7 +1,7 @@
 {
   "tools": [
     {
-      "description": "デーモンと録画状態を取得します。",
+      "description": "デーモンと録画状態を取得します。 タップは getevent で観測した端末入力です。adb shell input tap などの Framework 注入は記録されない場合があります。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_status",
       "outputType": "Status",
@@ -145,6 +145,8 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "note": {"type": "string", "description": "保存してカタログに表示するメモ。"},
+          "memo": {"type": "string", "description": "note の別名。"},
           "dest_dir": {"type": "string", "description": "出力先の親ディレクトリ。"},
           "drain_timeout_ms": {
             "minimum": 0,
@@ -159,6 +161,7 @@
         },
         "type": "object",
         "allOf": [
+          {"not": {"required": ["note", "memo"]}},
           {"not": {"required": ["duration_sec", "duration_secs"]}},
           {"not": {"required": ["duration_sec", "window_secs"]}},
           {"not": {"required": ["duration_secs", "window_secs"]}}
@@ -188,7 +191,7 @@
         "type": "object"
       },
       "name": "arb_trash_bundle",
-      "outputType": "BundleEntryView",
+      "outputType": "ListedBundle",
       "annotations": {"title": "ごみ箱へ移動", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
@@ -200,7 +203,7 @@
         "type": "object"
       },
       "name": "arb_restore_bundle",
-      "outputType": "BundleEntryView",
+      "outputType": "ListedBundle",
       "annotations": {"title": "バンドルの復元", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
@@ -236,11 +239,14 @@
       "annotations": {"title": "カタログの整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "画面遷移、クラッシュ、タップ、ログの概要を取得します。",
+      "description": "画面遷移、クラッシュ、タップ、ログの概要を取得します。 タップは getevent で観測した端末入力です。adb shell input tap などの Framework 注入は記録されない場合があります。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
+          "package": {"description": "対象の Android パッケージ名（完全一致）。", "type": "string"},
+          "tag": {"description": "対象タグの部分一致条件（大文字小文字を区別しません）。", "type": "string"},
+          "exclude_tags": {"description": "除外するタグ名（完全一致、大文字小文字を区別しません）。", "type": "array", "items": {"type":"string"}},
           "max_error_logs": {"description": "概要に含めるエラーの最大件数。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
           "bundle_id_or_path": {"description": "bundle_id の互換名。", "type": "string", "pattern": "\\S"}
         },
@@ -258,16 +264,17 @@
         "additionalProperties": false,
         "properties": {
           "after_seq": {
-            "description": "このシーケンス番号の次から取得します。cursor と排他です。",
+            "description": "旧クライアントの互換引数。ページ送りには next_cursor を cursor に渡します。",
+            "deprecated": true,
             "minimum": 0,
             "type": "integer",
             "maximum": 18446744073709551615
           },
           "bucket": {
-            "description": "時刻が確定したログ、未確定ログ、または両方。",
+            "description": "main は録画窓内、unanchored は時刻未確定の別枠、all は両方です。別枠の件数は unanchored_count で確認できます。",
             "enum": ["main", "unanchored", "all"],
             "type": "string",
-            "default": "all"
+            "default": "main"
           },
           "bundle_id": {"description": "カタログのバンドル ID またはバンドルのパス。", "type": "string", "pattern": "\\S"},
           "end_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
@@ -297,7 +304,7 @@
       "annotations": {"title": "ログ検索", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "選択フレームの時刻・座標・参照先を返します。画像の同梱は include_images で指定します。",
+      "description": "選択フレームの時刻・座標・参照先を返します。画像の同梱は include_images で指定します。 タップは getevent で観測した端末入力です。adb shell input tap などの Framework 注入は記録されない場合があります。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -346,7 +353,8 @@
           "dest_dir": {"description": "出力先の親ディレクトリ。", "type": "string"},
           "format": {"description": "共有 MP4 または編集済みバンドル。", "enum": ["share_mp4", "bundle"], "type": "string", "default": "share_mp4"},
           "in_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す先頭フレーム（両端を含む）。", "maximum": 18446744073709551615},
-          "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。省略時は burn_taps に従います。", "type": "boolean"},
+          "keep_bundle": {"description": "共有 MP4 とともに編集済みバンドルを dest_dir に保存します。", "type": "boolean", "default": false},
+          "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。format=bundle での既定は true。", "type": "boolean"},
           "out_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す最終フレーム（両端を含む）。", "maximum": 18446744073709551615},
           "output_path": {"description": "出力ファイルのパス。", "type": "string"},
           "trash_original": {"description": "元バンドルを保持します。移動には書き出し後に arb_trash_bundle を使います。", "type": "boolean", "const": false, "default": false},
@@ -577,7 +585,7 @@
         "log_count": {"type": "integer", "minimum": 0},
         "crash_marker_count": {"type": "integer", "minimum": 0},
         "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "created_utc": {"type": "string"},
+        "created_utc": {"description": "created_at_utc の互換名。", "deprecated": true, "type": "string"},
         "bundle_id": {"type": "string"},
         "path": {"type": "string"},
         "format_version": {"$ref": "#/$defs/CatalogFormatVersion"},
@@ -903,6 +911,7 @@
     "ErrorLogHighlight": {
       "type": "object",
       "properties": {
+        "timestamp_utc": {"type": ["string", "null"]},
         "seq": {"type": "integer", "minimum": 0},
         "level": {"type": "string"},
         "frame_index_hint": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
@@ -924,8 +933,8 @@
       "type": "object",
       "properties": {
         "share_mp4_path": {"type": "string"},
-        "trimmed_bundle_id": {"type": "string"},
-        "trimmed_bundle_path": {"type": "string"},
+        "trimmed_bundle_id": {"type": "string", "description": "keep_bundle が true の場合に作成したバンドル ID。"},
+        "trimmed_bundle_path": {"type": "string", "description": "keep_bundle が true の場合の出力ディレクトリ。"},
         "audio_included": {"type": "boolean"},
         "video_frame_count": {"type": "integer", "minimum": 0},
         "edts_box_count": {"type": "integer", "minimum": 0},
@@ -1075,7 +1084,7 @@
         "log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "crash_marker_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "memo": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "created_utc": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "created_utc": {"description": "created_at_utc の互換名。", "deprecated": true, "anyOf": [{"type": "string"}, {"type": "null"}]},
         "bundle_id": {"type": "string"},
         "path": {"type": "string"},
         "format_version": {"$ref": "#/$defs/CatalogFormatVersion"},
@@ -1103,9 +1112,20 @@
         "has_video",
         "has_audio",
         "log_count",
-        "crash_marker_count",
-        "created_utc"
+        "crash_marker_count"
       ],
+      "additionalProperties": false
+    },
+    "LogcatEvidence": {
+      "type": "object",
+      "properties": {
+        "status": {"anyOf": [{"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
+        "overflow_events": {"type": "integer", "minimum": 0},
+        "dropped_count": {"type": ["integer", "null"], "minimum": 0},
+        "unanchored_count": {"type": "integer", "minimum": 0},
+        "unanchored_truncated_count": {"type": "integer", "minimum": 0}
+      },
+      "required": ["status", "overflow_events", "dropped_count", "unanchored_count", "unanchored_truncated_count"],
       "additionalProperties": false
     },
     "LogCompleteness": {"type": "string", "enum": ["verified_no_overflow", "overflow_detected", "unverified"]},
@@ -1114,6 +1134,7 @@
       "properties": {
         "status": {"$ref": "#/$defs/StreamStatus"},
         "completeness": {"$ref": "#/$defs/LogCompleteness"},
+        "dropped_count": {"type": "integer", "minimum": 0},
         "overflow_events": {"type": "integer", "minimum": 0},
         "tail_may_be_incomplete": {"type": "boolean"}
       },
@@ -1260,6 +1281,10 @@
         "unanchored_log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "truncated_unanchored_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "discontinuity_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "video_shortfall": {"type": ["boolean", "null"]},
+        "log_shortfall": {"type": ["boolean", "null"]},
+        "warning_codes": {"type": "array", "items": {"type": "string"}},
+        "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type": "null"}]},
         "window_shortfall": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
         "warnings": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
         "requested_duration_secs": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
@@ -1276,12 +1301,17 @@
             "INVALID_PARAMS",
             "BUNDLE_NOT_FOUND",
             "CONFLICT",
+            "ALREADY_TRASHED",
+            "ALREADY_ACTIVE",
             "DAEMON_UNAVAILABLE",
             "FAILED_RETRYABLE",
             "OPERATION_FAILED",
             "CANCELLED"
           ]
         },
+        "kind": {"type": "string"},
+        "hint": {"type": "string"},
+        "retryable": {"type": "boolean"},
         "rpc_code": {"type": "integer"},
         "message": {"type": "string"}
       },
@@ -1299,8 +1329,10 @@
         "unanchored_log_count",
         "truncated_unanchored_count",
         "discontinuity_count",
+        "warning_codes", "video_shortfall", "log_shortfall", "logcat_completeness",
         "window_shortfall",
         "warnings",
+        "hint", "retryable", "kind",
         "error_code",
         "rpc_code",
         "message"
@@ -1342,6 +1374,10 @@
         "unanchored_log_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "truncated_unanchored_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "discontinuity_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "video_shortfall": {"type": ["boolean", "null"]},
+        "log_shortfall": {"type": ["boolean", "null"]},
+        "warning_codes": {"type": "array", "items": {"type": "string"}},
+        "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type": "null"}]},
         "window_shortfall": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
         "warnings": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
         "requested_duration_secs": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
@@ -1367,6 +1403,7 @@
         "unanchored_log_count",
         "truncated_unanchored_count",
         "discontinuity_count",
+        "warning_codes", "video_shortfall", "log_shortfall", "logcat_completeness",
         "window_shortfall",
         "warnings"
       ],
@@ -1422,6 +1459,7 @@
     "SystemHelloResponse": {
       "type": "object",
       "properties": {
+        "standalone_share_trim": {"type": "boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"type": "integer", "minimum": 0},
         "schema_version": {"type": "integer", "minimum": 0},
@@ -1536,6 +1574,7 @@
     "TimelineLogsResponse": {
       "type": "object",
       "properties": {
+        "unanchored_count": {"type": "integer", "minimum": 0},
         "logs": {"type": "array", "items": {"$ref": "#/$defs/QueryLogRow"}},
         "total_matched": {"type": "integer", "minimum": 0},
         "returned_count": {"type": "integer", "minimum": 0},
@@ -1561,11 +1600,14 @@
         "fps_estimate": {"anyOf": [{"type": "number"}, {"type": "null"}]},
         "audio_status": {"$ref": "#/$defs/StreamStatus"},
         "av_offset_ms": {"type": "integer"},
-        "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
+        "logcat_completeness": {"description": "保存結果と同型の欠落・隔離情報。旧デーモンは状態名を返します。", "anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
         "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
         "taps": {"type": "array", "items": {"$ref": "#/$defs/OverviewTapItem"}},
         "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
         "discontinuities": {"type": "array", "items": {"$ref": "#/$defs/DiscontinuityEvent"}},
+        "total_error_logs": {"type": "integer", "minimum": 0},
+        "error_logs_truncated": {"type": "boolean"},
+        "logcat_completeness_detail": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type":"null"}]},
         "error_log_highlights": {"type": "array", "items": {"$ref": "#/$defs/ErrorLogHighlight"}},
         "unanchored_count": {"type": "integer", "minimum": 0},
         "unanchored_truncated_count": {"type": "integer", "minimum": 0},
@@ -1667,17 +1709,22 @@
             "INVALID_PARAMS",
             "BUNDLE_NOT_FOUND",
             "CONFLICT",
+            "ALREADY_TRASHED",
+            "ALREADY_ACTIVE",
             "DAEMON_UNAVAILABLE",
             "FAILED_RETRYABLE",
             "OPERATION_FAILED",
             "CANCELLED"
           ]
         },
+        "kind": {"type": "string"},
+        "hint": {"type": "string"},
+        "retryable": {"type": "boolean"},
         "rpc_code": {"type": "integer"},
         "message": {"type": "string"},
         "save": {"$ref": "#/$defs/SaveOutcomeResponse"}
       },
-      "required": ["error_code", "rpc_code", "message"],
+      "required": ["error_code", "rpc_code", "message", "hint", "retryable", "kind"],
       "additionalProperties": false
     },
     "TrimReport": {
