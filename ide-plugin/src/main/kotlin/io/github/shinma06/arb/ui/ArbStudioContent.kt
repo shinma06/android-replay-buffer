@@ -72,6 +72,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -119,6 +121,19 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+internal fun ArbStudioController.handleStudioKey(key: Key, textFieldHasFocus: Boolean): Boolean {
+    if (textFieldHasFocus) return false
+    when (key) {
+        Key.Spacebar -> togglePlayPause()
+        Key.DirectionLeft -> stepFrame(-1)
+        Key.DirectionRight -> stepFrame(1)
+        Key.I -> markInAtPlayhead()
+        Key.O -> markOutAtPlayhead()
+        else -> return false
+    }
+    return true
+}
+
 /**
  * Native JetBrains Jewel Compose UI for the Integrated Viewer & Trim Studio (`ArbBundleFileEditor`).
  *
@@ -152,22 +167,12 @@ fun ArbStudioContent(controller: ArbStudioController) {
             .fillMaxSize()
             .background(ArbJewelPalette.panelBackground())
             .focusRequester(focusRequester)
-            .focusable()
             .onPreviewKeyEvent { event ->
-                if (searchHasFocus) return@onPreviewKeyEvent false
-                if (event.type != KeyEventType.KeyDown || event.isCtrlPressed || event.isMetaPressed || event.isAltPressed) {
-                    return@onPreviewKeyEvent false
-                }
-                when (event.key) {
-                    Key.Spacebar -> controller.togglePlayPause()
-                    Key.DirectionLeft -> controller.stepFrame(-1)
-                    Key.DirectionRight -> controller.stepFrame(1)
-                    Key.I -> controller.markInAtPlayhead()
-                    Key.O -> controller.markOutAtPlayhead()
-                    else -> return@onPreviewKeyEvent false
-                }
-                true
-            },
+                event.type == KeyEventType.KeyDown &&
+                    !event.isCtrlPressed && !event.isMetaPressed && !event.isAltPressed &&
+                    controller.handleStudioKey(event.key, searchHasFocus)
+            }
+            .focusable(),
     ) {
         // 1. Clean single-row Studio Header (~38dp)
         StudioHeaderBar(controller = controller, state = state)
@@ -851,7 +856,7 @@ private fun RightEventsAndLogsPane(
                         placeholder = { Text("検索...", style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.mutedText())) },
                         modifier = Modifier
                             .weight(1f)
-                            .onFocusChanged { onSearchFocusChanged(it.isFocused) },
+                            .onFocusChanged { onSearchFocusChanged(it.hasFocus) },
                     )
                 }
 
@@ -1267,13 +1272,6 @@ private fun DiscontinuityPill(event: DiscontinuityEvent) {
 
 // ---- Bottom Multi-Track Timeline & Trim Dock ----
 
-private enum class TimelineDragTarget {
-    NONE,
-    PLAYHEAD,
-    IN_HANDLE,
-    OUT_HANDLE,
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BottomMultiTrackDock(
@@ -1383,10 +1381,47 @@ private fun BottomMultiTrackDock(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MultiTrackTimelineCanvas(
     controller: ArbStudioController,
     state: TimelineViewerState?,
+) {
+    var zoom by remember(state?.axis) { mutableFloatStateOf(1f) }
+    Column {
+        FlowRow(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ArbSubtleAction("−", { zoom /= 2 }, compact = true, enabled = zoom > 1f, tooltip = "縮小")
+                ArbSubtleAction("${zoom.toInt()}x", { zoom = 1f }, compact = true, tooltip = "全体を表示")
+                ArbSubtleAction("+", { zoom *= 2 }, compact = true, enabled = zoom < 8f, tooltip = "拡大")
+            }
+            for (edge in TrimEdge.entries) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(edge.name, style = ArbJewelPalette.tabularMonoStyle(10f))
+                    for (byTime in listOf(false, true)) {
+                        for (direction in listOf(-1, 1)) {
+                            val sign = if (direction < 0) "−" else "+"
+                            val step = if (byTime) "0.1s" else "1f"
+                            ArbSubtleAction(
+                                "$sign$step", { controller.nudge(edge, direction, byTime) },
+                                compact = true, enabled = controller.hasVideo,
+                                tooltip = "${edge.name} を $sign$step 移動（フレーム境界に合わせる）",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        TimelineTracks(controller, state, zoom) { zoom = it.coerceIn(1f, 8f) }
+    }
+}
+
+@Composable
+private fun TimelineTracks(
+    controller: ArbStudioController,
+    state: TimelineViewerState?,
+    zoom: Float,
+    changeZoom: (Float) -> Unit,
 ) {
     val currentState by rememberUpdatedState(state)
     val density = LocalDensity.current
@@ -1414,21 +1449,42 @@ private fun MultiTrackTimelineCanvas(
 
     val screenColors = List(4) { idx -> ArbJewelPalette.screenSpanColor(idx) }
 
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(118.dp),
-    ) {
+    var viewportStart by remember(state?.axis) { mutableStateOf(0L) }
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(118.dp).clipToBounds()) {
         val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val trackW = (widthPx - padHPx * 2f).coerceAtLeast(1f)
-
-        val geometry = state?.let { StudioTimelineGeometry(it, padHPx, trackW) }
+        val geometry = state?.let { StudioTimelineGeometry(it, padHPx, trackW, zoom, viewportStart) }
         val latestGeometry by rememberUpdatedState(geometry)
-
+        LaunchedEffect(controller, state?.axis, zoom) {
+            if (geometry != null) viewportStart = (controller.playheadTimeNs - geometry.span / 2).coerceIn(0L, geometry.maxStart)
+            snapshotFlow { controller.playheadTimeNs }.collect { time ->
+                val g = latestGeometry ?: return@collect
+                if (time !in g.start..g.end) viewportStart = (time - g.span / 2).coerceIn(0L, g.maxStart)
+            }
+        }
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .semantics { contentDescription = "マルチトラックタイムライン" }
+                .pointerInput(widthPx, state?.axis) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type != PointerEventType.Scroll) continue
+                            val g = latestGeometry ?: continue
+                            val change = event.changes.firstOrNull() ?: continue
+                            val delta = change.scrollDelta
+                            if (event.keyboardModifiers.isCtrlPressed && delta.y != 0f) {
+                                changeZoom(if (delta.y < 0) g.zoom * 2 else g.zoom / 2)
+                            } else if (g.zoom > 1f) {
+                                val steps = if (delta.x != 0f) delta.x else delta.y
+                                val shift = (g.span * (steps / 12.0).coerceIn(-1.0, 1.0)).toLong()
+                                viewportStart = g.start + shift.coerceIn(-g.start, g.maxStart - g.start)
+                            } else continue
+                            change.consume()
+                        }
+                    }
+                }
                 .pointerInput(widthPx, padHPx, state?.axis) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
@@ -1439,7 +1495,7 @@ private fun MultiTrackTimelineCanvas(
                         val y = down.position.y
 
                         // Track 2 click: check Activity Screen Span or Tap/Crash marker pin snap
-                        if (y in markerTopPx..(markerTopPx + markerHeightPx)) {
+                        if (y in markerTopPx..(markerTopPx + markerHeightPx) && g.markerHittable(x)) {
                             val spanHit = s.screens.firstOrNull { span ->
                                 val x1 = g.screen(span) ?: return@firstOrNull false
                                 // Keep short or clipped spans clickable (same 8px floor as before the time axis).
@@ -1456,72 +1512,56 @@ private fun MultiTrackTimelineCanvas(
                             }
                             // Snap to nearest tap or crash marker pin within 7dp
                             val pinSnapRadiusPx = 7.dp.toPx()
-                            val markerTimes = buildList<Pair<Float, Long>> {
-                                for (tap in s.mainTaps) {
-                                    val time = s.tapTime(tap) ?: continue
-                                    add(g.at(time) to time)
-                                }
-                                for (crash in s.crashes) {
-                                    val time = s.crashTime(crash) ?: continue
-                                    add(g.at(time) to time)
-                                }
-                            }
-                            val nearestPin = markerTimes.minByOrNull { abs(it.first - x) }
-                            if (nearestPin != null && abs(nearestPin.first - x) <= pinSnapRadiusPx) {
-                                controller.seekTime(nearestPin.second)
+                            val pinTime = g.pinAt(x, pinSnapRadiusPx, s.mainTaps.mapNotNull(s::tapTime) + s.crashes.mapNotNull(s::crashTime))
+                            if (pinTime != null) {
+                                controller.seekTime(pinTime)
                                 down.consume()
                                 return@awaitEachGesture
                             }
                         }
 
-                        val inX = g.inX
-                        val outX = g.outX
-                        val dragTarget = when {
-                            y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f) &&
-                                abs(x - inX) <= handleHitPx -> TimelineDragTarget.IN_HANDLE
-                            y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f) &&
-                                abs(x - outX) <= handleHitPx -> TimelineDragTarget.OUT_HANDLE
-                            else -> TimelineDragTarget.PLAYHEAD
-                        }
+                        val onFilmstrip = y in (filmstripTopPx - 6f)..(filmstripTopPx + filmstripHeightPx + 6f)
+                        val edge = if (onFilmstrip) g.trimEdgeAt(x, handleHitPx) else null
 
                         fun dispatch(posX: Float, settled: Boolean) {
-                            val st = currentState ?: return
-                            val time = g.timeAt(posX)
-                            when (dragTarget) {
-                                TimelineDragTarget.IN_HANDLE -> {
-                                    val targetFrame = if (posX == x) s.inFrameIndex else st.axis.frameAt(time)
-                                    controller.applyInFrame(targetFrame, settled)
-                                    if (settled) controller.seekExactFrame(targetFrame) else controller.scrubToFrame(targetFrame)
+                            val view = latestGeometry ?: return
+                            val time = when {
+                                posX == x && view.start == g.start && edge == TrimEdge.IN -> s.axis.start(s.inFrameIndex)
+                                posX == x && view.start == g.start && edge == TrimEdge.OUT -> s.axis.outTime(s.outFrameIndex)
+                                else -> view.timeAt(posX)
+                            }
+                            if (edge == null) controller.seekTime(time, settled) else controller.dragTrim(edge, time, settled)
+                            if (!settled && view.zoom > 1f) {
+                                val overshoot = posX - posX.coerceIn(padHPx, padHPx + trackW)
+                                if (overshoot != 0f) {
+                                    viewportStart = (view.start + view.span * (overshoot / trackW).coerceIn(-1f, 1f).toDouble())
+                                        .coerceIn(0.0, view.maxStart.toDouble()).toLong()
                                 }
-                                TimelineDragTarget.OUT_HANDLE -> {
-                                    val targetFrame = if (posX == x) s.outFrameIndex else st.axis.outFrame(time)
-                                    controller.applyOutFrame(targetFrame, settled)
-                                    if (settled) controller.seekExactFrame(targetFrame) else controller.scrubToFrame(targetFrame)
-                                }
-                                TimelineDragTarget.PLAYHEAD -> {
-                                    controller.seekTime(time, settled)
-                                }
-                                TimelineDragTarget.NONE -> Unit
                             }
                         }
 
-                        dispatch(x, settled = false)
-                        down.consume()
-                        var lastX = x
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            if (!change.pressed) break
-                            lastX = change.position.x
-                            dispatch(lastX, settled = false)
-                            change.consume()
+                        val originalTime = controller.playheadTimeNs
+                        try {
+                            dispatch(x, settled = false)
+                            down.consume()
+                            while (true) {
+                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                dispatch(change.position.x, settled = !change.pressed)
+                                change.consume()
+                                if (!change.pressed) break
+                            }
+                        } finally {
+                            if (controller.dragTime != null && currentState?.axis === s.axis) {
+                                controller.cancelDrag(originalTime)
+                            }
                         }
-                        dispatch(lastX, settled = true)
                     }
                 },
         ) {
             val s = state
             val g = geometry ?: return@Canvas
+            val inX = if (controller.dragEdge == TrimEdge.IN) g.at(controller.playheadTimeNs) else g.inX
+            val outX = if (controller.dragEdge == TrimEdge.OUT) g.at(controller.playheadTimeNs) else g.outX
             // 1. Subtle ruler line & ticks
             drawLine(hairline, Offset(padHPx, rulerHeightPx), Offset(padHPx + trackW, rulerHeightPx), strokeWidth = 1f)
             if (s.frameCount > 0L) {
@@ -1545,13 +1585,15 @@ private fun MultiTrackTimelineCanvas(
                 clipRect(padHPx, filmstripTopPx, padHPx + trackW, filmstripTopPx + filmstripHeightPx) {
                     val slotCount = s.filmstrip.size.coerceIn(6, 20)
                     val slotW = trackW / slotCount.toFloat()
+                    // Zoomed slots stay anchored to timeline time so they pan with every other layer.
+                    fun slotX(i: Int) = if (g.zoom == 1f) padHPx + i * slotW else g.at(s.axis.endNs * i / slotCount)
                     for (i in 0 until slotCount) {
-                        val sx = padHPx + i * slotW
+                        val sx = slotX(i)
                         if (i % 2 == 0) {
                             drawRect(
                                 color = Color.White.copy(alpha = 0.03f),
                                 topLeft = Offset(sx, filmstripTopPx),
-                                size = Size(slotW, filmstripHeightPx),
+                                size = Size(slotX(i + 1) - sx, filmstripHeightPx),
                             )
                         }
                         if (i > 0) {
@@ -1575,8 +1617,6 @@ private fun MultiTrackTimelineCanvas(
                         )
                     }
 
-                    val inX = g.inX
-                    val outX = g.outX
 
                     // Dimmed out-of-range overlays
                     if (inX > padHPx) {
@@ -1588,17 +1628,18 @@ private fun MultiTrackTimelineCanvas(
                 }
 
                 // QuickTime-inspired soft rounded warm gold dual In/Out trim frame & handles
-                val inX = g.inX
-                val outX = g.outX
                 val borderW = 2.5.dp.toPx()
-                drawRoundRect(
-                    color = trimAccent,
-                    topLeft = Offset(inX, filmstripTopPx),
-                    size = Size((outX - inX).coerceAtLeast(2f), filmstripHeightPx),
-                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-                    style = Stroke(width = borderW),
-                )
+                clipRect(padHPx - borderW, filmstripTopPx - borderW, padHPx + trackW + borderW, filmstripTopPx + filmstripHeightPx + borderW) {
+                    drawRoundRect(
+                        color = trimAccent,
+                        topLeft = Offset(inX, filmstripTopPx),
+                        size = Size((outX - inX).coerceAtLeast(2f), filmstripHeightPx),
+                        cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                        style = Stroke(width = borderW),
+                    )
+                }
                 fun drawHandle(centerX: Float) {
+                    if (!g.visible(centerX)) return
                     val hx = (centerX - handleWidthPx / 2f).coerceIn(padHPx - handleWidthPx / 2f, padHPx + trackW - handleWidthPx / 2f)
                     drawRoundRect(
                         color = trimAccent,
@@ -1690,7 +1731,7 @@ private fun MultiTrackTimelineCanvas(
                 val dashEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                 val crashR = 4.5.dp.toPx()
                 for (crash in s.crashes) {
-                    val cx = g.crash(crash) ?: continue
+                    val cx = g.crash(crash)?.takeIf(g::visible) ?: continue
                     drawLine(
                         color = red,
                         start = Offset(cx, filmstripTopPx),
@@ -1710,25 +1751,27 @@ private fun MultiTrackTimelineCanvas(
 
                 // 4. Unified crisp full-height playhead across ruler + tracks
                 val px = g.playhead(controller.playheadTimeNs)
-                drawLine(
-                    color = playheadOutline,
-                    start = Offset(px, rulerHeightPx - 4.dp.toPx()),
-                    end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
-                    strokeWidth = 4.dp.toPx(),
-                )
-                drawLine(
-                    color = playheadColor,
-                    start = Offset(px, rulerHeightPx - 4.dp.toPx()),
-                    end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
-                    strokeWidth = 2.dp.toPx(),
-                )
-                val cap = Path().apply {
-                    moveTo(px - 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
-                    lineTo(px + 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
-                    lineTo(px, rulerHeightPx - 2.dp.toPx())
-                    close()
+                if (g.visible(px)) {
+                    drawLine(
+                        color = playheadOutline,
+                        start = Offset(px, rulerHeightPx - 4.dp.toPx()),
+                        end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
+                        strokeWidth = 4.dp.toPx(),
+                    )
+                    drawLine(
+                        color = playheadColor,
+                        start = Offset(px, rulerHeightPx - 4.dp.toPx()),
+                        end = Offset(px, markerTopPx + markerHeightPx + 2.dp.toPx()),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                    val cap = Path().apply {
+                        moveTo(px - 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
+                        lineTo(px + 4.5.dp.toPx(), rulerHeightPx - 9.dp.toPx())
+                        lineTo(px, rulerHeightPx - 2.dp.toPx())
+                        close()
+                    }
+                    drawPath(cap, color = playheadColor)
                 }
-                drawPath(cap, color = playheadColor)
             }
         }
 
@@ -1738,7 +1781,7 @@ private fun MultiTrackTimelineCanvas(
                 modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
                 content = {
                     for (tick in 0..2) {
-                        val timeMs = state.axis.timeAtFraction(tick / 2.0) / 1_000_000L
+                        val timeMs = geometry.tickTime(tick, 2) / 1_000_000L
                         Text(ArbFormatters.formatDurationSeconds(timeMs), style = ArbJewelPalette.tabularMonoStyle(9.5f, color = mutedText))
                     }
                 },
@@ -1753,8 +1796,11 @@ private fun MultiTrackTimelineCanvas(
             }
 
             // Floating selection summary pill centered over the trim selection
-            val inX = geometry.inX
-            val outX = geometry.outX
+            val liveTime = controller.dragTime
+            val inTime = if (controller.dragEdge == TrimEdge.IN && liveTime != null) liveTime else state.axis.start(state.inFrameIndex)
+            val outTime = if (controller.dragEdge == TrimEdge.OUT && liveTime != null) liveTime else state.axis.outTime(state.outFrameIndex)
+            val inX = geometry.at(inTime)
+            val outX = geometry.at(outTime)
             val centerX = ((inX + outX) / 2f).coerceIn(padHPx + 90f, (padHPx + trackW - 90f).coerceAtLeast(padHPx + 90f))
             val pillShape = RoundedCornerShape(5.dp)
             Box(
@@ -1765,7 +1811,12 @@ private fun MultiTrackTimelineCanvas(
                     .padding(horizontal = 7.dp, vertical = 2.dp),
             ) {
                 Text(
-                    text = state.selectionSummaryText,
+                    text = if (liveTime == null) state.selectionSummaryText else {
+                        val label = controller.dragEdge?.name ?: "再生"
+                        val time = ArbFormatters.formatTimecode(liveTime / 1_000_000)
+                        val duration = ArbFormatters.formatTimecode((outTime - inTime) / 1_000_000)
+                        "$label $time · 選択 $duration"
+                    },
                     style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10f, bold = true),
                     maxLines = 1,
                     softWrap = false,
