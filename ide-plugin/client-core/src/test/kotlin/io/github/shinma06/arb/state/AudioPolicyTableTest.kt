@@ -38,6 +38,52 @@ class AudioPolicyTableTest {
             deviceApiLevel = api,
         )
 
+    @Test
+    fun compactReasonKeepsTheExceptionAndCompatHint() {
+        val exception = "java.lang.RuntimeException: registerAudioPolicy() returned -1"
+        val frame = "at com.genymobile.scrcpy.audio.AudioCapture.start(AudioCapture.java:42)"
+        for (separator in listOf(" | ", "\n", "\r\n\t")) {
+            val raw = listOf(
+                "device capture failed; scrcpy stderr: ERROR: Could not capture audio playback",
+                exception,
+                frame,
+                "at java.lang.Thread.run(Thread.java:1)  ",
+            ).joinToString(separator)
+            val status = capture(AudioCaptureState.UNAVAILABLE, AudioCause.DEVICE_CAPTURE_FAILED)
+            val banner = assertNotNull(AudioPolicyTable.banner(status.copy(audioReason = raw)))
+            assertEquals(exception, banner.detail.lineSequence().first())
+            assertTrue("端末消音" in banner.detail && frame !in banner.detail)
+            assertEquals(raw, banner.technicalDetail)
+        }
+    }
+
+    @Test
+    fun simpleReasonsAndMissingReasonsNeedNoDisclosure() {
+        for (raw in listOf("API 28", "短い理由🌱", "audio | disabled")) {
+            assertEquals(AudioReasonSummary(raw), summarizeAudioReasonForBanner(raw))
+        }
+        for (raw in listOf("", "  ")) {
+            assertEquals(AudioReasonSummary("詳細な理由は報告されていません。"), summarizeAudioReasonForBanner(raw))
+        }
+    }
+
+    @Test
+    fun summaryIsBoundedAndEveryFoldedReasonRoundTrips() {
+        val random = kotlin.random.Random(17)
+        val tokens = listOf("あ", "🌱", "a", "|", "\r", "\n", " ", "at com.example.C.run(C.java:1)")
+        repeat(500) {
+            val raw = List(random.nextInt(1, 200)) { tokens.random(random) }.joinToString("")
+            val result = summarizeAudioReasonForBanner(raw)
+            assertTrue(result.detail.isNotBlank() && result.detail.length <= 121)
+            if (raw.isNotBlank()) assertEquals(raw, result.technicalDetail ?: result.detail)
+        }
+        for (raw in listOf("あ".repeat(1000), "at com.example.Foo.run(Foo.java:1)\nat java.lang.Thread.run()")) {
+            val result = summarizeAudioReasonForBanner(raw)
+            assertEquals(raw, result.technicalDetail)
+            assertTrue("at com." !in result.detail)
+        }
+    }
+
     private fun goldenTable(): JsonObject {
         val root = System.getProperty("arb.repo.root")?.takeIf { it.isNotBlank() }?.let(::File)
             ?: generateSequence(File("").absoluteFile) { it.parentFile }

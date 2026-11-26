@@ -177,6 +177,7 @@ tasks.test {
     inputs.file(rootProject.file("../docs/specs/playback-s6-traces.json"))
     useJUnitPlatform()
     systemProperty("java.awt.headless", "true")
+    systemProperty("skiko.library.path", intellijPlatform.platformPath.resolve("lib/skiko-awt-runtime-all").toString())
     inputs.files(rootProject.fileTree("../docs/specs") { include("*-table.json") })
     systemProperty("arb.repo.root", projectDir.parentFile.absolutePath)
     testLogging {

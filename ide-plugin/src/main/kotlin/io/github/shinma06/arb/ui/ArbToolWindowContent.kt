@@ -19,18 +19,23 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +48,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.shinma06.arb.ide.ArbNotifications
 import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.SaveJobView
@@ -271,7 +277,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
             }
             for (banner in capture.banners) {
-                CaptureAlertBanner(banner)
+                key(banner.kind, banner.title) { CaptureAlertBanner(banner) }
             }
             for (job in recovery.retryableJobs) {
                 FailedSaveJobBanner(
@@ -563,7 +569,10 @@ private fun StaleDaemonBanner(
 }
 
 @Composable
-private fun CaptureAlertBanner(banner: CaptureBanner) {
+internal fun CaptureAlertBanner(
+    banner: CaptureBanner,
+    onCopy: (String) -> Unit = ArbNotifications::copyTextToClipboard,
+) {
     val (bg, accent) = when (banner.kind) {
         CaptureBannerKind.STORAGE_PRESSURE_STOP -> ArbJewelPalette.recRedSoft() to ArbJewelPalette.recRed()
         CaptureBannerKind.CONNECTION_LOST,
@@ -582,6 +591,27 @@ private fun CaptureAlertBanner(banner: CaptureBanner) {
                 text = banner.detail,
                 style = ArbJewelPalette.bodyStyle(sizeSp = 10.5f, color = ArbJewelPalette.mutedText()),
             )
+            val raw = banner.technicalDetail
+            if (!raw.isNullOrEmpty()) {
+                var expanded by remember(banner) { mutableStateOf(false) }
+                Row {
+                    ArbSubtleAction(
+                        label = if (expanded) "詳細を隠す" else "詳細を表示",
+                        compact = true,
+                        onClick = { expanded = !expanded },
+                    )
+                    if (expanded) {
+                        ArbSubtleAction(label = "詳細をコピー", compact = true, onClick = { onCopy(raw) })
+                    }
+                }
+                if (expanded) {
+                    Text(
+                        text = raw,
+                        modifier = Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
+                        style = ArbJewelPalette.tabularMonoStyle(sizeSp = 10.5f),
+                    )
+                }
+            }
         }
     }
 }
