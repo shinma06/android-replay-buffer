@@ -174,6 +174,7 @@ class ArbStudioControllerOrderingTest {
         val edt = ManualEdt()
         val (editor, _) = readyEditor(tmp, edt, daemon)
         try {
+            val originalFrame = editor.studioController.viewerState!!.currentFrameIndex
             editor.studioController.selectAroundCrash()
             val range = editor.currentTrimRange()
             assertTrue(range.second < 399)
@@ -181,7 +182,7 @@ class ArbStudioControllerOrderingTest {
             val (start, end, playhead) = daemon.storedRanges.last()
             assertEquals(range.first, start)
             assertEquals(range.second, end)
-            assertEquals(10L, playhead)
+            assertEquals(originalFrame, playhead)
         } finally {
             editor.dispose()
         }

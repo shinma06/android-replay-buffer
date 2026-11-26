@@ -309,15 +309,13 @@ class ArbViewModelsTest {
             summary = sampleSummary(),
             frameCount = 90L,
             currentFrameIndex = 0L,
-            inFrameIndex = 0L,
-            outFrameIndex = 89L,
         )
         val steppedBack = TimelineViewerReducer.stepFrame(state, -1L)
         assertEquals(0L, steppedBack.currentFrameIndex)
         val steppedFwd = TimelineViewerReducer.stepFrame(state, +1L)
         assertEquals(1L, steppedFwd.currentFrameIndex)
 
-        val movedInPastOut = TimelineViewerReducer.setInFrame(state.copy(outFrameIndex = 20L), 50L)
+        val movedInPastOut = TimelineViewerReducer.setInFrame(state.copy(outTimeNs = state.axis.outTime(20)), 50L)
         assertEquals(50L, movedInPastOut.inFrameIndex)
         assertEquals(50L, movedInPastOut.outFrameIndex)
 

@@ -28,6 +28,11 @@ internal class StudioViewportSession(
     private var sourceBundleId: String? = null
 
     @Synchronized
+    fun ensureOpen(bundleId: String) {
+        if (current == null) open(bundleId)
+    }
+
+    @Synchronized
     fun open(bundleId: String): MediaOpenViewportResponse {
         check(current == null && !disposed())
         sourceBundleId = bundleId

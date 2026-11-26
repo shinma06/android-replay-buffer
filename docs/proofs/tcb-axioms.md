@@ -212,6 +212,12 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
 | TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 20 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 
+### S7 の Studio トリム状態機械
+
+S7 はフレーム開始位置 0・2、終端 3、最小選択幅 1 の有限軸で、全ポインタ位置、再生ティック、ズーム、プレビューデコードの開始・遅延到着を全探索する。S7-1〜5 は再生位置と選択区間の独立、離した境界の保持、区間幅、プレビューの解放を検査する。S7-6 は再生位置の追従、離した境界の量子化、キャンセル時の解放漏れを個別に注入し、各反例の最終状態を検査する。
+
+同じ遷移を 32 秒の VFR 軸（12〜22 秒は同一フレーム）で実行し、各ステップの時刻・描画座標・デコード結果の採否を [共有トレース](../specs/studio-trim-s7-traces.json) に固定する。Kotlin は本番の Studio コントローラ、選択リデューサ、描画座標変換で同じ操作を再生する。S7 の探索範囲は単一ポインタと直列デコーダで、実際のウィンドウイベントの配送、Skiko のラスタライズ、実機デコードの遅延は IDE 受け入れで確認する。Stage B の保存・書き出し RPC には従来のフレーム射影が渡る。実時間区間の書き出しは Stage C で検証する。
+
 端末選択では arbd の `select_live_target` と tray が `arb_core::device::selectable_online_serials` を直接使う。Rust 側の二重実装についての公理は不要になった。
 
 ## 5. Sara 互換性

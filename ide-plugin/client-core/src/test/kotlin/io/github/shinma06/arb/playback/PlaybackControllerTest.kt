@@ -88,6 +88,33 @@ class PlaybackControllerTest {
         List(count) { i -> baseNs + i * stepMs * 1_000_000L }
 
     @Test
+    fun studioEditOutsideThePlayingFrameAppliesOnNextPlay() {
+        val clock = ManualClock()
+        val seeker = RecordingSeeker()
+        PlaybackController(
+            totalFrames = 8, frameSeeker = seeker, framePtsNs = uniformPtsNs(8),
+            clock = clock, autoRunLoop = false,
+        ).use { playback ->
+            playback.play()
+            clock.advanceMs(250)
+            playback.tick()
+            val seeks = seeker.calls.toList()
+            val before = playback.displayPositionNs()
+            playback.setStudioRange(5L..6L)
+            assertEquals(before, playback.displayPositionNs())
+            assertEquals(PlaybackMode.PLAYING, playback.state.mode)
+            assertEquals(seeks, seeker.calls)
+            clock.advanceMs(100)
+            playback.tick()
+            assertEquals(3L, playback.state.currentFrameIndex)
+            playback.pause()
+            playback.play()
+            assertEquals(5L, playback.state.currentFrameIndex)
+            assertEquals(6L, playback.state.outFrameIndex)
+        }
+    }
+
+    @Test
     fun sharedVfrQueriesAndConstantSpeedWhileHolding() {
         val path = java.nio.file.Path.of(System.getProperty("arb.repo.root"), "core/crates/arb-media/tests/data/vfr-timeline.txt")
         val lines = java.nio.file.Files.readAllLines(path).filterNot { it.startsWith('#') }
