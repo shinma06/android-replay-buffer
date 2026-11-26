@@ -982,3 +982,95 @@ fn k12_filmstrip_cache_rejects_mismatched_content_digest() {
         "legacy header is a miss"
     );
 }
+
+fn k13_range() -> ([u64; 3], u64, u64, u64) {
+    let interval = || u64::from(kani::any::<u16>()) + 1;
+    let second = interval();
+    let third = second + interval();
+    let end = third + interval();
+    let (start, stop) = (u64::from(kani::any::<u32>()), u64::from(kani::any::<u32>()));
+    kani::assume(start < stop && stop <= end);
+    ([0, second, third], end, start, stop)
+}
+
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k13_time_range_trim_valid_bounds_and_positive_durations() {
+    let (pts, end, start, stop) = k13_range();
+    let (first, last, mut durations) =
+        crate::timeline::trim_intervals(&pts, end, start, stop).unwrap();
+    assert!(first <= last && last < pts.len());
+    assert!(durations.all(|d| d > 0));
+    kani::cover!(first == 1 && last == 1, "single middle frame");
+}
+
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k13_time_range_trim_exact_duration_conservation() {
+    let (pts, end, start, stop) = k13_range();
+    let (first, last, durations) = crate::timeline::trim_intervals(&pts, end, start, stop).unwrap();
+    assert_eq!(durations.sum::<u64>(), stop - start);
+    kani::cover!(
+        start > 0 && stop < end && last - first == 2,
+        "both ends shortened"
+    );
+}
+
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k13_time_range_trim_frame_equivalence_at_every_time() {
+    let (pts, end, start, stop) = k13_range();
+    let t = u64::from(kani::any::<u32>());
+    kani::assume(t < stop - start);
+    let (first, _, durations) = crate::timeline::trim_intervals(&pts, end, start, stop).unwrap();
+    let mut elapsed = 0;
+    let mut displayed = None;
+    for (offset, d) in durations.enumerate() {
+        elapsed += d;
+        if t < elapsed {
+            displayed = Some(first + offset);
+            break;
+        }
+    }
+    let expected = pts.iter().rposition(|&stamp| stamp <= start + t);
+    assert_eq!(displayed, expected);
+    kani::cover!(start + t == pts[1], "exact internal boundary");
+}
+
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k13_time_range_trim_rejects_invalid_ranges() {
+    let (pts, end, _, _) = k13_range();
+    let (start, stop): (u64, u64) = (kani::any(), kani::any());
+    kani::assume(start >= stop || stop > end);
+    assert!(crate::timeline::plan_time_range_trim(&pts, end, start, stop).is_err());
+    assert!(crate::timeline::plan_time_range_trim(&[], end, 0, end).is_err());
+    kani::cover!(start == stop, "empty selection");
+    kani::cover!(stop > end && start < stop, "past track end");
+}
+
+#[kani::proof]
+#[kani::solver(minisat)]
+#[kani::unwind(5)]
+fn k13_quantize_durations_positive_and_drift_free() {
+    // 8 ns/tick; every residue including exact half ticks and sub-tick samples is reachable.
+    let durations = [(); 3].map(|()| 1 + u64::from(kani::any::<u8>()));
+    let target = (durations.iter().sum::<u64>() + 4) / 8;
+    let result = crate::timeline::quantize_durations_ns_to_ticks(&durations, 125_000_000);
+    if target < 3 {
+        assert!(result.is_err());
+    } else {
+        let ticks = result.unwrap();
+        assert_eq!(ticks.len(), 3);
+        assert!(ticks.iter().all(|&d| d >= 1));
+        assert_eq!(ticks.iter().map(|&d| u64::from(d)).sum::<u64>(), target);
+    }
+    kani::cover!(
+        durations[0] == 1 && durations[2] == 1 && target >= 3,
+        "two sub-tick edges"
+    );
+}

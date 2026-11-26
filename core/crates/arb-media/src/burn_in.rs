@@ -870,7 +870,7 @@ pub fn burn_in_taps_video(
         samples,
     };
 
-    let copied = write_trim_mp4(output_path, &track, Some(&segment), None)?;
+    let copied = write_trim_mp4(output_path, &track, Some(&segment), None, None)?;
     debug_assert_eq!(copied, 0, "full-range burn-in writes no stream-copied tail");
 
     Ok(BurnInReport {

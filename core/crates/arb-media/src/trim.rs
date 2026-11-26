@@ -23,6 +23,15 @@ pub struct TrimReport {
     pub in_frame_index: u64,
     /// Inclusive ending zero-based frame index from the input MP4.
     pub out_frame_index: u64,
+    /// Requested inclusive start for a time range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_time_ns: Option<u64>,
+    /// Requested exclusive end for a time range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_time_ns: Option<u64>,
+    /// Actual quantized duration for a time range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_duration_ns: Option<u64>,
     /// Total frames written to the output MP4 (`out_frame_index - in_frame_index + 1`).
     pub output_frame_count: u64,
     /// Number of input frames decoded from the head GOP IDR to reconstruct the trim boundary.
@@ -69,6 +78,95 @@ pub fn trim_video(
     let output_path = output_mp4.as_ref();
     ensure_output_is_not_input(input_path, output_path)?;
     let track = Mp4VideoTrack::open(input_path)?;
+    trim_track(
+        &track,
+        output_path,
+        in_frame_index,
+        out_frame_index,
+        backend,
+        None,
+    )
+}
+
+/// Writes the frames displayed in the half-open media time range, shortening the boundary samples.
+///
+/// # Errors
+/// Rejects invalid ranges, reordered video and unsupported sample timing. Uses the same codec,
+/// container and atomic publication checks as [`trim_video`].
+pub fn trim_video_time_range(
+    input_mp4: impl AsRef<Path>,
+    output_mp4: impl AsRef<Path>,
+    in_time_ns: u64,
+    out_time_ns: u64,
+    backend: &dyn VideoCodecBackend,
+) -> Result<TrimReport, MediaError> {
+    let output = output_mp4.as_ref();
+    ensure_output_is_not_input(input_mp4.as_ref(), output)?;
+    let track = Mp4VideoTrack::open(input_mp4)?;
+    track.require_no_b_frames("trim_video_time_range")?;
+    let frames = track.frames();
+    let pts = crate::timeline::normalized_timestamps(frames.iter().map(|frame| frame.pts_ns));
+    // Accept both the viewport's end (truncated PTS plus truncated duration) and the end
+    // converted once from PTS ticks; either can exceed the other by one ns.
+    let tail = frames
+        .last()
+        .filter(|f| f.duration_ticks > 0)
+        .map(|f| i64::try_from(f.duration_ns.max(1)).unwrap_or(i64::MAX));
+    let mut end = crate::timeline::end_ns(&pts, tail, 1);
+    if let (Some(first), Some(last)) = (
+        frames.first(),
+        frames.last().filter(|f| f.duration_ticks > 0),
+    ) {
+        let ticks = last
+            .pts_ticks
+            .checked_add(i64::from(last.duration_ticks))
+            .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
+        let exact =
+            crate::mp4::ticks_to_ns_signed(ticks, track.timescale()).saturating_sub(first.pts_ns);
+        end = end.max(exact);
+    }
+    let end = end.unsigned_abs();
+    let pts: Vec<_> = pts.into_iter().map(i64::unsigned_abs).collect();
+    let invalid = |msg: &str| MediaError::InvalidArgument(msg.to_owned());
+    let plan = crate::timeline::plan_time_range_trim(&pts, end, in_time_ns, out_time_ns)
+        .map_err(invalid)?;
+    // A cut straddling a frame boundary can be shorter than two source ticks.
+    // Raise precision only when the source clock cannot give each frame one tick.
+    let span = u128::from(out_time_ns - in_time_ns);
+    let count =
+        u128::try_from(plan.durations_ns.len()).map_err(|_| invalid("sample count overflow"))?;
+    let mut scale = track.timescale();
+    if count > 1 && (span * u128::from(scale) + 500_000_000) / 1_000_000_000 < count {
+        scale = u32::try_from((count * 1_000_000_000).div_ceil(span))
+            .map_err(|_| invalid("timescale overflow"))?;
+    }
+    let ticks = crate::timeline::quantize_durations_ns_to_ticks(&plan.durations_ns, scale)
+        .map_err(invalid)?;
+    // Clocks finer than 1 ns can truncate a positive length to zero.
+    let duration =
+        crate::mp4::ticks_to_ns_unsigned(ticks.iter().map(|&n| u64::from(n)).sum(), scale).max(1);
+    let mut report = trim_track(
+        &track,
+        output,
+        u64::try_from(plan.in_frame_index).map_err(|_| invalid("frame index overflow"))?,
+        u64::try_from(plan.out_frame_index).map_err(|_| invalid("frame index overflow"))?,
+        backend,
+        Some((scale, &ticks)),
+    )?;
+    report.in_time_ns = Some(in_time_ns);
+    report.out_time_ns = Some(out_time_ns);
+    report.output_duration_ns = Some(duration);
+    Ok(report)
+}
+
+fn trim_track(
+    track: &Mp4VideoTrack,
+    output_path: &Path,
+    in_frame_index: u64,
+    out_frame_index: u64,
+    backend: &dyn VideoCodecBackend,
+    timing: Option<(u32, &[u32])>,
+) -> Result<TrimReport, MediaError> {
     let frame_count = track.frame_count();
     if frame_count == 0 || in_frame_index > out_frame_index || out_frame_index >= frame_count {
         return Err(MediaError::InvalidFrameRange {
@@ -99,7 +197,7 @@ pub fn trim_video(
 
     if in_frame_index > gop_start {
         let encoded_head = backend.reencode_frame_range(
-            &track,
+            track,
             in_frame_index,
             splice_point,
             EncodeParams::default(),
@@ -133,8 +231,13 @@ pub fn trim_video(
     };
 
     let copy_range = (copy_start <= out_frame_index).then_some((copy_start, out_frame_index));
-    let stream_copied_frames =
-        write_trim_mp4(output_path, &track, head_segment.as_ref(), copy_range)?;
+    let stream_copied_frames = write_trim_mp4(
+        output_path,
+        track,
+        head_segment.as_ref(),
+        copy_range,
+        timing,
+    )?;
 
     let output_frame_count = reencoded_frames + stream_copied_frames;
     if output_frame_count != out_frame_index - in_frame_index + 1 {
@@ -143,6 +246,9 @@ pub fn trim_video(
         ));
     }
     Ok(TrimReport {
+        in_time_ns: None,
+        out_time_ns: None,
+        output_duration_ns: None,
         in_frame_index,
         out_frame_index,
         output_frame_count,
