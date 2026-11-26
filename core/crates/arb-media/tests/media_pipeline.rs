@@ -1118,22 +1118,24 @@ fn b_frame_ctts_is_detected_and_explicitly_rejected_by_trim() {
 /// single-chunk faststart MP4 produced by `mux_raw_h264_to_mp4`, updating enclosing box sizes
 /// and `stco` offset accordingly.
 fn inject_synthetic_bframe_ctts(mp4: &[u8]) -> Vec<u8> {
-    // Build a 32-byte `ctts` full box (version 0, 2 entries: 1 frame +6000, remaining frames 0).
-    let mut ctts = Vec::with_capacity(32);
-    ctts.extend_from_slice(&32u32.to_be_bytes());
+    // 2 entries: 1 frame +6000 ticks (reorders behind frame 1), remaining frames 0.
+    let rem = u32::try_from(FRAME_COUNT - 1).expect("remaining fits u32");
+    inject_ctts(mp4, &[(1, 6_000), (rem, 0)])
+}
+
+/// Inserts a version-0 `ctts` box with `(sample_count, sample_offset)` entries before `stco`.
+fn inject_ctts(mp4: &[u8], entries: &[(u32, u32)]) -> Vec<u8> {
+    let size = 16 + 8 * entries.len();
+    let mut ctts = Vec::with_capacity(size);
+    ctts.extend_from_slice(&u32::try_from(size).expect("ctts size").to_be_bytes());
     ctts.extend_from_slice(b"ctts");
     ctts.extend_from_slice(&0u32.to_be_bytes()); // version=0, flags=0
-    ctts.extend_from_slice(&2u32.to_be_bytes()); // entry_count = 2
-    ctts.extend_from_slice(&1u32.to_be_bytes()); // sample_count = 1
-    ctts.extend_from_slice(&6_000u32.to_be_bytes()); // sample_offset = +6000 ticks (reorders behind frame 1)
-    let rem = u32::try_from(FRAME_COUNT - 1).expect("remaining fits u32");
-    ctts.extend_from_slice(&rem.to_be_bytes());
-    ctts.extend_from_slice(&0u32.to_be_bytes());
-    assert_eq!(
-        ctts.len(),
-        32,
-        "ctts box length must match declared header size"
-    );
+    let count = u32::try_from(entries.len()).expect("entry count");
+    ctts.extend_from_slice(&count.to_be_bytes());
+    for &(samples, offset) in entries {
+        ctts.extend_from_slice(&samples.to_be_bytes());
+        ctts.extend_from_slice(&offset.to_be_bytes());
+    }
 
     let delta = u32::try_from(ctts.len()).expect("ctts len fits u32");
 
@@ -1486,4 +1488,39 @@ fn subframe_trims_preserve_vfr_hold_and_decoded_barcodes() {
             assert_eq!(read_barcode_from_frame(&frame), Some(first + i));
         }
     }
+}
+
+#[test]
+fn constant_ctts_track_accepts_the_viewport_end() {
+    let tmp = TempDir::new().unwrap();
+    let plain = tmp.path().join("plain.mp4");
+    let source = tmp.path().join("ctts.mp4");
+    let output = tmp.path().join("out.mp4");
+    let backend = OpenH264Backend::new();
+    let frames: Vec<_> = (0..2).map(synthesize_barcode_yuv420p_frame).collect();
+    let packets = backend
+        .encode_yuv420p_sequence(&frames, 30, FRAME_DURATION_NS, EncodeParams::default())
+        .unwrap();
+    mux_raw_h264_to_mp4(&plain, 448, 256, TIMESCALE, FRAME_DURATION_TICKS, &packets).unwrap();
+    // A constant composition offset is not reordering; 8 ticks makes the truncated
+    // PTS + duration end one ns later than the truncated DTS end.
+    std::fs::write(
+        &source,
+        inject_ctts(&std::fs::read(&plain).unwrap(), &[(2, 8)]),
+    )
+    .unwrap();
+    let track = Mp4VideoTrack::open(&source).unwrap();
+    assert!(!track.has_b_frames());
+    let pts = arb_media::timeline::viewport_timestamps(track.frames().iter().map(|f| f.pts_ns));
+    let tail = i64::try_from(track.frames()[1].duration_ns).unwrap();
+    let end = arb_media::timeline::end_ns(&pts, Some(tail), 1).unsigned_abs();
+    assert_eq!(end, 66_666_667);
+
+    let report =
+        arb_media::trim::trim_video_time_range(&source, &output, 0, end, &backend).unwrap();
+    assert_eq!((report.in_frame_index, report.out_frame_index), (0, 1));
+    assert_eq!(
+        Mp4VideoTrack::open(&output).unwrap().duration_ticks(),
+        6_000
+    );
 }

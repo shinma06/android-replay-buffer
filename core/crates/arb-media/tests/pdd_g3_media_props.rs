@@ -349,3 +349,20 @@ fn complete_90khz_clock_range_can_be_trimmed_again_at_reported_end() {
         9_000
     );
 }
+
+#[test]
+fn sub_nanosecond_tick_trim_reports_a_positive_retrimmable_duration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("input.mp4");
+    let first = tmp.path().join("first.mp4");
+    let second = tmp.path().join("second.mp4");
+    let backend = OpenH264Backend::new();
+    let packets = encode_vfr(&[2], &[400]);
+    mux_raw_h264_to_mp4(&src, 64, 48, u32::MAX, 1, &packets).unwrap();
+    let report = arb_media::trim::trim_video_time_range(&src, &first, 0, 1, &backend).unwrap();
+    // One ns is 4 ticks (0.93 ns) at this clock; the track still lasts for a nonzero time.
+    assert_eq!(Mp4VideoTrack::open(&first).unwrap().duration_ticks(), 4);
+    assert_eq!(report.output_duration_ns, Some(1));
+    let end = report.output_duration_ns.unwrap();
+    arb_media::trim::trim_video_time_range(&first, &second, 0, end, &backend).unwrap();
+}

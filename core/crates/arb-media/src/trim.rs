@@ -104,20 +104,28 @@ pub fn trim_video_time_range(
     ensure_output_is_not_input(input_mp4.as_ref(), output)?;
     let track = Mp4VideoTrack::open(input_mp4)?;
     track.require_no_b_frames("trim_video_time_range")?;
-    let pts =
-        crate::timeline::normalized_timestamps(track.frames().iter().map(|frame| frame.pts_ns));
-    // Convert the final stts boundary once. Adding independently truncated ns for the
-    // last PTS and its duration can reject the track's own reported end by one ns.
-    let end = if let Some(last) = track.frames().last().filter(|f| f.duration_ticks > 0) {
+    let frames = track.frames();
+    let pts = crate::timeline::normalized_timestamps(frames.iter().map(|frame| frame.pts_ns));
+    // Accept both the viewport's end (truncated PTS plus truncated duration) and the end
+    // converted once from PTS ticks; either can exceed the other by one ns.
+    let tail = frames
+        .last()
+        .filter(|f| f.duration_ticks > 0)
+        .map(|f| i64::try_from(f.duration_ns.max(1)).unwrap_or(i64::MAX));
+    let mut end = crate::timeline::end_ns(&pts, tail, 1);
+    if let (Some(first), Some(last)) = (
+        frames.first(),
+        frames.last().filter(|f| f.duration_ticks > 0),
+    ) {
         let ticks = last
-            .dts_ticks
-            .checked_add(u64::from(last.duration_ticks))
+            .pts_ticks
+            .checked_add(i64::from(last.duration_ticks))
             .ok_or_else(|| MediaError::InvalidContainer("track duration overflow".into()))?;
-        crate::mp4::ticks_to_ns_unsigned(ticks, track.timescale())
-            .max(crate::timeline::end_ns(&pts, Some(1), 1).unsigned_abs())
-    } else {
-        crate::timeline::end_ns(&pts, None, 1).unsigned_abs()
-    };
+        let exact =
+            crate::mp4::ticks_to_ns_signed(ticks, track.timescale()).saturating_sub(first.pts_ns);
+        end = end.max(exact);
+    }
+    let end = end.unsigned_abs();
     let pts: Vec<_> = pts.into_iter().map(i64::unsigned_abs).collect();
     let invalid = |msg: &str| MediaError::InvalidArgument(msg.to_owned());
     let plan = crate::timeline::plan_time_range_trim(&pts, end, in_time_ns, out_time_ns)
@@ -134,8 +142,9 @@ pub fn trim_video_time_range(
     }
     let ticks = crate::timeline::quantize_durations_ns_to_ticks(&plan.durations_ns, scale)
         .map_err(invalid)?;
+    // Clocks finer than 1 ns can truncate a positive length to zero.
     let duration =
-        crate::mp4::ticks_to_ns_unsigned(ticks.iter().map(|&n| u64::from(n)).sum(), scale);
+        crate::mp4::ticks_to_ns_unsigned(ticks.iter().map(|&n| u64::from(n)).sum(), scale).max(1);
     let mut report = trim_track(
         &track,
         output,
