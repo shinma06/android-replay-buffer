@@ -1059,10 +1059,19 @@ impl Catalog {
                         if gate == PurgeGate::ForgottenMissing {
                             preview.missing_bundle_ids.push(bundle.bundle_id.clone());
                         }
-                        let path = self.existing_purge_path(&bundle)?;
-                        preview.estimated_reclaim_bytes = preview
-                            .estimated_reclaim_bytes
-                            .saturating_add(estimate_tree_bytes(&path)?);
+                        match self
+                            .existing_purge_path(&bundle)
+                            .and_then(|path| estimate_tree_bytes(&path))
+                        {
+                            Ok(bytes) => {
+                                preview.estimated_reclaim_bytes =
+                                    preview.estimated_reclaim_bytes.saturating_add(bytes);
+                            }
+                            Err(error) => report.failed.push(GcFailure {
+                                bundle_id: bundle.bundle_id.clone(),
+                                error: error.to_string(),
+                            }),
+                        }
                         preview.candidate_bundle_ids.push(bundle.bundle_id);
                     }
                 }
@@ -1289,7 +1298,7 @@ impl Catalog {
         if current.state != BundleLifecycleState::Trashed {
             return Ok(PurgeGate::Gone);
         }
-        let disk_state = probe_bundle_disk_state(&current.path);
+        let disk_state = self.bundle_disk_state(&current.path);
         if current.path != bundle.path
             || (disk_state != BundleDiskState::Missing && !self.is_purgeable_location(&current)?)
         {

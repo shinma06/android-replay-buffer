@@ -338,6 +338,18 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
         Ok(stats)
     }
 
+    /// Counts rows matching the same bucket and bounds as a paged log query.
+    ///
+    /// # Errors
+    /// Returns an error when the timeline cannot be read.
+    fn count_logs(
+        &self,
+        bucket: Option<RecordBucket>,
+        range: TimeRange,
+    ) -> Result<usize, StorageError> {
+        self.query_logs(bucket, range, None).map(|rows| rows.len())
+    }
+
     /// Queries logcat rows filtered by optional `bucket`, [`TimeRange`], and optional row `limit`.
     ///
     /// # Errors
@@ -949,6 +961,32 @@ impl V2BundleReader {
 }
 
 impl BundleReader for V2BundleReader {
+    fn count_logs(
+        &self,
+        bucket: Option<RecordBucket>,
+        range: TimeRange,
+    ) -> Result<usize, StorageError> {
+        let conn = self.open_timeline_ro()?;
+        if bucket.is_none() && range == TimeRange::all() {
+            return conn
+                .query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0))
+                .map_err(|err| StorageError::sqlite("count_all_logs", err));
+        }
+        conn.query_row(
+            "SELECT COUNT(*) FROM logs
+             WHERE (?1 IS NULL OR bucket = ?1)
+               AND (?2 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) >= ?2)
+               AND (?3 IS NULL OR COALESCE(aligned_boottime_ns, pc_ingest_cont_ns) <= ?3)",
+            params![
+                bucket.map(record_bucket_to_str),
+                range.start_ns,
+                range.end_ns
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|err| StorageError::sqlite("count_logs", err))
+    }
+
     fn log_statistics(&self) -> Result<LogStatistics, StorageError> {
         let conn = self.open_timeline_ro()?;
         let mut stmt = conn
@@ -1424,6 +1462,24 @@ impl LegacyBundleReader {
 }
 
 impl BundleReader for LegacyBundleReader {
+    fn count_logs(
+        &self,
+        bucket: Option<RecordBucket>,
+        range: TimeRange,
+    ) -> Result<usize, StorageError> {
+        if bucket.is_none() && range == TimeRange::all() {
+            return Ok(self.logs.len());
+        }
+        Ok(self
+            .logs
+            .iter()
+            .filter(|row| {
+                bucket.is_none_or(|b| b == row.bucket)
+                    && range.matches(alignment_query_timestamp(&row.alignment))
+            })
+            .count())
+    }
+
     fn legacy_log_digest(&self) -> Option<&str> {
         Some(&self.log_digest)
     }

@@ -1070,7 +1070,7 @@ impl CapturePipeline {
     }
 
     /// Computes the honest elapsed duration currently retained in the Zone-1 ring buffer (in
-    /// whole seconds), scoped to the active capture session when one is running and bounded by
+    /// whole seconds), scoped to the current serial and device boot and bounded by
     /// the configured ring duration cap.
     #[must_use]
     pub fn buffered_secs(&self) -> u64 {
@@ -1176,7 +1176,9 @@ impl CapturePipeline {
             self.recovered_boot_id = Some(boot.to_owned());
         }
         let event_pc_ns = capture_event_pc_cont_ns(&event);
-        if let (Some(start), Some(end)) = (self.resume_from_ns.take(), event_pc_ns) {
+        if let Some(end) = event_pc_ns
+            && let Some(start) = self.resume_from_ns.take()
+        {
             let gap = stream_gap(
                 start,
                 end.max(start),
@@ -2129,8 +2131,8 @@ fn measure_saved_evidence(
     DaemonError,
 > {
     let reader = arb_storage::bundle_io::open_bundle(path)?;
-    let summary = crate::inspect_export::catalog_summary(reader.as_ref())?;
     let logs = reader.log_statistics()?;
+    let summary = crate::inspect_export::catalog_summary_with_logs(reader.as_ref(), &logs)?;
     let manifest = reader.manifest_summary();
     let video = summary
         .duration_ms
