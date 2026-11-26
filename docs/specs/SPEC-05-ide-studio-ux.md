@@ -45,6 +45,8 @@ Tool Window は録画状態・接続端末・保存アクションと、保存�
 - タイムラインは 1x〜8x のズーム、パン、ハンドルの ±1 フレーム／±0.1 秒の微調整を提供する。I／O は現在位置を IN／OUT に設定する。検索欄に入力フォーカスがある間は文字入力を優先する。基準版は両端を含むフレーム番号を編集状態として保存する。
 - 共有動画へのタップ／スワイプ焼き込みは初期 ON。チェックの変更を IDE ローカル設定に保存し次回に引き継ぐ。表示用オーバーレイの切替とは独立する。トリム書き出し成功後もタブを閉じず、出力先等の完了バナーを表示する。書き出した選択と現在の選択が同じなら未書き出しの終了確認を解除し、その後に範囲を変更すれば再び保護する。PNG 1 枚の書き出しでトリム済み扱いにしてはならない。[Studio の操作](../../ide-plugin/src/main/kotlin/io/github/shinma06/arb/ui/ArbStudioContent.kt)・[エディタの書き出し](../../ide-plugin/src/main/kotlin/io/github/shinma06/arb/ide/ArbBundleFileEditor.kt)・[終了確認](../../ide-plugin/client-core/src/main/kotlin/io/github/shinma06/arb/state/TrimCloseState.kt)
 
+[既知制約 / Trail #139] 別々の IDE が同じ編集セッション ID を更新すると、最後に書かれた範囲が残る。基準版の `edit.update_session` に期待バージョンによる競合検出はない。失敗時にそのタブの未保存範囲を再送できることと、別の IDE の上書きを防ぐことは別の条件である。[更新処理](../../core/crates/arbd/src/lib.rs)
+
 ## 連続実時間トリムの受け入れ条件 [設計 / Item #18]
 
 選択を連続時間とする設計 10 の T-1〜T-6 を適用する。現行のフレーム指定トリムと区別して、以下を次の実装の合否基準に用いる。
