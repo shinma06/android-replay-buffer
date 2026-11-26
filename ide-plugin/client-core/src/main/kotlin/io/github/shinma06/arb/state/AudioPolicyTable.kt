@@ -101,7 +101,7 @@ object AudioPolicyTable {
         val mode = capture.audioCaptureMode ?: AudioCaptureMode.PLAYBACK_DUP
         val api = capture.deviceApiLevel
         val title = bannerTitle(cause, api, mode) ?: return null
-        val detail = capture.audioReason?.takeIf { it.isNotBlank() } ?: "詳細な理由は報告されていません。"
+        val (detail, technicalDetail) = summarizeAudioReasonForBanner(capture.audioReason.orEmpty())
         val suggestCompat = mode == AudioCaptureMode.PLAYBACK_DUP && cause == AudioCause.DEVICE_CAPTURE_FAILED &&
             (api == null || api == 0L || api >= AudioCaptureMode.OUTPUT_COMPAT.minApi)
         return CaptureBanner(
@@ -112,6 +112,7 @@ object AudioPolicyTable {
             } else {
                 detail
             },
+            technicalDetail = technicalDetail,
         )
     }
 
@@ -147,4 +148,35 @@ object AudioPolicyTable {
             else -> live
         }
     }
+}
+
+internal data class AudioReasonSummary(val detail: String, val technicalDetail: String? = null)
+
+private const val SUMMARY_LIMIT = 120
+private const val STDERR_MARKER = "scrcpy stderr:"
+private val exceptionHeader = Regex("""(?:Exception|Error)(?::|$)""")
+private val framePrefix = Regex("""^at\s+\S+\.""")
+
+internal fun summarizeAudioReasonForBanner(raw: String): AudioReasonSummary {
+    if (raw.isBlank()) return AudioReasonSummary("詳細な理由は報告されていません。")
+    val stderr = raw.indexOf(STDERR_MARKER, ignoreCase = true)
+    val lines = raw.substring(if (stderr < 0) 0 else stderr + STDERR_MARKER.length)
+        .splitToSequence('|', '\r', '\n')
+        .map { it.trim() }
+    if (stderr < 0 && raw.length <= SUMMARY_LIMIT && raw.none { it == '\r' || it == '\n' } &&
+        lines.none { framePrefix.containsMatchIn(it) }
+    ) {
+        return AudioReasonSummary(raw)
+    }
+
+    // arbd prefixes a partially retained stderr line with an ellipsis.
+    val messages = lines.filter { it.isNotEmpty() && !it.startsWith("…") && !framePrefix.containsMatchIn(it) }
+    val summary = messages.firstOrNull { exceptionHeader.containsMatchIn(it) }
+        ?: messages.firstOrNull()
+        ?: "音声キャプチャの診断情報があります。"
+    val compact = if (summary.length <= SUMMARY_LIMIT) summary else {
+        val end = if (summary[SUMMARY_LIMIT - 1].isHighSurrogate()) SUMMARY_LIMIT - 1 else SUMMARY_LIMIT
+        summary.take(end) + "…"
+    }
+    return AudioReasonSummary(compact, raw)
 }

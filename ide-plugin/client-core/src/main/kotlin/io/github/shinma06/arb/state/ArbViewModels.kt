@@ -60,6 +60,7 @@ data class CaptureBanner(
     val kind: CaptureBannerKind,
     val title: String,
     val detail: String,
+    val technicalDetail: String? = null,
 )
 
 data class CaptureBarState(
