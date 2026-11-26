@@ -3047,6 +3047,70 @@ mod tests {
     }
 
     #[test]
+    fn gc_preview_keeps_expired_leases_and_matches_the_next_execution() {
+        let tmp = TempDir::new().expect("temp dir must be created");
+        let managed_root = tmp.path().join("bundles");
+        let db = tmp.path().join("catalog.sqlite");
+        let catalog = Catalog::open(&db, &managed_root).expect("catalog open must succeed");
+        let path = managed_root.join("b-preview");
+        std::fs::create_dir_all(&path).expect("bundle dir must be created");
+        super::catalog_fixture::write_manifest(&path, "b-preview", "2026-11-22T10:00:00Z");
+        catalog
+            .register_bundle(&entry("b-preview", path.clone()))
+            .expect("register must succeed");
+        let dead_lease = catalog
+            .acquire_lease(
+                "b-preview",
+                LeaseHolderKind::IdeViewer,
+                u32::MAX - 7,
+                "2026-11-22T10:00:00Z",
+            )
+            .expect("acquire dead lease");
+        catalog
+            .trash_bundle("b-preview", "2026-11-22T10:00:00Z")
+            .expect("trash must succeed");
+        let wal = tmp.path().join("catalog.sqlite-wal");
+        let snapshot = || (std::fs::read(&db).unwrap(), std::fs::read(&wal).ok());
+        let before = snapshot();
+
+        let preview = catalog
+            .collect_garbage(
+                "2099-01-01T00:00:00Z",
+                0,
+                "2099-01-01T00:00:00Z",
+                super::GcMode::Preview,
+            )
+            .expect("preview must run");
+        let plan = preview.preview.expect("preview plan");
+        assert_eq!(plan.expired_lease_ids, vec![dead_lease]);
+        assert_eq!(plan.candidate_bundle_ids, vec!["b-preview".to_owned()]);
+        assert!(preview.reaped_lease_ids.is_empty(), "preview reaps nothing");
+        assert_eq!(
+            snapshot(),
+            before,
+            "preview must not write SQLite or its WAL"
+        );
+        assert_eq!(
+            super::count_active_leases(&catalog.lock_conn().unwrap(), "b-preview").unwrap(),
+            1,
+            "expired lease row is still present"
+        );
+        assert!(path.is_dir(), "payload untouched");
+
+        let executed = catalog
+            .collect_garbage(
+                "2099-01-01T00:00:00Z",
+                0,
+                "2099-01-01T00:00:00Z",
+                super::GcMode::Execute,
+            )
+            .expect("gc must run");
+        assert_eq!(executed.reaped_lease_ids, plan.expired_lease_ids);
+        assert_eq!(executed.purged_bundle_ids, plan.candidate_bundle_ids);
+        assert!(!path.exists(), "execution purges the previewed candidate");
+    }
+
+    #[test]
     fn r3_s6_gc_reaps_dead_pid_leases_and_purges_unblocked_bundle() {
         let tmp = TempDir::new().expect("temp dir must be created");
         let managed_root = tmp.path().join("bundles");

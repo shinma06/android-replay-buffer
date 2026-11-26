@@ -1147,6 +1147,96 @@
         "frame_index": 0
       },
       "code": -32001
+    },
+    {
+      "method": "timeline.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 0
+      },
+      "code": -32602,
+      "message": "limit must be positive"
+    },
+    {
+      "method": "timeline.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 100001
+      },
+      "code": -32602,
+      "message": "limit must not exceed 100000"
+    },
+    {
+      "method": "timeline.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "cursor": "1",
+        "after_seq": 1
+      },
+      "code": -32602,
+      "message": "cursor and after_seq cannot be combined"
+    },
+    {
+      "method": "timeline.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "cursor": "x"
+      },
+      "code": -32602,
+      "message": "cursor must be a decimal sequence"
+    },
+    {
+      "method": "timeline.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 10
+      },
+      "code": -32001
+    },
+    {
+      "method": "bundle.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 0
+      },
+      "code": -32602,
+      "message": "limit must be positive"
+    },
+    {
+      "method": "bundle.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 100001
+      },
+      "code": -32602,
+      "message": "limit must not exceed 100000"
+    },
+    {
+      "method": "bundle.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "cursor": "1",
+        "after_seq": 1
+      },
+      "code": -32602,
+      "message": "cursor and after_seq cannot be combined"
+    },
+    {
+      "method": "bundle.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "cursor": "x"
+      },
+      "code": -32602,
+      "message": "cursor must be a decimal sequence"
+    },
+    {
+      "method": "bundle.query_logs",
+      "params": {
+        "bundle_id": "nonexistent",
+        "limit": 10
+      },
+      "code": -32001
     }
   ]
 }

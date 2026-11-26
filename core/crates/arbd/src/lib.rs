@@ -787,21 +787,37 @@ impl DaemonState {
             }
             return Err(err.into());
         }
-        let (result, generation) = match rx
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            Ok(r) => r?,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                return Ok(
-                    json!({"serial": serial, "capture_mode":mode, "started":false,"connected":false,
-                "wait_timed_out":true,"audio_state":"unknown","audio_cause":null}),
-                );
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(DaemonError::Internal("capture start worker exited".into()));
-            }
+        let Some((result, generation)) = self.await_attach(&rx, deadline)? else {
+            return Ok(
+                json!({"serial": serial, "capture_mode":mode, "started":false,"connected":false,
+            "wait_timed_out":true,"audio_state":"unknown","audio_cause":null}),
+            );
         };
         self.wait_for_connection(result, generation, deadline)
+    }
+
+    /// Waits for the attach worker; `None` means the deadline passed first.
+    fn await_attach(
+        &self,
+        rx: &Receiver<AttachOutcome>,
+        deadline: Instant,
+    ) -> Result<Option<(Value, Option<u64>)>, DaemonError> {
+        loop {
+            if self.is_shutting_down() {
+                return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            match rx.recv_timeout(remaining.min(Duration::from_millis(DRAIN_POLL_INTERVAL_MS))) {
+                Ok(r) => return r.map(Some),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(DaemonError::Internal("capture start worker exited".into()));
+                }
+            }
+        }
     }
 
     fn wait_for_connection(
@@ -1510,6 +1526,11 @@ impl DaemonState {
         let mut parsed: TimelineQueryParams = parse_params(params)?;
         if parsed.limit == Some(0) {
             return Err(DaemonError::InvalidParams("limit must be positive".into()));
+        }
+        if parsed.limit.is_some_and(|limit| limit > MAX_QUERY_LIMIT) {
+            return Err(DaemonError::InvalidParams(format!(
+                "limit must not exceed {MAX_QUERY_LIMIT}"
+            )));
         }
         if let Some(cursor) = &parsed.cursor {
             if parsed.after_seq.is_some() {
@@ -2546,6 +2567,8 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
 }
 
 /// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
+type AttachOutcome = Result<(Value, Option<u64>), DaemonError>;
+
 fn effective_query_limit(requested: Option<usize>) -> usize {
     requested
         .unwrap_or(DEFAULT_QUERY_LIMIT)
@@ -2632,6 +2655,25 @@ mod supervisor_hardening_tests {
             cache_dir: tmp.path().join("c"),
             runtime_dir: tmp.path().join("r"),
         }
+    }
+
+    #[test]
+    fn start_wait_returns_promptly_when_daemon_shuts_down_during_discovery() {
+        let tmp = tempfile::tempdir().expect("temp");
+        let server = DaemonServer::start(DaemonConfig::new(test_paths(&tmp))).expect("daemon");
+        let (_worker, rx) = mpsc::channel();
+        let state = Arc::clone(&server.state);
+        let waiter = thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = state.await_attach(&rx, started + Duration::from_secs(30));
+            (outcome.is_err(), started.elapsed())
+        });
+        thread::sleep(Duration::from_millis(100));
+        server.state.trigger_shutdown();
+        let (failed, elapsed) = waiter.join().expect("waiter");
+        assert!(failed, "shutdown must cancel the wait");
+        assert!(elapsed < Duration::from_secs(2), "woke after {elapsed:?}");
+        server.shutdown();
     }
 
     #[test]
