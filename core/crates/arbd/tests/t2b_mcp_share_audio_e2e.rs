@@ -991,7 +991,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     }
 
     // Tap in physical 1080x2400 display coordinates -> center (540, 1200) must map to (64, 64) on 128x128 video!
-    let taps = vec![TapRecord {
+    let mut taps = vec![TapRecord {
         seq: 1,
         boot_id: Some("boot-epoch-1".to_owned()),
         event_mono_ns: Some(5_000_000_000 + 3 * step),
@@ -1014,6 +1014,11 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
         path: Vec::new(),
     }];
 
+    let mut overrange = taps[0].clone();
+    overrange.seq = 2;
+    overrange.x = Some(364_077.0);
+    overrange.y = Some(204_793.0);
+    taps.push(overrange);
     let draft = V2BundleDraft {
         memo: None,
         bundle_kind: BundleKind::Full,
@@ -1129,6 +1134,15 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     assert_eq!(crop["frame_indices_rendered"], json!([18]));
     assert_eq!(crop["tap_crop"]["tap_x"], 64);
     assert_eq!(crop["tap_crop"]["tap_y"], 64);
+
+    assert_eq!(overview["taps"][1]["x"], 1079.0);
+    assert_eq!(overview["taps"][1]["y"], 2399.0);
+    let crop = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":bid,"mode":"tap_crop","tap_index":1}),
+    );
+    assert_eq!(crop["tap_crop"]["tap_x"], 127);
+    assert_eq!(crop["tap_crop"]["tap_y"], 127);
 
     // Contact sheet with include_tap_marker: true also automatically scales without error.
     let sheet = rpc.call(

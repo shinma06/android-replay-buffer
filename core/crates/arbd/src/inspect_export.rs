@@ -462,7 +462,7 @@ pub fn build_timeline_overview(
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let taps = build_overview_taps(&main_taps, &frames, base_boottime_ns);
 
-    let (error_log_highlights, total_error_logs) =
+    let (error_log_highlights, total_error_logs, unique_error_logs) =
         overview_highlights(reader.as_ref(), &frames, params)?;
 
     let audio_status = summary
@@ -501,7 +501,8 @@ pub fn build_timeline_overview(
         discontinuities,
         logcat_completeness_detail: Some(summary.into()),
         total_error_logs,
-        error_logs_truncated: total_error_logs > error_log_highlights.len(),
+        unique_error_logs,
+        error_logs_truncated: unique_error_logs > error_log_highlights.len(),
         error_log_highlights,
         unanchored_count: summary.unanchored_summary.included_count,
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
@@ -1557,7 +1558,7 @@ fn overview_highlights(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
     params: &crate::protocol::TimelineOverviewParams,
-) -> Result<(Vec<ErrorLogHighlight>, usize), DaemonError> {
+) -> Result<(Vec<ErrorLogHighlight>, usize, usize), DaemonError> {
     let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let max_errors = params
         .max_error_logs
@@ -1591,10 +1592,11 @@ fn build_error_log_highlights(
     filter: &CompiledLogFilter<'_>,
     exclude_tags: &[String],
     max_errors: usize,
-) -> (Vec<ErrorLogHighlight>, usize) {
-    let mut out = VecDeque::with_capacity(max_errors);
+) -> (Vec<ErrorLogHighlight>, usize, usize) {
+    let mut groups = std::collections::HashMap::new();
+    let mut out: Vec<ErrorLogHighlight> = Vec::with_capacity(max_errors);
     let mut total = 0;
-    for log in main_logs {
+    for log in main_logs.iter().rev() {
         let level = normalize_log_level(log.level.as_deref().unwrap_or(""));
         if !matches!(level, "E" | "F")
             || !filter.matches(log)
@@ -1606,14 +1608,28 @@ fn build_error_log_highlights(
             continue;
         }
         total += 1;
-        if max_errors == 0 {
+        let signature = (level, log.tag.as_deref(), log.message.as_str());
+        let slot = match groups.entry(signature) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                if let Some(index) = *entry.get() {
+                    let group: &mut ErrorLogHighlight = &mut out[index];
+                    group.repeat_count += 1;
+                    group.first_offset_ms = coordinates.locate(log).0;
+                }
+                continue;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => entry,
+        };
+        if out.len() == max_errors {
+            slot.insert(None);
             continue;
         }
-        if out.len() == max_errors {
-            out.pop_front();
-        }
+        slot.insert(Some(out.len()));
         let (t_ms, frame_index_hint) = coordinates.locate(log);
-        out.push_back(ErrorLogHighlight {
+        out.push(ErrorLogHighlight {
+            repeat_count: 1,
+            first_offset_ms: t_ms,
+            last_offset_ms: t_ms,
             timestamp_utc: log
                 .header_epoch_ns
                 .map(crate::time_util::format_epoch_ns_iso8601),
@@ -1625,7 +1641,8 @@ fn build_error_log_highlights(
             message: truncate_chars(&log.message, MAX_ERROR_LOG_MESSAGE_CHARS),
         });
     }
-    (out.into(), total)
+    out.reverse();
+    (out, total, groups.len())
 }
 
 fn normalize_log_level(raw: &str) -> &str {
@@ -1995,11 +2012,23 @@ mod tests {
             let logs = samples.enumerate().map(|(i,t)| LogRecord {
                 seq:u64::try_from(i).unwrap(),boot_id:Some("boot".into()),header_epoch_ns:Some(t), device_read_boottime_ns:Some(t),
                 pc_ingest_cont_ns:t,alignment:anchor(t),bucket:RecordBucket::Main,level:Some("E".into()),tag:None,
-                pid:None,tid:None,uid:None,package_name:None,message:String::new(),
+                pid:None,tid:None,uid:None,package_name:None,message:i.to_string(),
             }).collect::<Vec<_>>();
             let coordinates=super::LogCoordinates::new(&frames,&[]);
             let filter=super::CompiledLogFilter{package:None,level:None,tag_lower:None,keyword_lower:None,whole_word:false};
-            let (highlights,total)=super::build_error_log_highlights(&logs,&coordinates,&filter,&[],logs.len());
+            // Repeated system errors consume one group, even when the chosen limit is smaller than the burst.
+            let mut burst = vec![logs[0].clone()];
+            for seq in 1..=43 {
+                let mut row = logs[1].clone();
+                row.message = "repeated".into();
+                row.seq = seq;
+                burst.push(row);
+            }
+            let (groups, raw, distinct) = super::build_error_log_highlights(&burst, &coordinates, &filter, &[], 2);
+            proptest::prop_assert_eq!((raw, distinct), (44,2));
+            proptest::prop_assert_eq!(groups[1].repeat_count,43);
+            proptest::prop_assert_eq!(groups[1].seq,43);
+            let (highlights,total,_)=super::build_error_log_highlights(&logs,&coordinates,&filter,&[],logs.len());
             proptest::prop_assert_eq!(total,logs.len());
             for (log,h) in logs.into_iter().zip(highlights) {
                 let expected = pts.iter().rposition(|p| *p <= log.pc_ingest_cont_ns).unwrap_or(0);

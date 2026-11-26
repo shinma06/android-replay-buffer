@@ -1288,7 +1288,27 @@ impl BundleReader for V2BundleReader {
         let mut records = Vec::new();
         for row in rows {
             let raw = row.map_err(|source| StorageError::sqlite("read_tap_row", source))?;
-            records.push(decode_tap_row(raw)?);
+            let mut tap = decode_tap_row(raw)?;
+            if let Some(video) = &self.summary.streams.video
+                && let (Some(w), Some(h)) = (video.display_width, video.display_height)
+                && w > 0
+                && h > 0
+            {
+                // Earlier v2 recordings could store out-of-range evdev values as pixels.
+                // Bound their read-only display projection for Studio, crop and burn-in together.
+                let bounds = (f64::from(w - 1), f64::from(h - 1));
+                for x in [&mut tap.x, &mut tap.end_x].into_iter().flatten() {
+                    *x = x.clamp(0.0, bounds.0);
+                }
+                for y in [&mut tap.y, &mut tap.end_y].into_iter().flatten() {
+                    *y = y.clamp(0.0, bounds.1);
+                }
+                for point in &mut tap.path {
+                    point.x = point.x.clamp(0.0, bounds.0);
+                    point.y = point.y.clamp(0.0, bounds.1);
+                }
+            }
+            records.push(tap);
         }
         Ok(records)
     }

@@ -92,7 +92,13 @@ satisfies:
 
 入力トラックは getevent に届いたハードウェア・仮想タッチデバイスのイベントを記録する。実機での指操作や、対応するタッチデバイスへの sendevent が対象となる。adb shell input tap など Android Framework 経由の注入はこの経路を通らない場合があり、タップ件数が 0 でも操作がなかったとは判定できない。[AOSP getevent](https://source.android.com/docs/core/interaction/input/getevent)
 
-ログのフレーム番号は同一ブートのナノ秒時刻から半開区間で求める。UTC はミリ秒まで表示する。MCP のログ検索は録画窓内を既定とし、次のページは同じ条件で next_cursor を cursor に渡す。概要のエラーログ件数はフィルタ適用後、件数制限前の総数である。
+タップの座標単位は端末の画面ピクセル。端末ごとの evdev 軸を校正し、宣言された軸の外にある入力は最寄りの画面端に制限する。以前の v2 バンドルに範囲外の座標が残っている場合も、記録済みの画面寸法を使って読み出し時だけ画面端に制限する。元の画面内位置を特定できない入力を表すため、エミュレータの `emu event mouse` には表示範囲内の画面座標を渡す。概要、タップクロップ、Studio と焼き込みはこの画面座標を使用する。
+
+ログのフレーム番号は同一ブートのナノ秒時刻から半開区間で求める。UTC はミリ秒まで表示する。MCP のログ検索は録画窓内を既定とし、次のページは同じ条件で next_cursor を cursor に渡す。概要と保存後の調査は優先度・タグ・本文が一致するエラーをまとめ、最新出現順で表示対象を選ぶ。各代表行には出現数 repeat_count と最初・最後のオフセットがある。total_error_logs はフィルタ一致の生行総数、unique_error_logs はグループ総数、error_logs_truncated は上限によりグループを省いたかを示す。arb_query_logs は生行を返す。
+
+MCP 2025-11-25 の arb_screenshot は既定で保存パスとメタデータを返す。PNG のインライン返却には include_image=true を指定する。旧プロトコルではインライン返却が既定。最新のスクリーンショット・トリムは overwrite・trash_original を受け付けない。保存時間の正本は duration_secs、対象の正本は bundle_id。drain_timeout_ms の有効範囲は 0～5000 で、境界を超えると RPC と MCP のどちらも -32602 を返す。
+
+Task 非対応のツールに task を付けた場合と taskId が欠落・型違い・未知または期限切れの場合は、それぞれの理由を付けて -32602 を返す。進捗トークンのある呼び出しの各段階は notifications/progress で通知する。失敗はエラーログ、トークンのない詳細な段階ログは debug 設定で通知する。
 
 MCP 2025-11-25 の概要と保存結果は同型の `logcat_completeness` を返す。RPC の概要では以前からの状態名も維持し、詳細を `logcat_completeness_detail` に返す。状態・停止ツールの `audio_reason` は先頭の要約を最大 256 文字で返す。IDE は RPC から詳細を取得する。
 

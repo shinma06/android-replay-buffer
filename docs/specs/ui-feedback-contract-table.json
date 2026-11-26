@@ -1188,6 +1188,8 @@
     }
   ],
   "rpc_parameter_rows": [
+    {"method":"save.trigger","params":{"drain_timeout_ms":5001},"code":-32602,"message":"drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
+    {"method":"save.logs","params":{"drain_timeout_ms":999999},"code":-32602,"message":"drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
     {
       "method": "bundle.trash",
       "params": {},

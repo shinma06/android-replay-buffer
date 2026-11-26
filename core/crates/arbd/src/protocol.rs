@@ -1405,9 +1405,20 @@ pub struct OverviewTapItem {
     pub end_t_ms: Option<i64>,
 }
 
+const fn one_occurrence() -> usize {
+    1
+}
+
 /// Compact `E`/`F` error log highlight returned inside [`TimelineOverviewResponse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorLogHighlight {
+    /// Number of raw rows represented by this signature.
+    #[serde(default = "one_occurrence")]
+    pub repeat_count: usize,
+    /// Timeline offsets of the first and last occurrences in log sequence order.
+    pub first_offset_ms: Option<i64>,
+    /// Last occurrence in log sequence order.
+    pub last_offset_ms: Option<i64>,
     /// UTC time from the log header, with millisecond precision when known.
     pub timestamp_utc: Option<String>,
     /// Source `LogRecord::seq` in `timeline.sqlite`.
@@ -1469,6 +1480,9 @@ pub struct TimelineOverviewResponse {
     /// Filtered highlight count before applying the limit.
     #[serde(default)]
     pub total_error_logs: usize,
+    /// Distinct matching signatures before the display cap.
+    #[serde(default)]
+    pub unique_error_logs: usize,
     /// Whether matching rows were omitted by the highlight limit.
     #[serde(default)]
     pub error_logs_truncated: bool,

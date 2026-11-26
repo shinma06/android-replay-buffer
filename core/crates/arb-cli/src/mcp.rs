@@ -301,7 +301,7 @@ impl McpServer {
             if self.version != MCP_PROTOCOL_LATEST || !long {
                 return rpc_error(
                     req_id,
-                    JSONRPC_METHOD_NOT_FOUND,
+                    JSONRPC_INVALID_PARAMS,
                     "このツールの Task 実行には対応していません",
                 );
             }
@@ -318,7 +318,19 @@ impl McpServer {
         let name = def["name"].as_str().expect("tool name");
         schema::normalize_integers(&def["inputSchema"], &mut args);
         let output = schema::validate(&def["inputSchema"], &args, "arguments")
-            .map_err(Failure::invalid)
+            .map_err(|message| {
+                let mut err = Failure::invalid(message);
+                err.hint = match name {
+                    "arb_export_trim" if args.get("trash_original").is_some() => {
+                        Some("元バンドルをごみ箱に移すには arb_trash_bundle を実行してください。")
+                    }
+                    "arb_screenshot" if args.get("overwrite").is_some() => {
+                        Some("別名保存には新しい output_path を指定してください。")
+                    }
+                    _ => None,
+                };
+                err
+            })
             .and_then(|()| self.dispatch_tool(name, args.as_object().expect("validated object")));
         self.activity.finish(&self.session, output.as_ref().err());
         match output {
@@ -542,7 +554,7 @@ impl McpServer {
         let include_image = args
             .get("include_image")
             .and_then(Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(self.version != MCP_PROTOCOL_LATEST);
         let mut params = Map::new();
         if let Some(serial) = args.get("serial") {
             params.insert("serial".to_owned(), serial.clone());
@@ -556,7 +568,14 @@ impl McpServer {
         if let Some(overwrite) = args.get("overwrite") {
             params.insert("overwrite".to_owned(), overwrite.clone());
         }
-        let resp = self.call_daemon("save.screenshot", &Value::Object(params))?;
+        let mut resp = self.call_daemon("save.screenshot", &Value::Object(params))?;
+        if self.version == MCP_PROTOCOL_LATEST
+            && let Some(uri) = resp["path"]
+                .as_str()
+                .and_then(|path| url::Url::from_file_path(path).ok())
+        {
+            resp["file_uri"] = json!(uri.as_str());
+        }
         let mut content = Vec::with_capacity(2);
         if include_image
             && let Some(path_str) = resp.get("path").and_then(Value::as_str)
@@ -678,6 +697,7 @@ impl McpServer {
         } else {
             self.tool_save(&save_args)?
         };
+        self.activity.notify(&self.session, "保存完了・証跡を確認");
         if let Err(mut error) = self.inspect_saved(args, &mut result) {
             error.detail = Some(json!({"save":result.body}));
             return Err(error);
@@ -693,12 +713,38 @@ impl McpServer {
         let id = result.body["bundle_id"].clone();
         let target = json!({"bundle_id_or_path":id});
         let summary = self.call_daemon("timeline.summary", &target)?;
-        let screens = self.call_daemon("timeline.screens", &target)?;
-        let crashes = self.call_daemon("timeline.crashes", &target)?;
-        let error_logs=self.call_daemon("bundle.query_logs",&json!({"bundle_id_or_path":id,"level":"ERROR","tail":true,"limit":args.get("max_errors").cloned().unwrap_or(json!(20))}))?;
+        let max_errors = args.get("max_errors").cloned().unwrap_or(json!(20));
+        let (screens, crashes, error_logs) = if self.version == MCP_PROTOCOL_LATEST {
+            let mut overview = self.call_daemon(
+                "timeline.overview",
+                &json!({"bundle_id":id,"max_error_logs":max_errors}),
+            )?;
+            if !overview["unique_error_logs"].is_u64() {
+                return Err(Failure::unavailable(
+                    "エラーを集約するには arbd を更新してください",
+                ));
+            }
+            let logs = overview["error_log_highlights"].take();
+            let shown = logs.as_array().map_or(0, Vec::len);
+            let errors = json!({"logs":logs,"total_matched":overview["total_error_logs"],
+                "unique_count":overview["unique_error_logs"], "returned_count":shown,"has_more":overview["error_logs_truncated"]});
+            (
+                overview["screens"].take(),
+                overview["crashes"].take(),
+                errors,
+            )
+        } else {
+            let screens = self.call_daemon("timeline.screens", &target)?["screens"].take();
+            let crashes = self.call_daemon("timeline.crashes", &target)?["crashes"].take();
+            let errors = self.call_daemon(
+                "bundle.query_logs",
+                &json!({"bundle_id_or_path":id,"level":"ERROR","tail":true,"limit":max_errors}),
+            )?;
+            (screens, crashes, errors)
+        };
         result.blocks.push(resources::bundle_link(&id, "crashes"));
         if args.get("include_key_frame_links") != Some(&Value::Bool(false)) {
-            for frame in screens["screens"]
+            for frame in screens
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -709,7 +755,7 @@ impl McpServer {
                     .push(resources::bundle_link(&id, &format!("frame/{frame}")));
             }
         }
-        result.body = json!({"save":result.body,"summary":summary,"screens":screens["screens"],"crashes":crashes["crashes"],"error_logs":error_logs,"memo":args.get("memo")});
+        result.body = json!({"save":result.body,"summary":summary,"screens":screens,"crashes":crashes,"error_logs":error_logs,"memo":args.get("memo")});
         Ok(())
     }
 
@@ -1013,6 +1059,7 @@ pub(super) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
             label: "FAILED_RETRYABLE",
             message: "保存に失敗しました。ジョブの状態を確認してください。".into(),
             detail: Some(response),
+            hint: None,
         });
     }
     let blocks = ["manifest", "logs", "screens"]
@@ -1030,6 +1077,7 @@ pub(super) struct Failure {
     label: &'static str,
     message: String,
     detail: Option<Value>,
+    hint: Option<&'static str>,
 }
 impl Failure {
     fn new(code: i32, label: &'static str, message: impl Into<String>) -> Self {
@@ -1038,6 +1086,7 @@ impl Failure {
             label,
             message: message.into(),
             detail: None,
+            hint: None,
         }
     }
     fn invalid(message: impl Into<String>) -> Self {
@@ -1068,7 +1117,7 @@ impl Failure {
         let mut body = self.detail.clone().unwrap_or_else(|| json!({}));
         let (kind, hint, retryable) = arb_os::rpc::error_guidance(self.label);
         body["kind"] = json!(kind);
-        body["hint"] = json!(hint);
+        body["hint"] = json!(self.hint.unwrap_or(hint));
         body["retryable"] = json!(retryable);
         body["error_code"] = json!(self.label);
         body["rpc_code"] = json!(self.rpc_code);

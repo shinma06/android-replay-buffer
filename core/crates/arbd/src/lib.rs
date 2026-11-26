@@ -1027,16 +1027,19 @@ impl DaemonState {
                 "save window {duration_sec}s is outside {MIN_SAVE_WINDOW_SECS}..={MAX_SAVE_WINDOW_SECS} seconds"
             )));
         }
+        let mut policy = selection_policy.unwrap_or_default();
+        policy.drain_timeout_ms = drain_timeout_ms.unwrap_or(policy.drain_timeout_ms);
+        if policy.drain_timeout_ms > 5_000 {
+            return Err(DaemonError::InvalidParams(
+                "drain_timeout_ms は 0～5000 ミリ秒で指定してください".into(),
+            ));
+        }
         let dest_dir = self.resolve_output_dir(
             dest_dir.as_deref(),
             user_cfg.output_dir_override.as_deref(),
             self.catalog.managed_bundles_root(),
             None,
         )?;
-        let mut policy = selection_policy.unwrap_or_default();
-        policy.drain_timeout_ms = drain_timeout_ms
-            .unwrap_or(policy.drain_timeout_ms)
-            .min(5_000);
         let limits = SelectionPolicy::default();
         policy.unanchored_ingest_margin_ns = policy
             .unanchored_ingest_margin_ns

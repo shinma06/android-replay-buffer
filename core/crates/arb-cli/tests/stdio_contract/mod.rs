@@ -195,10 +195,8 @@ fn registry(c: &mut Client) {
             let legacy = version < "2025-11-25";
             assert_eq!(tool["annotations"]["destructiveHint"], legacy);
             assert_eq!(
-                tool["inputSchema"]["properties"][flag]
-                    .get("const")
-                    .is_some(),
-                !legacy
+                tool["inputSchema"]["properties"].get(flag).is_some(),
+                legacy
             );
             if !legacy {
                 let mut args = json!({});
@@ -341,6 +339,31 @@ fn resources_and_prompts(c: &mut Client, id: &str) {
             c.result("prompts/get", json!({"name":p["name"]}))["messages"][0]["content"]["text"]
                 .is_string()
         );
+    }
+    for (name, args, expected) in [
+        (
+            "investigate_crash",
+            json!({"bundle_id":"fixture"}),
+            "arb://bundles/fixture/crashes",
+        ),
+        (
+            "triage_recent_bug",
+            json!({"duration_secs":"15","keyword":"DOGFOOD_ERR_001"}),
+            "arb_save_and_inspect({\"duration_secs\":15})",
+        ),
+        (
+            "safe_cleanup_review",
+            json!({"ignore_grace":"true"}),
+            "\"ignore_grace\":true",
+        ),
+    ] {
+        let prompt = c.result("prompts/get", json!({"name":name,"arguments":args}));
+        let text = prompt["messages"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains(expected), "{text}");
+        if name == "triage_recent_bug" {
+            assert!(text.contains("\"keyword\":\"DOGFOOD_ERR_001\""));
+        }
+        assert!(!text.contains("指定値"));
     }
     for reference in [
         json!({"type":"ref/resource","uri":"arb://bundles/{bundle_id}/manifest"}),
@@ -496,10 +519,31 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     )
     .unwrap();
     fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
-    c.tool(
-        "arb_screenshot",
-        json!({"serial":"contract-device","output_path":root.path().join("shot.png")}),
-    );
+    for (version, inline, expected) in [
+        ("2024-11-05", None, true),
+        ("2025-06-18", None, true),
+        ("2025-11-25", None, false),
+        ("2025-11-25", Some(true), true),
+    ] {
+        c.init(version);
+        let out = root.path().join(format!("shot-{version}-{expected}.png"));
+        let mut args = json!({"serial":"contract-device","output_path":out});
+        if let Some(flag) = inline {
+            args["include_image"] = json!(flag);
+        }
+        let result = c.result(
+            "tools/call",
+            json!({"name":"arb_screenshot","arguments":args}),
+        );
+        let image = result["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "image");
+        assert_eq!(image, expected);
+        c.check_tool("arb_screenshot", result);
+        assert!(out.is_file());
+    }
     fs::remove_file(adb_dir.join("devices")).unwrap();
     let overview = c.tool("arb_timeline_overview", target.clone());
     assert!(overview["logcat_completeness"].is_object());
@@ -580,6 +624,25 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
 
 fn tasks(c: &mut Client) {
     c.result("logging/setLevel", json!({"level":"info"}));
+    for method in ["tasks/get", "tasks/result", "tasks/cancel"] {
+        for (params, message) in [
+            (json!({}), "必須"),
+            (json!({"taskId":123}), "文字列"),
+            (json!({"taskId":"absent"}), "期限切れ"),
+        ] {
+            let reply = c.request(method, params);
+            assert_eq!(reply["error"]["code"], -32602);
+            assert!(
+                reply["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+        }
+    }
+    let unsupported = c.request("tools/call", json!({"name":"arb_status","task":{}}));
+    assert_eq!(unsupported["error"]["code"], -32602);
+    c.events.clear();
     let call = json!({"name":"arb_save_and_inspect","arguments":{"logs_only":true,"memo":"調査"},"task":{"ttl":60000},"_meta":{"progressToken":"save"}});
     let task = c.result("tools/call", call)["task"].clone();
     assert_eq!(task["status"], "working");
@@ -610,7 +673,7 @@ fn tasks(c: &mut Client) {
     }
     assert!(progress >= 6);
     assert!(
-        c.events
+        !c.events
             .iter()
             .any(|n| n["method"] == "notifications/message")
     );

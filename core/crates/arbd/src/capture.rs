@@ -5796,6 +5796,18 @@ mod tests {
         e.ev_code = super::ABS_Y;
         e.ev_value = 4095;
         assert_eq!(calibration.display_value(&e), Some(2399));
+
+        let axes = "add device 2: /dev/input/event2\nABS_MT_POSITION_X : value 0, min 0, max 32767\nABS_MT_POSITION_Y : value 0, min 0, max 32767";
+        let emulator = TouchCalibration::from_getevent(axes, 1080, 2400);
+        for (code, raw, pixel) in [
+            (super::ABS_MT_POSITION_X, 364_077, 1079),
+            (super::ABS_MT_POSITION_Y, 204_793, 2399),
+            (super::ABS_MT_POSITION_X, -1, 0),
+            (super::ABS_MT_POSITION_X, 12_000, 395),
+        ] {
+            let event = raw_evdev(super::EV_ABS, code, raw, 0);
+            assert_eq!(emulator.display_value(&event), Some(pixel));
+        }
     }
 
     #[test]
