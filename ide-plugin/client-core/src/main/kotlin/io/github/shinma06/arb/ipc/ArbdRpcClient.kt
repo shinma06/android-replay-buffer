@@ -41,6 +41,7 @@ import io.github.shinma06.arb.model.MediaScrubResponse
 import io.github.shinma06.arb.model.MediaSeekFrameResponse
 import io.github.shinma06.arb.model.ProtocolJson
 import io.github.shinma06.arb.model.QueryBucket
+import io.github.shinma06.arb.model.RpcErrorDetails
 import io.github.shinma06.arb.model.SaveJobView
 import io.github.shinma06.arb.model.SaveListJobsResponse
 import io.github.shinma06.arb.model.SaveLogsParams
@@ -502,7 +503,10 @@ class ArbdRpcClient(
             val errObj = errorElem.asJsonObject
             val code = errObj.get("code")?.asInt ?: -32603
             val message = errObj.get("message")?.asString ?: "Unknown RPC error"
-            throw ArbdRpcException(code = code, message = message, method = method)
+            val details = errObj.get("data")?.takeIf { it.isJsonObject }?.let {
+                runCatching { gson.fromJson(it, RpcErrorDetails::class.java) }.getOrNull()
+            }
+            throw ArbdRpcException(code = code, message = message, method = method, details = details)
         }
         return respObj.get("result") ?: JsonNull.INSTANCE
     }

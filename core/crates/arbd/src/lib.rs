@@ -1058,16 +1058,17 @@ impl DaemonState {
                 } else {
                     mode
                 };
-            cap.phase1_pin_with_options(
+            cap.pin_request(
                 duration_sec,
                 &dest_dir,
                 policy,
                 effective_mode,
                 trigger_kind,
+                note,
             )?
         };
 
-        self.finish_pinned_save(pending.with_note(note), policy, trigger_kind)
+        self.finish_pinned_save(pending, policy, trigger_kind)
     }
 
     fn finish_pinned_save(

@@ -11,10 +11,18 @@ data class RpcErrorObject(
     val data: Any? = null,
 )
 
+data class RpcErrorDetails(
+    val errorCode: String? = null,
+    val kind: String? = null,
+    val hint: String? = null,
+    val retryable: Boolean? = null,
+)
+
 class ArbdRpcException(
     val code: Int,
     override val message: String,
     val method: String? = null,
+    val details: RpcErrorDetails? = null,
 ) : RuntimeException(
     if (method != null) "arbd RPC error ($method) [$code]: $message" else "arbd RPC error [$code]: $message",
 ) {

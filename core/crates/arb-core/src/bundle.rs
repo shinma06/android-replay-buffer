@@ -233,7 +233,7 @@ pub enum LogCompleteness {
 /// Logcat stream summary metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LogcatStreamMeta {
-    /// Sum of observed non-negative logd drop deltas; unknown without a usable counter.
+    /// Lost log records when every observed interval has an exact count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped_count: Option<u64>,
     /// Presence state of the logcat stream.

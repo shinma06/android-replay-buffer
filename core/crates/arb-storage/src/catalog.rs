@@ -765,7 +765,7 @@ impl Catalog {
                         parent_bundle_id, created_at_utc
                  FROM bundles
                  WHERE (?1 IS NULL OR state = ?1)
-                 ORDER BY created_at_utc ASC, bundle_id ASC",
+                 ORDER BY julianday(created_at_utc) ASC, bundle_id ASC",
             )
             .map_err(|source| StorageError::sqlite("prepare_list_bundles", source))?;
 
@@ -1772,7 +1772,7 @@ impl Catalog {
                 "SELECT job_id, state, destination_path, pinned_chunks_json,
                         error_message, created_at_utc, updated_at_utc, trigger_kind
                  FROM save_jobs
-                 ORDER BY created_at_utc ASC, job_id ASC",
+                 ORDER BY julianday(created_at_utc) ASC, job_id ASC",
             )
             .map_err(|source| StorageError::sqlite("prepare_list_save_jobs", source))?;
 
@@ -2567,7 +2567,7 @@ fn fetch_interrupted_save_jobs(conn: &Connection) -> Result<Vec<CatalogSaveJob>,
                     error_message, created_at_utc, updated_at_utc, trigger_kind
              FROM save_jobs
              WHERE state IN ('pinned', 'draining', 'materializing')
-             ORDER BY created_at_utc ASC, job_id ASC",
+             ORDER BY julianday(created_at_utc) ASC, job_id ASC",
         )
         .map_err(|source| StorageError::sqlite("prepare_interrupted_save_jobs", source))?;
     let rows = stmt
@@ -2939,6 +2939,24 @@ mod tests {
             parent_bundle_id: None,
             created_at_utc: "2026-11-22T10:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn list_orders_seconds_and_milliseconds_as_instants() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("bundles");
+        let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &root).unwrap();
+        for (id, stamp) in [
+            ("a-later", "2026-11-22T10:00:00.001Z"),
+            ("z-first", "2026-11-22T10:00:00Z"),
+        ] {
+            let mut row = entry(id, root.join(id));
+            row.created_at_utc = stamp.to_owned();
+            catalog.register_bundle(&row).unwrap();
+        }
+        let rows = catalog.list_bundles(None).unwrap();
+        assert_eq!(rows[0].bundle_id, "z-first");
+        assert_eq!(rows[1].bundle_id, "a-later");
     }
 
     #[test]

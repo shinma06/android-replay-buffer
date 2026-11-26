@@ -54,6 +54,7 @@ enum OutputFormat {
 struct CliError {
     exit_code: u8,
     rpc_code: Option<i32>,
+    error_code: Option<String>,
     message: String,
     already_emitted: bool,
 }
@@ -63,6 +64,7 @@ impl CliError {
         Self {
             exit_code: EXIT_USAGE_ERROR,
             rpc_code: None,
+            error_code: None,
             message: message.into(),
             already_emitted: false,
         }
@@ -72,6 +74,7 @@ impl CliError {
         Self {
             exit_code: EXIT_GENERAL_ERROR,
             rpc_code: None,
+            error_code: None,
             message: message.into(),
             already_emitted: false,
         }
@@ -81,21 +84,28 @@ impl CliError {
         Self {
             exit_code: EXIT_SAVE_FAILED_RETRYABLE,
             rpc_code: None,
+            error_code: None,
             message: "save failed (retryable); see emitted job status".to_owned(),
             already_emitted: true,
         }
     }
 
     fn from_rpc(err: RpcClientError) -> Self {
-        match err {
-            RpcClientError::Rpc { code, message, .. }
-            | RpcClientError::Rejected { code, message } => Self {
-                exit_code: exit_code_for_rpc(code),
-                rpc_code: Some(code),
+        let (code, message, error_code) = match err {
+            RpcClientError::Rpc {
+                code,
                 message,
-                already_emitted: false,
-            },
-            other => Self::general(other.to_string()),
+                error_code,
+            } => (code, message, error_code),
+            RpcClientError::Rejected { code, message } => (code, message, None),
+            other => return Self::general(other.to_string()),
+        };
+        Self {
+            exit_code: exit_code_for_rpc(code),
+            rpc_code: Some(code),
+            error_code: Some(error_code.unwrap_or_else(|| arb_os::rpc::error_label(code).into())),
+            message,
+            already_emitted: false,
         }
     }
 }
@@ -323,14 +333,19 @@ enum CommandSpec {
 
 fn format_error(output: OutputFormat, err: &CliError) -> String {
     match output {
-        OutputFormat::Json => serde_json::to_string(&json!({
-            "error": {
-                "code": err.rpc_code,
-                "exit_code": err.exit_code,
-                "message": err.message,
+        OutputFormat::Json => {
+            let mut data =
+                json!({"code":err.rpc_code,"exit_code":err.exit_code,"message":err.message});
+            if let Some(label) = &err.error_code {
+                let (kind, hint, retryable) = arb_os::rpc::error_guidance(label);
+                data["rpc_code"] = json!(err.rpc_code);
+                data["error_code"] = json!(label);
+                data["kind"] = json!(kind);
+                data["hint"] = json!(hint);
+                data["retryable"] = json!(retryable);
             }
-        }))
-        .unwrap_or_else(|_| format!("{{\"error\":{{\"message\":\"{}\"}}}}", err.message)),
+            json!({"error":data}).to_string()
+        }
         OutputFormat::Human => format!("error: {}", err.message),
     }
 }
@@ -2212,11 +2227,16 @@ mod tests {
         assert_eq!(not_found.exit_code, EXIT_NOT_FOUND, "not found exit code");
 
         let conflict = CliError::from_rpc(RpcClientError::Rpc {
-            error_code: None,
+            error_code: Some("ALREADY_TRASHED".into()),
             code: RPC_ERR_CONFLICT,
             message: "busy".to_owned(),
         });
         assert_eq!(conflict.exit_code, EXIT_CONFLICT, "conflict exit code");
+
+        let structured: Value =
+            serde_json::from_str(&format_error(OutputFormat::Json, &conflict)).unwrap();
+        assert_eq!(structured["error"]["error_code"], "ALREADY_TRASHED");
+        assert_eq!(structured["error"]["retryable"], false);
 
         let invalid = CliError::from_rpc(RpcClientError::Rpc {
             error_code: None,

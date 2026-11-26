@@ -534,9 +534,7 @@ impl From<&arb_storage::bundle_io::BundleManifestSummary> for LogcatEvidence {
         Self {
             status,
             overflow_events: stream.map_or(0, |s| s.overflow_events),
-            dropped_count: stream
-                .and_then(|s| s.dropped_count)
-                .or_else(|| (status == Some(LogCompleteness::VerifiedNoOverflow)).then_some(0)),
+            dropped_count: stream.and_then(|s| s.dropped_count),
             unanchored_count: manifest.unanchored_summary.included_count,
             unanchored_truncated_count: manifest.unanchored_summary.truncated_count,
         }

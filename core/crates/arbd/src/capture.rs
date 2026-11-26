@@ -419,12 +419,13 @@ pub struct PendingSave {
     must_drain: bool,
 }
 
-impl PendingSave {
-    pub(super) fn with_note(mut self, note: Option<String>) -> Self {
-        self.params.note = note;
-        self
-    }
+struct SaveIntent {
+    mode: SaveMode,
+    trigger_kind: SaveTriggerKind,
+    note: Option<String>,
+}
 
+impl PendingSave {
     /// Returns the save job identifier reserved for this pending save.
     #[must_use]
     pub fn job_id(&self) -> &str {
@@ -1404,8 +1405,11 @@ impl CapturePipeline {
             secs,
             dest,
             SelectionPolicy::default(),
-            mode,
-            SaveTriggerKind::CrashAutoSave,
+            SaveIntent {
+                mode,
+                trigger_kind: SaveTriggerKind::CrashAutoSave,
+                note: None,
+            },
             window,
         )
     }
@@ -1668,13 +1672,35 @@ impl CapturePipeline {
         mode: SaveMode,
         trigger_kind: SaveTriggerKind,
     ) -> Result<PendingSave, DaemonError> {
-        let window = self.build_save_window(duration_sec, self.trigger_point());
-        self.pin_window(
+        self.pin_request(
             duration_sec,
             dest_parent_dir,
             policy,
             mode,
             trigger_kind,
+            None,
+        )
+    }
+
+    pub(super) fn pin_request(
+        &mut self,
+        duration_sec: u64,
+        dest_parent_dir: &Path,
+        policy: SelectionPolicy,
+        mode: SaveMode,
+        trigger_kind: SaveTriggerKind,
+        note: Option<String>,
+    ) -> Result<PendingSave, DaemonError> {
+        let window = self.build_save_window(duration_sec, self.trigger_point());
+        self.pin_window(
+            duration_sec,
+            dest_parent_dir,
+            policy,
+            SaveIntent {
+                mode,
+                trigger_kind,
+                note,
+            },
             window,
         )
     }
@@ -1684,10 +1710,14 @@ impl CapturePipeline {
         duration_sec: u64,
         dest_parent_dir: &Path,
         policy: SelectionPolicy,
-        mode: SaveMode,
-        trigger_kind: SaveTriggerKind,
+        intent: SaveIntent,
         window: WindowSpec,
     ) -> Result<PendingSave, DaemonError> {
+        let SaveIntent {
+            mode,
+            trigger_kind,
+            note,
+        } = intent;
         let initial_flush_failed =
             self.flush_pending_chunk().is_err() || self.storage_pressure_stopped;
         let chunk_ids = self.select_window_chunks(&window, &policy, mode);
@@ -1717,7 +1747,7 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
-            note: None,
+            note,
             bundle_id,
             mode,
             duration_sec,
@@ -2659,7 +2689,7 @@ impl ReplayCollector {
             discontinuities: params.extra_discontinuities.clone(),
             log_completeness: LogCompleteness::Unverified,
             log_overflow_events: 0,
-            dropped_count: None,
+            dropped_count: Some(0),
             touch_normalizer: TouchNormalizer::default(),
             active_strokes: BTreeMap::new(),
             touch_slop_px: touch_slop(
@@ -2784,10 +2814,10 @@ impl ReplayCollector {
             }
             CaptureEvent::LogOverflowStats { payload, .. } => {
                 let next_comp = payload.completeness.to_core_completeness();
-                if let Ok(delta) = u64::try_from(payload.pruned_delta) {
-                    self.dropped_count =
-                        Some(self.dropped_count.unwrap_or(0).saturating_add(delta));
-                }
+                self.dropped_count = self
+                    .dropped_count
+                    .zip(payload.dropped_records())
+                    .and_then(|(total, delta)| total.checked_add(delta));
                 if next_comp == LogCompleteness::OverflowDetected {
                     self.log_completeness = LogCompleteness::OverflowDetected;
                     self.log_overflow_events = self.log_overflow_events.saturating_add(1);
@@ -3212,7 +3242,9 @@ impl ReplayCollector {
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
             log_overflow_events: self.log_overflow_events,
-            dropped_count: self.dropped_count,
+            dropped_count: self
+                .dropped_count
+                .filter(|_| self.log_completeness != LogCompleteness::Unverified),
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -4787,12 +4819,13 @@ mod tests {
         cap.ingest_event(heartbeat_at(100)).unwrap();
         cap.ingest_event(heartbeat_at(200)).unwrap();
         let mut pending = cap
-            .phase1_pin_with_options(
+            .pin_request(
                 10,
                 &out,
                 SelectionPolicy::default(),
                 SaveMode::LogsOnly,
                 super::SaveTriggerKind::Manual,
+                Some("保存メモ".to_owned()),
             )
             .unwrap();
         let job_id = pending.job_id().to_owned();
@@ -4813,6 +4846,8 @@ mod tests {
             .unwrap()
             .bundle_path
             .unwrap();
+        let manifest = arb_storage::bundle_io::read_bundle_manifest(&path).unwrap();
+        assert_eq!(manifest["memo"], "保存メモ");
         let saved = arb_storage::bundle_io::V2BundleReader::open(path).unwrap();
         assert_eq!(saved.clock_anchors().unwrap().len(), 1);
         assert!(

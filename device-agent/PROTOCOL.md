@@ -228,6 +228,8 @@ Emitted on Stream 1 startup, every 5 seconds, and immediately upon unexpected `l
 | 6 | `i64` | `pruned_cumulative` | Cumulative pruned/dropped count if reported by `logcat -S`, or `-1` if `Unverified` |
 | 7 | `str16` | `detail` | Concise diagnostic summary (e.g., `"logcat-S:total=1234,now=1234,pruned=0"` or reason for `Unverified`/`OverflowDetected`) |
 
+The host counts a verified interval as zero lost records. For an overflow, only `writer_queue_overflow:dropped=N` and `explicit_dropped_delta=N` provide a record count. Normal ring pruning is not a reader loss counter. An unverified interval or unquantified gap makes the total unknown.
+
 **Honesty Rule (`REQ-03`)**:
 - `Verified (0)` is emitted ONLY when explicit drop/pruned counters are parsed cleanly from `logcat -S` AND no drop/EOF increase occurred AND the reader experienced zero unrecovered gaps since the previous check.
 - `OverflowDetected (1)` is emitted immediately when `logcat` exits unexpectedly (EOF/SIGKILL), when explicit dropped-log counters increase, or when ring-buffer eviction outpaces consumption (e.g., logd `dropped` / `chatty` / `pruned` overflow signal).
