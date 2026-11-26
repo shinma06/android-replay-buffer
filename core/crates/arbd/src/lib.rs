@@ -2566,9 +2566,9 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
     state.close_client_viewports(&owned_viewports);
 }
 
-/// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
 type AttachOutcome = Result<(Value, Option<u64>), DaemonError>;
 
+/// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
 fn effective_query_limit(requested: Option<usize>) -> usize {
     requested
         .unwrap_or(DEFAULT_QUERY_LIMIT)
