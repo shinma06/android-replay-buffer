@@ -262,6 +262,15 @@ object ProtocolJson {
                 parentBundleId = obj.optString("parent_bundle_id"),
                 createdAtUtc = obj.requireString("created_at_utc"),
                 activeLeases = obj.requireLong("active_leases").toInt(),
+                createdUtc = obj.optString("created_utc"),
+                bundleKind = obj.optString("bundle_kind"),
+                durationMs = obj.optLong("duration_ms"),
+                frameCount = obj.optLong("frame_count"),
+                hasVideo = obj.get("has_video")?.takeUnless { it.isJsonNull }?.asBoolean,
+                hasAudio = obj.get("has_audio")?.takeUnless { it.isJsonNull }?.asBoolean,
+                logCount = obj.optLong("log_count"),
+                crashMarkerCount = obj.optLong("crash_marker_count"),
+                memo = obj.optString("memo"),
                 diskState = obj.optString("disk_state")?.let(BundleDiskState::fromWire) ?: BundleDiskState.PRESENT,
             )
         }
@@ -282,6 +291,9 @@ object ProtocolJson {
                 )
             } ?: emptyList()
             return BundleGcResponse(
+                dryRun = obj.get("dry_run")?.asBoolean ?: false,
+                preview = obj.get("preview")?.takeUnless { it.isJsonNull }?.let { context.deserialize(it, GcPreview::class.java) },
+                counts = obj.get("counts")?.takeUnless { it.isJsonNull }?.asJsonObject?.entrySet()?.associate { it.key to it.value.asInt },
                 purgedBundleIds = obj.optStringList("purged_bundle_ids"),
                 skippedLeasedBundleIds = obj.optStringList("skipped_leased_bundle_ids"),
                 skippedActiveJobBundleIds = obj.optStringList("skipped_active_job_bundle_ids"),

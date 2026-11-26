@@ -408,7 +408,11 @@ pub fn build_timeline_overview(
     };
 
     let base_boottime_ns = first_bundle_boottime_ns(&frames, &summary.epochs);
-    let duration_ms = compute_bundle_duration_ms(video_duration_ns, &frames, &summary.epochs);
+    let duration_ms = if frames.is_empty() {
+        reader.log_statistics()?.duration_ms
+    } else {
+        compute_bundle_duration_ms(video_duration_ns, &frames, &summary.epochs)
+    };
     let fps_estimate = compute_fps_estimate(frame_count, duration_ms);
 
     let screens = reader.screens()?;
@@ -576,6 +580,75 @@ pub fn inspect_frames(
     })
 }
 
+pub(super) fn query_log_response(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    params: &TimelineQueryParams,
+    limit: usize,
+) -> Result<crate::protocol::TimelineLogsResponse, DaemonError> {
+    let page = query_logs_with_total(reader, bucket, params, limit)?;
+    let mut frames = BTreeMap::<String, (Vec<i64>, Vec<u64>)>::new();
+    for frame in reader.frames()? {
+        if let Some(t) = frame_boottime_ns(&frame) {
+            let (times, indices) = frames.entry(frame.boot_id).or_default();
+            times.push(times.last().map_or(t, |prev| t.max(*prev)));
+            indices.push(frame.frame_index);
+        }
+    }
+    let epochs = &reader.manifest_summary().epochs;
+    let logs = page
+        .logs
+        .into_iter()
+        .map(|record| {
+            let timestamp_utc = record
+                .header_epoch_ns
+                .map(crate::time_util::format_epoch_ns_iso8601);
+            let (offset_ms, frame_index) = match (&record.alignment, record.bucket) {
+                (
+                    TimeAlignment::Anchored {
+                        boot_id,
+                        boottime_ns,
+                        ..
+                    },
+                    RecordBucket::Main,
+                ) => {
+                    let table = frames.get(boot_id);
+                    let start = table.and_then(|(p, _)| p.first().copied()).or_else(|| {
+                        epochs
+                            .iter()
+                            .find(|e| e.boot_id == *boot_id)
+                            .map(|e| e.start_boottime_ns)
+                    });
+                    let frame = table.and_then(|(p, ids)| {
+                        arb_media::timeline::frame_at_time(p, *boottime_ns).map(|i| ids[i])
+                    });
+                    (
+                        start.map(|s| boottime_ns.saturating_sub(s) / 1_000_000),
+                        frame,
+                    )
+                }
+                _ => (None, None),
+            };
+            crate::protocol::QueryLogRow {
+                record,
+                timestamp_utc,
+                offset_ms,
+                frame_index,
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(crate::protocol::TimelineLogsResponse {
+        returned_count: logs.len(),
+        logs,
+        total_matched: page.total_matched,
+        has_more: page.has_more,
+        next_cursor: page
+            .next_after_seq
+            .filter(|_| page.has_more)
+            .map(|s| s.to_string()),
+    })
+}
+
 /// Resolves optional `start_frame` / `end_frame` bounds on [`TimelineQueryParams`] into a
 /// [`TimeRange`] and filters `logs` by optional `package`, `tag`, `level`, and `keyword` criteria.
 ///
@@ -601,6 +674,8 @@ pub struct FilteredLogPage {
     pub next_after_seq: Option<u64>,
     /// Number of candidate rows read from `reader` while scanning for this page.
     pub candidate_rows_scanned: usize,
+    /// Exact across all pages when requested by the RPC.
+    pub total_matched: usize,
     /// `true` when a `package` filter was satisfied from the bundle-scoped PID resolver cache
     /// without re-scanning all bundle logs.
     pub resolver_cache_hit: bool,
@@ -620,6 +695,69 @@ enum BundleLogCacheKey {
         digest: String,
         files: [FileStamp; 2],
     },
+}
+
+// Immutable bundle identity and complete search conditions. Page size and cursor do not
+// affect the total. Oversized one-off queries bypass the bounded process cache.
+#[derive(Clone, PartialEq, Eq)]
+struct LogCountKey {
+    bundle: BundleLogCacheKey,
+    bucket: Option<RecordBucket>,
+    range: TimeRange,
+    filters: [Option<String>; 4],
+    whole_word: bool,
+}
+
+fn query_logs_with_total(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    params: &TimelineQueryParams,
+    limit: usize,
+) -> Result<FilteredLogPage, DaemonError> {
+    static TOTALS: Mutex<VecDeque<(LogCountKey, usize)>> = Mutex::new(VecDeque::new());
+    let filters = [&params.tag, &params.keyword, &params.level, &params.package];
+    let cacheable = filters.iter().any(|v| v.is_some())
+        && filters
+            .iter()
+            .filter_map(|v| v.as_ref())
+            .map(String::len)
+            .sum::<usize>()
+            <= 4096;
+    let key = if cacheable && let Some(bundle) = build_bundle_cache_key(reader) {
+        Some(LogCountKey {
+            bundle,
+            bucket,
+            range: resolve_log_query_time_range(reader, params)?,
+            filters: filters.map(Clone::clone),
+            whole_word: params.whole_word,
+        })
+    } else {
+        None
+    };
+    let cached = key.as_ref().and_then(|key| {
+        TOTALS
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, total)| *total)
+    });
+    if let Some(total) = cached {
+        let mut page = scan_logs(reader, bucket, params, limit, CountMatches::PageOnly)?;
+        page.total_matched = total;
+        return Ok(page);
+    }
+    let page = scan_logs(reader, bucket, params, limit, CountMatches::EntireQuery)?;
+    if let Some(key) = key
+        && build_bundle_cache_key(reader).as_ref() == Some(&key.bundle)
+        && let Ok(mut cache) = TOTALS.lock()
+    {
+        if cache.len() >= MAX_LOG_RESOLVER_CACHE_ENTRIES {
+            cache.pop_front();
+        }
+        cache.push_back((key, page.total_matched));
+    }
+    Ok(page)
 }
 
 #[derive(Default)]
@@ -707,9 +845,24 @@ struct CompiledLogFilter<'a> {
     level: Option<String>,
     tag_lower: Option<String>,
     keyword_lower: Option<String>,
+    whole_word: bool,
 }
 
 impl CompiledLogFilter<'_> {
+    fn text_matches(&self, text: &str, needle: &str) -> bool {
+        let text = text.to_ascii_lowercase();
+        if !self.whole_word {
+            return text.contains(needle);
+        }
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        !needle.is_empty()
+            && text.char_indices().any(|(i, _)| {
+                text[i..].starts_with(needle)
+                    && !text[..i].chars().next_back().is_some_and(word)
+                    && !text[i + needle.len()..].chars().next().is_some_and(word)
+            })
+    }
+
     fn matches(&self, log: &LogRecord) -> bool {
         if let Some((target_pkg, ref resolver)) = self.package
             && !resolver.matches_package(log, target_pkg)
@@ -726,17 +879,17 @@ impl CompiledLogFilter<'_> {
             let matched = log
                 .tag
                 .as_deref()
-                .is_some_and(|t| t.to_ascii_lowercase().contains(want_tag));
+                .is_some_and(|t| self.text_matches(t, want_tag));
             if !matched {
                 return false;
             }
         }
         if let Some(ref want_kw) = self.keyword_lower {
-            let in_msg = log.message.to_ascii_lowercase().contains(want_kw);
+            let in_msg = self.text_matches(&log.message, want_kw);
             let in_tag = log
                 .tag
                 .as_deref()
-                .is_some_and(|t| t.to_ascii_lowercase().contains(want_kw));
+                .is_some_and(|t| self.text_matches(t, want_kw));
             if !in_msg && !in_tag {
                 return false;
             }
@@ -807,6 +960,38 @@ pub fn query_logs_filtered_page(
     params: &TimelineQueryParams,
     limit: usize,
 ) -> Result<FilteredLogPage, DaemonError> {
+    scan_logs(reader, bucket, params, limit, CountMatches::PageOnly)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CountMatches {
+    EntireQuery,
+    PageOnly,
+}
+
+fn query_level(raw: Option<&str>) -> Result<Option<String>, DaemonError> {
+    Ok(match raw {
+        Some(raw) => {
+            let norm = normalize_log_level(raw);
+            if norm.is_empty() || raw.trim().eq_ignore_ascii_case("A") {
+                return Err(DaemonError::InvalidParams(format!(
+                    "unknown log level `{raw}`; expected V/D/I/W/E/F or VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT"
+                )));
+            }
+            Some(norm.to_owned())
+        }
+        None => None,
+    })
+}
+
+fn scan_logs(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    params: &TimelineQueryParams,
+    limit: usize,
+    count: CountMatches,
+) -> Result<FilteredLogPage, DaemonError> {
+    let count_all = count == CountMatches::EntireQuery;
     let range = resolve_log_query_time_range(reader, params)?;
 
     let package_filter = params
@@ -831,22 +1016,16 @@ pub fn query_logs_filtered_page(
             has_more,
             next_after_seq,
             candidate_rows_scanned,
+            total_matched: if count_all {
+                reader.count_logs(bucket, range)?
+            } else {
+                candidate_rows_scanned
+            },
             resolver_cache_hit: false,
         });
     }
 
-    let level = match params.level.as_deref() {
-        Some(raw) => {
-            let norm = normalize_log_level(raw);
-            if norm.is_empty() {
-                return Err(DaemonError::InvalidParams(format!(
-                    "unknown log level `{raw}`; expected one of V, D, I, W, E, F"
-                )));
-            }
-            Some(norm.to_owned())
-        }
-        None => None,
-    };
+    let level = query_level(params.level.as_deref())?;
 
     let (package, resolver_cache_hit) = if let Some(target_pkg) = package_filter {
         let (resolver, hit) = load_or_build_package_resolver(reader)?;
@@ -859,13 +1038,15 @@ pub fn query_logs_filtered_page(
         package,
         level,
         tag_lower: params.tag.as_deref().map(str::to_ascii_lowercase),
+        whole_word: params.whole_word,
         keyword_lower: params.keyword.as_deref().map(str::to_ascii_lowercase),
     };
 
     let batch_size = limit
         .saturating_mul(4)
         .clamp(MIN_FILTERED_LOG_BATCH_ROWS, MAX_FILTERED_LOG_BATCH_ROWS);
-    let mut cursor_seq = params.after_seq;
+    let mut total_matched = 0;
+    let mut cursor_seq = if count_all { None } else { params.after_seq };
     let mut matched = Vec::with_capacity(limit.min(MAX_FILTERED_LOG_BATCH_ROWS));
     let mut has_more = false;
     let mut candidate_rows_scanned = 0_usize;
@@ -880,15 +1061,21 @@ pub fn query_logs_filtered_page(
         for log in batch {
             cursor_seq = Some(log.seq);
             if filter.matches(&log) {
+                total_matched += 1;
+                if params.after_seq.is_some_and(|after| log.seq <= after) {
+                    continue;
+                }
                 if matched.len() < limit {
                     matched.push(log);
                 } else {
                     has_more = true;
-                    break;
+                    if !count_all {
+                        break;
+                    }
                 }
             }
         }
-        if has_more || batch_len < batch_size {
+        if (has_more && !count_all) || batch_len < batch_size {
             break;
         }
     }
@@ -900,6 +1087,7 @@ pub fn query_logs_filtered_page(
         next_after_seq,
         candidate_rows_scanned,
         resolver_cache_hit,
+        total_matched,
     })
 }
 
@@ -1374,6 +1562,55 @@ fn first_bundle_boottime_ns(
         .iter()
         .find_map(frame_boottime_ns)
         .or_else(|| epochs.first().map(|e| e.start_boottime_ns))
+}
+
+pub(super) fn catalog_summary(
+    reader: &dyn BundleReader,
+) -> Result<crate::protocol::CatalogSummary, DaemonError> {
+    catalog_summary_with_logs(reader, &reader.log_statistics()?)
+}
+
+pub(super) fn catalog_summary_with_logs(
+    reader: &dyn BundleReader,
+    logs: &arb_storage::bundle_io::LogStatistics,
+) -> Result<crate::protocol::CatalogSummary, DaemonError> {
+    let manifest = reader.manifest_summary();
+    let video = reader.video_path();
+    let duration_ms = video
+        .as_ref()
+        .map(Mp4VideoTrack::open)
+        .transpose()?
+        .map(|t| {
+            u64::try_from(u128::from(t.duration_ticks()) * 1000 / u128::from(t.timescale()))
+                .unwrap_or(u64::MAX)
+        });
+    let frame_count = if let Some(meta) = &manifest.streams.video {
+        meta.frame_count
+    } else if reader.is_legacy() {
+        u64::try_from(reader.frames()?.len()).unwrap_or(u64::MAX)
+    } else {
+        0
+    };
+    let kind = if matches!(
+        manifest.provenance,
+        arb_core::bundle::Provenance::Trimmed { .. }
+    ) {
+        "trimmed"
+    } else if manifest.bundle_kind == arb_core::bundle::BundleKind::LogsOnly {
+        "logs_only"
+    } else {
+        "full"
+    };
+    Ok(crate::protocol::CatalogSummary {
+        bundle_kind: Some(kind.to_owned()),
+        duration_ms: Some(duration_ms.unwrap_or(logs.duration_ms)),
+        frame_count: Some(frame_count),
+        has_video: Some(video.is_some()),
+        has_audio: Some(reader.audio_path().is_some()),
+        log_count: Some(logs.count),
+        crash_marker_count: Some(reader.crashes()?.len()),
+        memo: None,
+    })
 }
 
 fn compute_bundle_duration_ms(

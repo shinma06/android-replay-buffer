@@ -159,7 +159,7 @@ def main() -> int:
             for n, line in grep(src, re.compile(r"allow\(\s*unsafe_code")):
                 fail("RS-3", f"{rel}:{n}: unsafe_code allowed outside the FFI boundary: {line}")
         if rel == "arbd/src/lib.rs":
-            m = re.search(r"fn dispatch\(&self, method: &str.*?\n    }\n", src, re.S)
+            m = re.search(r"fn dispatch\(\s*(?:&self|self: &Arc<Self>),\s*method: &str.*?\n    }\n", src, re.S)
             if m:
                 rpc_dispatched = set(RPC_NAME.findall(m.group(0)))
 

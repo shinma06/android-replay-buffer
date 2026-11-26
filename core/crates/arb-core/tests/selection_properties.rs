@@ -141,6 +141,14 @@ proptest! {
             }
         }
 
+        let confirmed: Vec<_> = part.main.iter().filter_map(|r| match r.alignment {
+            TimeAlignment::Anchored { boottime_ns, .. } => Some(boottime_ns), _ => None,
+        }).collect();
+        if let Some((lo, hi)) = confirmed.iter().min().zip(confirmed.iter().max()) {
+            prop_assert!(*lo >= w_start && *hi <= w_end);
+            prop_assert!(hi - lo <= w_len);
+        }
+
         // Quarantine caps are strictly enforced.
         prop_assert!(
             part.unanchored.len() <= max_recs,

@@ -113,6 +113,7 @@ fn legacy_fixture() -> PathBuf {
 
 fn info(boot: i64, cont: i64) -> CaptureChunkInfo {
     CaptureChunkInfo {
+        device_boot_id: None,
         host_boot_ns: boot,
         host_live: true,
         device_serial: "emulator-5554".into(),

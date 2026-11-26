@@ -199,9 +199,9 @@ private fun executeConfiguredSave(project: Project?) {
                     daemonService = service,
                     bundleId = savedId,
                     bundlePath = res.bundlePath,
-                    windowSecs = windowSecs,
+                    windowSecs = res.actualVideoDurationMs?.div(1000) ?: windowSecs,
                     openedInStudio = openInStudio,
-                    warning = res.warning,
+                    warning = res.notificationWarning,
                 )
             } else {
                 ArbNotifications.notifyWarning(
@@ -293,8 +293,8 @@ private fun executeSaveLogsOnly(project: Project?) {
                     daemonService = service,
                     bundleId = savedId,
                     bundlePath = res.bundlePath,
-                    windowSecs = windowSecs,
-                    warning = res.warning,
+                    windowSecs = res.actualLogDurationMs?.div(1000) ?: windowSecs,
+                    warning = res.notificationWarning,
                 )
             } else {
                 ArbNotifications.notifyWarning(
