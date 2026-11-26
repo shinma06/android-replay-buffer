@@ -182,7 +182,7 @@ def main() -> int:
     clients: set[str] = set()
     for kt in (REPO / "ide-plugin").glob("**/src/main/kotlin/**/*.kt"):
         clients |= set(RPC_NAME.findall(kt.read_text(encoding="utf-8")))
-    for rs in (CRATES / "arb-cli" / "src").glob("*.rs"):
+    for rs in (CRATES / "arb-cli" / "src").rglob("*.rs"):
         clients |= set(RPC_NAME.findall(rs.read_text(encoding="utf-8")))
     # The catalog reconciliation and purge operations are required on each surface.
     for source in (

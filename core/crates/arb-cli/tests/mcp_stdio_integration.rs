@@ -393,7 +393,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "protocolVersion"
     );
     assert_eq!(
-        init["result"]["serverInfo"]["name"], "arb-mcp",
+        init["result"]["serverInfo"]["name"], "android-replay-buffer",
         "serverInfo name"
     );
 
@@ -426,7 +426,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let tools = tools_resp["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 19, "expected all 19 MCP tools");
+    assert_eq!(tools.len(), 20, "expected all 20 MCP tools");
     for required in [
         "arb_status",
         "arb_devices",
@@ -437,6 +437,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "arb_save",
         "arb_screenshot",
         "arb_save_logs",
+        "arb_save_and_inspect",
         "arb_list_bundles",
         "arb_trash_bundle",
         "arb_restore_bundle",
@@ -584,7 +585,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                 "name": "arb_inspect_frames",
                 "arguments": {
                     "bundle_id": bundle_id,
-                    "mode": "contact_sheet",
+                    "mode": "contact_sheet", "include_images":true,
                     "max_tiles": 4,
                     "include_tap_marker": true
                 }
@@ -908,3 +909,5 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
     drop(rpc);
     drop(server);
 }
+#[cfg(test)]
+mod stdio_contract;

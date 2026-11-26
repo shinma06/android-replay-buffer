@@ -1576,6 +1576,30 @@ impl BundleReader for LegacyBundleReader {
     }
 }
 
+/// Reads the original JSON manifest of a v2 or legacy bundle.
+///
+/// # Errors
+/// Returns an error for an unknown format, invalid JSON or a path escaping the bundle.
+pub fn read_bundle_manifest(dir: &Path) -> Result<serde_json::Value, StorageError> {
+    let root = fs::canonicalize(dir).map_err(|e| StorageError::io("resolve_bundle", dir, e))?;
+    for name in [
+        MANIFEST_V2_FILE,
+        LEGACY_SCHEMA4_MANIFEST,
+        LEGACY_SCHEMA3_MANIFEST,
+    ] {
+        let path = confined_path(&root, name)?;
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| StorageError::io("read_manifest", &path, e))?;
+            return serde_json::from_slice(&bytes)
+                .map_err(|e| StorageError::json("parse_manifest", e));
+        }
+    }
+    Err(StorageError::InvalidBundle {
+        path: root,
+        reason: "missing manifest".into(),
+    })
+}
+
 /// Auto-detects whether `bundle_dir` is a WORM v2 bundle or a legacy schema 3/4
 /// bundle and opens it strictly read-only.
 ///

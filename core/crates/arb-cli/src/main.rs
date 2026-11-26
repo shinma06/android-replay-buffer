@@ -225,6 +225,8 @@ enum CommandSpec {
         logcat_enabled: bool,
         input_enabled: bool,
         heartbeat_ms: Option<u32>,
+        wait_connected: bool,
+        wait_timeout_ms: u64,
     },
     CaptureStop,
     Save {
@@ -276,10 +278,14 @@ enum CommandSpec {
     },
     BundlesGc {
         ignore_grace: bool,
+        dry_run: bool,
     },
     BundlesForget {
         bundle_id: Option<String>,
         all_missing: bool,
+    },
+    Logs {
+        params: Value,
     },
     Inspect {
         target: String,
@@ -413,6 +419,8 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
         "screenshot" => parse_screenshot_cmd(&rest[1..])?,
         "config" => parse_config_cmd(&rest[1..])?,
         "jobs" => parse_jobs_cmd(&rest[1..])?,
+        "gc" => parse_gc(&rest[1..])?,
+        "logs" => parse_logs(&rest[1..])?,
         "bundles" => parse_bundles_cmd(&rest[1..])?,
         "inspect" => {
             let raw = rest
@@ -497,6 +505,8 @@ fn parse_capture_start_flags(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut logcat_enabled = true;
     let mut input_enabled = true;
     let mut heartbeat_ms = None;
+    let mut wait_connected = false;
+    let mut wait_timeout_ms = 5000;
 
     let mut i = 0_usize;
     while i < args.len() {
@@ -529,30 +539,26 @@ fn parse_capture_start_flags(args: &[String]) -> Result<CommandSpec, CliError> {
                 )?))?);
                 i += 2;
             }
-            "--max-size" => {
-                max_size = Some(parse_u32(
-                    require_val(args, i, "--max-size")?,
-                    "--max-size",
-                )?);
+            flag @ ("--max-size" | "--max-fps" | "--video-bit-rate" | "--heartbeat-ms"
+            | "--wait-timeout-ms") => {
+                let value = parse_u32(require_val(args, i, flag)?, flag)?;
+                match flag {
+                    "--max-size" => max_size = Some(value),
+                    "--max-fps" => max_fps = Some(value),
+                    "--video-bit-rate" => video_bit_rate = Some(value),
+                    "--heartbeat-ms" => heartbeat_ms = Some(value),
+                    _ if value <= 30_000 => wait_timeout_ms = u64::from(value),
+                    _ => {
+                        return Err(CliError::usage(
+                            "--wait-timeout-ms は 30000 以下で指定してください",
+                        ));
+                    }
+                }
                 i += 2;
             }
-            "--max-fps" => {
-                max_fps = Some(parse_u32(require_val(args, i, "--max-fps")?, "--max-fps")?);
-                i += 2;
-            }
-            "--video-bit-rate" => {
-                video_bit_rate = Some(parse_u32(
-                    require_val(args, i, "--video-bit-rate")?,
-                    "--video-bit-rate",
-                )?);
-                i += 2;
-            }
-            "--heartbeat-ms" => {
-                heartbeat_ms = Some(parse_u32(
-                    require_val(args, i, "--heartbeat-ms")?,
-                    "--heartbeat-ms",
-                )?);
-                i += 2;
+            "--wait-connected" => {
+                wait_connected = true;
+                i += 1;
             }
             "--no-audio" => {
                 audio_enabled = Some(false);
@@ -586,6 +592,8 @@ fn parse_capture_start_flags(args: &[String]) -> Result<CommandSpec, CliError> {
         logcat_enabled,
         input_enabled,
         heartbeat_ms,
+        wait_connected,
+        wait_timeout_ms,
     })
 }
 
@@ -885,6 +893,57 @@ fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 }
 
+fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
+    let target = args
+        .first()
+        .ok_or_else(|| CliError::usage("logs <bundle-id-or-path>"))?;
+    let mut params = json!({"bundle_id_or_path": absolutize_bundle_target(target)?, "limit":100});
+    let mut i = 1;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        match flag {
+            "--whole-word" => {
+                params["whole_word"] = json!(true);
+                i += 1;
+            }
+            "--limit" => {
+                let limit = parse_u64(require_val(args, i, flag)?, flag)?;
+                if !(1..=100_000).contains(&limit) {
+                    return Err(CliError::usage("--limit は 1〜100000 で指定してください"));
+                }
+                params["limit"] = json!(limit);
+                i += 2;
+            }
+            "--cursor" | "--keyword" | "--tag" | "--level" | "--package" => {
+                params[&flag[2..]] = json!(require_val(args, i, flag)?);
+                i += 2;
+            }
+            _ => return Err(CliError::usage(format!("unknown logs option {flag}"))),
+        }
+    }
+    Ok(CommandSpec::Logs { params })
+}
+
+fn parse_gc(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut ignore_grace = false;
+    let mut dry_run = false;
+    for flag in args {
+        match flag.as_str() {
+            "--now" => ignore_grace = true,
+            "--dry-run" => dry_run = true,
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown bundles gc option `{other}` (expected `--now` or `--dry-run`)"
+                )));
+            }
+        }
+    }
+    Ok(CommandSpec::BundlesGc {
+        ignore_grace,
+        dry_run,
+    })
+}
+
 fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
         Some("list") => {
@@ -951,20 +1010,7 @@ fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 .clone();
             Ok(CommandSpec::BundlesRestore { bundle_id })
         }
-        Some("gc") => {
-            let mut ignore_grace = false;
-            for flag in args.iter().skip(1) {
-                match flag.as_str() {
-                    "--now" => ignore_grace = true,
-                    other => {
-                        return Err(CliError::usage(format!(
-                            "unknown bundles gc option `{other}` (expected optional `--now`)"
-                        )));
-                    }
-                }
-            }
-            Ok(CommandSpec::BundlesGc { ignore_grace })
-        }
+        Some("gc") => parse_gc(&args[1..]),
         Some("forget") => match args.get(1).map(String::as_str) {
             Some("--all-missing") if args.len() == 2 => Ok(CommandSpec::BundlesForget {
                 bundle_id: None,
@@ -1301,6 +1347,7 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         CommandSpec::DaemonStop => ("system.shutdown", json!({}), "arbd shutdown requested"),
         CommandSpec::Devices => ("device.list", json!({}), "devices"),
         CommandSpec::CaptureStart { .. } => capture_start_to_rpc(cmd),
+        CommandSpec::Logs { params } => ("bundle.query_logs", params, "logs"),
         CommandSpec::CaptureStop => ("capture.stop", json!({}), "capture stopped"),
         CommandSpec::Save {
             seconds,
@@ -1369,12 +1416,17 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             json!({ "bundle_id": bundle_id }),
             "bundle restored",
         ),
-        CommandSpec::BundlesGc { ignore_grace } => {
-            let params = if ignore_grace {
-                json!({ "ignore_grace": true })
-            } else {
-                json!({})
-            };
+        CommandSpec::BundlesGc {
+            ignore_grace,
+            dry_run,
+        } => {
+            let mut params = json!({});
+            if ignore_grace {
+                params["ignore_grace"] = json!(true);
+            }
+            if dry_run {
+                params["dry_run"] = json!(true);
+            }
             ("bundle.gc", params, "bundle gc")
         }
         CommandSpec::BundlesForget {
@@ -1469,6 +1521,8 @@ fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str)
         logcat_enabled,
         input_enabled,
         heartbeat_ms,
+        wait_connected,
+        wait_timeout_ms,
     } = cmd
     else {
         return ("system.status", json!({}), "arbd status");
@@ -1480,7 +1534,7 @@ fn capture_start_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str)
             "scrcpy_jar": scrcpy_jar, "max_size": max_size, "max_fps": max_fps,
             "video_bit_rate": video_bit_rate, "audio_enabled": audio_enabled,
             "logcat_enabled": logcat_enabled, "input_enabled": input_enabled,
-            "heartbeat_ms": heartbeat_ms,
+            "heartbeat_ms": heartbeat_ms, "wait_connected":wait_connected, "wait_timeout_ms":wait_timeout_ms,
         }),
         "capture started",
     )
@@ -1763,7 +1817,7 @@ COMMANDS:\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  bundles trash <ID> | restore <ID> | gc [--now] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run]\n  logs <ID> [--limit N] [--cursor CURSOR] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> --in-frame <N> --out-frame <M> [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--burn-taps] [--trash-original]\n  \
@@ -2096,11 +2150,18 @@ mod tests {
             gc_default,
             CommandSpec::BundlesGc {
                 ignore_grace: false,
+                dry_run: false,
             }
         );
         let (_, gc_now) =
             parse_args(&vec_str(&["bundles", "gc", "--now"])).expect("bundles gc --now");
-        assert_eq!(gc_now, CommandSpec::BundlesGc { ignore_grace: true });
+        assert_eq!(
+            gc_now,
+            CommandSpec::BundlesGc {
+                ignore_grace: true,
+                dry_run: false
+            }
+        );
         assert!(parse_args(&vec_str(&["bundles", "gc", "--bogus"])).is_err());
 
         let (_, forget_one) =

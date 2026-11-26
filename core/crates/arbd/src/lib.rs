@@ -561,6 +561,7 @@ impl DaemonState {
         match method {
             "system.hello" => Ok(serde_json::to_value(SystemHelloResponse {
                 protocol_version: IPC_PROTOCOL_VERSION,
+                gc_dry_run: true,
                 schema_version: BUNDLE_SCHEMA_VERSION,
                 pid: std::process::id(),
                 data_dir: self.paths.data_dir.clone(),
@@ -589,6 +590,7 @@ impl DaemonState {
             "save.retry" => self.handle_save_retry(params),
             "save.retarget" => self.handle_save_retarget(params),
             "save.discard" => self.handle_save_discard(params),
+            "bundle.manifest" => self.handle_bundle_manifest(params),
             "bundle.list" => self.handle_bundle_list(params),
             "bundle.open" => self.handle_bundle_open(params),
             "bundle.lease_renew" => self.handle_bundle_lease_renew(params),
@@ -760,9 +762,8 @@ impl DaemonState {
             (ticket, parsed)
         };
         if !parsed.wait_connected {
-            return self
-                .attach_reserved(&reservation, &parsed)
-                .map(|(value, _)| value);
+            let (value, generation) = self.attach_reserved(&reservation, &parsed)?;
+            return self.wait_for_connection(value, generation, None);
         }
         let timeout = Duration::from_millis(parsed.wait_timeout_ms.unwrap_or(5000).min(30_000));
         let deadline = Instant::now() + timeout;
@@ -793,7 +794,7 @@ impl DaemonState {
             "wait_timed_out":true,"audio_state":"unknown","audio_cause":null}),
             );
         };
-        self.wait_for_connection(result, generation, deadline)
+        self.wait_for_connection(result, generation, Some(deadline))
     }
 
     /// Waits for the attach worker; `None` means the deadline passed first.
@@ -824,7 +825,7 @@ impl DaemonState {
         &self,
         mut result: Value,
         generation: Option<u64>,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<Value, DaemonError> {
         loop {
             let cap = self.lock_capture()?;
@@ -833,10 +834,12 @@ impl DaemonState {
             let connected = current && status.connected;
             let pending = current && !connected && cap.is_active() && !self.is_shutting_down();
             drop(cap);
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.map_or(Duration::ZERO, |d| {
+                d.saturating_duration_since(Instant::now())
+            });
             if !pending || remaining.is_zero() {
                 result["connected"] = json!(connected);
-                result["wait_timed_out"] = json!(pending);
+                result["wait_timed_out"] = json!(deadline.is_some() && pending);
                 result["audio_state"] = if current {
                     json!(status.audio_state)
                 } else {
@@ -1242,6 +1245,11 @@ impl DaemonState {
         Ok(serde_json::to_value(view)?)
     }
 
+    fn handle_bundle_manifest(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: BundleRefParams = parse_params(params)?;
+        let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
+        Ok(arb_storage::bundle_io::read_bundle_manifest(&path)?)
+    }
     fn handle_bundle_list(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: BundleListParams = parse_optional_params(params)?;
         let entries = self.catalog.list_bundles(parsed.state)?;
@@ -1778,6 +1786,9 @@ impl DaemonState {
         let parsed: MediaInspectFramesParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        if parsed.metadata_only {
+            return inspect_export::inspect_metadata(&self.catalog, &path, source_id, &parsed);
+        }
         let backend = default_codec_backend();
         let ctx = ExportContext {
             catalog: &self.catalog,
@@ -2688,7 +2699,7 @@ mod supervisor_hardening_tests {
         let wait = |g| {
             server
                 .state
-                .wait_for_connection(json!({"serial":"mock"}), Some(g), Instant::now())
+                .wait_for_connection(json!({"serial":"mock"}), Some(g), Some(Instant::now()))
                 .expect("wait")
         };
         let before = wait(generation);
