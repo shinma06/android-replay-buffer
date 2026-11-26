@@ -142,6 +142,10 @@ class PlaybackController(
             if (closed || totalFrames <= 0L) return
             if (currentState.mode == PlaybackMode.PLAYING) return
 
+            nextStudioRange?.let { range ->
+                currentState = currentState.copy(inFrameIndex = range.first, outFrameIndex = range.last)
+                nextStudioRange = null
+            }
             val cur = currentState
             val resume = anchorMediaPtsNs >= axis.start(cur.inFrameIndex) && anchorMediaPtsNs < axis.outTime(cur.outFrameIndex)
             startPtsNs = if (resume) anchorMediaPtsNs else axis.start(cur.inFrameIndex)
@@ -402,6 +406,24 @@ class PlaybackController(
             notifyListeners(preSnapshot)
         }
         performExactSeek(targetFrame, gen)
+    }
+
+    // An edit made during playback applies to the next play session. The running
+    // session keeps its loop bounds, clock anchor, audio and decoder generation.
+    private var nextStudioRange: LongRange? = null
+
+    fun setStudioRange(range: LongRange) {
+        val snapshot = stateLock.withLock {
+            if (closed || totalFrames == 0L) return
+            require(!range.isEmpty() && range.first >= 0 && range.last < totalFrames)
+            if (currentState.mode == PlaybackMode.PLAYING) {
+                nextStudioRange = range
+                return
+            }
+            nextStudioRange = null
+            publishStateLocked(currentState.copy(inFrameIndex = range.first, outFrameIndex = range.last))
+        }
+        snapshot?.let(::notifyListeners)
     }
 
     /**

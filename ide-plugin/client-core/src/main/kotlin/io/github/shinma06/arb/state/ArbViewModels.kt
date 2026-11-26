@@ -635,8 +635,6 @@ data class TimelineViewerState(
     val summary: TimelineSummaryResponse,
     val frameCount: Long,
     val currentFrameIndex: Long = 0L,
-    val inFrameIndex: Long = 0L,
-    val outFrameIndex: Long = (summary.frameCount - 1).coerceAtLeast(0).toLong(),
     val currentFrameMeta: ShmFrameMeta? = null,
     val filmstrip: List<FilmstripEntryMeta> = emptyList(),
     val discontinuities: List<DiscontinuityEvent> = emptyList(),
@@ -651,6 +649,8 @@ data class TimelineViewerState(
     val exportCompletion: ExportCompletionInfo? = null,
     val lastActionMessage: String? = null,
     val axis: TimelineCoordinateAxis = estimatedAxis(summary, frameCount),
+    val inTimeNs: Long = 0L,
+    val outTimeNs: Long = axis.endNs,
     /** Per-stream load status; a stream absent from the map has not been requested ([StreamLoadState.Pending]). */
     val auxStreams: Map<AuxStream, StreamLoadState> = emptyMap(),
     /** `true` when the MAIN log bucket hit the display limit and rows were dropped. */
@@ -659,6 +659,14 @@ data class TimelineViewerState(
     val unanchoredLogsLimited: Boolean = false,
     val logLimitUnknown: Boolean = false,
 ) {
+    val minSelectionNs get() = minOf(1_000_000L, axis.endNs)
+    val inFrameIndex get() = axis.frameAt(inTimeNs)
+    val outFrameIndex get() = axis.outFrame(outTimeNs)
+
+    init {
+        require(inTimeNs in 0..outTimeNs && outTimeNs <= axis.endNs && outTimeNs - inTimeNs >= minSelectionNs)
+    }
+
     fun streamState(stream: AuxStream): StreamLoadState = auxStreams[stream] ?: StreamLoadState.Pending
 
     /** Streams whose last load failed (empty while loading or when everything loaded). */
@@ -819,15 +827,16 @@ data class TimelineViewerState(
     }
 
     val selectedDurationMs: Long
-        get() = (axis.outTime(outFrameIndex) - axis.start(inFrameIndex)) / 1_000_000L
+        get() = (outTimeNs - inTimeNs) / 1_000_000L
 
     val exportCtaLabel: String
-        get() = ArbFormatters.formatExportCtaLabel(inFrameIndex, outFrameIndex, frameCount, selectedDurationMs)
+        get() = ArbFormatters.formatExportCtaLabel(inTimeNs == 0L && outTimeNs == axis.endNs, selectedDurationMs)
 
     val selectionSummaryText: String
         get() = ArbFormatters.formatSelectionSummary(
-            inMs = frameToRelativeMs(inFrameIndex),
-            outMs = axis.outTime(outFrameIndex) / 1_000_000L,
+            inMs = inTimeNs / 1_000_000L,
+            outMs = outTimeNs / 1_000_000L,
+            durationMs = selectedDurationMs,
             inFrameIndex = inFrameIndex,
             outFrameIndex = outFrameIndex,
         )
@@ -1117,7 +1126,7 @@ data class TimelineViewerState(
 
     fun isTimeInTrimRange(time: Long?): Boolean {
         if (time == null || frameCount == 0L) return true
-        return time >= axis.start(inFrameIndex) && time < axis.outTime(outFrameIndex)
+        return time >= inTimeNs && time < outTimeNs
     }
 
     private fun kindSortOrder(kind: SyncedEventKind): Int = when (kind) {
@@ -1156,7 +1165,34 @@ data class TimelineViewerState(
     }
 }
 
+enum class TrimEdge { IN, OUT }
+
+data class TrimPreviewState(val edge: TrimEdge, val timeNs: Long, val frameIndex: Long)
+
 object TimelineViewerReducer {
+    fun setEdge(state: TimelineViewerState, edge: TrimEdge, timeNs: Long): TimelineViewerState =
+        when (edge) {
+            TrimEdge.IN -> state.copy(inTimeNs = timeNs.coerceIn(0, state.outTimeNs - state.minSelectionNs))
+            TrimEdge.OUT -> state.copy(outTimeNs = timeNs.coerceIn(state.inTimeNs + state.minSelectionNs, state.axis.endNs))
+        }
+
+    fun setRange(state: TimelineViewerState, start: Long, end: Long): TimelineViewerState {
+        val left = start.coerceIn(0, state.axis.endNs - state.minSelectionNs)
+        return state.copy(inTimeNs = left, outTimeNs = end.coerceIn(left + state.minSelectionNs, state.axis.endNs))
+    }
+
+    fun nudge(state: TimelineViewerState, edge: TrimEdge, direction: Int, byTime: Boolean): TimelineViewerState {
+        require(direction == -1 || direction == 1)
+        val time = if (edge == TrimEdge.IN) state.inTimeNs else state.outTimeNs
+        val axis = state.axis
+        val target = when {
+            byTime -> time + (direction * 100_000_000L).coerceIn(-time, axis.endNs - time)
+            direction < 0 -> axis.start(axis.outFrame(time))
+            else -> axis.outTime(axis.frameAt(time))
+        }
+        return setEdge(state, edge, target)
+    }
+
     fun onFramePublished(state: TimelineViewerState, meta: ShmFrameMeta): TimelineViewerState =
         state.copy(
             currentFrameMeta = meta,
@@ -1172,14 +1208,14 @@ object TimelineViewerReducer {
         if (state.frameCount <= 0L) return state
         val clamped = frameIndex.coerceIn(0L, state.frameCount - 1L)
         val adjustedOut = if (state.outFrameIndex < clamped) clamped else state.outFrameIndex
-        return state.copy(inFrameIndex = clamped, outFrameIndex = adjustedOut)
+        return setRange(state, state.axis.start(clamped), if (adjustedOut == state.outFrameIndex) state.outTimeNs else state.axis.outTime(adjustedOut))
     }
 
     fun setOutFrame(state: TimelineViewerState, frameIndex: Long): TimelineViewerState {
         if (state.frameCount <= 0L) return state
         val clamped = frameIndex.coerceIn(0L, state.frameCount - 1L)
         val adjustedIn = if (state.inFrameIndex > clamped) clamped else state.inFrameIndex
-        return state.copy(inFrameIndex = adjustedIn, outFrameIndex = clamped)
+        return setRange(state, if (adjustedIn == state.inFrameIndex) state.inTimeNs else state.axis.start(adjustedIn), state.axis.outTime(clamped))
     }
 
     /** Records the outcome of one auxiliary stream load without touching the other streams. */
