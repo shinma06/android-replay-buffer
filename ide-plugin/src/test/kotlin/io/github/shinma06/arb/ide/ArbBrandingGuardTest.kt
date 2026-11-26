@@ -101,6 +101,28 @@ class ArbBrandingGuardTest {
     }
 
     @Test
+    fun currentUserFacingDocsContainZeroProductV2Branding() {
+        val root = repoRoot()
+        val docs = Files.list(root.resolve("docs")).use { top ->
+            top.filter { Files.isRegularFile(it) && it.toString().endsWith(".md") }.toList()
+        } + Files.walk(root.resolve("docs/specs")).use { specs ->
+            specs.filter { Files.isRegularFile(it) && it.toString().endsWith(".md") }.toList()
+        }
+        val violations = docs.flatMap { file ->
+            val rel = root.relativize(file).toString().replace('\\', '/')
+            Files.readAllLines(file).mapIndexedNotNull { idx, line ->
+                FORBIDDEN_BRANDING_PATTERNS.firstOrNull { it.containsMatchIn(line) }
+                    ?.let { "$rel:${idx + 1}: matched /${it.pattern}/" }
+            }
+        }
+
+        assertTrue(
+            violations.isEmpty(),
+            "Found forbidden user-facing 'v2' product branding in docs:\n${violations.joinToString("\n")}",
+        )
+    }
+
+    @Test
     fun runtimeUiLabelsAndFormattersExposeZeroProductV2Strings() {
         assertEquals("ARB バンドル", ArbBundleFileType.displayName)
         assertEquals("Android Replay Buffer バンドルマニフェスト", ArbBundleFileType.description)
