@@ -230,6 +230,22 @@ class ArbUiComponentsTest {
     }
 
     @Test
+    fun offCenterPressCommitsTheClampedPointerTimeEvenWithoutMovement() {
+        val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
+        val state = studioVideoState().copy(axis = axis, frameCount = 1, inTimeNs = 1_000_000_000, outTimeNs = axis.endNs)
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        studio.renderState(state, null)
+        val geometry = StudioTimelineGeometry(state, 0f, 1000f)
+        val x = geometry.inX + 3f
+        assertEquals(StudioTimelineGeometry.Hit.IN, geometry.hit(x, 32f, 25f..60f, 12f))
+        studio.dragTrim(TrimEdge.IN, geometry.timeAt(x), false)
+        assertEquals(1_030_000_000L, studio.trimPreview?.timeNs)
+        studio.dragTrim(TrimEdge.IN, geometry.timeAt(x), true)
+        assertEquals(1_030_000_000L, studio.viewerState?.inTimeNs)
+        assertEquals(0L, studio.playheadTimeNs)
+    }
+
+    @Test
     fun shortcutsAndNudgePreviewPreserveSingleFrameSubranges() {
         val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
         val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })

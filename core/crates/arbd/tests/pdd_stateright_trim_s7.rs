@@ -27,6 +27,8 @@ enum Action {
     MarkOutFromPlayhead,
     TogglePlay,
     PlayTick(i64),
+    PlaybackStopsAt(i64),
+    SampleStoppedClock,
     DecodeStart,
     LateFrameArrives,
     ZoomChange(u8, i64),
@@ -62,6 +64,7 @@ struct State {
     in_ns: i64,
     out_ns: i64,
     playing: bool,
+    stopped_clock: Option<i64>,
     drag_target: Target,
     original: i64,
     preview_time_ns: Option<i64>,
@@ -173,7 +176,12 @@ impl S7 {
         // Monitor pre/post observations independently from the transition implementation.
         let transport = matches!(
             action,
-            DragPlayheadStart(_) | DragPlayheadMove(_) | DragPlayheadEnd | PlayTick(_)
+            DragPlayheadStart(_)
+                | DragPlayheadMove(_)
+                | DragPlayheadEnd
+                | PlayTick(_)
+                | PlaybackStopsAt(_)
+                | SampleStoppedClock
         );
         if !transport && s.playhead_ns != before.playhead_ns {
             s.violation = Violation::Coupled;
@@ -220,6 +228,7 @@ impl Model for S7 {
             in_ns: 0,
             out_ns: self.end,
             playing: false,
+            stopped_clock: None,
             drag_target: Target::None,
             original: 0,
             preview_time_ns: None,
@@ -241,7 +250,7 @@ impl Model for S7 {
                 Target::Out => out.push(DragOutMove(t)),
             }
             if s.playing && t >= s.playhead_ns {
-                out.push(PlayTick(t));
+                out.extend([PlayTick(t), PlaybackStopsAt(t)]);
             }
         }
         match s.drag_target {
@@ -260,6 +269,9 @@ impl Model for S7 {
                 .iter()
                 .map(|&(zoom, scroll)| ZoomChange(zoom, scroll)),
         );
+        if s.stopped_clock.is_some() && s.drag_target == Target::None {
+            out.push(SampleStoppedClock);
+        }
         if s.pending_preview_frame.is_some() && s.late_frame_in_flight.is_none() {
             out.push(DecodeStart);
         }
@@ -274,6 +286,7 @@ impl Model for S7 {
         let idle = before.drag_target == Target::None;
         match action {
             DragPlayheadStart(t) if idle => {
+                s.stopped_clock = None;
                 s.drag_target = Target::Playhead;
                 s.playhead_ns = t;
             }
@@ -332,7 +345,19 @@ impl Model for S7 {
             MarkOutFromPlayhead if idle => {
                 self.set_edge(&mut s, Target::Out, before.playhead_ns);
             }
-            TogglePlay if idle => s.playing = !s.playing,
+            TogglePlay if idle => {
+                s.stopped_clock = None;
+                s.playing = !s.playing;
+            }
+            PlaybackStopsAt(t) if s.playing => {
+                s.playing = false;
+                if matches!(s.drag_target, Target::In | Target::Out) {
+                    s.stopped_clock = Some(t);
+                } else if idle {
+                    s.playhead_ns = t;
+                }
+            }
+            SampleStoppedClock if idle => s.playhead_ns = s.stopped_clock.take()?,
             PlayTick(t) if s.playing => {
                 if idle {
                     s.playhead_ns = t;

@@ -94,6 +94,11 @@ class PddS7StudioTrimTraceReplayTest {
                     studio.renderPlaybackState(studio.playbackState.copy(currentFrameIndex = axis.frameAt(now)))
                     studio.sampleClock()
                 }
+                "PlaybackStopsAt" -> {
+                    now = time()
+                    studio.renderPlaybackState(studio.playbackState.copy(mode = PlaybackMode.PAUSED, currentFrameIndex = axis.frameAt(now)))
+                }
+                "SampleStoppedClock" -> studio.sampleClock()
                 "DecodeStart" -> {
                     assertNull(flight)
                     flight = checkNotNull(pending)

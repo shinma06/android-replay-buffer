@@ -150,10 +150,11 @@ fun ArbStudioContent(controller: ArbStudioController) {
     var searchHasFocus by remember { mutableStateOf(false) }
     var splitFraction by remember { mutableFloatStateOf(0.58f) }
 
-    LaunchedEffect(controller, controller.isPlaying) {
-        while (controller.isPlaying) {
-            controller.sampleClock()
+    LaunchedEffect(controller, controller.isPlaying, controller.trimPreview != null) {
+        controller.sampleClock()
+        while (controller.isPlaying && controller.trimPreview == null) {
             kotlinx.coroutines.delay(50L)
+            controller.sampleClock()
         }
     }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }

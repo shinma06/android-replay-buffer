@@ -290,8 +290,14 @@ class ArbStudioController(
     val playheadTimeNs: Long get() = clockTimeNs
     private var clockTimeNs by mutableStateOf(0L)
 
+    private var deferredStopNs: Long? = null
+
+    /** The next presentation tick also delivers a pause/EOF received while a handle was held. */
     fun sampleClock() {
-        if (trimPreview == null && scrubOrigin == null) displayPositionNs()?.let { clockTimeNs = it }
+        if (trimPreview != null || scrubOrigin != null) return
+        val time = if (isPlaying) displayPositionNs() else deferredStopNs
+        time?.let { clockTimeNs = it }
+        deferredStopNs = null
     }
 
     val timecodeText: String
@@ -394,7 +400,10 @@ class ArbStudioController(
      * the UI thread; a `null` [bitmap] keeps the previous frame.
      */
     fun renderFrame(next: TimelineViewerState, bitmap: ImageBitmap?, width: Int, height: Int) {
-        if (viewerState?.axis !== next.axis) clearGesture()
+        if (viewerState?.axis !== next.axis) {
+            clearGesture()
+            deferredStopNs = null
+        }
         if (trimPreview == null && scrubOrigin == null) syncPlayheadToFrame(viewerState, next)
         viewerState = next
         errorMessage = null
@@ -487,10 +496,13 @@ class ArbStudioController(
         val current = viewerState
         if (current != null) {
             if (scrubOrigin != null) return
-            if (trimPreview == null) {
-                clockTimeNs = displayPositionNs() ?: if (current.currentFrameIndex == pb.currentFrameIndex) clockTimeNs
-                else current.axis.start(pb.currentFrameIndex)
+            val sampled = displayPositionNs() ?: if (current.currentFrameIndex == pb.currentFrameIndex) {
+                clockTimeNs
+            } else {
+                current.axis.start(pb.currentFrameIndex)
             }
+            if (trimPreview == null) clockTimeNs = sampled
+            deferredStopNs = sampled.takeIf { trimPreview != null && pb.mode == PlaybackMode.PAUSED }
             if (current.currentFrameIndex != pb.currentFrameIndex) {
                 viewerState = current.copy(currentFrameIndex = pb.currentFrameIndex)
             }
@@ -546,6 +558,7 @@ class ArbStudioController(
     fun togglePlayPause() = onPlayPauseToggle()
 
     fun stepFrame(delta: Int) {
+        deferredStopNs = null
         val s = viewerState ?: return
         val next = TimelineViewerReducer.stepFrame(s, delta.toLong())
         viewerState = next
@@ -593,6 +606,7 @@ class ArbStudioController(
     fun seekTime(timeNs: Long, settled: Boolean = true) {
         val s = viewerState ?: return
         if (s.frameCount == 0L) return
+        deferredStopNs = null
         val time = timeNs.coerceIn(0, s.axis.endNs)
         val frame = s.axis.frameAt(time)
         if (!settled && scrubOrigin == null) scrubOrigin = clockTimeNs
@@ -704,6 +718,7 @@ class ArbStudioController(
     }
 
     fun scrubToFrame(frameIndex: Long) {
+        deferredStopNs = null
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)
@@ -714,6 +729,7 @@ class ArbStudioController(
     }
 
     fun seekExactFrame(frameIndex: Long) {
+        deferredStopNs = null
         val s = viewerState ?: return
         if (s.frameCount <= 0L) return
         val clamped = frameIndex.coerceIn(0L, s.frameCount - 1L)

@@ -1452,6 +1452,160 @@
           "previewNs": null
         }
       ]
+    },
+    {
+      "name": "IN プレビュー中の再生終端",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 12000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragInStart": 15500000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "PlaybackStopsAt": 32000000000
+          },
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragInEnd",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "SampleStoppedClock",
+          "inNs": 15500000000,
+          "inX": 510.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 32000000000,
+          "playheadX": 1038.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
+    },
+    {
+      "name": "OUT 中断後の再生終端",
+      "steps": [
+        {
+          "action": "TogglePlay",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 0,
+          "playheadX": 14.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "PlayTick": 12000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": {
+            "DragOutStart": 15500000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": {
+            "PlaybackStopsAt": 32000000000
+          },
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 15500000000,
+          "outX": 510.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": 15500000000
+        },
+        {
+          "action": "DragOutCancel",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 12000000000,
+          "playheadX": 398.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        },
+        {
+          "action": "SampleStoppedClock",
+          "inNs": 0,
+          "inX": 14.0,
+          "outNs": 32000000000,
+          "outX": 1038.0,
+          "playheadNs": 32000000000,
+          "playheadX": 1038.0,
+          "previewDisplayed": false,
+          "previewNs": null
+        }
+      ]
     }
   ],
   "widthPx": 1024
