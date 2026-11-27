@@ -29,18 +29,13 @@ impl ToolOutput {
         self.links.get_or_insert_with(Vec::new).push(link);
     }
     pub(super) fn result(mut self, version: ProtocolVersion) -> Value {
-        let mut content = Vec::new();
-        if let Some(links) = self.links {
+        if let Some(links) = &self.links {
             self.body["resource_links"] = json!(links);
-            content.push(text_block(&self.body));
-            content.extend(self.image);
-            if version.supports_resource_link_block() {
-                content.extend(links.iter().map(ResourceLink::block));
-            }
-        } else {
-            // A screenshot with include_image historically returns its image first.
-            content.extend(self.image);
-            content.push(text_block(&self.body));
+        }
+        let mut content = vec![text_block(&self.body)];
+        content.extend(self.image);
+        if version.supports_resource_link_block() {
+            content.extend(self.links.iter().flatten().map(ResourceLink::block));
         }
         let mut result = json!({"isError":false,"content":content});
         if version.supports_structured_content() {

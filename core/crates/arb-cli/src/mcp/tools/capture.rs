@@ -5,9 +5,8 @@ use crate::mcp::{
     image_block,
     project::time::Zone,
 };
-use arb_core::base64_encode;
 use serde_json::{Map, Value, json};
-use std::{fs, path::Path};
+use std::path::Path;
 impl McpServer {
     pub(in crate::mcp) fn tool_status(&mut self) -> Result<ToolOutput, Failure> {
         let mut hello = self.call_daemon("system.hello", &json!({}))?;
@@ -87,27 +86,32 @@ impl McpServer {
             params.insert("overwrite".to_owned(), overwrite.clone());
         }
         let mut resp = self.call_daemon("save.screenshot", &Value::Object(params))?;
-        if !self.version.legacy_result_fields()
-            && let Some(uri) = resp["path"]
+        let path = Path::new(
+            resp["path"]
                 .as_str()
-                .and_then(|path| url::Url::from_file_path(path).ok())
-        {
-            resp["file_uri"] = json!(uri.as_str());
-        }
-        let image = if include_image
-            && let Some(path_str) = resp.get("path").and_then(Value::as_str)
-            && let Ok(bytes) = fs::read(path_str)
-        {
-            Some(image_block(&base64_encode(&bytes)))
+                .ok_or_else(|| Failure::unavailable("スクリーンショットの保存先がありません。"))?,
+        );
+        let uri = url::Url::from_file_path(path)
+            .map_err(|()| Failure::unavailable("スクリーンショットの保存先が不正です。"))?;
+        let digest = resp["sha256"]
+            .as_str()
+            .ok_or_else(|| Failure::unavailable("スクリーンショットの SHA-256 がありません。"))?;
+        let image = if include_image {
+            crate::mcp::resources::screenshot_blob(path, digest).map(|blob| image_block(&blob))
         } else {
             None
         };
+        let link = crate::mcp::resources::ResourceLink::screenshot(path, uri.clone());
+        self.remember_screenshot(&uri, digest);
+        if !self.version.legacy_result_fields() {
+            resp["file_uri"] = json!(uri.as_str());
+        }
         Zone::from_args(args).localize_unix_ms(
             &mut resp,
             "captured_at_unix_ms",
             "captured_at_local",
         );
-        let output = ToolOutput::new(resp);
+        let output = ToolOutput::new(resp).with_links(vec![link]);
         Ok(match image {
             Some(image) => output.with_image(image),
             None => output,

@@ -39,6 +39,7 @@ pub(in crate::mcp) fn project(overview: &mut Value, version: ProtocolVersion, zo
         {
             obj.insert("logcat_completeness".into(), detail);
         }
+        obj.entry("carried_in").or_insert(Value::Null);
         obj.entry("noise_candidates").or_insert_with(|| json!([]));
     }
     screen_offsets(&mut overview["screens"]);
@@ -67,7 +68,7 @@ pub(in crate::mcp) fn error_groups(
     next.insert("max_error_logs".into(), json!(next_limit));
     let mut raw = Map::new();
     raw.insert("bundle_id".into(), bundle_id.clone());
-    raw.insert("level".into(), json!("E"));
+    raw.insert("min_level".into(), json!("E"));
     raw.insert("bucket".into(), json!("main"));
     for key in FILTERS.into_iter().chain(["time_zone"]) {
         if let Some(value) = args.get(key) {
@@ -135,13 +136,14 @@ mod tests {
         assert_eq!(more["logcat_completeness"]["status"], "complete");
         assert_eq!(more["screens"][0]["start_offset_ms"], Value::Null);
         let groups = error_groups(&mut more, &json!("b1"), args);
+        assert_eq!(groups["logs"][0]["level"], "E");
         assert_eq!(
             groups["continuation"],
             json!({"tool":"arb_timeline_overview","arguments":{"bundle_id":"b1","max_error_logs":3,"package":"com.example","tag":"Auth","exclude_tags":["Vendor"]}})
         );
         assert_eq!(
             groups["raw_query"],
-            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","level":"E","bucket":"main","package":"com.example","tag":"Auth"}})
+            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","min_level":"E","bucket":"main","package":"com.example","tag":"Auth"}})
         );
         assert_eq!(
             (
@@ -157,7 +159,7 @@ mod tests {
         assert_eq!(groups["continuation"], Value::Null);
         assert_eq!(
             groups["raw_query"]["arguments"],
-            json!({"bundle_id":"b1","level":"E","bucket":"main"})
+            json!({"bundle_id":"b1","min_level":"E","bucket":"main"})
         );
         // The daemon request carries the same filters the follow-up calls repeat.
         assert_eq!(

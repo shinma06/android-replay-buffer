@@ -11,11 +11,12 @@ fn main() {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+        let devices = fs::read_to_string(dir.join("devices")).unwrap_or_default();
+        if dir.join("hello.bin").is_file() {
+            fs::write(dir.join("discovered"), []).unwrap();
+        }
         println!("List of devices attached");
-        print!(
-            "{}",
-            fs::read_to_string(dir.join("devices")).unwrap_or_default()
-        );
+        print!("{devices}");
         return;
     }
     if args == ["forward", "--list"] {
@@ -31,6 +32,28 @@ fn main() {
             .write_all(&fs::read(dir.join("screencap.png")).unwrap())
             .unwrap();
         return;
+    }
+    // A recorded Hello travels over a real socket once the device becomes visible.
+    if dir.join("hello.bin").is_file() {
+        if args.get(2).is_some_and(|a| a == "push") {
+            return;
+        }
+        if line.contains("forward --no-rebind") {
+            let port = args.iter().find_map(|s| s.strip_prefix("tcp:")).unwrap();
+            fs::write(dir.join("port"), port).unwrap();
+            return;
+        }
+        if line.contains("app_process") {
+            let port = fs::read_to_string(dir.join("port")).unwrap();
+            let listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+            println!("ARB_COMPANION_READY");
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(&fs::read(dir.join("hello.bin")).unwrap())
+                .unwrap();
+            let _ = std::io::copy(&mut stream, &mut std::io::sink());
+            return;
+        }
     }
     if line.contains("forward --remove") || line.contains("shell rm -f") {
         writeln!(

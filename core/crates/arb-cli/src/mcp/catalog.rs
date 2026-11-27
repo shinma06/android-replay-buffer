@@ -199,6 +199,10 @@ fn local_output_schema(mut root: Value, definitions: &Value) -> Value {
                 }
             } else {
                 pack(&mut definition, defs, counts, kept);
+                // A description beside a reference describes this particular field.
+                if let Some(description) = node.get("description") {
+                    definition["description"] = description.clone();
+                }
                 *node = definition;
             }
             return;

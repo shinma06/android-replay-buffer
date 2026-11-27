@@ -108,10 +108,16 @@ pub(super) fn verify(c: &mut Client) {
         "arb_inspect_frames",
         &json!({"bundle_id":"fixture","mode":"single","frame_indices":[]}),
         &json!({"field":"frame_indices","min":1,"max":16,"got":0}),
-        &["frame_indices", "件数 0", "1..=16"],
+        &["frame_indices", "件数 0", "1..=16 件の範囲外です"],
         &["1..=16 件"],
     );
     for (tool, first, second, args) in [
+        (
+            "arb_query_logs",
+            "level",
+            "min_level",
+            json!({"bundle_id":"fixture","level":"E","min_level":"E"}),
+        ),
         (
             "arb_save",
             "duration_secs",
@@ -150,7 +156,7 @@ pub(super) fn verify(c: &mut Client) {
         rejected(
             c,
             tool,
-            &json!({"bundle_id":"fixture","bundle_id_or_path":"fixture"}),
+            &json!({"bundle_id":"fixture","bundle_id_or_path":"different"}),
             &json!({"conflicts":["bundle_id","bundle_id_or_path"]}),
             &["bundle_id", "bundle_id_or_path"],
             &["だけ"],

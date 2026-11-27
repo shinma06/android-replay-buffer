@@ -10,15 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use arb_adb::adb::AdbClient;
-use arb_core::analytics::validate_png_bytes;
+use arb_core::analytics::{MAX_SCREENSHOT_BYTES, validate_png_bytes};
 use arb_core::device::{DeviceSelectionOutcome, validate_adb_serial};
 use arb_os::fs::{fsync_dir, fsync_file};
 
 use crate::error::DaemonError;
 use crate::time_util::next_id;
 
-/// Maximum PNG payload accepted from `adb exec-out screencap -p` (`64 MiB`).
-const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 /// Wall-clock timeout for `adb exec-out screencap -p`.
 const SCREENCAP_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -73,7 +71,12 @@ impl ScreenshotProvider for AdbScreenshotProvider {
     fn capture_png(&self, serial: Option<&str>) -> Result<(String, Vec<u8>), DaemonError> {
         let adb = AdbClient::discover()?;
         let target_serial = resolve_screenshot_serial(&adb, serial)?;
-        let bytes = run_adb_screencap(adb.adb_path(), &target_serial, SCREENCAP_TIMEOUT)?;
+        let bytes = run_adb_screencap(adb.adb_path(), &target_serial, SCREENCAP_TIMEOUT).map_err(
+            |err| match resolve_screenshot_serial(&adb, Some(&target_serial)) {
+                Err(offline @ DaemonError::DeviceNotFound(_)) => offline,
+                _ => err,
+            },
+        )?;
         let _dims = validate_png_bytes(&bytes)
             .map_err(|err| DaemonError::Internal(format!("invalid PNG from screencap: {err}")))?;
         Ok((target_serial, bytes))
@@ -91,19 +94,9 @@ pub(crate) fn resolve_screenshot_serial(
     match crate::live_adb::select_live_target(adb, preferred)? {
         DeviceSelectionOutcome::Selected { serial } => Ok(serial),
         DeviceSelectionOutcome::WaitingForPreferredDevice {
-            preferred_serial,
-            other_online_serials,
-        } => Err(DaemonError::NotFound(if other_online_serials.is_empty() {
-            format!("preferred ADB device `{preferred_serial}` is offline or disconnected")
-        } else {
-            format!(
-                "preferred ADB device `{preferred_serial}` is offline or disconnected (other online devices: {}; refusing to auto-switch)",
-                other_online_serials.join(", ")
-            )
-        })),
-        DeviceSelectionOutcome::NoOnlineDevices => Err(DaemonError::NotFound(
-            "no online ADB devices found for screenshot".to_owned(),
-        )),
+            preferred_serial, ..
+        } => Err(DaemonError::DeviceNotFound(Some(preferred_serial))),
+        DeviceSelectionOutcome::NoOnlineDevices => Err(DaemonError::DeviceNotFound(None)),
         DeviceSelectionOutcome::MultipleDevicesNeedSelection { online_serials } => {
             Err(DaemonError::Conflict(format!(
                 "MultipleDevicesNeedSelection: multiple online ADB devices found ({}); select a device explicitly",

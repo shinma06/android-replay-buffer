@@ -2,7 +2,9 @@
 use super::{
     BASE_BT_NS, FRAME_STEP_NS, build_minimal_valid_png, seed_bundle, seed_bundle_with_logs,
 };
-use arb_adb::mock::FaultScenario;
+use arb_adb::mock::{
+    CaptureEvent, CaptureSourceError, DeviceEventSource, FaultScenario, MockDeviceSource,
+};
 use arb_core::bundle::{LogRecord, RecordBucket};
 use arb_core::config::CaptureMode;
 use arb_core::time::{TimeAlignment, TimestampSemantics};
@@ -17,10 +19,42 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tempfile::TempDir;
 
+use super::version::ProtocolVersion;
+
 mod arguments;
 
 #[path = "../../src/mcp/validate.rs"]
 mod validate;
+
+/// The recorded window contains one Error and one Fatal row, generated from the same anchored sample.
+struct ErrorLogSource {
+    inner: MockDeviceSource,
+    pending: std::collections::VecDeque<CaptureEvent>,
+}
+
+impl DeviceEventSource for ErrorLogSource {
+    fn serial(&self) -> &str {
+        self.inner.serial()
+    }
+
+    fn next_event(&mut self) -> Result<Option<CaptureEvent>, CaptureSourceError> {
+        if let Some(row) = self.pending.pop_front() {
+            return Ok(Some(row));
+        }
+        let event = self.inner.next_event()?;
+        if let Some(info @ CaptureEvent::LogRecord { .. }) = &event {
+            for priority in [6, 7] {
+                let mut row = info.clone();
+                if let CaptureEvent::LogRecord { payload, .. } = &mut row {
+                    payload.priority = priority;
+                    payload.payload[0] = priority;
+                }
+                self.pending.push_back(row);
+            }
+        }
+        Ok(event)
+    }
+}
 
 struct Client {
     child: Child,
@@ -166,17 +200,17 @@ fn assert_rejected(c: &mut Client, name: &str, args: &Value) {
 
 fn registry(c: &mut Client) {
     for version in [
-        "2024-11-05",
-        "2025-03-26",
-        "2025-06-18",
-        "2025-11-25",
+        ProtocolVersion::V2024_11_05.as_str(),
+        ProtocolVersion::V2025_03_26.as_str(),
+        ProtocolVersion::V2025_06_18.as_str(),
+        ProtocolVersion::V2025_11_25.as_str(),
         "2099-11-25",
     ] {
         let init = c.init(version);
         assert_eq!(
             init["protocolVersion"],
             if version.starts_with("2099") {
-                "2025-11-25"
+                ProtocolVersion::V2025_11_25.as_str()
             } else {
                 version
             }
@@ -184,7 +218,7 @@ fn registry(c: &mut Client) {
         assert_eq!(init["serverInfo"]["name"], "android-replay-buffer");
         assert_eq!(
             init["capabilities"].get("tasks").is_some(),
-            version >= "2025-11-25"
+            version >= ProtocolVersion::V2025_11_25.as_str()
         );
         let tools = c.result("tools/list", json!({}));
         assert_eq!(tools["tools"].as_array().unwrap().len(), 20);
@@ -198,7 +232,7 @@ fn registry(c: &mut Client) {
                 .iter()
                 .find(|t| t["name"] == name)
                 .unwrap();
-            let legacy = version < "2025-11-25";
+            let legacy = version < ProtocolVersion::V2025_11_25.as_str();
             assert_eq!(tool["annotations"]["destructiveHint"], legacy);
             assert_eq!(
                 tool["inputSchema"]["properties"].get(flag).is_some(),
@@ -433,7 +467,10 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     // Seed the on-disk ring, then exercise the same recovery path as a restarted daemon.
     let seed = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
     seed.ingest_device_source_with_mode(
-        &mut FaultScenario::NormalFhd30.build(),
+        &mut ErrorLogSource {
+            inner: FaultScenario::NormalFhd30.build(),
+            pending: std::collections::VecDeque::new(),
+        },
         CaptureMode::LogsOnly,
     )
     .unwrap();
@@ -563,11 +600,11 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     .unwrap();
     fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
     for (version, inline, expected) in [
-        ("2024-11-05", None, true),
-        ("2025-03-26", None, true),
-        ("2025-06-18", None, false),
-        ("2025-11-25", None, false),
-        ("2025-11-25", Some(true), true),
+        (ProtocolVersion::V2024_11_05.as_str(), None, true),
+        (ProtocolVersion::V2025_03_26.as_str(), None, true),
+        (ProtocolVersion::V2025_06_18.as_str(), None, false),
+        (ProtocolVersion::V2025_11_25.as_str(), None, false),
+        (ProtocolVersion::V2025_11_25.as_str(), Some(true), true),
     ] {
         c.init(version);
         let out = root.path().join(format!("shot-{version}-{expected}.png"));
@@ -585,8 +622,34 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             .iter()
             .any(|c| c["type"] == "image");
         assert_eq!(image, expected);
-        c.check_tool("arb_screenshot", result);
+        let link = json!({"uri":url::Url::from_file_path(&out).unwrap().as_str(),"name":out.file_name().unwrap().to_str().unwrap(),"mimeType":"image/png"});
+        let link_blocks: Vec<_> = result["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["type"] == "resource_link")
+            .collect();
+        assert_eq!(
+            link_blocks.len(),
+            usize::from(version >= ProtocolVersion::V2025_06_18.as_str())
+        );
+        if let Some(block) = link_blocks.first() {
+            assert_eq!(block["uri"], link["uri"]);
+        }
+        assert_eq!(
+            c.check_tool("arb_screenshot", result)["resource_links"],
+            json!([link])
+        );
         assert!(out.is_file());
+        let png = c.result("resources/read", json!({"uri":link["uri"]}));
+        assert_eq!(png["contents"][0]["mimeType"], "image/png");
+        assert_eq!(
+            png["contents"][0]["blob"],
+            arb_core::base64_encode(&fs::read(&out).unwrap())
+        );
+        fs::write(&out, b"replacement").unwrap();
+        let stale = c.request("resources/read", json!({"uri":link["uri"]}));
+        assert!(stale["error"].is_object(), "{stale}");
         let collision = c.result(
             "tools/call",
             json!({"name":"arb_screenshot","arguments":args}),
@@ -597,7 +660,10 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         assert_eq!(body["details"]["reason"], "already_exists");
         let hint = body["hint"].as_str().unwrap();
         assert!(hint.contains("output_path"), "{hint}");
-        assert_eq!(hint.contains("overwrite"), version != "2025-11-25");
+        assert_eq!(
+            hint.contains("overwrite"),
+            version != ProtocolVersion::V2025_11_25.as_str()
+        );
         // The CONFLICT hint offers overwrite exactly where the schema accepts it.
         let accepts = c.result("tools/list", json!({}))["tools"]
             .as_array()
@@ -609,13 +675,22 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             .is_some();
         assert_eq!(hint.contains("overwrite"), accepts, "{version}");
     }
-    c.init("2025-11-25");
+    c.init(ProtocolVersion::V2025_11_25.as_str());
     let shot = c.tool(
         "arb_screenshot",
         json!({"serial":"contract-device","output_dir":root.path().join("shots"),"time_zone":"host"}),
     );
     assert_local_time(&shot["captured_at_local"]);
     fs::remove_file(adb_dir.join("devices")).unwrap();
+    let offline = c.result(
+        "tools/call",
+        json!({"name":"arb_screenshot","arguments":{"serial":"absent-device"}}),
+    );
+    let error = &offline["structuredContent"];
+    assert_eq!(error["error_code"], "DEVICE_NOT_FOUND");
+    assert_eq!(error["retryable"], true);
+    assert!(error["message"].as_str().unwrap().contains("端末"));
+    assert!(error["hint"].as_str().unwrap().contains("接続"));
     let overview = c.tool("arb_timeline_overview", target.clone());
     assert!(overview["logcat_completeness"].is_object());
     assert_eq!(overview["noise_candidates"], json!([]));
@@ -631,7 +706,12 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         json!({"bundle_id":id,"limit":1,"cursor":page["next_cursor"]}),
     );
     assert_eq!(page["has_more"], false);
-    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+    for version in [
+        ProtocolVersion::V2024_11_05.as_str(),
+        ProtocolVersion::V2025_03_26.as_str(),
+        ProtocolVersion::V2025_06_18.as_str(),
+        ProtocolVersion::V2025_11_25.as_str(),
+    ] {
         c.init(version);
         let tools = c.result("tools/list", json!({}));
         for def in tools["tools"].as_array().unwrap() {
@@ -650,7 +730,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             ),
             (
                 "arb_save_and_inspect",
-                json!({"dest_dir":dest,"drain_timeout_ms":0,"logs_only":version<"2025-06-18","memo":"調査","exclude_tags":["VendorHal"],"max_errors":5}),
+                json!({"dest_dir":dest,"drain_timeout_ms":0,"logs_only":version<ProtocolVersion::V2025_06_18.as_str(),"memo":"調査","exclude_tags":["VendorHal"],"max_errors":5}),
             ),
         ] {
             let result = c.result("tools/call", json!({"name":tool,"arguments":args}));
@@ -661,7 +741,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
                 .expect("body resource_links");
             assert_ne!(links.len(), 0);
             assert_eq!(blocks.iter().filter(|b| b["type"] == "text").count(), 1);
-            let modern = version >= "2025-06-18";
+            let modern = version >= ProtocolVersion::V2025_06_18.as_str();
             assert_eq!(result.get("structuredContent").is_some(), modern);
             assert_eq!(blocks.len(), if modern { links.len() + 1 } else { 1 });
             for (i, link) in links.iter().enumerate() {
@@ -948,7 +1028,7 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
         "bundle-noise",
         extra,
     );
-    c.init("2025-11-25");
+    c.init(ProtocolVersion::V2025_11_25.as_str());
     let target = json!({"bundle_id":bundle,"time_zone":"host"});
     let all = c.tool("arb_timeline_overview", target.clone());
     assert_eq!(
@@ -1004,7 +1084,7 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
 
 /// #571: `fields` defaults to compact only where structured content exists.
 fn log_fields(c: &mut Client, id: &str, version: &str) {
-    let compact = version >= "2025-06-18";
+    let compact = version >= ProtocolVersion::V2025_06_18.as_str();
     let page = c.tool("arb_query_logs", json!({"bundle_id":id}));
     assert_eq!(page["fields"], if compact { "compact" } else { "full" });
     assert_eq!(
@@ -1039,7 +1119,13 @@ fn log_fields(c: &mut Client, id: &str, version: &str) {
 
 /// #571: `include_images` adds a PNG block; the body keeps one shape.
 fn inspect_shape(c: &mut Client, id: &str) {
-    let args = json!({"bundle_id":id,"mode":"contact_sheet","start_frame":0,"end_frame":5});
+    let args = json!({"bundle_id":id,"bundle_id_or_path":id,"mode":"contact_sheet","start_frame":0,"end_frame":5,"include_images":false});
+    validate::validate(
+        &c.schemas["arb_inspect_frames"]["inputSchema"],
+        &args,
+        "arguments",
+    )
+    .unwrap();
     let meta = c.tool("arb_inspect_frames", args.clone());
     let mut inline_args = args;
     inline_args["include_images"] = json!(true);
@@ -1067,7 +1153,16 @@ fn inspect_shape(c: &mut Client, id: &str) {
     ] {
         assert_eq!(with[key], meta[key], "{key}");
     }
-    assert!(meta.get("png_path").is_none());
+    let keys = |body: &Value| {
+        body.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(keys(&meta), keys(&with));
+    assert_eq!(meta.get("png_path"), Some(&Value::Null));
+    assert_eq!(meta.get("png_bytes_len"), Some(&Value::Null));
     assert!(with["png_path"].is_string() && with["png_bytes_len"].as_u64() > Some(0));
     let screens = meta["screens"].as_array().unwrap();
     let mut previous = None;
@@ -1127,6 +1222,26 @@ fn same_errors_as_overview(
     );
     assert_eq!(groups["raw_query"]["tool"], "arb_query_logs");
     assert_eq!(&groups["raw_query"]["arguments"]["bundle_id"], saved);
+    let call = &groups["raw_query"];
+    let name = call["tool"].as_str().unwrap();
+    validate::validate(
+        &c.schemas[name]["inputSchema"],
+        &call["arguments"],
+        "raw_query",
+    )
+    .unwrap();
+    let page = c.tool(name, call["arguments"].clone());
+    let levels: Vec<_> = page["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["level"].as_str().unwrap())
+        .collect();
+    assert_eq!(levels, ["E", "F"]);
+    assert_eq!(page["total_matched"], groups["total_matched"]);
+    assert_eq!(page["has_more"], false);
+    let exact = c.tool(name, json!({"bundle_id":saved,"level":"E"}));
+    assert_eq!(exact["total_matched"], 1);
     let summary = rpc
         .call("timeline.summary", json!({"bundle_id_or_path":saved}))
         .unwrap();

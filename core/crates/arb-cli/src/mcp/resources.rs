@@ -76,6 +76,19 @@ pub(super) struct ResourceLink {
     description: String,
 }
 impl ResourceLink {
+    pub(super) fn screenshot(path: &std::path::Path, uri: url::Url) -> Self {
+        Self {
+            uri: uri.into(),
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            mime_type: "image/png",
+            description: "保存したスクリーンショット".into(),
+        }
+    }
+
     pub(super) fn block(&self) -> Value {
         let mut block = json!(self);
         block["type"] = json!("resource_link");
@@ -266,8 +279,38 @@ impl McpServer {
         Ok(json!(key))
     }
 
+    pub(super) fn remember_screenshot(&mut self, uri: &url::Url, digest: &str) {
+        self.screenshots.retain(|(old, _)| old != uri);
+        if self.screenshots.len() >= 256 {
+            self.screenshots.pop_front();
+        }
+        self.screenshots.push_back((uri.clone(), digest.to_owned()));
+    }
+
     fn read_resource(&mut self, uri: &str) -> Result<Value, Failure> {
         let response = match uri {
+            uri if uri.starts_with("file:") => {
+                // Only URLs returned by save.screenshot in this session can reach the filesystem.
+                let (issued, digest) = self
+                    .screenshots
+                    .iter()
+                    .find(|(issued, _)| issued.as_str() == uri)
+                    .ok_or_else(|| {
+                        Failure::invalid("このセッションが発行した PNG の URI を指定してください。")
+                    })?;
+                let blob = issued
+                    .to_file_path()
+                    .ok()
+                    .and_then(|path| screenshot_blob(&path, digest))
+                    .ok_or_else(|| {
+                        Failure::new(
+                            -32002,
+                            "RESOURCE_NOT_FOUND",
+                            "保存時のスクリーンショットが見つかりません。",
+                        )
+                    })?;
+                return Ok(json!({"contents":[{"uri":uri,"mimeType":"image/png","blob":blob}]}));
+            }
             "arb://status" => self.call_daemon("system.status", &json!({}))?,
             "arb://bundles" => self.call_daemon("bundle.list", &json!({}))?,
             _ => {
@@ -330,6 +373,22 @@ impl McpServer {
         )
     }
 }
+/// Only publish the bytes whose hash the daemon computed when it saved this screenshot.
+pub(super) fn screenshot_blob(path: &std::path::Path, digest: &str) -> Option<String> {
+    use arb_core::analytics::MAX_SCREENSHOT_BYTES;
+    use std::{fs, io::Read};
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(MAX_SCREENSHOT_BYTES + 1).ok()?)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_SCREENSHOT_BYTES && format!("{:x}", Sha256::digest(&bytes)) == digest)
+        .then(|| arb_core::base64_encode(&bytes))
+}
+
 fn resource_error(e: Failure, uri: &str) -> Failure {
     if e.rpc_code == -32001 {
         Failure::new(

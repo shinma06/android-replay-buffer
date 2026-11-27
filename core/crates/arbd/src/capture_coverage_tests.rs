@@ -546,6 +546,14 @@ fn carried_in_frame_shares_one_media_origin_across_layers() {
     let path = outcome.bundle_path.clone().unwrap();
     let reader = arb_storage::bundle_io::open_bundle(&path).unwrap();
 
+    let params = serde_json::from_value(serde_json::json!({"bundle_id":"origin"})).unwrap();
+    let overview = crate::inspect_export::build_timeline_overview(&path, None, &params).unwrap();
+    let overview = serde_json::to_value(overview).unwrap();
+    assert_eq!(
+        overview["carried_in"],
+        serde_json::json!(manifest_carried_in(&outcome).unwrap())
+    );
+
     // MP4: sample 0 (carried in) is displayed from W0 = 10 s until the change at 20 s.
     let track = arb_media::mp4::Mp4VideoTrack::open(reader.video_path().unwrap()).unwrap();
     let pts: Vec<i64> = track.frames().iter().map(|f| f.pts_ns).collect();

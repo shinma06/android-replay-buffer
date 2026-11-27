@@ -2,6 +2,7 @@
 """Check the live stdio catalog and real trim results with python-jsonschema (Draft 2020-12)."""
 import argparse
 import json
+import runpy
 import shutil
 import subprocess
 import tempfile
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from referencing import Registry
+
+VERSIONS = runpy.run_path(str(Path(__file__).with_name("mcp_versions.py")))["VERSIONS"]
 
 
 def check_refs(node, root):
@@ -68,7 +71,7 @@ def check_version(cli, flags, fixture, version):
                 exported, _ = call("tools/call", {"name": trim["name"], "arguments": args})
                 assert exported["isError"] is False, exported
                 body = json.loads(exported["content"][0]["text"])
-                if version >= "2025-06-18":
+                if version >= VERSIONS["V2025_06_18"]:
                     assert exported["structuredContent"] == body
                 outputs.validate(body)
                 for key in ("in_time_ns", "out_time_ns"):
@@ -105,7 +108,8 @@ def main():
                     if daemon.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("arbd did not become ready")
                     time.sleep(0.05)
-                for version in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"):
+                assert len(VERSIONS) == 4
+                for version in sorted(VERSIONS.values()):
                     check_version(cli, flags, fixture, version)
             finally:
                 daemon.stdin.close()

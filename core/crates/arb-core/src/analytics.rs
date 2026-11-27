@@ -13,6 +13,9 @@ use thiserror::Error;
 use crate::bundle::{FrameRecord, LogRecord, RecordBucket};
 use crate::time::TimeAlignment;
 
+/// Maximum PNG payload saved by the daemon or read back through an MCP screenshot link.
+pub const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
+
 /// Android `events` logcat numeric tag for `am_resume_activity` (API <= 28) / `wm_resume_activity` (API 29+).
 pub const AM_RESUME_ACTIVITY_EVENT_TAG: i32 = 30_007;
 

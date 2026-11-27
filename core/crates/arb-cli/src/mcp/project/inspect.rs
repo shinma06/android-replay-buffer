@@ -24,6 +24,7 @@ pub(in crate::mcp) fn frames(mut meta: Value) -> Value {
         frame["screen_index"] = json!(index);
         fill_null(frame, &["offset_ms", "offset_ns", "tap"]);
     }
+    fill_null(&mut meta, &["png_path", "png_bytes_len", "tap_crop"]);
     meta["screens"] = Value::Array(screens);
     screen_offsets(&mut meta["screens"]);
     meta
@@ -67,6 +68,13 @@ mod tests {
         attach_render(
             &mut body,
             &json!({"png_path":"/tmp/x.png","png_bytes_len":5,"width":640,"frames":null}),
+        );
+        assert!(
+            before
+                .as_object()
+                .unwrap()
+                .keys()
+                .eq(body.as_object().unwrap().keys())
         );
         assert_eq!(body["png_path"], "/tmp/x.png");
         // Rendering adds cache facts; the metadata shape and values are untouched.

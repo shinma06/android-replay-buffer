@@ -1119,6 +1119,12 @@
       }
     },
     {
+      "id": "ER-D1",
+      "description": "スクリーンショットで対象端末がオフラインなら接続を維持し、再接続を案内する",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"DEVICE_NOT_FOUND"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"DEVICE_NOT_FOUND","retryable":true}
+    },
+    {
       "id": "ER-N1",
       "description": "映像トラックのないバンドルでの映像操作は接続を維持する",
       "failure": {

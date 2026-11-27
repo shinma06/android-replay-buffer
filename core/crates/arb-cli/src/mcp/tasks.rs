@@ -280,6 +280,7 @@ impl McpServer {
             session: Arc::clone(&self.session),
             activity,
             external_bundles: BTreeMap::new(),
+            screenshots: std::collections::VecDeque::new(),
         };
         let worker_key = key.clone();
         let spawned = std::thread::Builder::new()

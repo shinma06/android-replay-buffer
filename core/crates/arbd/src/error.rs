@@ -73,6 +73,9 @@ pub enum DaemonError {
     /// Atomic publication refused to replace an existing file.
     #[error("output file already exists: {0}")]
     OutputExists(std::path::PathBuf),
+    /// Screenshot target is absent or offline.
+    #[error("対象の ADB 端末が接続されていません。")]
+    DeviceNotFound(Option<String>),
     /// Requested entity was not found.
     #[error("not found: {0}")]
     NotFound(String),
@@ -110,6 +113,15 @@ impl DaemonError {
         let mut details = json!({});
         let mut diagnostic = true;
         let (rpc_code, label, message) = match self {
+            Self::DeviceNotFound(serial) => {
+                details = json!({"serial":serial});
+                diagnostic = false;
+                (
+                    RPC_ERR_NOT_FOUND,
+                    Some("DEVICE_NOT_FOUND"),
+                    "対象の ADB 端末が接続されていません。",
+                )
+            }
             Self::NoVideo(id) => {
                 details = json!({"bundle_id": id});
                 diagnostic = false;
@@ -181,7 +193,19 @@ impl DaemonError {
                 "デーモンが操作を完了できませんでした。",
             ),
         };
-        let user_message = match self {
+        ClassifiedError {
+            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
+            rpc_code,
+            user_message: self.public_message(message),
+            details,
+            cause: diagnostic
+                .then(|| self.public_cause())
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    fn public_message(&self, message: &str) -> String {
+        match self {
             // Parameter validation explains the rejected field/type/range to the caller.
             Self::InvalidParams(reason)
                 if !reason.is_empty()
@@ -192,14 +216,38 @@ impl DaemonError {
                 format!("{message} {reason}")
             }
             _ => message.to_owned(),
-        };
-        ClassifiedError {
-            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
-            rpc_code,
-            user_message,
-            details,
-            cause: diagnostic.then(|| self.to_string()),
         }
+    }
+
+    fn public_cause(&self) -> String {
+        const PREFIXES: &[&str] = &[
+            "os error:",
+            "storage error:",
+            "media error:",
+            "adb error:",
+            "wire error:",
+            "json error:",
+            "io error:",
+            "i/o error:",
+            "selection error:",
+            "capture source error:",
+            "capture transport I/O error:",
+            "wire I/O error:",
+            "wire protocol error:",
+            "scrcpy tunnel error:",
+            "not found:",
+            "conflict:",
+            "internal error:",
+            "state transition error:",
+            "method not found:",
+        ];
+        // Keep operation/path context from the inner error while stripping display wrappers.
+        let text = self.to_string();
+        let mut cause = text.trim();
+        while let Some(rest) = PREFIXES.iter().find_map(|p| cause.strip_prefix(p)) {
+            cause = rest.trim_start();
+        }
+        cause.to_owned()
     }
 
     pub(crate) fn into_response(self, id: Value) -> crate::protocol::RpcResponse {
@@ -262,17 +310,20 @@ mod tests {
             DaemonError::Conflict(reason.into()),
             DaemonError::MethodNotFound(reason.into()),
             DaemonError::Internal(reason.into()),
-            DaemonError::NoVideo(reason.into()),
+            DaemonError::NoVideo("logs-only".into()),
+            DaemonError::DeviceNotFound(Some("serial".into())),
             DaemonError::OutputExists("fixture.png".into()),
             StorageError::NotFound {
                 entity: "bundle",
-                id: reason.into(),
+                id: "fixture".into(),
             }
             .into(),
         ];
         for err in errors {
             let message = err.classify().user_message;
-            assert_eq!(err.into_response(1.into()).error.unwrap().message, message);
+            let response = err.into_response(1.into()).error.unwrap();
+            assert_eq!(response.message, message);
+            let details = response.data.unwrap()["details"].to_string();
             assert_ne!(message.trim(), "");
             for prefix in [
                 "os error:",
@@ -292,6 +343,7 @@ mod tests {
                 "method not found:",
             ] {
                 assert!(!message.contains(prefix), "{message}");
+                assert!(!details.contains(prefix), "{details}");
             }
         }
     }

@@ -75,6 +75,7 @@ struct McpServer {
     session: Arc<Session>,
     activity: Activity,
     external_bundles: std::collections::BTreeMap<String, String>,
+    screenshots: std::collections::VecDeque<(url::Url, String)>,
 }
 
 impl McpServer {
@@ -86,6 +87,7 @@ impl McpServer {
             session: Arc::default(),
             activity: Activity::default(),
             external_bundles: std::collections::BTreeMap::new(),
+            screenshots: std::collections::VecDeque::new(),
         }
     }
 

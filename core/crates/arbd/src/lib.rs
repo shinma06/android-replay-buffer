@@ -522,6 +522,7 @@ impl DaemonState {
     fn handle_system_hello(&self) -> Result<Value, DaemonError> {
         Ok(serde_json::to_value(SystemHelloResponse {
             protocol_version: IPC_PROTOCOL_VERSION,
+            log_min_level: true,
             gc_dry_run: true,
             standalone_share_trim: true,
             realtime_trim: true,
@@ -812,7 +813,7 @@ impl DaemonState {
         let outcome = if let Some(deadline) = deadline {
             self.attach_with_deadline(&reservation, parsed, deadline)?
         } else {
-            Some(self.attach_reserved(&reservation, &parsed)?)
+            Some(self.attach_reserved(&reservation, &parsed, None)?)
         };
         let Some((selection, generation)) = outcome else {
             response.wait_timed_out = Some(true);
@@ -822,7 +823,15 @@ impl DaemonState {
             response.started = true;
             response.serial = serial;
         } else {
+            response.wait_timed_out =
+                Some(
+                    deadline.is_some()
+                        && matches!(selection,
+                arb_core::device::DeviceSelectionOutcome::NoOnlineDevices |
+                arb_core::device::DeviceSelectionOutcome::WaitingForPreferredDevice { .. }),
+                );
             response.selection = Some(selection);
+            return Ok(serde_json::to_value(response)?);
         }
         self.wait_for_connection(serde_json::to_value(response)?, generation, deadline)
     }
@@ -839,7 +848,7 @@ impl DaemonState {
         let spawned = thread::Builder::new()
             .name("arbd-connect-wait".into())
             .spawn(move || {
-                let _ = tx.send(state.attach_reserved(&worker_ticket, &parsed));
+                let _ = tx.send(state.attach_reserved(&worker_ticket, &parsed, Some(deadline)));
             });
         if let Err(err) = spawned {
             let mut live = self.lock(&self.live_capture, "live capture")?;
@@ -896,6 +905,9 @@ impl DaemonState {
                 d.saturating_duration_since(Instant::now())
             });
             if !pending || remaining.is_zero() {
+                if deadline.is_some() {
+                    result["started"] = json!(connected);
+                }
                 result["connected"] = json!(connected);
                 result["wait_timed_out"] = json!(deadline.is_some() && pending);
                 result["audio_state"] = if current {
@@ -989,34 +1001,59 @@ impl DaemonState {
         Ok(parsed)
     }
 
-    fn attach_reserved(&self, ticket: &Arc<()>, parsed: &CaptureStartParams) -> AttachOutcome {
-        let discovery = AdbClient::discover()
-            .map_err(DaemonError::from)
-            .and_then(|adb| {
-                let outcome = select_live_target(&adb, parsed.serial.as_deref())?;
-                Ok((adb, outcome))
-            });
-        let mut live = self.lock(&self.live_capture, "live capture")?;
-        if self.is_shutting_down()
-            || !live
-                .reservation
-                .as_ref()
-                .is_some_and(|active| Arc::ptr_eq(active, ticket))
-        {
-            return Err(DaemonError::Conflict("capture start was cancelled".into()));
+    fn attach_reserved(
+        &self,
+        ticket: &Arc<()>,
+        parsed: &CaptureStartParams,
+        deadline: Option<Instant>,
+    ) -> AttachOutcome {
+        use arb_core::device::DeviceSelectionOutcome::{
+            NoOnlineDevices, WaitingForPreferredDevice,
+        };
+        loop {
+            let discovery = AdbClient::discover()
+                .map_err(DaemonError::from)
+                .and_then(|adb| {
+                    let outcome = select_live_target(&adb, parsed.serial.as_deref())?;
+                    Ok((adb, outcome))
+                });
+            let mut live = self.lock(&self.live_capture, "live capture")?;
+            if self.is_shutting_down()
+                || !live
+                    .reservation
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, ticket))
+            {
+                return Err(DaemonError::Conflict("capture start was cancelled".into()));
+            }
+            // Keep this request's reservation across discovery attempts. A stop or replacement
+            // invalidates the ticket, and the background supervisor cannot claim this generation.
+            if let Some(end) = deadline
+                && matches!(
+                    &discovery,
+                    Ok((_, NoOnlineDevices | WaitingForPreferredDevice { .. }))
+                )
+            {
+                let remaining = end.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    drop(live);
+                    thread::sleep(remaining.min(Duration::from_millis(100)));
+                    continue;
+                }
+            }
+            live.reservation = None;
+            let (adb, selection) = discovery?;
+            if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
+                let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
+                live.handle = Some(handle);
+                let generation = self.lock_capture()?.session_generation();
+                return Ok((
+                    arb_core::device::DeviceSelectionOutcome::Selected { serial },
+                    Some(generation),
+                ));
+            }
+            return Ok((selection, None));
         }
-        live.reservation = None;
-        let (adb, selection) = discovery?;
-        if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
-            let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
-            live.handle = Some(handle);
-            let generation = self.lock_capture()?.session_generation();
-            return Ok((
-                arb_core::device::DeviceSelectionOutcome::Selected { serial },
-                Some(generation),
-            ));
-        }
-        Ok((selection, None))
     }
 
     fn auto_attach(&self) -> Result<(), DaemonError> {
@@ -1042,7 +1079,7 @@ impl DaemonState {
             live.reservation = Some(Arc::clone(&ticket));
             (ticket, parsed)
         };
-        self.attach_reserved(&ticket, &parsed)?;
+        self.attach_reserved(&ticket, &parsed, None)?;
         Ok(())
     }
 
