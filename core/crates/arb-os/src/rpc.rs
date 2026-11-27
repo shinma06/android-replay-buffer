@@ -507,9 +507,13 @@ impl RpcClient {
                 message: "ログレベルの下限を指定するには arbd の更新が必要です".into(),
             });
         }
-        // Older daemons ignore unknown query fields and would return the excluded tags.
+        // Older daemons ignore unknown query fields and would return the excluded tags. An
+        // empty list excludes nothing, which they already do.
         if matches!(method, "bundle.query_logs" | "timeline.query_logs")
             && !params["exclude_tags"].is_null()
+            && params["exclude_tags"]
+                .as_array()
+                .is_none_or(|tags| !tags.is_empty())
             && self.verify_hello()?["log_exclude_tags"] != true
         {
             return Err(RpcClientError::Rpc {
@@ -1323,7 +1327,13 @@ mod tests {
         let listener = LocalIpcListener::bind(&endpoint).unwrap();
         let server = thread::spawn(move || {
             let mut reader = BufReader::new(listener.accept().unwrap());
-            for _ in 0..4 {
+            // Three gated calls verify the daemon; an empty `exclude_tags` is forwarded as is.
+            for expected in [
+                "system.hello",
+                "system.hello",
+                "system.hello",
+                "timeline.query_logs",
+            ] {
                 let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
                     .unwrap()
                     .unwrap();
@@ -1335,7 +1345,7 @@ mod tests {
                     DEFAULT_MAX_IPC_LINE_BYTES,
                 )
                 .unwrap();
-                assert_eq!(req["method"], "system.hello");
+                assert_eq!(req["method"], expected);
             }
             reader.get_mut().drain().unwrap();
         });
@@ -1354,16 +1364,19 @@ mod tests {
                 "bundle.query_logs",
                 json!({"bundle_id_or_path":"bundle", "exclude_tags":["Hal"]}),
             ),
-            (
-                "timeline.query_logs",
-                json!({"bundle_id_or_path":"bundle", "exclude_tags":[]}),
-            ),
         ] {
             let err = client.call(method, params).unwrap_err();
             assert!(
                 matches!(err, RpcClientError::Rpc {code: -32601, message, ..} if message.contains("arbd の更新"))
             );
         }
+        // An empty list excludes nothing, which an older daemon already does by ignoring it.
+        client
+            .call(
+                "timeline.query_logs",
+                json!({"bundle_id_or_path":"bundle", "exclude_tags":[]}),
+            )
+            .expect("an empty exclude_tags must reach an older daemon");
         server.join().unwrap();
     }
 
