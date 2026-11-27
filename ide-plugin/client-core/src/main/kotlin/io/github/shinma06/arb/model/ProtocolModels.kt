@@ -484,6 +484,18 @@ data class SaveOutcomeResponse(
     val videoShortfall: Boolean? = null,
     val logShortfall: Boolean? = null,
     val note: String? = null,
+    /** Canonical warnings; `warningCodes` and `warnings` are its projection (same order, same length). */
+    val warningDetails: List<WarningDetail>? = null,
+    /** Window milliseconds covered by a running logcat stream; `logShortfall` is judged by it. */
+    val logCoverageMs: Long? = null,
+    /** Window milliseconds covered by a live video stream, static screens included. */
+    val videoCoverageMs: Long? = null,
+    /** The first frame was carried in from before the window because coverage proved it on screen. */
+    val carriedInFrame: Boolean? = null,
+    /** Milliseconds shown by held frames at the window edges (information, not a warning). */
+    val staticHoldMs: Long? = null,
+    /** Informational codes that are not warnings, e.g. `video_static_hold`. */
+    val infoCodes: List<String>? = null,
 ) {
     /**
      * The saved bundle, or `null` when the save did not complete. Same rule as `arb-cli`
@@ -499,6 +511,11 @@ data class SaveOutcomeResponse(
             .joinToString("、")
             .ifBlank { null }
 }
+
+data class WarningDetail(
+    val code: String,
+    val message: String,
+)
 
 data class LogcatEvidence(
     val status: LogCompleteness? = null,

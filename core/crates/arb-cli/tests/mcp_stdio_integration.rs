@@ -248,6 +248,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
                 display_width: Some(64),
                 display_height: Some(64),
+                carried_in: None,
             }),
             audio: Some(AudioStreamMeta {
                 status: StreamStatus::Present,

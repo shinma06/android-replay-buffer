@@ -337,7 +337,7 @@ fn mux_selected_media(
     let video_guard = if range.is_some() || !taps.is_empty() {
         fs::create_dir_all(&tmp)?;
         let guard = TempFileCleanup(tmp.join(format!("{job}.mp4")));
-        let frames = reader.frames()?;
+        let frames = reader.display_frames()?;
         let window = range
             .filter(|r| !r.realtime || !taps.is_empty())
             .map(|r| r.window(&frames))
@@ -442,7 +442,7 @@ pub fn build_timeline_overview(
     let summary = reader.manifest_summary();
     let bundle_id = catalog_bundle_id.unwrap_or(&summary.bundle_id).to_owned();
 
-    let frames = reader.frames()?;
+    let frames = reader.display_frames()?;
     let frame_count = frames.len();
     let (width, height, video_duration_ns) = match reader.video_path() {
         Some(video_path) => match Mp4VideoTrack::open(&video_path) {
@@ -702,7 +702,7 @@ pub(super) fn query_log_response(
     limit: usize,
 ) -> Result<crate::protocol::TimelineLogsResponse, DaemonError> {
     let page = query_logs_with_total(reader, bucket, params, limit)?;
-    let records = reader.frames()?;
+    let records = reader.display_frames()?;
     let coordinates = LogCoordinates::new(&records, &reader.manifest_summary().epochs);
     let logs = page
         .logs
@@ -982,7 +982,7 @@ fn resolve_log_query_time_range(
     if params.start_frame.is_none() && params.end_frame.is_none() {
         return Ok(range);
     }
-    let frames = reader.frames()?;
+    let frames = reader.display_frames()?;
     if frames.is_empty() {
         return Err(DaemonError::InvalidParams(
             "cannot filter by start_frame/end_frame on a bundle with 0 video frames".to_owned(),
@@ -1380,7 +1380,7 @@ fn tap_target(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<(u64, u32, u32), DaemonError> {
     Ok(if let Some(tap_idx) = params.tap_index {
-        let frames = reader.frames()?;
+        let frames = reader.display_frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
         let selected_taps = select_overview_taps(&main_taps);
         let tap = selected_taps.get(tap_idx).copied().ok_or_else(|| {
@@ -1443,7 +1443,7 @@ fn build_frame_tap_map(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
-    let frames = reader.frames()?;
+    let frames = reader.display_frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
     for tap in select_overview_taps(&main_taps) {
@@ -1560,8 +1560,13 @@ impl<'a> LogCoordinates<'a> {
                 .find(|e| e.boot_id == *boot_id)
                 .map(|e| e.start_boottime_ns)
         });
+        // Before the first frame's display start nothing is on screen yet: no frame is
+        // fabricated (the offset stays negative relative to the video start).
         let frame = table.and_then(|(p, ids)| {
-            arb_media::timeline::frame_at_time_ns(p, *boottime_ns).map(|i| ids[i])
+            p.first()
+                .is_some_and(|first| *boottime_ns >= *first)
+                .then(|| arb_media::timeline::frame_at_time_ns(p, *boottime_ns).map(|i| ids[i]))
+                .flatten()
         });
         (
             start.map(|s| boottime_ns.saturating_sub(s) / 1_000_000),
@@ -1682,14 +1687,9 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Display start of a frame read through `BundleReader::display_frames` (single time origin).
 fn frame_boottime_ns(frame: &FrameRecord) -> Option<i64> {
-    match &frame.alignment {
-        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
-        TimeAlignment::Bounded {
-            min_boottime_ns, ..
-        } => Some(*min_boottime_ns),
-        _ => None,
-    }
+    arb_core::bundle::frame_display_start_ns(frame, None)
 }
 
 fn tap_boottime_ns(tap: &TapRecord) -> Option<i64> {
@@ -2047,9 +2047,10 @@ mod tests {
             let (highlights,total,_)=super::build_error_log_highlights(&logs,&coordinates,&filter,&[],logs.len());
             proptest::prop_assert_eq!(total,logs.len());
             for (log,h) in logs.into_iter().zip(highlights) {
-                let expected = pts.iter().rposition(|p| *p <= log.pc_ingest_cont_ns).unwrap_or(0);
+                // Before the first displayed frame nothing is on screen: no frame (#564).
+                let expected = pts.iter().rposition(|p| *p <= log.pc_ingest_cont_ns);
                 let row=coordinates.query_row(log);
-                proptest::prop_assert_eq!(row.frame_index,Some(u64::try_from(expected).unwrap()));
+                proptest::prop_assert_eq!(row.frame_index,expected.map(|i| u64::try_from(i).unwrap()));
                 proptest::prop_assert_eq!(row.frame_index,h.frame_index_hint);
                 proptest::prop_assert_eq!(row.offset_ms,h.t_ms);
             }

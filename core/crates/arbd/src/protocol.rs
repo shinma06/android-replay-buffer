@@ -590,9 +590,49 @@ pub struct SaveEvidence {
     /// Requested evidence stream falls short by more than one second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_shortfall: Option<bool>,
-    /// Warnings about evidence completeness.
+    /// Warnings about evidence completeness: the display text of `warning_details`, in the
+    /// same order and with the same length as `warning_codes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// Canonical `{code, message}` pairs from which `warning_codes` and `warnings` are derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_details: Option<Vec<WarningDetail>>,
+    /// Milliseconds of the save window covered by a running logcat stream (#570). Measured from
+    /// the coverage ledger, independent of how many log rows were written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_coverage_ms: Option<u64>,
+    /// Milliseconds of the save window covered by a live video stream, static screens included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_coverage_ms: Option<u64>,
+    /// Whether the first saved frame was carried in from before the window (#564).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_in_frame: Option<bool>,
+    /// Milliseconds of the saved video shown by held frames at the window edges (carried-in
+    /// head and the last frame's tail), proven by coverage. Informational, never a warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_hold_ms: Option<u64>,
+    /// Informational codes that are not warnings (for example `video_static_hold`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_codes: Option<Vec<String>>,
+}
+
+/// One save warning: a stable machine code and its Japanese display message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WarningDetail {
+    /// Stable machine-readable code (`warning_codes` entry).
+    pub code: String,
+    /// Display text (`warnings` entry).
+    pub message: String,
+}
+
+impl SaveEvidence {
+    /// Sets `warning_details`, `warning_codes` and `warnings` from one list, so the two flat
+    /// arrays always have the same length and order.
+    pub fn set_warnings(&mut self, details: Vec<WarningDetail>) {
+        self.warning_codes = Some(details.iter().map(|d| d.code.clone()).collect());
+        self.warnings = Some(details.iter().map(|d| d.message.clone()).collect());
+        self.warning_details = Some(details);
+    }
 }
 
 /// Response payload for `save.list_jobs`.

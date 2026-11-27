@@ -388,6 +388,7 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
                 display_width: Some(128),
                 display_height: Some(128),
+                carried_in: None,
             }),
             audio: audio_meta,
             logcat: Some(LogcatStreamMeta {
@@ -1059,6 +1060,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
                 display_width: Some(1080),
                 display_height: Some(2400),
+                carried_in: None,
             }),
             audio: None,
             logcat: Some(LogcatStreamMeta {

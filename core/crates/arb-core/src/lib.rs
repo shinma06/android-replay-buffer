@@ -12,6 +12,7 @@ pub mod analytics;
 pub mod audio_policy;
 pub mod bundle;
 pub mod config;
+pub mod coverage;
 pub mod device;
 pub mod gesture;
 pub mod legacy;

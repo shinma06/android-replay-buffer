@@ -1003,6 +1003,27 @@ fn summarize_audio_reason(response: &mut Value) {
     }
 }
 
+/// `warning_details` for a daemon that predates it: each code paired with the display text at
+/// the same position (older daemons omitted the text of a trailing `window_shortfall`).
+fn legacy_warning_details(obj: &serde_json::Map<String, Value>) -> Value {
+    let codes = obj.get("warning_codes").and_then(Value::as_array);
+    let messages = obj.get("warnings").and_then(Value::as_array);
+    Value::Array(
+        codes
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(i, code)| {
+                let message = messages
+                    .and_then(|m| m.get(i))
+                    .filter(|m| m.is_string())
+                    .unwrap_or(code);
+                json!({"code": code, "message": message})
+            })
+            .collect(),
+    )
+}
+
 fn fill_missing(body: &mut Value, names: &[&str]) {
     if let Some(obj) = body.as_object_mut() {
         for &key in names {
@@ -1014,6 +1035,10 @@ fn fill_missing(body: &mut Value, names: &[&str]) {
 pub(super) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
     if let Some(obj) = response.as_object_mut() {
         obj.entry("warning_codes").or_insert_with(|| json!([]));
+        if !obj.contains_key("warning_details") {
+            let details = legacy_warning_details(obj);
+            obj.insert("warning_details".into(), details);
+        }
     }
     fill_missing(
         &mut response,
@@ -1626,5 +1651,36 @@ mod tests {
         assert_eq!(content.body["bundle_id"], body["bundle_id"]);
         body["bundle_id"] = serde_json::Value::Null;
         assert!(super::save_content(body.clone()).is_err());
+    }
+
+    #[test]
+    fn save_content_keeps_or_derives_warning_details_one_to_one() {
+        // Current daemon: the canonical details pass through unchanged.
+        let current = serde_json::json!({
+            "job": {"job_id": "j", "state": "completed", "pinned_chunk_ids": []},
+            "bundle_id": "b",
+            "warning_codes": ["log_shortfall", "window_shortfall"],
+            "warnings": ["ログが要求した保存時間に達していません", "要求した保存時間に達していない記録があります"],
+            "warning_details": [
+                {"code": "log_shortfall", "message": "ログが要求した保存時間に達していません"},
+                {"code": "window_shortfall", "message": "要求した保存時間に達していない記録があります"}
+            ]
+        });
+        let out = super::save_content(current.clone()).unwrap().body;
+        assert_eq!(out["warning_details"], current["warning_details"]);
+        // Older daemon: codes and texts were not one to one (no text for window_shortfall).
+        let legacy = serde_json::json!({
+            "job": {"job_id": "j", "state": "completed", "pinned_chunk_ids": []},
+            "bundle_id": "b",
+            "warning_codes": ["log_shortfall", "window_shortfall"],
+            "warnings": ["ログが要求した保存時間に達していません"]
+        });
+        let out = super::save_content(legacy).unwrap().body;
+        let details = out["warning_details"].as_array().unwrap();
+        assert_eq!(details.len(), 2);
+        assert_eq!(
+            details[1],
+            serde_json::json!({"code": "window_shortfall", "message": "window_shortfall"})
+        );
     }
 }

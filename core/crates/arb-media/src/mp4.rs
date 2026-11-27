@@ -1729,6 +1729,42 @@ pub fn mux_raw_h264_to_mp4(
     default_frame_duration_ticks: u32,
     packets: &[RawH264Packet],
 ) -> Result<MuxReport, MediaError> {
+    mux_raw_h264_to_mp4_with_last_duration(
+        path,
+        width,
+        height,
+        timescale,
+        default_frame_duration_ticks,
+        None,
+        packets,
+    )
+}
+
+/// [`mux_raw_h264_to_mp4`] with an explicit display length for the **last** sample.
+///
+/// `last_sample_ticks` (`Some`, non-zero) becomes the final `stts` delta, so a static screen
+/// held until the end of the saved coverage plays for its real duration (#564). `None` keeps
+/// the default frame duration. Every other sample still uses its PTS delta; the output keeps a
+/// single `avc1` entry and no `edts` / `elst`.
+///
+/// # Errors
+///
+/// As [`mux_raw_h264_to_mp4`]; additionally [`MediaError::InvalidArgument`] for
+/// `last_sample_ticks == Some(0)`.
+pub fn mux_raw_h264_to_mp4_with_last_duration(
+    path: impl AsRef<Path>,
+    width: u16,
+    height: u16,
+    timescale: u32,
+    default_frame_duration_ticks: u32,
+    last_sample_ticks: Option<u32>,
+    packets: &[RawH264Packet],
+) -> Result<MuxReport, MediaError> {
+    if last_sample_ticks == Some(0) {
+        return Err(MediaError::InvalidArgument(
+            "last sample duration must be non-zero".to_owned(),
+        ));
+    }
     if timescale == 0 || default_frame_duration_ticks == 0 {
         return Err(MediaError::InvalidArgument(
             "timescale and default frame duration must be non-zero".to_owned(),
@@ -1800,6 +1836,10 @@ pub fn mux_raw_h264_to_mp4(
                 u32::try_from(ticks).ok().filter(|&t| t > 0)
             })
             .unwrap_or(default_frame_duration_ticks);
+        let duration_ticks = match last_sample_ticks {
+            Some(ticks) if idx + 1 == packets.len() => ticks,
+            _ => duration_ticks,
+        };
 
         segments
             .last_mut()

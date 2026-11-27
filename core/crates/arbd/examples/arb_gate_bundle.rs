@@ -348,6 +348,7 @@ fn streams_summary(frames: u64) -> StreamsSummary {
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
             display_width: Some(WIDTH),
             display_height: Some(HEIGHT),
+            carried_in: None,
         }),
         audio: Some(AudioStreamMeta {
             status: StreamStatus::Present,

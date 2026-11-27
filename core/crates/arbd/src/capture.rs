@@ -2,7 +2,7 @@
 //!
 //! Bridges [`arb_adb::mock::DeviceEventSource`] (both live ADB sessions and deterministic
 //! [`arb_adb::mock::MockDeviceSource`]) into [`ClockTimeline`], [`RingStore`],
-//! [`arb_core::selection::select_records`], [`arb_media::mp4::mux_raw_h264_to_mp4`],
+//! [`arb_core::selection::select_records`], [`arb_media::mp4::mux_raw_h264_to_mp4_with_last_duration`],
 //! and [`V2BundleWriter`].
 //!
 //! # Save engine (R3)
@@ -36,11 +36,16 @@ use arb_adb::wire::{
 use arb_core::analytics::{ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary};
 use arb_core::audio_policy::AudioModeSelection;
 use arb_core::bundle::{
-    AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
-    InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta, Provenance, RecordBucket,
-    RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
+    AudioStreamMeta, AvOffsetStatus, BundleKind, CarriedInFrame, CarryInEvidence, DeviceInfo,
+    EpochSpan, FrameRecord, InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta,
+    Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary, TapRecord,
+    UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::config::{AudioCaptureMode, CaptureMode};
+use arb_core::coverage::{
+    CarryCandidate, CoverageLedger, CoverageSnapshot, VideoCoverageKey, coverage_duration_for_key,
+    coverage_duration_in_window, covering_end, select_carry_in,
+};
 use arb_core::gesture::{GestureKind, TouchPoint, classify_stroke, touch_slop};
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
 use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
@@ -53,7 +58,7 @@ use arb_media::audio::{
     AacMuxInput, AacPacket, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
     parse_audio_specific_config,
 };
-use arb_media::mp4::{Mp4VideoTrack, RawH264Packet, mux_raw_h264_to_mp4};
+use arb_media::mp4::{Mp4VideoTrack, RawH264Packet, mux_raw_h264_to_mp4_with_last_duration};
 use arb_os::OsError;
 use arb_os::clock::sample_host_clock;
 use arb_os::fs::{DiskSpaceInfo, fsync_dir};
@@ -328,6 +333,11 @@ struct SaveJobMaterializeParams {
     /// Best-effort UID -> Android package name map captured from `cmd package list packages -U`.
     #[serde(default)]
     uid_packages: BTreeMap<u32, String>,
+    /// Video / logcat coverage intervals intersecting the window (host ingest axis), captured
+    /// with the pin and refreshed after the drain (#564 / #570). `None` on jobs pinned before
+    /// the ledger existed: those keep the span-based measurements and never carry a frame in.
+    #[serde(default)]
+    coverage: Option<CoverageSnapshot>,
 }
 
 /// What a closed ring chunk contains, used to pick the nearest preceding anchor chunks.
@@ -606,6 +616,8 @@ pub struct CapturePipeline {
     last_discontinuities: Vec<DiscontinuityEvent>,
     pressure_discontinuities: Vec<DiscontinuityEvent>,
     chunk_contents: BTreeMap<String, ChunkContent>,
+    /// Continuous video / logcat coverage evidence of the current device (#564 / #570).
+    coverage: CoverageLedger,
     crash_notifier: Option<Sender<CrashAutoSaveNotice>>,
     pub(super) crash_daemon: std::sync::Weak<super::DaemonState>,
 }
@@ -691,6 +703,7 @@ impl CapturePipeline {
             last_discontinuities: Vec::new(),
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
+            coverage: CoverageLedger::new(arb_adb::adb::DEFAULT_BEACON_TIMEOUT_NS),
             crash_notifier: None,
             crash_daemon: std::sync::Weak::new(),
         };
@@ -950,6 +963,7 @@ impl CapturePipeline {
             self.latest_video_config = None;
             self.latest_audio_config = None;
             self.chunk_contents.clear();
+            self.coverage.clear();
             self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
             self.latest_heartbeat_boottime_ns = None;
             self.latest_heartbeat_pc_cont_ns = None;
@@ -963,6 +977,8 @@ impl CapturePipeline {
             self.device.is_emulator = false;
         }
         self.drain_watermark_ns = None;
+        // A new generation never extends the coverage of an older one.
+        self.coverage.close_all();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active = true;
         self.connected = false;
@@ -1000,6 +1016,7 @@ impl CapturePipeline {
     pub fn mark_stopped(&mut self) {
         self.active = false;
         self.connected = false;
+        self.coverage.close_all();
         let _ = self.flush_pending_chunk();
     }
 
@@ -1171,6 +1188,7 @@ impl CapturePipeline {
             {
                 self.flush_pending_chunk()?;
                 self.chunk_contents.clear();
+                self.coverage.close_all();
                 self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
                 self.latest_heartbeat_boottime_ns = None;
                 self.latest_heartbeat_pc_cont_ns = None;
@@ -1237,7 +1255,66 @@ impl CapturePipeline {
         }
     }
 
+    /// Coverage evidence of one event (#564 / #570). Discontinuities are handled by
+    /// [`Self::close_coverage_for`] where they are recorded.
+    fn apply_coverage_event(&mut self, event: &CaptureEvent) {
+        match event {
+            // A new transport session (or its end): coverage restarts from fresh evidence.
+            CaptureEvent::Hello { .. } | CaptureEvent::Shutdown { .. } => {
+                self.coverage.close_all();
+            }
+            CaptureEvent::Heartbeat {
+                pc_cont_ns,
+                boot_id,
+                payload,
+            } => self.observe_heartbeat_coverage(*pc_cont_ns, boot_id, payload),
+            // A regenerated video session (new encoder, resolution or configuration) never
+            // continues the coverage of the previous one.
+            CaptureEvent::VideoSession { .. } => self.coverage.video.close(),
+            CaptureEvent::VideoFrame {
+                packet,
+                pc_cont_ns,
+                boot_id,
+            } if !packet.is_config() => {
+                // Keyed by the dimensions of the session the frame belongs to.
+                self.coverage.video.observe_data(
+                    VideoCoverageKey {
+                        boot_id: boot_id.clone(),
+                        width: self.video_width,
+                        height: self.video_height,
+                    },
+                    *pc_cont_ns,
+                );
+            }
+            CaptureEvent::LogRecord {
+                pc_cont_ns,
+                boot_id,
+                ..
+            } => self
+                .coverage
+                .logcat
+                .observe_data(boot_id.clone(), *pc_cont_ns),
+            CaptureEvent::StreamState { payload, .. }
+                if !matches!(
+                    payload.state,
+                    StreamLifecycleState::Running | StreamLifecycleState::Starting
+                ) =>
+            {
+                match payload.target_stream_id {
+                    StreamId::Logcat => self.coverage.logcat.close(),
+                    StreamId::Video => self.coverage.video.close(),
+                    StreamId::Control => self.coverage.close_all(),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn apply_live_event_state(&mut self, event: &CaptureEvent) -> bool {
+        // VideoSession updates the dimensions after closing the old coverage; frames are keyed
+        // by the dimensions in effect when they arrive.
+        self.apply_coverage_event(event);
         let mut should_flush = false;
         match event {
             CaptureEvent::Hello { payload, .. } => {
@@ -1347,10 +1424,62 @@ impl CapturePipeline {
             self.audio_cause = Some(AudioCause::Unknown);
             self.audio_reason.clone_from(&disc.detail);
         }
+        self.close_coverage_for(disc);
         self.discontinuities_seen += 1;
         self.push_live_discontinuity(disc.clone());
         if disc.kind == DiscontinuityKind::ConnectionLost {
             self.connected = false;
+        }
+    }
+
+    /// Gaps, disconnects, storage stops and reboots end the coverage of the affected streams.
+    fn close_coverage_for(&mut self, disc: &DiscontinuityEvent) {
+        if !matches!(
+            disc.kind,
+            DiscontinuityKind::StreamGap
+                | DiscontinuityKind::ConnectionLost
+                | DiscontinuityKind::StoragePressureStop
+                | DiscontinuityKind::DeviceReboot
+        ) {
+            return;
+        }
+        match disc.stream {
+            None => self.coverage.close_all(),
+            Some(StreamKind::Video) => self.coverage.video.close(),
+            Some(StreamKind::Logcat) => self.coverage.logcat.close(),
+            Some(_) => {}
+        }
+    }
+
+    /// A companion beacon keeps a still-alive stream covered (static screen, quiet logcat);
+    /// a beacon reporting a stopped stream ends that stream's coverage (#564 / #570).
+    fn observe_heartbeat_coverage(
+        &mut self,
+        pc_cont_ns: i64,
+        boot_id: &str,
+        payload: &arb_adb::wire::HeartbeatPayload,
+    ) {
+        let state_of = |id: StreamId| {
+            payload
+                .streams
+                .iter()
+                .find(|e| e.stream_id == id)
+                .map(|e| e.state)
+        };
+        match state_of(StreamId::Logcat) {
+            Some(StreamLifecycleState::Running) => {
+                self.coverage
+                    .logcat
+                    .observe_data(boot_id.to_owned(), pc_cont_ns);
+            }
+            Some(_) => self.coverage.logcat.close(),
+            None => self.coverage.logcat.observe_alive(pc_cont_ns),
+        }
+        match state_of(StreamId::Video) {
+            Some(StreamLifecycleState::Running) | None => {
+                self.coverage.video.observe_alive(pc_cont_ns);
+            }
+            Some(_) => self.coverage.video.close(),
         }
     }
 
@@ -1622,6 +1751,7 @@ impl CapturePipeline {
             self.storage_pressure_stopped = true;
             self.active = false;
         }
+        self.close_coverage_for(&event);
         self.discontinuities_seen += 1;
         self.push_live_discontinuity(event.clone());
         self.pressure_discontinuities.push(event);
@@ -1765,7 +1895,10 @@ impl CapturePipeline {
             trigger_kind,
             extra_discontinuities,
             uid_packages: self.uid_packages.clone(),
+            coverage: None,
         };
+        let mut params = params;
+        params.coverage = Some(self.coverage_snapshot_for(&params.window));
         write_job_params(&self.data_dir, &job_id, &params)?;
         guard.armed = true;
         self.ring.pin_chunks(
@@ -1821,6 +1954,8 @@ impl CapturePipeline {
                     chunk_ids.push(id);
                 }
             }
+            // The drain may have delivered the beacon that confirms coverage up to `T`.
+            pending.params.coverage = Some(self.coverage_snapshot_for(&pending.params.window));
         }
         let job_id = pending.guard.job_id.clone();
         if chunk_ids.len() != pending.pinned_chunk_ids.len() {
@@ -2060,6 +2195,12 @@ impl CapturePipeline {
         selected
     }
 
+    /// Coverage intervals that intersect the window's ingest range, persisted with the job.
+    fn coverage_snapshot_for(&self, window: &WindowSpec) -> CoverageSnapshot {
+        self.coverage
+            .snapshot(window.ingest_start_cont_ns(), window.ingest_end_cont_ns())
+    }
+
     /// Carried discontinuities whose `pc_cont` span overlaps the save window (R3 C5).
     fn carried_discontinuities_for(
         &self,
@@ -2154,18 +2295,141 @@ struct Materialized {
     warning: Option<String>,
 }
 
+/// Per-stream shortfall flags (`actual_ms + 1000 < requested_secs * 1000`).
+///
+/// Logs are judged by `log_coverage_ms` (window time covered by a running logcat stream) when
+/// the coverage ledger measured it; the span of log rows is only the fallback for jobs pinned
+/// before the ledger existed (#570). A healthy stream that merely had no row near an edge is
+/// therefore not short, while a stream that started late or broke is.
 fn stream_shortfalls(
     mode: SaveMode,
     requested_secs: u64,
     video_ms: Option<u64>,
     logs_ms: u64,
+    log_coverage_ms: Option<u64>,
 ) -> (bool, bool) {
     let short =
         |actual_ms: u64| actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000);
     (
         mode == SaveMode::Full && short(video_ms.unwrap_or(0)),
-        short(logs_ms),
+        short(log_coverage_ms.unwrap_or(logs_ms)),
     )
+}
+
+/// Conditions that each produce exactly one warning (code + message).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one independent flag per warning code; the list is the single source of warnings"
+)]
+struct WarningFlags {
+    video_shortfall: bool,
+    log_shortfall: bool,
+    logcat_overflow: bool,
+    unanchored_truncated: bool,
+    audio_absent: bool,
+    stream_discontinuity: bool,
+    tail_unconfirmed: bool,
+}
+
+/// The single source of save warnings: `warning_codes` and `warnings` are both projected from
+/// this list, so they always have the same length and order (#570).
+fn evidence_warnings(flags: WarningFlags) -> Vec<crate::protocol::WarningDetail> {
+    [
+        (
+            flags.video_shortfall,
+            "video_shortfall",
+            "映像が要求した保存時間に達していません",
+        ),
+        (
+            flags.log_shortfall,
+            "log_shortfall",
+            "ログが要求した保存時間に達していません",
+        ),
+        (
+            flags.video_shortfall || flags.log_shortfall,
+            "window_shortfall",
+            "要求した保存時間に達していない記録があります",
+        ),
+        (
+            flags.logcat_overflow,
+            "logcat_overflow",
+            "logcat のオーバーフローを検出しました",
+        ),
+        (
+            flags.unanchored_truncated,
+            "unanchored_truncated",
+            "時刻未確定の記録を件数・容量制限で切り捨てました",
+        ),
+        (flags.audio_absent, "audio_absent", "音声がありません"),
+        (
+            flags.stream_discontinuity,
+            "stream_discontinuity",
+            "記録に不連続箇所があります",
+        ),
+        (
+            flags.tail_unconfirmed,
+            "tail_unconfirmed",
+            "保存範囲の末尾は未確認です",
+        ),
+    ]
+    .into_iter()
+    .filter(|(flag, _, _)| *flag)
+    .map(|(_, code, message)| crate::protocol::WarningDetail {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    })
+    .collect()
+}
+
+/// Static holds shorter than this are ordinary frame intervals, not an informational hold.
+const STATIC_HOLD_INFO_MS: u64 = 2_000;
+
+/// Window coverage of the video and logcat streams from the persisted ledger snapshot.
+fn window_coverage_ms(params: &SaveJobMaterializeParams) -> (Option<u64>, Option<u64>) {
+    let Some(coverage) = params.coverage.as_ref() else {
+        return (None, None);
+    };
+    let window = &params.window;
+    let (lo, hi) = (window.ingest_start_cont_ns(), window.ingest_end_cont_ns());
+    let boot = window.boot_id().to_owned();
+    let video: Vec<_> = coverage
+        .video
+        .iter()
+        .filter(|c| c.key.boot_id == boot)
+        .cloned()
+        .collect();
+    (
+        Some(coverage_duration_in_window(&video, lo, hi) / 1_000_000),
+        Some(coverage_duration_for_key(&coverage.logcat, &boot, lo, hi) / 1_000_000),
+    )
+}
+
+/// Held display time at the window edges: the carried-in first sample (when later frames
+/// follow) plus the last sample's display length.
+fn saved_static_hold_ms(
+    reader: &dyn arb_storage::bundle_io::BundleReader,
+    carried_in: Option<&CarriedInFrame>,
+) -> u64 {
+    let Some(track) = reader
+        .video_path()
+        .and_then(|path| Mp4VideoTrack::open(path).ok())
+    else {
+        return 0;
+    };
+    let frames = track.frames();
+    let head = match frames {
+        [first, second, ..] if carried_in.is_some() => {
+            u64::try_from(second.pts_ns - first.pts_ns).unwrap_or(0)
+        }
+        _ => 0,
+    };
+    let tail = track
+        .last_presentation_duration_ns()
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    head.saturating_add(tail) / 1_000_000
 }
 
 fn measure_saved_evidence(
@@ -2185,78 +2449,65 @@ fn measure_saved_evidence(
     let video = summary
         .duration_ms
         .filter(|_| summary.has_video == Some(true));
-    let (video_shortfall, log_shortfall) =
-        stream_shortfalls(params.mode, params.duration_sec, video, logs.duration_ms);
+    let (video_coverage_ms, log_coverage_ms) = window_coverage_ms(params);
+    let (video_shortfall, log_shortfall) = stream_shortfalls(
+        params.mode,
+        params.duration_sec,
+        video,
+        logs.duration_ms,
+        log_coverage_ms,
+    );
     let window_shortfall = video_shortfall || log_shortfall;
     let completeness = crate::protocol::LogcatEvidence::from(manifest);
     let discontinuity_count = reader.discontinuities()?.len();
-    let mut warnings = Vec::new();
-    let mut warning_codes = Vec::new();
-    for (flag, code, message) in [
-        (
-            video_shortfall,
-            "video_shortfall",
-            "映像が要求した保存時間に達していません",
-        ),
-        (
-            log_shortfall,
-            "log_shortfall",
-            "ログが要求した保存時間に達していません",
-        ),
-        (
-            completeness.overflow_events > 0
-                || completeness.status == Some(LogCompleteness::OverflowDetected),
-            "logcat_overflow",
-            "logcat のオーバーフローを検出しました",
-        ),
-        (
-            completeness.unanchored_truncated_count > 0,
-            "unanchored_truncated",
-            "時刻未確定の記録を件数・容量制限で切り捨てました",
-        ),
-        (
-            params.mode == SaveMode::Full && summary.has_audio != Some(true),
-            "audio_absent",
-            "音声がありません",
-        ),
-        (
-            discontinuity_count > 0,
-            "stream_discontinuity",
-            "記録に不連続箇所があります",
-        ),
-        (
-            params.tail_may_be_incomplete,
-            "tail_unconfirmed",
-            "保存範囲の末尾は未確認です",
-        ),
-    ] {
-        if flag {
-            warning_codes.push(code.to_owned());
-            warnings.push(message.to_owned());
-        }
-    }
-    if window_shortfall {
-        warning_codes.push("window_shortfall".into());
-    }
-    Ok((
-        crate::protocol::SaveEvidence {
-            video_shortfall: Some(video_shortfall),
-            log_shortfall: Some(log_shortfall),
-            warning_codes: Some(warning_codes),
-            logcat_completeness: Some(completeness),
-            note: params.note.clone(),
-            actual_video_duration_ms: Some(video.unwrap_or(0)),
-            actual_log_duration_ms: Some(logs.duration_ms),
-            video_frame_count: summary.frame_count,
-            log_count: Some(logs.count),
-            unanchored_log_count: Some(logs.unanchored),
-            truncated_unanchored_count: Some(manifest.unanchored_summary.truncated_count),
-            discontinuity_count: Some(discontinuity_count),
-            window_shortfall: Some(window_shortfall),
-            warnings: Some(warnings),
-        },
-        summary,
-    ))
+    let full = params.mode == SaveMode::Full;
+    let carried_in = manifest
+        .streams
+        .video
+        .as_ref()
+        .and_then(|v| v.carried_in.as_ref());
+    let carried_in_frame = carried_in.is_some();
+    let static_hold_ms = if full {
+        saved_static_hold_ms(reader.as_ref(), carried_in)
+    } else {
+        0
+    };
+    let info_codes = if full && (carried_in_frame || static_hold_ms >= STATIC_HOLD_INFO_MS) {
+        vec!["video_static_hold".to_owned()]
+    } else {
+        Vec::new()
+    };
+    let mut evidence = crate::protocol::SaveEvidence {
+        video_shortfall: Some(video_shortfall),
+        log_shortfall: Some(log_shortfall),
+        logcat_completeness: Some(completeness.clone()),
+        note: params.note.clone(),
+        actual_video_duration_ms: Some(video.unwrap_or(0)),
+        actual_log_duration_ms: Some(logs.duration_ms),
+        video_frame_count: summary.frame_count,
+        log_count: Some(logs.count),
+        unanchored_log_count: Some(logs.unanchored),
+        truncated_unanchored_count: Some(manifest.unanchored_summary.truncated_count),
+        discontinuity_count: Some(discontinuity_count),
+        window_shortfall: Some(window_shortfall),
+        log_coverage_ms,
+        video_coverage_ms: video_coverage_ms.filter(|_| full),
+        carried_in_frame: full.then_some(carried_in_frame),
+        static_hold_ms: full.then_some(static_hold_ms),
+        info_codes: Some(info_codes),
+        ..Default::default()
+    };
+    evidence.set_warnings(evidence_warnings(WarningFlags {
+        video_shortfall,
+        log_shortfall,
+        logcat_overflow: completeness.overflow_events > 0
+            || completeness.status == Some(LogCompleteness::OverflowDetected),
+        unanchored_truncated: completeness.unanchored_truncated_count > 0,
+        audio_absent: full && summary.has_audio != Some(true),
+        stream_discontinuity: discontinuity_count > 0,
+        tail_unconfirmed: params.tail_may_be_incomplete,
+    }));
+    Ok((evidence, summary))
 }
 
 fn saved_evidence(
@@ -2268,15 +2519,17 @@ fn saved_evidence(
 ) {
     match measure_saved_evidence(path, params) {
         Ok((evidence, summary)) => (evidence, Some(summary)),
-        Err(e) => (
-            crate::protocol::SaveEvidence {
+        Err(e) => {
+            let mut evidence = crate::protocol::SaveEvidence {
                 note: params.note.clone(),
-                warning_codes: Some(vec!["evidence_unavailable".into()]),
-                warnings: Some(vec![format!("保存済み記録の集計に失敗しました: {e}")]),
                 ..Default::default()
-            },
-            None,
-        ),
+            };
+            evidence.set_warnings(vec![crate::protocol::WarningDetail {
+                code: "evidence_unavailable".into(),
+                message: format!("保存済み記録の集計に失敗しました: {e}"),
+            }]);
+            (evidence, None)
+        }
     }
 }
 
@@ -2663,6 +2916,123 @@ struct SelectedVideo {
     preroll: Vec<RawH264Packet>,
     main: Vec<AlignedVideoItem>,
     unanchored_excluded: usize,
+    /// `main[0]` was captured before the window and is displayed from `W0` (#564).
+    carried_in: Option<CarriedInFrame>,
+}
+
+/// Explicit MP4 timing for the first and last saved samples (#564).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct VideoMuxTiming {
+    /// Device-mono PTS at which the carried-in first sample starts being displayed (`W0`).
+    head_display_pts_ns: Option<i64>,
+    /// Display length of the last sample in `MP4_TIMESCALE` ticks, held until coverage ends.
+    last_sample_ticks: Option<u32>,
+}
+
+/// Display start of an aligned frame on `DeviceBoottime` (`Anchored` center / `Bounded` low).
+fn aligned_boottime_ns(alignment: &TimeAlignment) -> Option<i64> {
+    match alignment {
+        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
+        TimeAlignment::Bounded {
+            min_boottime_ns, ..
+        } => Some(*min_boottime_ns),
+        _ => None,
+    }
+}
+
+fn video_coverage_key(item: &AlignedVideoItem) -> VideoCoverageKey {
+    VideoCoverageKey {
+        boot_id: item.record.boot_id.clone(),
+        width: item.dimensions.0,
+        height: item.dimensions.1,
+    }
+}
+
+/// Picks the frame on screen at `W0` (#564, K14) among the frames before the first in-window
+/// frame, or `None` without continuous video coverage from that frame to `W0`.
+///
+/// Returns the carried frame and the IDR that starts its GOP. A frame is eligible only when it
+/// is confidently before the window on the same boot; the decode chain from its IDR must stay on
+/// one boot and one resolution, and with in-window frames it must be their immediate
+/// predecessor so the saved GOP has no holes.
+fn carry_in_frame(
+    aligned: &[AlignedVideoItem],
+    first_in: Option<usize>,
+    params: &SaveJobMaterializeParams,
+) -> Option<(usize, usize)> {
+    let coverage = params.coverage.as_ref()?;
+    let window = &params.window;
+    let prefix_end = first_in.unwrap_or(aligned.len());
+    let w0_bt = window.start_boottime_ns();
+    let candidates: Vec<CarryCandidate<Option<VideoCoverageKey>>> = aligned[..prefix_end]
+        .iter()
+        .map(|v| {
+            let eligible = v.record.boot_id == window.boot_id()
+                && arb_core::selection::classify_record(v, window)
+                    == arb_core::selection::Membership::OutOfRange
+                && aligned_boottime_ns(&v.record.alignment).is_some_and(|bt| bt < w0_bt);
+            CarryCandidate {
+                ts_ns: v.record.pc_ingest_cont_ns,
+                key: eligible.then(|| video_coverage_key(v)),
+            }
+        })
+        .collect();
+    let intervals: Vec<_> = coverage
+        .video
+        .iter()
+        .map(|c| arb_core::coverage::CoverageInterval {
+            key: Some(c.key.clone()),
+            start_ns: c.start_ns,
+            end_ns: c.end_ns,
+        })
+        .collect();
+    let idx = select_carry_in(&candidates, window.ingest_start_cont_ns(), &intervals)?;
+    if first_in.is_some_and(|first| idx + 1 != first) {
+        return None;
+    }
+    let gop_start = aligned[..=idx].iter().rposition(|v| v.record.is_keyframe)?;
+    aligned[gop_start..=idx]
+        .iter()
+        .all(|v| {
+            v.record.boot_id == aligned[idx].record.boot_id
+                && v.dimensions == aligned[idx].dimensions
+        })
+        .then_some((idx, gop_start))
+}
+
+/// Display length of the last saved frame: held until `min(T, video coverage end)` (#564).
+///
+/// `None` (fixed default sample length) without coverage evidence for that frame.
+fn tail_hold_ticks(
+    main: &[AlignedVideoItem],
+    carried_in: Option<&CarriedInFrame>,
+    params: &SaveJobMaterializeParams,
+) -> Option<u32> {
+    let coverage = params.coverage.as_ref()?;
+    let last = main.last()?;
+    let window = &params.window;
+    let end_pc = covering_end(
+        &coverage.video,
+        &video_coverage_key(last),
+        last.record.pc_ingest_cont_ns,
+    )?
+    .min(window.ingest_end_cont_ns());
+    // The save window fixes one ingest <-> boottime correspondence at `T`.
+    let end_bt = end_pc
+        .saturating_add(
+            window
+                .end_boottime_ns()
+                .saturating_sub(window.ingest_end_cont_ns()),
+        )
+        .min(window.end_boottime_ns());
+    let start_bt = match carried_in {
+        Some(c) if main.len() == 1 => c.display_start_boottime_ns,
+        _ => aligned_boottime_ns(&last.record.alignment)?,
+    };
+    let hold_ns = end_bt.checked_sub(start_bt).filter(|d| *d > 0)?;
+    let ticks = (i128::from(hold_ns) * i128::from(MP4_TIMESCALE) + i128::from(NANOS_PER_SEC / 2))
+        / i128::from(NANOS_PER_SEC);
+    u32::try_from(ticks.max(1)).ok()
 }
 
 /// Audio packets selected for the main timeline plus the uncertain packets left out (R3 S2).
@@ -2984,11 +3354,36 @@ impl ReplayCollector {
                 }
             })
             .collect();
-        let mut preroll = Vec::new();
-        if let Some(first) = aligned.iter().position(|v| {
+        let first_in = aligned.iter().position(|v| {
             arb_core::selection::classify_record(v, &params.window)
                 == arb_core::selection::Membership::InRange
-        }) && !aligned[first].record.is_keyframe
+        });
+        let mut preroll = Vec::new();
+        let mut carried: Option<(AlignedVideoItem, CarriedInFrame)> = None;
+        if let Some((idx, gop_start)) = carry_in_frame(&aligned, first_in, params) {
+            preroll.extend(aligned[gop_start..idx].iter_mut().map(|v| RawH264Packet {
+                pts_ns: v.record.pts_device_mono_ns,
+                is_keyframe: v.record.is_keyframe,
+                annex_b: std::mem::take(&mut v.annex_b),
+            }));
+            let item = &mut aligned[idx];
+            let captured_boottime_ns = aligned_boottime_ns(&item.record.alignment).unwrap_or(0);
+            carried = Some((
+                AlignedVideoItem {
+                    dimensions: item.dimensions,
+                    // WORM: the capture-time record is kept as captured.
+                    record: item.record.clone(),
+                    annex_b: std::mem::take(&mut item.annex_b),
+                },
+                CarriedInFrame {
+                    frame_index: 0,
+                    captured_boottime_ns,
+                    display_start_boottime_ns: params.window.start_boottime_ns(),
+                    evidence: CarryInEvidence::Coverage,
+                },
+            ));
+        } else if let Some(first) = first_in
+            && !aligned[first].record.is_keyframe
             && let Some(start) = aligned[..first].iter().rposition(|v| v.record.is_keyframe)
             && aligned[start..first].iter().all(|v| {
                 v.record.boot_id == aligned[first].record.boot_id
@@ -3009,10 +3404,16 @@ impl ReplayCollector {
             .unanchored
             .len()
             .saturating_add(part.unanchored_truncated_count);
+        let mut main = part.main;
+        let carried_in = carried.map(|(item, meta)| {
+            main.insert(0, item);
+            meta
+        });
         SelectedVideo {
-            main: part.main,
             preroll,
+            main,
             unanchored_excluded,
+            carried_in,
         }
     }
 
@@ -3236,6 +3637,7 @@ impl ReplayCollector {
         let (log_completeness, dropped_count) =
             saved_log_completeness(self.log_completeness, self.dropped_count, &discontinuities);
         let streams = build_streams_summary(&StreamSummaryCounts {
+            carried_in: media.carried_in.clone(),
             frame_count,
             video_status: media.video_status,
             display_width,
@@ -3284,6 +3686,7 @@ impl ReplayCollector {
 
 struct SelectedMediaTracks {
     bundle_kind: BundleKind,
+    carried_in: Option<CarriedInFrame>,
     video_mp4: Option<MediaPayload>,
     audio_m4a: Option<MediaPayload>,
     frames: Vec<FrameRecord>,
@@ -3300,6 +3703,7 @@ impl SelectedMediaTracks {
     const fn logs_only() -> Self {
         Self {
             bundle_kind: BundleKind::LogsOnly,
+            carried_in: None,
             video_mp4: None,
             audio_m4a: None,
             frames: Vec::new(),
@@ -3352,6 +3756,17 @@ fn build_full_media_tracks(
             push_unanchored_exclusion_gap(discontinuities, kind, params, excluded, label);
         }
     }
+    let carried_in = selected_video.carried_in.clone();
+    let timing = VideoMuxTiming {
+        head_display_pts_ns: carried_in.as_ref().and_then(|c| {
+            selected_video.main.first().map(|f| {
+                f.record
+                    .pts_device_mono_ns
+                    .saturating_add(c.display_start_boottime_ns - c.captured_boottime_ns)
+            })
+        }),
+        last_sample_ticks: tail_hold_ticks(&selected_video.main, carried_in.as_ref(), params),
+    };
     let (video_mp4, frames, video_status) = mux_selected_video(
         job_id,
         data_dir,
@@ -3359,7 +3774,10 @@ fn build_full_media_tracks(
         video_height,
         selected_video.preroll,
         selected_video.main,
+        timing,
     )?;
+    // A carried-in frame exists only when the track was actually written with it.
+    let carried_in = carried_in.filter(|_| video_mp4.is_some() && !frames.is_empty());
     let (audio_m4a, audio_status) = mux_selected_audio(
         job_id,
         data_dir,
@@ -3371,6 +3789,7 @@ fn build_full_media_tracks(
         ReplayCollector::select_taps(timeline, raw_taps, params, tap_budget);
     Ok(SelectedMediaTracks {
         bundle_kind: BundleKind::Full,
+        carried_in,
         video_mp4,
         audio_m4a,
         frames,
@@ -3394,15 +3813,25 @@ fn build_full_media_tracks(
 /// selected nothing (no shared origin exists).
 fn av_lead_in_offset_ns(video: &SelectedVideo, audio: &SelectedAudio) -> i64 {
     match (audio.main.first(), video.main.first()) {
-        (Some(first_audio), Some(first_video)) => first_audio
-            .pts_us
-            .saturating_mul(1_000)
-            .saturating_sub(first_video.record.pts_device_mono_ns),
+        (Some(first_audio), Some(first_video)) => {
+            // A carried-in frame starts its display (media time 0) at `W0`.
+            let video_origin = first_video.record.pts_device_mono_ns.saturating_add(
+                video
+                    .carried_in
+                    .as_ref()
+                    .map_or(0, |c| c.display_start_boottime_ns - c.captured_boottime_ns),
+            );
+            first_audio
+                .pts_us
+                .saturating_mul(1_000)
+                .saturating_sub(video_origin)
+        }
         _ => 0,
     }
 }
 
 struct StreamSummaryCounts {
+    carried_in: Option<CarriedInFrame>,
     frame_count: u64,
     video_status: StreamStatus,
     display_width: Option<u32>,
@@ -3455,6 +3884,7 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
             display_width: counts.display_width,
             display_height: counts.display_height,
+            carried_in: counts.carried_in.clone(),
         }),
         audio: Some(AudioStreamMeta {
             // Computed by `mux_selected_audio`: `Present` only when `audio.m4a` was
@@ -3551,6 +3981,7 @@ fn mux_selected_video(
     height: u16,
     mut packets: Vec<RawH264Packet>,
     mut selected: Vec<AlignedVideoItem>,
+    timing: VideoMuxTiming,
 ) -> Result<(Option<MediaPayload>, Vec<FrameRecord>, StreamStatus), DaemonError> {
     if selected.is_empty() {
         return Ok((None, Vec::new(), StreamStatus::Absent));
@@ -3562,10 +3993,17 @@ fn mux_selected_video(
         .map(|v| v.dimensions)
         .max_by_key(|&(w, h)| u32::from(w) * u32::from(h))
         .unwrap_or((width, height));
-    packets.extend(selected.iter_mut().map(|item| RawH264Packet {
-        annex_b: std::mem::take(&mut item.annex_b),
-        pts_ns: item.record.pts_device_mono_ns,
-        is_keyframe: item.record.is_keyframe,
+    packets.extend(selected.iter_mut().enumerate().map(|(idx, item)| {
+        RawH264Packet {
+            annex_b: std::mem::take(&mut item.annex_b),
+            // Only the muxed display time of a carried-in frame moves to `W0`; its record keeps
+            // the capture PTS.
+            pts_ns: timing
+                .head_display_pts_ns
+                .filter(|_| idx == 0)
+                .unwrap_or(item.record.pts_device_mono_ns),
+            is_keyframe: item.record.is_keyframe,
+        }
     }));
 
     let tmp_dir = data_dir.join("tmp");
@@ -3581,12 +4019,13 @@ fn mux_selected_video(
             .any(|n| n.first().is_some_and(|b| b & 31 == 5))
     });
     let muxed = if decodable_head {
-        mux_raw_h264_to_mp4(
+        mux_raw_h264_to_mp4_with_last_duration(
             &tmp_mp4,
             width.max(16),
             height.max(16),
             MP4_TIMESCALE,
             MP4_DEFAULT_FRAME_DURATION_TICKS,
+            timing.last_sample_ticks,
             &packets,
         )
         .and_then(|report| {
@@ -4013,6 +4452,10 @@ const fn log_priority_label(priority: u8) -> &'static str {
 mod pdd_g5_tests;
 
 #[cfg(test)]
+#[path = "capture_coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -4388,8 +4831,16 @@ mod tests {
         // I/O error, which must fail the save (FailedRetryable), never become "no video".
         std::fs::create_dir_all(tmp.path().join("tmp").join("mux-job-m3.mp4"))
             .expect("create blocking dir");
-        let err = mux_selected_video("job-m3", tmp.path(), 64, 64, Vec::new(), real_h264_items())
-            .expect_err("I/O mux failure must propagate");
+        let err = mux_selected_video(
+            "job-m3",
+            tmp.path(),
+            64,
+            64,
+            Vec::new(),
+            real_h264_items(),
+            super::VideoMuxTiming::default(),
+        )
+        .expect_err("I/O mux failure must propagate");
         assert!(
             matches!(err, DaemonError::Media(MediaError::Io(_))),
             "expected MediaError::Io, got {err:?}"
@@ -4404,9 +4855,16 @@ mod tests {
             pts_ns: 1,
             is_keyframe: true,
         }]);
-        let (mp4, frames, status) =
-            mux_selected_video("job-stub", tmp.path(), 64, 64, Vec::new(), stub)
-                .expect("stub stream must fall back cleanly");
+        let (mp4, frames, status) = mux_selected_video(
+            "job-stub",
+            tmp.path(),
+            64,
+            64,
+            Vec::new(),
+            stub,
+            super::VideoMuxTiming::default(),
+        )
+        .expect("stub stream must fall back cleanly");
         assert!(mp4.is_none(), "stub stream must not produce an MP4");
         assert_eq!(frames.len(), 1, "timeline metadata must be kept");
         assert_eq!(status, StreamStatus::Partial, "stub video must be Partial");
@@ -4489,6 +4947,7 @@ mod tests {
                 row["requested_duration_secs"].as_u64().unwrap(),
                 row["actual_video_duration_ms"].as_u64(),
                 row["actual_log_duration_ms"].as_u64().unwrap(),
+                row["log_coverage_ms"].as_u64(),
             );
             assert_eq!(row["video_shortfall"], v);
             assert_eq!(row["log_shortfall"], l);
@@ -4496,6 +4955,40 @@ mod tests {
                 v || l,
                 row["window_shortfall"].as_bool().expect("shortfall"),
                 "row {row}"
+            );
+            // #570: the shared rows' details are exactly what the single warning source emits,
+            // and the flat arrays are its one-to-one projection.
+            let has = |code: &str| {
+                row["warning_codes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c == code)
+            };
+            let details = super::evidence_warnings(super::WarningFlags {
+                video_shortfall: v,
+                log_shortfall: l,
+                logcat_overflow: has("logcat_overflow"),
+                unanchored_truncated: has("unanchored_truncated"),
+                audio_absent: has("audio_absent"),
+                stream_discontinuity: has("stream_discontinuity"),
+                tail_unconfirmed: has("tail_unconfirmed"),
+            });
+            assert_eq!(
+                serde_json::to_value(&details).unwrap(),
+                row["warning_details"],
+                "row {}",
+                row["id"]
+            );
+            let mut evidence = crate::protocol::SaveEvidence::default();
+            evidence.set_warnings(details);
+            assert_eq!(
+                serde_json::to_value(&evidence.warning_codes).unwrap(),
+                row["warning_codes"]
+            );
+            assert_eq!(
+                serde_json::to_value(&evidence.warnings).unwrap(),
+                row["warnings"]
             );
         }
     }
@@ -5491,6 +5984,7 @@ mod tests {
             trigger_kind: arb_core::state::SaveTriggerKind::Manual,
             extra_discontinuities: Vec::new(),
             uid_packages: BTreeMap::new(),
+            coverage: None,
         }
     }
 

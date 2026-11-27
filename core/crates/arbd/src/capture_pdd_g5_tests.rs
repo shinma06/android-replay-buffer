@@ -57,6 +57,7 @@ fn full_params() -> SaveJobMaterializeParams {
         trigger_kind: arb_core::state::SaveTriggerKind::Manual,
         extra_discontinuities: Vec::new(),
         uid_packages: BTreeMap::from([(10_001, "com.example".to_owned())]),
+        coverage: None,
     }
 }
 

@@ -5,6 +5,7 @@
     "severity": "info = IDE の通常通知、warning = 警告通知（保護・スキップ・失敗で要求どおりにならなかった項目が残る）、error = 操作失敗通知（RPC が失敗）。0 でないバケットは必ず summary に件数付きで出す。",
     "gc_bucket_labels": "BundleGcResponse の各フィールドと IDE summary の表示ラベル。",
     "save": "cli_exit_code は arb-cli の終了コード、mcp_is_error は MCP tools/call の isError、ide_feedback は IDE の保存結果（success = 保存通知・エディタを開く、warning = ジョブ状態の警告。どちらも RPC 成功なので接続状態は変えない）。",
+    "capture_evidence": "warning_details が正本。warning_codes と warnings は同じ長さ・同じ順序で warning_details の code と message を射影する。log_shortfall は log_coverage_ms（窓のうち logcat ストリームが動作していた時間）で判定し、actual_log_duration_ms（行の最小〜最大時刻の差）はそのまま返す。video_static_hold は情報コードで警告ではない。",
     "errors": "is_transport は arb-os RpcClientError::is_transport。ide_daemon_connected は IDE が操作失敗後も接続中と表示するか。"
   },
   "gc_bucket_labels": {
@@ -1121,15 +1122,13 @@
   "capture_evidence_rows": [
     {
       "id": "CE-01",
+      "issue": "映像だけが要求に満たない",
       "warning": "末尾は未確認",
-      "warnings": [
-        "末尾は未確認",
-        "要求 90 秒に対し映像は 50 秒"
-      ],
-      "notification_warning": "末尾は未確認、要求 90 秒に対し映像は 50 秒",
+      "notification_warning": "末尾は未確認、映像が要求した保存時間に達していません、要求した保存時間に達していない記録があります",
       "requested_duration_secs": 90,
       "actual_video_duration_ms": 50000,
       "actual_log_duration_ms": 90000,
+      "log_coverage_ms": 90000,
       "logs_only": false,
       "window_shortfall": true,
       "video_shortfall": true,
@@ -1137,24 +1136,44 @@
       "warning_codes": [
         "video_shortfall",
         "window_shortfall"
+      ],
+      "warnings": [
+        "映像が要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります"
+      ],
+      "warning_details": [
+        {
+          "code": "video_shortfall",
+          "message": "映像が要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        }
       ]
     },
     {
       "id": "CE-02",
+      "issue": "ログ単体の健全な保存",
       "requested_duration_secs": 60,
       "actual_video_duration_ms": null,
       "actual_log_duration_ms": 59500,
+      "log_coverage_ms": 60000,
       "logs_only": true,
       "window_shortfall": false,
       "video_shortfall": false,
       "log_shortfall": false,
-      "warning_codes": []
+      "warning_codes": [],
+      "warnings": [],
+      "warning_details": []
     },
     {
       "id": "CE-03",
+      "issue": "logcat が窓を被覆していない",
       "requested_duration_secs": 60,
       "actual_video_duration_ms": null,
       "actual_log_duration_ms": 0,
+      "log_coverage_ms": 0,
       "logs_only": true,
       "window_shortfall": true,
       "video_shortfall": false,
@@ -1162,29 +1181,187 @@
       "warning_codes": [
         "log_shortfall",
         "window_shortfall"
+      ],
+      "warnings": [
+        "ログが要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります"
+      ],
+      "warning_details": [
+        {
+          "code": "log_shortfall",
+          "message": "ログが要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        }
       ]
     },
     {
       "id": "CE-04",
+      "issue": "ログの被覆不足と溢れ",
       "requested_duration_secs": 60,
       "actual_video_duration_ms": 60000,
       "actual_log_duration_ms": 55000,
+      "log_coverage_ms": 55000,
       "logs_only": false,
       "window_shortfall": true,
       "video_shortfall": false,
       "log_shortfall": true,
-      "warning_codes": [
-        "log_shortfall",
-        "window_shortfall",
-        "logcat_overflow"
-      ],
       "logcat_completeness": {
         "status": "overflow_detected",
         "overflow_events": 2,
         "dropped_count": 7,
         "unanchored_count": 3,
         "unanchored_truncated_count": 0
-      }
+      },
+      "warning_codes": [
+        "log_shortfall",
+        "window_shortfall",
+        "logcat_overflow"
+      ],
+      "warnings": [
+        "ログが要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります",
+        "logcat のオーバーフローを検出しました"
+      ],
+      "warning_details": [
+        {
+          "code": "log_shortfall",
+          "message": "ログが要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        },
+        {
+          "code": "logcat_overflow",
+          "message": "logcat のオーバーフローを検出しました"
+        }
+      ]
+    },
+    {
+      "id": "CE-05",
+      "issue": "#570 健全な 30 秒保存で両端 0.5 秒に行がない",
+      "requested_duration_secs": 30,
+      "actual_video_duration_ms": null,
+      "actual_log_duration_ms": 28999,
+      "log_coverage_ms": 30000,
+      "logs_only": true,
+      "window_shortfall": false,
+      "video_shortfall": false,
+      "log_shortfall": false,
+      "warning_codes": [],
+      "warnings": [],
+      "warning_details": []
+    },
+    {
+      "id": "CE-06",
+      "issue": "#570 録画開始 10 秒後の 30 秒保存",
+      "requested_duration_secs": 30,
+      "actual_video_duration_ms": null,
+      "actual_log_duration_ms": 9000,
+      "log_coverage_ms": 10000,
+      "logs_only": true,
+      "window_shortfall": true,
+      "video_shortfall": false,
+      "log_shortfall": true,
+      "warning_codes": [
+        "log_shortfall",
+        "window_shortfall"
+      ],
+      "warnings": [
+        "ログが要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります"
+      ],
+      "warning_details": [
+        {
+          "code": "log_shortfall",
+          "message": "ログが要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        }
+      ]
+    },
+    {
+      "id": "CE-07",
+      "issue": "#564 30 秒静止。引き継ぎフレーム 1 枚を窓全体で保持",
+      "requested_duration_secs": 30,
+      "actual_video_duration_ms": 30000,
+      "actual_log_duration_ms": 0,
+      "log_coverage_ms": 30000,
+      "video_coverage_ms": 30000,
+      "video_frame_count": 1,
+      "carried_in_frame": true,
+      "static_hold_ms": 30000,
+      "info_codes": [
+        "video_static_hold"
+      ],
+      "logs_only": false,
+      "window_shortfall": false,
+      "video_shortfall": false,
+      "log_shortfall": false,
+      "warning_codes": [
+        "audio_absent"
+      ],
+      "warnings": [
+        "音声がありません"
+      ],
+      "warning_details": [
+        {
+          "code": "audio_absent",
+          "message": "音声がありません"
+        }
+      ]
+    },
+    {
+      "id": "CE-08",
+      "issue": "#564 最終フレーム後に映像が切断。引き継がない",
+      "requested_duration_secs": 30,
+      "actual_video_duration_ms": 0,
+      "actual_log_duration_ms": 0,
+      "log_coverage_ms": 30000,
+      "video_coverage_ms": 0,
+      "video_frame_count": 0,
+      "carried_in_frame": false,
+      "static_hold_ms": 0,
+      "info_codes": [],
+      "logs_only": false,
+      "window_shortfall": true,
+      "video_shortfall": true,
+      "log_shortfall": false,
+      "warning_codes": [
+        "video_shortfall",
+        "window_shortfall",
+        "audio_absent",
+        "stream_discontinuity"
+      ],
+      "warnings": [
+        "映像が要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります",
+        "音声がありません",
+        "記録に不連続箇所があります"
+      ],
+      "warning_details": [
+        {
+          "code": "video_shortfall",
+          "message": "映像が要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        },
+        {
+          "code": "audio_absent",
+          "message": "音声がありません"
+        },
+        {
+          "code": "stream_discontinuity",
+          "message": "記録に不連続箇所があります"
+        }
+      ]
     }
   ],
   "rpc_parameter_rows": [

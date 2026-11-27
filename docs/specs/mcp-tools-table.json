@@ -1321,6 +1321,7 @@
       "additionalProperties": false
     },
     "SaveOutcomeResponse": {"allOf":[{"$ref":"#/$defs/SaveFields"}],"unevaluatedProperties":false},
+    "WarningDetail": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "required": ["code", "message"], "additionalProperties": false},
     "SaveFields": {
       "type": "object",
       "properties": {
@@ -1336,7 +1337,13 @@
         "warning_codes": {"type": "array", "items": {"type": "string"}},
         "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type": "null"}]},
         "window_shortfall": {"type": ["boolean", "null"]},
-        "warnings": {"type": ["array", "null"], "items": {"type": "string"}},
+        "warnings": {"type": ["array", "null"], "items": {"type": "string"}, "description": "warning_details の message を同じ順序で並べた表示文。warning_codes と同じ長さ。"},
+        "warning_details": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}, "description": "警告の正本。code と message の組。warning_codes・warnings はこれを同じ順序で射影する。"},
+        "log_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "保存窓のうち logcat ストリームが動作していたミリ秒。log_shortfall はこの値で判定する。行の最小〜最大時刻の差は actual_log_duration_ms。"},
+        "video_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "保存窓のうち映像ストリームが生存していたミリ秒（静止画面を含む）。"},
+        "carried_in_frame": {"type": ["boolean", "null"], "description": "窓の先頭で表示中だった窓前のフレームを、被覆の裏付けにより先頭フレームとして引き継いだか。"},
+        "static_hold_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓の両端で同じフレームを保持して表示したミリ秒（情報。警告ではない）。"},
+        "info_codes": {"type": ["array", "null"], "items": {"type": "string"}, "description": "警告ではない情報コード。静止画面の保持は video_static_hold。"},
         "requested_duration_secs": {"type": ["integer", "null"], "minimum": 0},
         "job": {"$ref": "#/$defs/SaveJobView"},
         "bundle_id": {"type": ["string", "null"]},
@@ -1363,7 +1370,7 @@
         "warning_codes", "video_shortfall", "log_shortfall", "logcat_completeness",
         "window_shortfall",
         "warnings"
-      ]
+      , "warning_details"]
     },
     "SaveScreenshotResponse": {
       "type": "object",

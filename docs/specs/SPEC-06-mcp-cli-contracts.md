@@ -40,7 +40,7 @@ satisfies:
 4. `whole_word` は keyword／tag の両端を単語境界（英数字・アンダースコア以外、または文字列端）に制限する。`level` は大文字小文字を区別せず V/D/I/W/E/F、VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT。未定義値は拒否。旧 2 版の MCP だけは A を F として受理する。
 5. 各行の `timestamp_utc` はログヘッダ由来のミリ秒 UTC、`offset_ms` は同じ boot の映像先頭（なければ epoch 開始）からの差、`frame_index` はその時刻の表示フレーム。同期できない行の相対時刻・フレームは null。映像がない場合もフレームを捏造してはならない。公開引数の秒・ms・ns はそれぞれのフィールド名に従い、フレーム番号は 0 始まりである。
 6. `arb_timeline_overview` のエラーは `package`／`tag`／`exclude_tags` を適用した E/F 主ログを優先度・タグ・本文で集約する。最新出現を代表とし、グループを最新側から上限まで選ぶ。`repeat_count`、`first_offset_ms`、`last_offset_ms` を返す。`total_error_logs` は生行、`unique_error_logs` はグループの総数、`error_logs_truncated` は省略グループの有無。最新 MCP の保存後調査もこの集約を使い、生行が必要なら `arb_query_logs` で読む。
-7. 新規記録は一覧の `created_at_utc` もミリ秒 UTC。退避・復元の応答行も一覧と同じ集計を持つ。最新 MCP では保存結果・概要に同型の `logcat_completeness` を返す。概要 RPC は状態名に加え `logcat_completeness_detail` を返す。状態・停止ツールの `audio_reason` は先頭の要約を最大 256 文字にする。`drain_timeout_ms` の有効範囲は 0〜5000 ms。
+7. 新規記録は一覧の `created_at_utc` もミリ秒 UTC。退避・復元の応答行も一覧と同じ集計を持つ。最新 MCP では保存結果・概要に同型の `logcat_completeness` を返す。保存結果の警告は `warning_details`（`code` と `message`）が正本で、`warning_codes`・`warnings` は同じ順序・同じ長さの射影。旧デーモンの応答で `warning_details` がなければ MCP が同じ位置の組から補う。`log_coverage_ms`・`video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` は [SPEC-02](SPEC-02-time-selection-bundle.md) の被覆と引き継ぎをそのまま返す。概要 RPC は状態名に加え `logcat_completeness_detail` を返す。状態・停止ツールの `audio_reason` は先頭の要約を最大 256 文字にする。`drain_timeout_ms` の有効範囲は 0〜5000 ms。
 
 [検索・出力](../../core/crates/arbd/src/inspect_export.rs)・[CLI の入口](../../core/crates/arb-cli/src/main.rs)・[保存尺の定義](SPEC-02-time-selection-bundle.md)
 

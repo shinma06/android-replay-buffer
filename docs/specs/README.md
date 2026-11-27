@@ -9,6 +9,7 @@
 | 領域 | 正本（書き手・判定元） | 混同を防ぐ境界 | 守る条件 | 現行の検査・証明の境界 |
 | --- | --- | --- | --- | --- |
 | 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
+| 被覆台帳 | `arbd` の `CapturePipeline` が `arb-core::coverage` の台帳を所有し、保存ジョブのパラメータに区間を永続化 | フレーム・ログ行の出現幅／ストリームが動いていた被覆、静止／切断 | 映像はフレームで開始し、ビーコンが途絶前に続く間だけ静止として延長。ギャップ・切断・停止・boot 変化・映像セッション再生成・世代交代で閉じ、古い世代は延長しない。引き継ぎは 1 本の被覆区間が窓前の最終フレームから `W0` までを含むときだけ。撮影時刻は書き換えず `video.carried_in` に記録 | K14、G3、保存の端から端までの試験（`capture_coverage_tests.rs`）、共有表 `capture_evidence_rows` |
 | 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない | K1〜K3、G4、Miri M2 |
 | 保存物・GC | `arb-storage` の確定 manifest と外部カタログ、公開は `arbd` | WORM 本体／編集・リース・退避、媒体切断／恒久欠損 | 実体削除には管理内・現行形式・退避済み・猶予条件・リース 0・対象ジョブ 0・同一性が必要。登録解除は実体に触れない | K5、S2、G1・G2、RS-4、KON-7、TCB-03・TCB-04 |
 | IDE アイコン | 操作の意味ごとの `ArbIcons` | Swing の Icon／Jewel の IconKey／XML の静的フィールド | 同じ操作は全画面で同じアイコンを使い、デザイン変更は正本 1 箇所に集約する | アイコン構造テスト・XML の解決試験 |
@@ -26,6 +27,7 @@
 | --- | --- | --- | --- |
 | 録画開始・停止、リング上限、親終了 | 01・02・05・07 | device-agent → `live_adb.rs`・`capture.rs` → ring／catalog → CLI・MCP・IDE 状態。再接続・保存中に端末や pin を失わないか | K4・K5、S1〜S3・S5、G2・G5 |
 | アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
+| 被覆台帳・引き継ぎ・保存の警告 | 02・03・06・07 | ビーコン・フレーム・ログ・ギャップ → `capture.rs` の台帳 → ジョブパラメータ → 選別・MP4 の末尾長 → `display_frames` → RPC・CLI／MCP・IDE。静止・切断・録画開始直後・両端に行がない保存で、`carried_in`・各被覆時間・警告の 1 対 1 を比較 | K14、G3、`capture_evidence_rows`、MCP 実 stdio、`PddContractTablesTest` |
 | カタログ・リース・ゴミ箱・再試行 | 01・02・05・06 | catalog／bundle_io → `arbd` → CLI／MCP・IDE。切断・パス置換・閲覧中に実体を保護し、全結果区分を表示するか | K5、S2、G1、RS-4、KON-7、操作結果表 |
 | 操作アイコンの追加・変更 | 05 | `ArbIcons` → Tool Window・Studio・設定・Running Devices・メニュー・通知。同じ操作の全入口と XML 宣言を照合 | アイコン構造テスト |
 | トリム・シーク・ループ | 02・03・05・06 | Kotlin の三状態・時計 → edit／export → `trim_range.rs` → 映像・音声・ログ・入力。静止中に両端を置き、再読込・ループ・Studio 同梱と MCP 単独出力を比較 | K10・K13、S6・S7、G3、PlaybackControllerTest、四ストリーム統合試験 |
@@ -59,7 +61,7 @@
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 20 ツールと実書き出し、IDE と仕様書の表示名 |
-| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K13、S1〜S7、G1〜G8、M1〜M2、構造ガードと実機・外部実装への依存 |
+| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K14、S1〜S7、G1〜G8、M1〜M2、構造ガードと実機・外部実装への依存 |
 
 ## 症状から判定する
 
@@ -70,7 +72,11 @@
 | 親付きデーモンが IDE の強制終了後も常駐し続ける | バグ | 対応版の子は stdin EOF で終了する。CLI 単体起動はこの条件の外。 | [SPEC-01](SPEC-01-architecture.md) |
 | CLI を終了しても単体デーモンが残る | 仕様 | 親付きフラグを付けていない単体デーモンは常駐できる。 | [SPEC-01](SPEC-01-architecture.md) |
 | 停止→再開で停止前の証跡が全部消えた | 条件付きバグ | 同じ serial・boot_id で窓と保持予算内なら失われてはならない。別端末・別 boot・期限外は対象外。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
-| 60 秒を要求、映像尺がちょうど 59 秒で `video_shortfall=false` | 仕様 | 58,999 ms なら true。ログ尺は独立して評価し、`window_shortfall` は両者の論理和。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
+| 60 秒を要求、映像尺がちょうど 59 秒で `video_shortfall=false` | 仕様 | 58,999 ms なら true。ログは被覆時間 `log_coverage_ms` で独立に評価し、`window_shortfall` は両者の論理和。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
+| 30 秒静止した画面の 30 秒保存が映像 0 フレーム | バグ | 窓前の最終フレームから `W0` まで映像被覆が続けば、引き継ぎフレーム 1 枚を窓全体で保持する。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
+| 切断後の時間も同じ静止画として保存された | バグ | 被覆が切れたら引き継がず、被覆の終端で打ち切り `video_shortfall` を立てる。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
+| 健全な 30 秒保存で実ログ尺 28,999 ms、`log_shortfall` は false | 仕様 | 行の幅ではなく logcat の被覆で判定する。録画開始直後や切断があれば true。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
+| `warning_codes` と `warnings` の件数が違う | バグ | 両方とも `warning_details` を同じ順序で射影する。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
 | ログ単体にログが 1 件あるが実ログ尺は 0 | 仕様 | 同一 boot の確定ログの最大−最小時刻で測る。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
 | 時刻不明ログが映像と同時刻の確定行として並ぶ | バグ | 同期できない証跡は隔離する。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
 | ゴミ箱に入れた直後の通常 GC で消えない | 仕様 | 既定の猶予は最終退避から 24 時間。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |

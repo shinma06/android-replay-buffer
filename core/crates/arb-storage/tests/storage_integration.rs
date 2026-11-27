@@ -178,6 +178,7 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
                 display_width: None,
                 display_height: None,
+                carried_in: None,
             }),
             audio: None,
             logcat: Some(LogcatStreamMeta {

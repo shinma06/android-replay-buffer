@@ -503,6 +503,19 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         assert_eq!(saved["requested_duration_secs"], 5);
         assert_eq!(saved["note"], "調査記録");
         assert!(saved["warning_codes"].is_array());
+        // #570: one message per code, projected from the canonical details in the same order.
+        let codes = saved["warning_codes"].as_array().unwrap();
+        let details = saved["warning_details"].as_array().unwrap();
+        assert_eq!(saved["warnings"].as_array().unwrap().len(), codes.len());
+        assert_eq!(details.len(), codes.len());
+        for ((d, code), message) in details
+            .iter()
+            .zip(codes)
+            .zip(saved["warnings"].as_array().unwrap())
+        {
+            assert_eq!(&d["code"], code);
+            assert_eq!(&d["message"], message);
+        }
         let entries = c.tool("arb_list_bundles", json!({}));
         let entry = entries["bundles"]
             .as_array()

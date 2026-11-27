@@ -157,7 +157,7 @@ class PddContractTablesTest {
     fun saveEvidenceDecodesFromSharedRows() {
         val doc = table("ui-feedback-contract-table.json")
         val base = doc.rows("save_rows", 7).first()["response"].asJsonObject
-        for (row in doc.rows("capture_evidence_rows", 3)) {
+        for (row in doc.rows("capture_evidence_rows", 8)) {
             val wire = base.deepCopy()
             for ((name, value) in row.entrySet()) wire.add(name, value)
             val res = ProtocolJson.gson.fromJson(wire, SaveOutcomeResponse::class.java)
@@ -175,6 +175,27 @@ class PddContractTablesTest {
             assertEquals(row["actual_log_duration_ms"].asLong, res.actualLogDurationMs)
             assertEquals(row["actual_video_duration_ms"].takeUnless { it.isJsonNull }?.asLong, res.actualVideoDurationMs)
             assertEquals(row["requested_duration_secs"].asLong, res.requestedDurationSecs)
+            // #570: warnings and warning_codes are the same-length, same-order projection of warning_details.
+            val id = row["id"].asString
+            val details = res.warningDetails.orEmpty()
+            assertEquals(res.warningCodes.orEmpty().size, res.warnings.orEmpty().size, "$id: warnings 1:1")
+            assertEquals(res.warningCodes.orEmpty(), details.map { it.code }, "$id: details codes")
+            assertEquals(res.warnings.orEmpty(), details.map { it.message }, "$id: details messages")
+            assertTrue(details.none { it.message.isBlank() }, "$id: every code has a message")
+            assertEquals(
+                res.windowShortfall,
+                "window_shortfall" in res.warningCodes.orEmpty(),
+                "$id: window_shortfall has its own message",
+            )
+            assertEquals(row["log_coverage_ms"].asLong, res.logCoverageMs, "$id: log coverage")
+            row["carried_in_frame"]?.let { assertEquals(it.asBoolean, res.carriedInFrame, "$id: carried in") }
+            row["static_hold_ms"]?.let { assertEquals(it.asLong, res.staticHoldMs, "$id: static hold") }
+            row["video_coverage_ms"]?.let { assertEquals(it.asLong, res.videoCoverageMs, "$id: video coverage") }
+            row["info_codes"]?.let { codes ->
+                assertEquals(codes.asJsonArray.map { it.asString }, res.infoCodes, "$id: info codes")
+                // Static holds are information, never a warning.
+                assertTrue("video_static_hold" !in res.warningCodes.orEmpty(), "$id: static hold is not a warning")
+            }
         }
     }
 

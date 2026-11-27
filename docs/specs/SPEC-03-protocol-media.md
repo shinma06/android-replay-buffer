@@ -39,7 +39,7 @@ satisfies:
 
 `system.hello` は `protocol_version`、`build_id`、`parent_bound`、`gc_dry_run`、`realtime_trim`、`standalone_share_trim` 等を返す。CLI／MCP の Rust クライアントは実時間引数を送る前に同じ接続で能力を確認する。旧デーモンが余分なバンドルを作りうるフレーム範囲指定等は単独共有能力も確認し、未対応なら `-32601` と更新案内を返す。終了引継ぎの拒否は成功応答内の `ok: false`。`system.status` の `recovery` は起動時の物理削除完了件数・失敗件数・失敗 ID を伝える。保存・カタログは [SPEC-02](SPEC-02-time-selection-bundle.md)、検索・MCP 側の既定値は [SPEC-06](SPEC-06-mcp-cli-contracts.md)。[ディスパッチ](../../core/crates/arbd/src/lib.rs)・[要求・応答の型](../../core/crates/arbd/src/protocol.rs)
 
-ログの生行（`bundle.query_logs`／`timeline.query_logs`）と概要（`timeline.overview`）は同じ `LogCoordinates` で、同じ boot の主ログの ns 時刻から表示中の VFR フレームを引く。生行の `frame_index` と概要の代表行の `frame_index_hint` は同じ行なら一致する。`timestamp_utc` はログヘッダのミリ秒 UTC。検索・集約の件数とフィルタ、版別の MCP 投影は [SPEC-06](SPEC-06-mcp-cli-contracts.md)、保存尺・ログ完全性・ドレイン・GC は [SPEC-02](SPEC-02-time-selection-bundle.md)、タップ座標の取得・読取時校正は [SPEC-07](SPEC-07-device-capture-audio-input.md) を参照する。
+ログの生行（`bundle.query_logs`／`timeline.query_logs`）と概要（`timeline.overview`）は同じ `LogCoordinates` で、同じ boot の主ログの ns 時刻から表示中の VFR フレームを引く。生行の `frame_index` と概要の代表行の `frame_index_hint` は同じ行なら一致する。先頭フレームの表示開始より前の行は `frame_index` を null とし、`offset_ms` は負の値になる（フレームを捏造しない）。`timestamp_utc` はログヘッダのミリ秒 UTC。検索・集約の件数とフィルタ、版別の MCP 投影は [SPEC-06](SPEC-06-mcp-cli-contracts.md)、保存尺・ログ完全性・ドレイン・GC は [SPEC-02](SPEC-02-time-selection-bundle.md)、タップ座標の取得・読取時校正は [SPEC-07](SPEC-07-device-capture-audio-input.md) を参照する。
 
 ### エラーと再送
 
@@ -63,6 +63,7 @@ satisfies:
 - フレーム指定は `[in_frame_index, out_frame_index]` の両端を含む。通常のトリムは非 IDR 始点の先頭 GOP だけ再エンコードし、以降はコピーする。単一 `avc1` と IDR 境界での SPS/PPS により異なるプロファイルを接続。`edts`／`elst` で前フレームを隠すことを禁止し、開始前フレームは 0 枚。faststart は `moov` をメディアデータより前に置く。焼き込みは画素を書き換えるため再エンコードを伴う。[トリム](../../core/crates/arb-media/src/trim.rs)・[VER-06](../verifications/VER-06-arb-media.md)
 - K12 の GOP キャッシュ予算は 128 MiB。全 GOP が収まらないときは IDR から順に復号し、前進窓から古い画素を捨てる。連続した次フレームへの前進はデコーダーを再利用する。冷えた遠方シークの計算時間は IDR からの距離に依存する。単一フレームが予算を超える場合までプロセスのメモリ上限を約束しない。[再生キャッシュとフィルムストリップ](../../core/crates/arb-media/src/playback.rs)
 - 外部フィルムストリップ `filmstrip.bin` の magic は `ARBFS002`。入力 MP4 の長さ、フレーム数、内容の SHA-256 等を照合する。同じ長さでも内容が異なる場合や旧形式は再生成する。ヒット時も元動画のハッシュ計算は必要。FHD30 の全体サムネイル 1 秒・正確なシーク 0.2〜0.5 秒は実機計測目標。[REQ-11](../requirements/REQ-11.md)
+- メディア時刻 0 は先頭フレームの表示開始。引き継ぎフレーム（[SPEC-02](SPEC-02-time-selection-bundle.md)）では撮影時刻ではなく窓先頭 `W0` で、manifest の `video.carried_in` が示す。ログ座標、概要の `screens`、viewport の `frame_boottimes`、実時間トリムの時刻写像は、`BundleReader::display_frames` と `arb_core::bundle::frame_display_start_ns` の単一の原点を使い、保存済みの行は書き換えない。保存時の MP4 は `mux_raw_h264_to_mp4_with_last_duration` で最終サンプルに被覆の終端までの実時間長を書く。
 - K10 の軸は先頭メディア時刻 0、各表示開始 `frame_pts_ns`、最終保持を含む排他的終端 `timeline_duration_ns`。時刻は直前の開始 PTS のフレームを指す。最終フレームは `last_frame_duration_ns` を含む。10 万枚超では全 PTS を転送せず中間を推定する。旧デーモンや末尾長不明の推定差は [既知制約 / TCB-18]。[実時間軸](../../core/crates/arb-media/src/timeline.rs)・[TCB 台帳](../proofs/tcb-axioms.md)
 
 ### 実時間トリムと四つのストリーム
@@ -95,7 +96,8 @@ K13 の 5 ハーネスは区間・時間保存・表示同値・不正入力・�
 | --- | --- | --- |
 | 存在しない ID と未定義メソッド | 前者は対象なし、後者は ER-07 | 両方で IDE が切断を表示する |
 | 静止画面の 5 秒保持 | 時計は進み同じ画を表示 | フレーム番号を等間隔に並べ時計とマーカーがずれる |
+| 引き継ぎフレームのあるバンドル | メディア時刻 0 は `W0`。ログ・概要・トリム・再生が同じ原点 | 撮影時刻を原点にしてログ位置や `offset_ms` が引き継ぎ分ずれる |
 | 非 IDR からフレーム指定出力 | 指定した先頭画像から再生 | 再生開始前のフレームがファイルに残る |
 | 範囲指定の共有動画 | 明示的な保持指定がなければ MP4 1 本 | 単独共有で編集済みバンドルを登録する |
 
-設計と検証は Trail #96・#97・#113・#114・#133／PR #538・#136／PR #540・#140／PR #543・#149／PR #552・#151／PR #554。K8〜K10・K12・K13、S4・S6・S7、G3・G7、M1・M2、TCB-05／09／18／20。[TCB 台帳](../proofs/tcb-axioms.md)
+設計と検証は Trail #96・#97・#113・#114・#133／PR #538・#136／PR #540・#140／PR #543・#149／PR #552・#151／PR #554。K8〜K10・K12〜K14、S4・S6・S7、G3・G7、M1・M2、TCB-05／09／18／20。[TCB 台帳](../proofs/tcb-axioms.md)
