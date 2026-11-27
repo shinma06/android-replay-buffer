@@ -788,7 +788,6 @@ fn capture_wait_times_out_offline_then_connects_after_discovery() {
         )
     });
     await_condition(|| tmp.path().join("discovered").exists());
-    thread::sleep(Duration::from_millis(60));
     fs::write(tmp.path().join("devices"), "A device\n").unwrap();
     let result = waiter.join().unwrap();
     assert_eq!(result["serial"], "A");

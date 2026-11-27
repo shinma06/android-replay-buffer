@@ -10,15 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use arb_adb::adb::AdbClient;
-use arb_core::analytics::validate_png_bytes;
+use arb_core::analytics::{MAX_SCREENSHOT_BYTES, validate_png_bytes};
 use arb_core::device::{DeviceSelectionOutcome, validate_adb_serial};
 use arb_os::fs::{fsync_dir, fsync_file};
 
 use crate::error::DaemonError;
 use crate::time_util::next_id;
 
-/// Maximum PNG payload accepted from `adb exec-out screencap -p` (`64 MiB`).
-const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 /// Wall-clock timeout for `adb exec-out screencap -p`.
 const SCREENCAP_TIMEOUT: Duration = Duration::from_secs(15);
 

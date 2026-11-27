@@ -936,10 +936,10 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
     drop(rpc);
     drop(server);
 }
-mod stdio_contract;
 #[cfg(test)]
+mod stdio_contract;
 #[path = "../src/mcp/version.rs"]
-#[allow(
+#[expect(
     dead_code,
     reason = "the external wire client only needs the protocol version names"
 )]

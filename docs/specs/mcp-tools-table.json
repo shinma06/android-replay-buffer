@@ -1348,8 +1348,8 @@
     "ScreenSpan": {
       "type": "object",
       "properties": {
-        "start_ns": {"type": "integer","description":"端末 boottime(ns)。相対値は start_offset_ms。"},
-        "end_ns": {"type": "integer","description":"端末 boottime(ns)。相対値は end_offset_ms。"},
+        "start_ns": {"type": "integer","description":"端末 boottime(ns)。バンドル相対は start_offset_ms。"},
+        "end_ns": {"type": "integer","description":"端末 boottime(ns)。バンドル相対は end_offset_ms。"},
         "start_frame_index": {"$ref":"#/$defs/UIntOrNull"},
         "end_frame_index": {"$ref":"#/$defs/UIntOrNull"},
         "package_name": {"type": "string"},

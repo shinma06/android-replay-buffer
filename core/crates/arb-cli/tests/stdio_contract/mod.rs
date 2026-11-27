@@ -29,7 +29,7 @@ mod validate;
 /// The recorded window contains one Error and one Fatal row, generated from the same anchored sample.
 struct ErrorLogSource {
     inner: MockDeviceSource,
-    pending_fatal: Option<CaptureEvent>,
+    pending: std::collections::VecDeque<CaptureEvent>,
 }
 
 impl DeviceEventSource for ErrorLogSource {
@@ -38,19 +38,19 @@ impl DeviceEventSource for ErrorLogSource {
     }
 
     fn next_event(&mut self) -> Result<Option<CaptureEvent>, CaptureSourceError> {
-        if let Some(fatal) = self.pending_fatal.take() {
-            return Ok(Some(fatal));
+        if let Some(row) = self.pending.pop_front() {
+            return Ok(Some(row));
         }
-        let mut event = self.inner.next_event()?;
-        if let Some(CaptureEvent::LogRecord { payload, .. }) = &mut event {
-            payload.priority = 6;
-            payload.payload[0] = 6;
-            let mut fatal = event.clone();
-            if let Some(CaptureEvent::LogRecord { payload, .. }) = &mut fatal {
-                payload.priority = 7;
-                payload.payload[0] = 7;
+        let event = self.inner.next_event()?;
+        if let Some(info @ CaptureEvent::LogRecord { .. }) = &event {
+            for priority in [6, 7] {
+                let mut row = info.clone();
+                if let CaptureEvent::LogRecord { payload, .. } = &mut row {
+                    payload.priority = priority;
+                    payload.payload[0] = priority;
+                }
+                self.pending.push_back(row);
             }
-            self.pending_fatal = fatal;
         }
         Ok(event)
     }
@@ -469,7 +469,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     seed.ingest_device_source_with_mode(
         &mut ErrorLogSource {
             inner: FaultScenario::NormalFhd30.build(),
-            pending_fatal: None,
+            pending: std::collections::VecDeque::new(),
         },
         CaptureMode::LogsOnly,
     )
@@ -641,6 +641,15 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             json!([link])
         );
         assert!(out.is_file());
+        let png = c.result("resources/read", json!({"uri":link["uri"]}));
+        assert_eq!(png["contents"][0]["mimeType"], "image/png");
+        assert_eq!(
+            png["contents"][0]["blob"],
+            arb_core::base64_encode(&fs::read(&out).unwrap())
+        );
+        fs::write(&out, b"replacement").unwrap();
+        let stale = c.request("resources/read", json!({"uri":link["uri"]}));
+        assert!(stale["error"].is_object(), "{stale}");
         let collision = c.result(
             "tools/call",
             json!({"name":"arb_screenshot","arguments":args}),

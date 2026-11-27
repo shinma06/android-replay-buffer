@@ -193,7 +193,19 @@ impl DaemonError {
                 "デーモンが操作を完了できませんでした。",
             ),
         };
-        let user_message = match self {
+        ClassifiedError {
+            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
+            rpc_code,
+            user_message: self.public_message(message),
+            details,
+            cause: diagnostic
+                .then(|| self.public_cause())
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    fn public_message(&self, message: &str) -> String {
+        match self {
             // Parameter validation explains the rejected field/type/range to the caller.
             Self::InvalidParams(reason)
                 if !reason.is_empty()
@@ -204,27 +216,10 @@ impl DaemonError {
                 format!("{message} {reason}")
             }
             _ => message.to_owned(),
-        };
-        ClassifiedError {
-            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
-            rpc_code,
-            user_message,
-            details,
-            cause: diagnostic
-                .then(|| self.public_cause())
-                .filter(|s| !s.is_empty()),
         }
     }
 
     fn public_cause(&self) -> String {
-        use std::error::Error;
-        // Unwrap typed diagnostic layers before dealing with already-formatted causes.
-        let mut source: &dyn Error = self;
-        while let Some(next) = source.source() {
-            source = next;
-        }
-        let text = source.to_string();
-        let mut cause = text.trim();
         const PREFIXES: &[&str] = &[
             "os error:",
             "storage error:",
@@ -236,12 +231,19 @@ impl DaemonError {
             "i/o error:",
             "selection error:",
             "capture source error:",
+            "capture transport I/O error:",
+            "wire I/O error:",
+            "wire protocol error:",
+            "scrcpy tunnel error:",
             "not found:",
             "conflict:",
             "internal error:",
             "state transition error:",
             "method not found:",
         ];
+        // Keep operation/path context from the inner error while stripping display wrappers.
+        let text = self.to_string();
+        let mut cause = text.trim();
         while let Some(rest) = PREFIXES.iter().find_map(|p| cause.strip_prefix(p)) {
             cause = rest.trim_start();
         }
