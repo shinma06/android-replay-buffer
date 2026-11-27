@@ -630,6 +630,173 @@ fn log_before_the_first_displayed_frame_has_no_frame() {
     assert_eq!(rows[0].offset_ms, Some(-5_000));
 }
 
+/// One real H.264 GOP (IDR + deltas) split into `(config, picture, is_keyframe)` per frame.
+fn encoded_gop(count: usize, luma: u8) -> Vec<(Vec<u8>, Vec<u8>, bool)> {
+    let decoded: Vec<DecodedFrame> = (0..count)
+        .map(|i| DecodedFrame {
+            frame_index: u64::try_from(i).unwrap(),
+            width: 64,
+            height: 64,
+            format: PixelFormat::Yuv420p,
+            data: vec![luma + u8::try_from(i * 10).unwrap(); 64 * 64 * 3 / 2],
+        })
+        .collect();
+    OpenH264Backend::new()
+        .encode_yuv420p_sequence(&decoded, 30, 40_000_000, EncodeParams::default())
+        .unwrap()
+        .into_iter()
+        .map(|pkt| {
+            let mut config = Vec::new();
+            let mut picture = Vec::new();
+            for nal in arb_media::mp4::split_annexb_nals(&pkt.annex_b) {
+                let out = if matches!(nal[0] & 31, 7 | 8) {
+                    &mut config
+                } else {
+                    &mut picture
+                };
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(nal);
+            }
+            (config, picture, pkt.is_keyframe)
+        })
+        .collect()
+}
+
+/// Ingests one encoded frame captured at `capture_ns` (device clock) and received at `ingest_ns`.
+fn push_frame(
+    cap: &mut CapturePipeline,
+    frame: &(Vec<u8>, Vec<u8>, bool),
+    capture_ns: i64,
+    ingest_ns: i64,
+) {
+    let (config, picture, is_keyframe) = frame;
+    let mut push = |kind, data: &Vec<u8>| {
+        cap.ingest_event(CaptureEvent::VideoFrame {
+            pc_cont_ns: ingest_ns,
+            boot_id: BOOT.into(),
+            packet: VideoPacket {
+                kind,
+                data: data.clone(),
+                pts_us: u64::try_from(capture_ns / 1000).unwrap(),
+            },
+        })
+        .unwrap();
+    };
+    if !config.is_empty() {
+        push(VideoPacketKind::Config, config);
+    }
+    let kind = if *is_keyframe {
+        VideoPacketKind::Keyframe
+    } else {
+        VideoPacketKind::DeltaFrame
+    };
+    push(kind, picture);
+}
+
+/// #564: the carried-in frame is the frame on screen at `W0`, i.e. the last one *captured*
+/// before `W0`. A frame captured just before `W0` but received after it (transport latency)
+/// replaces the earlier frame on screen, so the earlier frame must never be carried in.
+#[test]
+fn carry_in_never_shows_a_frame_replaced_before_the_window() {
+    let tmp = TempDir::new().unwrap();
+    let mut cap = pipeline(&tmp);
+    beacons(&mut cap, 0, 900_000_000);
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: SEC,
+        boot_id: BOOT.into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 64,
+            height: 64,
+        },
+    })
+    .unwrap();
+    let gop = encoded_gop(4, 40);
+    for (i, t) in [SEC, 1_040_000_000, 1_080_000_000].into_iter().enumerate() {
+        push_frame(&mut cap, &gop[i], t, t);
+    }
+    beacons(&mut cap, 1_300_000_000, 9_700_000_000);
+    // Captured at 9.90 s (before W0 = 10 s), received at 10.02 s; the screen is static after.
+    push_frame(&mut cap, &gop[3], 9_900_000_000, 10_020_000_000);
+    beacons(&mut cap, 10_300_000_000, 40 * SEC);
+
+    let (outcome, _) = save(&mut cap, &tmp, "latency", 30, SaveMode::Full, Ledger::Keep);
+    let e = &outcome.evidence;
+    assert_warnings_one_to_one(&outcome);
+    if e.carried_in_frame == Some(true) {
+        let reader =
+            arb_storage::bundle_io::open_bundle(outcome.bundle_path.as_ref().unwrap()).unwrap();
+        let track = arb_media::mp4::Mp4VideoTrack::open(reader.video_path().unwrap()).unwrap();
+        let decoded = OpenH264Backend::new()
+            .decode_frame(&track, 0, PixelFormat::Yuv420p)
+            .unwrap();
+        assert!(
+            decoded.data[0].abs_diff(70) <= 4,
+            "carried in luma {} but the frame on screen at W0 has luma 70",
+            decoded.data[0]
+        );
+    } else {
+        assert_eq!(e.carried_in_frame, Some(false));
+        assert_eq!(e.video_shortfall, Some(true));
+    }
+}
+
+/// #564: a frame displayed exactly at `W0` is the frame on screen there: its predecessor is not
+/// carried in as a zero-length sample, and every MP4 sample keeps its display start.
+#[test]
+fn frame_exactly_at_w0_is_not_preceded_by_a_carried_in_frame() {
+    let tmp = TempDir::new().unwrap();
+    let mut cap = pipeline(&tmp);
+    beacons(&mut cap, 0, 900_000_000);
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: SEC,
+        boot_id: BOOT.into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 64,
+            height: 64,
+        },
+    })
+    .unwrap();
+    let gop = encoded_gop(5, 40);
+    for (i, t) in [SEC, 1_040_000_000, 1_080_000_000].into_iter().enumerate() {
+        push_frame(&mut cap, &gop[i], t, t);
+    }
+    beacons(&mut cap, 1_300_000_000, 9_700_000_000);
+    push_frame(&mut cap, &gop[3], 10 * SEC, 10 * SEC);
+    push_frame(&mut cap, &gop[4], 10_040_000_000, 10_040_000_000);
+    beacons(&mut cap, 10_300_000_000, 40 * SEC);
+
+    let (outcome, _) = save(&mut cap, &tmp, "atw0", 30, SaveMode::Full, Ledger::Keep);
+    assert_warnings_one_to_one(&outcome);
+    let reader =
+        arb_storage::bundle_io::open_bundle(outcome.bundle_path.as_ref().unwrap()).unwrap();
+    let track = arb_media::mp4::Mp4VideoTrack::open(reader.video_path().unwrap()).unwrap();
+    let display = reader.display_frames().unwrap();
+    let w0 = 10 * SEC;
+    let first = arb_core::bundle::frame_display_start_ns(&display[0], None).unwrap();
+    assert_eq!(track.frame_count(), u64::try_from(display.len()).unwrap());
+    for (sample, frame) in track.frames().iter().zip(&display) {
+        let start = arb_core::bundle::frame_display_start_ns(frame, None).unwrap();
+        assert!(
+            (sample.pts_ns - track.frames()[0].pts_ns - (start - first)).abs() <= 20_000,
+            "MP4 sample {} at {} ns vs display start {} ns",
+            frame.frame_index,
+            sample.pts_ns,
+            start - first,
+        );
+    }
+    assert!(first >= w0 - 1, "no frame shown before W0: {first}");
+    let decoded = OpenH264Backend::new()
+        .decode_frame(&track, 0, PixelFormat::Yuv420p)
+        .unwrap();
+    assert!(
+        decoded.data[0].abs_diff(70) <= 4,
+        "sample 0 must be the frame displayed at W0 (luma 70), got {}",
+        decoded.data[0]
+    );
+}
+
 proptest::proptest! {
     /// #570: for every combination of warning conditions, `warnings` and `warning_codes` have
     /// the same length and order as `warning_details`, every message is non-empty, and

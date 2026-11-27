@@ -52,6 +52,7 @@ satisfies:
 2. 同じ boot、同じ映像セッション、同じ寸法。
 3. `f_prev` の受信から `W0` までが 1 本の映像被覆区間に含まれる。切断・ギャップ・未開始なら引き継がない。
 4. 直前の IDR から `f_prev` までが同じ boot・寸法で pin 済み（既存の遡りで満たす）。
+5. 同じ boot の後続フレーム（受信順は撮影順と一致しない）がすべて `W0` の 1 tick 以上後に撮影されている。`W0` 前に撮影され `W0` 後に届いたフレームや、ちょうど `W0` に撮影されたフレームがあれば `f_prev` は `W0` の画面ではないので引き継がない。
 
 保存は既存の preroll 経路で `[IDR..f_prev)` を復号準備に使い、`f_prev` を IDR として再符号化する。`timeline.sqlite` の `f_prev` の撮影時刻は書き換えない。manifest の `video.carried_in` に `frame_index: 0`、`captured_boottime_ns`、`display_start_boottime_ns: W0`、`evidence: "coverage"` を記録する。最後のフレームは `min(T, 映像被覆の終端)` まで表示を保持し、MP4 の最終 `stts` に実時間長を書く。`edts`／`elst` は 0 個で単一 `avc1` のまま。30 秒静止して 30 秒保存すると 1 枚で約 30,000 ms の映像になり、20 秒で接続が切れれば 20 秒で打ち切って `video_shortfall` を立てる。旧形式（schema 3/4）と `carried_in` のないバンドルの読取は変わらない。
 

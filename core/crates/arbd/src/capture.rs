@@ -2990,6 +2990,17 @@ fn carry_in_frame(
     if first_in.is_some_and(|first| idx + 1 != first) {
         return None;
     }
+    // `f_prev` is on screen at `W0` only if every later frame of this boot (ingest order is not
+    // capture order) is displayed at least one MP4 tick after `W0`.
+    let one_tick_ns = i64::from(1_000_000_000_u32 / MP4_TIMESCALE + 1);
+    let min_display_ns = w0_bt.saturating_add(one_tick_ns);
+    if !aligned[idx + 1..]
+        .iter()
+        .filter(|v| v.record.boot_id == window.boot_id())
+        .all(|v| aligned_boottime_ns(&v.record.alignment).is_some_and(|bt| bt >= min_display_ns))
+    {
+        return None;
+    }
     let gop_start = aligned[..=idx].iter().rposition(|v| v.record.is_keyframe)?;
     aligned[gop_start..=idx]
         .iter()
