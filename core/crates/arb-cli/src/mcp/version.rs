@@ -35,6 +35,10 @@ impl ProtocolVersion {
     pub(super) fn supports_resource_link_block(self) -> bool {
         self >= Self::V2025_06_18
     }
+    /// Structured-content clients get the screenshot's `file_uri` beside its `resource_link`.
+    pub(super) fn screenshot_file_uri(self) -> bool {
+        self.supports_structured_content()
+    }
     pub(super) fn supports_tasks(self) -> bool {
         self >= Self::V2025_11_25
     }

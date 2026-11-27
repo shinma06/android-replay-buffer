@@ -19,6 +19,7 @@ pub mod legacy;
 pub mod selection;
 pub mod state;
 pub mod time;
+pub mod video_commit;
 
 #[cfg(kani)]
 mod kani_proofs;

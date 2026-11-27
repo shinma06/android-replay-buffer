@@ -2043,6 +2043,12 @@ fn empty_timeline_has_readable_sidecars_but_no_unanchored_log() {
     draft.logs.clear();
     draft.taps.clear();
     draft.discontinuities.clear();
+    draft.frames.clear();
+    draft.video_mp4 = None;
+    if let Some(video) = draft.streams.video.as_mut() {
+        video.status = StreamStatus::Absent;
+        video.frame_count = 0;
+    }
     let manifest = V2BundleWriter::write(&dir, "job", &draft).unwrap();
     for name in ["events.jsonl", "logcat.log"] {
         assert!(
@@ -2748,4 +2754,66 @@ fn reided_bundle_inside_managed_root_verifies_recorded_manifest_id() {
     assert_eq!(report.failed[0].bundle_id, "ext-foreign");
     assert!(report.failed[0].error.contains("identity mismatch"));
     assert!(foreign_path.is_dir());
+}
+
+/// K15 / W3B: a draft that declares video without a usable `video.mp4`, or whose `frames`
+/// rows disagree with `frame_count`, is never committed.
+#[test]
+fn w3b_commit_guard_refuses_video_declaration_without_matching_file_and_rows() {
+    type Corrupt = fn(&mut V2BundleDraft);
+    let cases: [(&str, Corrupt); 5] = [
+        ("partial-without-file", |d| {
+            d.video_mp4 = None;
+            if let Some(v) = d.streams.video.as_mut() {
+                v.status = StreamStatus::Partial;
+            }
+        }),
+        ("present-with-empty-file", |d| {
+            d.video_mp4 = Some(MediaPayload::Bytes(Vec::new()));
+        }),
+        ("row-count-mismatch", |d| {
+            d.frames.truncate(1);
+        }),
+        ("absent-with-rows", |d| {
+            d.video_mp4 = None;
+            if let Some(v) = d.streams.video.as_mut() {
+                v.status = StreamStatus::Absent;
+                v.frame_count = 0;
+            }
+        }),
+        ("absent-with-file", |d| {
+            d.frames.clear();
+            if let Some(v) = d.streams.video.as_mut() {
+                v.status = StreamStatus::Absent;
+                v.frame_count = 0;
+            }
+        }),
+    ];
+    for (name, corrupt) in cases {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("bundle");
+        let mut draft = build_draft(name, b"mp4-bytes".to_vec());
+        corrupt(&mut draft);
+        let err = V2BundleWriter::write(&dir, "job", &draft)
+            .expect_err("an inconsistent video declaration must not be committed");
+        assert!(
+            matches!(&err, StorageError::IntegrityMismatch { path, .. } if path == "video.mp4"),
+            "{name}: {err:?}"
+        );
+        assert!(!dir.exists(), "{name}: nothing may be published");
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "{name}: staging must be cleaned up"
+        );
+    }
+    // A consistent Absent track commits.
+    let tmp = TempDir::new().unwrap();
+    let mut draft = build_draft("absent-ok", Vec::new());
+    draft.frames.clear();
+    draft.video_mp4 = None;
+    if let Some(v) = draft.streams.video.as_mut() {
+        v.status = StreamStatus::Absent;
+        v.frame_count = 0;
+    }
+    V2BundleWriter::write(tmp.path().join("bundle"), "job", &draft).unwrap();
 }

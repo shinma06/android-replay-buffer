@@ -44,7 +44,7 @@
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "録画を開始。capture_enabled=true と明示した serial（device_serial）を保存。",
+      "description": "録画を開始。capture_enabled=true と明示した serial（device_serial）を保存。稼働中なら CONFLICT。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -264,7 +264,7 @@
           "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
           "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
           "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
-          "max_error_logs": {"description": "最新のグループ順に上限まで取得。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
+          "max_error_logs": {"description": "上限 200。最新 N グループを選び時系列順で返却。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
           "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "type": "object"
@@ -292,7 +292,7 @@
           },
           "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
           "end_frame": {"minimum": 0, "type": "integer", "description": "最終フレーム（両端含む）。"},
-          "end_ns": {"type": "integer", "description": "範囲の終了（ns）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "end_ns": {"type": "integer", "description": "範囲の終了。端末 boottime（ns、epochs 基準）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
           "keyword": {"description": "ログ本文またはタグを照合するキーワード。", "type": "string"},
           "level": {
             "type": "string",
@@ -303,8 +303,9 @@
           "limit": {"maximum": 100000, "minimum": 1, "type": "integer", "default": 100, "description": "ページの最大行数。"},
           "package": {"description": "Android パッケージ名（完全一致）。", "type": "string"},
           "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
-          "start_ns": {"type": "integer", "description": "範囲の開始（ns）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "start_ns": {"type": "integer", "description": "範囲の開始。端末 boottime（ns、epochs 基準）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
           "tag": {"description": "ログタグの部分一致条件。", "type": "string"},
+          "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
           "cursor": {"type": "string", "description": "前ページの next_cursor。", "pattern": "^[0-9]+$"},
           "whole_word": {"type": "boolean", "description": "キーワード・タグを単語境界で照合。", "default": false},
           "fields": {"enum": ["compact", "full"], "default": "compact", "description": "compact は時刻・位置・レベル・タグ・本文。full は全項目。"},
@@ -415,7 +416,7 @@
           "note": {"type": "string", "description": "保存・調査のメモ。"},
           "dest_dir": {"type": "string", "description": "保存先の親（管理域外は GC 対象外）。"},
           "drain_timeout_ms": {"type":"integer","minimum":0,"maximum":5000,"default":500,"description":"保存境界の待ち時間（ms）。"},
-          "max_errors": {"type": "integer", "description": "最新のグループ順に上限まで取得。", "minimum": 1, "maximum": 200, "default": 20},
+          "max_errors": {"type": "integer", "description": "上限 200。最新 N グループを選び時系列順で返却。", "minimum": 1, "maximum": 200, "default": 20},
           "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
           "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
           "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
@@ -1374,6 +1375,7 @@
       "properties": {
         "realtime_trim": {"type": "boolean"},
         "log_min_level": {"type": "boolean"},
+        "log_exclude_tags": {"type": "boolean"},
         "standalone_share_trim": {"type": "boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"$ref":"#/$defs/UInt"},

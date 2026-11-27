@@ -56,10 +56,12 @@ impl Violation {
         if !max.is_null() {
             details["max"] = max.clone();
         }
+        // A trailing unit word is followed directly by the particle ("1..=16 件の範囲").
+        let joiner = if range.ends_with('件') { "" } else { " " };
         Self::new(
             format!("{field} の{noun} {got} は {range}の範囲外です。"),
             details,
-            format!("{field} は {range} の範囲で指定してください。"),
+            format!("{field} は {range}{joiner}の範囲で指定してください。"),
         )
     }
 }

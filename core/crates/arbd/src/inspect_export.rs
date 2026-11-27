@@ -786,6 +786,7 @@ struct LogCountKey {
     bucket: Option<RecordBucket>,
     range: TimeRange,
     filters: [Option<String>; 5],
+    exclude_tags: Vec<String>,
     whole_word: bool,
 }
 
@@ -803,10 +804,12 @@ fn query_logs_with_total(
         &params.min_level,
         &params.package,
     ];
-    let cacheable = filters.iter().any(|v| v.is_some())
+    let exclude_tags = params.exclude_tags.clone().unwrap_or_default();
+    let cacheable = (filters.iter().any(|v| v.is_some()) || !exclude_tags.is_empty())
         && filters
             .iter()
             .filter_map(|v| v.as_ref())
+            .chain(&exclude_tags)
             .map(String::len)
             .sum::<usize>()
             <= 4096;
@@ -816,6 +819,7 @@ fn query_logs_with_total(
             bucket,
             range: resolve_log_query_time_range(reader, params)?,
             filters: filters.map(Clone::clone),
+            exclude_tags,
             whole_word: params.whole_word,
         })
     } else {
@@ -933,6 +937,8 @@ struct CompiledLogFilter<'a> {
     tag_lower: Option<String>,
     keyword_lower: Option<String>,
     whole_word: bool,
+    /// Exact tags left out, case-insensitive (the same rule as `timeline.overview`).
+    exclude_tags: &'a [String],
 }
 
 impl CompiledLogFilter<'_> {
@@ -951,6 +957,13 @@ impl CompiledLogFilter<'_> {
     }
 
     fn matches(&self, log: &LogRecord) -> bool {
+        if log.tag.as_deref().is_some_and(|tag| {
+            self.exclude_tags
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(tag))
+        }) {
+            return false;
+        }
         if let Some((target_pkg, ref resolver)) = self.package
             && !resolver.matches_package(log, target_pkg)
         {
@@ -1102,7 +1115,9 @@ fn scan_logs(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let levels = query_levels(params)?;
+    let exclude_tags = params.exclude_tags.as_deref().unwrap_or_default();
     let has_text_filter = params.tag.is_some()
+        || !exclude_tags.is_empty()
         || levels.is_some()
         || params.keyword.is_some()
         || package_filter.is_some();
@@ -1141,6 +1156,7 @@ fn scan_logs(
         tag_lower: params.tag.as_deref().map(str::to_ascii_lowercase),
         whole_word: params.whole_word,
         keyword_lower: params.keyword.as_deref().map(str::to_ascii_lowercase),
+        exclude_tags,
     };
 
     let batch_size = limit
@@ -1640,6 +1656,8 @@ fn overview_highlights(
         levels: None,
         keyword_lower: None,
         whole_word: false,
+        // Applied by `error_level`, so noise candidates see the same rows.
+        exclude_tags: &[],
     };
     let coordinates = LogCoordinates::new(frames, &reader.manifest_summary().epochs);
     let (highlights, total, unique) = build_error_log_highlights(
@@ -2227,7 +2245,7 @@ mod tests {
                 pid:None,tid:None,uid:None,package_name:None,message:i.to_string(),
             }).collect::<Vec<_>>();
             let coordinates=super::LogCoordinates::new(&frames,&[]);
-            let filter=super::CompiledLogFilter{package:None,levels:None,tag_lower:None,keyword_lower:None,whole_word:false};
+            let filter=super::CompiledLogFilter{package:None,levels:None,tag_lower:None,keyword_lower:None,whole_word:false,exclude_tags:&[]};
             // Repeated system errors consume one group, even when the chosen limit is smaller than the burst.
             let mut burst = vec![logs[0].clone()];
             for seq in 1..=43 {
@@ -2285,6 +2303,7 @@ mod tests {
             tag_lower: None,
             keyword_lower: None,
             whole_word: false,
+            exclude_tags: &[],
         }
     }
 

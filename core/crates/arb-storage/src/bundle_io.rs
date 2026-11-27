@@ -577,10 +577,13 @@ impl V2BundleWriter {
         arb_os::fs::fsync_dir(staging.staging_path())?;
         let mut files = Vec::new();
 
+        let mut video_bytes = None;
         if let Some(video) = &draft.video_mp4 {
             let digest = stage_media_file(&staging, VIDEO_MP4_FILE, video)?;
+            video_bytes = Some(digest.bytes);
             files.push(digest);
         }
+        check_draft_video_commit(draft, video_bytes)?;
 
         if let Some(audio) = &draft.audio_m4a {
             let digest = stage_media_file(&staging, AUDIO_M4A_FILE, audio)?;
@@ -709,6 +712,33 @@ impl V2BundleWriter {
         staging.commit()?;
         Ok(manifest)
     }
+}
+
+/// Refuses to commit a bundle whose video declaration disagrees with `video.mp4` or the
+/// `frames` rows (K15): a declared track needs a non-empty file and exactly
+/// `streams.video.frame_count` rows; an `Absent` track has neither.
+fn check_draft_video_commit(
+    draft: &V2BundleDraft,
+    video_bytes: Option<u64>,
+) -> Result<(), StorageError> {
+    let video = draft.streams.video.as_ref();
+    let rows = u64::try_from(draft.frames.len()).unwrap_or(u64::MAX);
+    arb_core::video_commit::check_video_commit(
+        video.map(|v| v.status),
+        video.map_or(0, |v| v.frame_count),
+        rows,
+        video_bytes,
+    )
+    .map_err(|violation| StorageError::IntegrityMismatch {
+        path: VIDEO_MP4_FILE.to_owned(),
+        reason: format!(
+            "refusing to commit bundle {}: video declaration is inconsistent ({violation:?}; \
+             status {:?}, frame_count {}, frames rows {rows}, video.mp4 bytes {video_bytes:?})",
+            draft.bundle_id,
+            video.map(|v| v.status),
+            video.map_or(0, |v| v.frame_count),
+        ),
+    })
 }
 
 const STAGING_OWNER: &str = ".arb-staging-owner";
