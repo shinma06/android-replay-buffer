@@ -113,7 +113,7 @@ class ArbUiComponentsTest {
             assertEquals(pixel.toFloat().coerceIn(14f, 1014f), geo.at(time))
             last = time
         }
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         studio.renderState(state, null)
         studio.seekTime(500_000_000)
         studio.applyFramePublished(ShmFrameMeta(1L, 0, true, 40, 80, 160, ShmPixelFormat.RGBA8, 50_000_000), null)
@@ -162,7 +162,7 @@ class ArbUiComponentsTest {
             val decodes = mutableListOf<Long>()
             val writes = mutableListOf<StudioTrimRange>()
             val studio = ArbStudioController(onScrub = { error("unexpected scrub") }, onSeekExact = {},
-                onTrimExport = { _, _ -> }, onPngExport = { _, _ -> }, onTimeRangeChanged = { range, _ -> writes += range },
+                onTrimExport = { _, _ -> }, onPngExport = {}, onTimeRangeChanged = { range, _ -> writes += range },
                 onTrimPreviewFrame = { frame, _ -> decodes += frame })
             studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
             studio.seekTime(14_000_000_000)
@@ -197,7 +197,7 @@ class ArbUiComponentsTest {
             4, listOf(0L, 12_000_000_000L, 22_000_000_000L, 28_000_000_000L), lastDurationNs = 4_000_000_000L,
         )
         val writes = mutableListOf<StudioTrimRange>()
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {},
             onTimeRangeChanged = { range, _ -> writes += range })
         studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
         studio.dragTrim(TrimEdge.IN, 15_500_000_000, false)
@@ -257,7 +257,7 @@ class ArbUiComponentsTest {
     fun offCenterPressCommitsTheClampedPointerTimeEvenWithoutMovement() {
         val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
         val state = studioVideoState().copy(axis = axis, frameCount = 1, inTimeNs = 1_000_000_000, outTimeNs = axis.endNs)
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         studio.renderState(state, null)
         val geometry = StudioTimelineGeometry(state, 0f, 1000f)
         val x = geometry.inX + 3f
@@ -272,7 +272,7 @@ class ArbUiComponentsTest {
     @Test
     fun shortcutsAndNudgePreviewPreserveSingleFrameSubranges() {
         val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(1, lastDurationNs = 10_000_000_000)
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         studio.renderState(studioVideoState().copy(axis = axis, frameCount = 1, outTimeNs = axis.endNs), null)
         studio.seekTime(2_500_000_000)
         assertFalse(studio.handleStudioKey(Key.I, textFieldHasFocus = true))
@@ -297,7 +297,7 @@ class ArbUiComponentsTest {
     fun emptyAndShortSingleFrameAxesKeepTheirFullRange() {
         for (count in 0L..1L) {
             val axis = io.github.shinma06.arb.playback.TimelineCoordinateAxis(count, lastDurationNs = 750_000)
-            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
             studio.renderState(studioVideoState().copy(axis = axis, frameCount = count, outTimeNs = axis.endNs), null)
             for (edge in TrimEdge.entries) {
                 studio.dragTrim(edge, Long.MAX_VALUE, false)
@@ -316,7 +316,7 @@ class ArbUiComponentsTest {
             listOf(0, 10_000_000, 510_000_000, 520_000_000))
         val seeks = mutableListOf<Pair<Long, Boolean>>()
         val ranges = mutableListOf<LongRange>()
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> },
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {},
             onRangeChanged = { i, o, _ -> ranges += i..o }, onTimeSeek = { t, settled -> seeks += t to settled })
         studio.renderState(studioVideoState().copy(axis = axis, frameCount = 4, outTimeNs = axis.endNs), null)
         studio.seekTime(220_000_000)
@@ -340,7 +340,7 @@ class ArbUiComponentsTest {
     @Test
     fun studioHeaderSubtitleNeverFallsBackToTheWireFormatName() {
         fun subtitleFor(format: BundleFormat, device: io.github.shinma06.arb.model.DeviceInfo?): String {
-            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+            val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
             val summary = TimelineSummaryResponse(
                 bundleId = "b-1",
                 path = "/tmp/b-1",
@@ -393,7 +393,7 @@ class ArbUiComponentsTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
         )
         assertFalse(studio.approximatePreviewVisible)
 
@@ -420,7 +420,7 @@ class ArbUiComponentsTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
         )
         val summary = TimelineSummaryResponse(
             bundleId = "b-ui-1",
@@ -606,7 +606,7 @@ class ArbUiComponentsTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
             onRangeChanged = { i, o, p -> lastRange = Triple(i, o, p) },
             onSourceJump = { fakeResolver.resolveAndNavigate(it) },
         )

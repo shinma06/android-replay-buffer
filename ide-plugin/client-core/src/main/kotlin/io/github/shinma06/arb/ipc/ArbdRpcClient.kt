@@ -374,8 +374,10 @@ class ArbdRpcClient(
         return call("export.trim", gson.toJsonTree(params), ExportTrimResponse::class.java)
     }
 
-    fun exportPng(params: ExportPngParams): ExportPngResponse =
-        call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
+    fun exportPng(params: ExportPngParams): ExportPngResponse {
+        val method = if (params.outputPath == null) "export.frame_png" else "export.png"
+        return call(method, gson.toJsonTree(params), ExportPngResponse::class.java)
+    }
 
     fun exportShareMp4(params: ExportShareMp4Params): ExportShareMp4Response {
         requireRealtimeTrim("export.share_mp4", params.inTimeNs, params.outTimeNs)

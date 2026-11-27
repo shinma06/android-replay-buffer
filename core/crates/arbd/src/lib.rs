@@ -615,7 +615,7 @@ impl DaemonState {
             "edit.get_session" => self.handle_edit_get_session(params),
             "edit.update_session" => self.handle_edit_update_session(params),
             "export.trim" => self.handle_export_trim(params),
-            "export.png" => self.handle_export_png(params),
+            "export.png" | "export.frame_png" => self.handle_export_png(params),
             "export.share_mp4" => self.handle_export_share_mp4(params),
             "media.open_viewport" => self.handle_media_open_viewport(params),
             "media.filmstrip" => self.handle_media_filmstrip(params),
@@ -1112,14 +1112,54 @@ impl DaemonState {
         phase2_materialize(&plan, &self.catalog, &job.job.job_id)
     }
 
+    fn screenshot_output_path(
+        &self,
+        config: &ArbConfig,
+        explicit_path: Option<&Path>,
+        output_dir: Option<&Path>,
+        source_bundle: Option<&Path>,
+    ) -> Result<PathBuf, DaemonError> {
+        if let Some(path) = explicit_path {
+            if output_dir.is_some() {
+                return Err(DaemonError::InvalidParams(
+                    "pass either output_path or output_dir, not both".to_owned(),
+                ));
+            }
+            self.validate_output_location(path, "output_path", source_bundle)?;
+            self.reject_data_dir_state_file(path, "output_path")?;
+            return Ok(path.to_owned());
+        }
+
+        let name = format!("{}.png", next_id("screenshot"));
+        let path = if let Some(dir) = output_dir.or(config.screenshot_dir_override.as_deref()) {
+            let path = dir.join(name);
+            self.reject_data_dir_state_file(&path, "output_dir")?;
+            path
+        } else if let Some(dir) = &config.output_dir_override {
+            // The configured bundle output root may itself be under data_dir. Only an
+            // automatically named, no-replace PNG may use this fallback.
+            dir.join(name)
+        } else {
+            // The daemon's own --data-dir may be relative. RPC-supplied paths must be absolute.
+            let path = std::fs::canonicalize(&self.paths.data_dir)?
+                .join("screenshots")
+                .join(name);
+            self.reject_data_dir_state_file(&path, "output_dir")?;
+            path
+        };
+        self.validate_output_location(&path, "output_dir", source_bundle)?;
+        Ok(path)
+    }
+
     fn handle_save_screenshot(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveScreenshotParams = parse_optional_params(params)?;
-        if parsed.output_path.is_some() && parsed.output_dir.is_some() {
-            return Err(DaemonError::InvalidParams(
-                "pass either output_path or output_dir, not both".to_owned(),
-            ));
-        }
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+        let dest_path = self.screenshot_output_path(
+            &user_cfg,
+            parsed.output_path.as_deref(),
+            parsed.output_dir.as_deref(),
+            None,
+        )?;
         let active_serial = self.lock_capture()?.active_serial();
         let requested_serial = parsed
             .serial
@@ -1134,36 +1174,11 @@ impl DaemonState {
                 .map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
         }
 
-        let dest_path = if let Some(explicit) = parsed.output_path {
-            self.validate_output_location(&explicit, "output_path", None)?;
-            self.reject_data_dir_state_file(&explicit, "output_path")?;
-            explicit
-        } else {
-            let base_dir = if let Some(explicit_dir) = parsed.output_dir {
-                self.validate_output_location(&explicit_dir, "output_dir", None)?;
-                self.reject_data_dir_state_file(&explicit_dir.join("probe.png"), "output_dir")?;
-                explicit_dir
-            } else if let Some(screenshot_dir) = user_cfg.screenshot_dir_override {
-                self.validate_output_location(&screenshot_dir, "screenshot_dir_override", None)?;
-                self.reject_data_dir_state_file(
-                    &screenshot_dir.join("probe.png"),
-                    "screenshot_dir_override",
-                )?;
-                screenshot_dir
-            } else if let Some(override_dir) = user_cfg.output_dir_override {
-                self.validate_output_location(&override_dir, "output_dir_override", None)?;
-                override_dir
-            } else {
-                self.paths.data_dir.join("screenshots")
-            };
-            base_dir.join(format!("{}.png", next_id("screenshot")))
-        };
-
         let (serial, png_bytes) = self
             .screenshot_provider
             .capture_png(requested_serial.as_deref())?;
         let captured_at_unix_ms = current_unix_millis();
-        let overwrite = if parsed.overwrite {
+        let overwrite = if parsed.output_path.is_some() && parsed.overwrite {
             ScreenshotOverwrite::Replace
         } else {
             ScreenshotOverwrite::NoReplace
@@ -1696,8 +1711,16 @@ impl DaemonState {
         let parsed: ExportPngParams = parse_params(params)?;
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         // R3 S7: validate before anything is created; never write into a WORM bundle.
-        self.validate_output_location(&parsed.output_path, "output_path", Some(&path))?;
-        self.reject_data_dir_state_file(&parsed.output_path, "output_path")?;
+        let config = self.lock(&self.user_config, "user config")?.clone();
+        let output_path = self.screenshot_output_path(
+            &config,
+            parsed
+                .output_path
+                .as_deref()
+                .filter(|p| !p.as_os_str().is_empty()),
+            parsed.output_dir.as_deref(),
+            Some(&path),
+        )?;
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
         let backend = default_codec_backend();
         let ctx = ExportContext {
@@ -1706,7 +1729,8 @@ impl DaemonState {
             backend: backend.as_ref(),
             faults: &self.faults,
         };
-        let resp = media_engine::export_png(&ctx, &path, source_id, &parsed)?;
+        let resp =
+            media_engine::export_png(&ctx, &path, source_id, parsed.frame_index, &output_path)?;
         Ok(serde_json::to_value(resp)?)
     }
 

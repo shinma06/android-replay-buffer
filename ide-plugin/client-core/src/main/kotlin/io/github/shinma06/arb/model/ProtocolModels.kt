@@ -1145,7 +1145,8 @@ data class MediaDecodeAudioPcmResponse(
 data class ExportPngParams(
     val bundleIdOrPath: String,
     val frameIndex: Long,
-    val outputPath: String,
+    val outputPath: String? = null,
+    val outputDir: String? = null,
 )
 
 data class PngExportReport(

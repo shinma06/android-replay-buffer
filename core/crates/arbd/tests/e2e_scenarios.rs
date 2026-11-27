@@ -665,6 +665,76 @@ fn verify_shm_scrub_and_seek(client: &mut TestIpcClient, bundle_id: &str, cache_
     assert_eq!(closed["closed"], true, "close_viewport must return true");
 }
 
+fn verify_frame_png_destinations(
+    client: &mut TestIpcClient,
+    bundle_id: &str,
+    tmp: &TempDir,
+    png_path: &Path,
+) {
+    let frame = json!({"bundle_id_or_path": bundle_id, "frame_index": 43});
+    let expected = fs::read(png_path).expect("read explicit frame PNG");
+    let export = |client: &mut TestIpcClient, params: &Value| {
+        let result = client.call("export.frame_png", params);
+        let path = PathBuf::from(result["output_path"].as_str().expect("final PNG path"));
+        assert_eq!(
+            fs::read(&path).expect("read automatic frame PNG"),
+            expected,
+            "all destinations must export the same frame"
+        );
+        path
+    };
+    let default = export(client, &frame);
+    assert_eq!(
+        default.parent(),
+        Some(
+            tmp.path()
+                .join("data/screenshots")
+                .canonicalize()
+                .expect("default screenshot directory")
+                .as_path()
+        ),
+        "default screenshot folder"
+    );
+    let shots = tmp.path().join("custom-shots");
+    client.call("config.update", &json!({"screenshot_dir_override": shots}));
+    let mut empty = frame.clone();
+    empty["output_path"] = json!("");
+    let first = export(client, &empty);
+    let second = export(client, &frame);
+    assert_eq!(
+        first.parent(),
+        Some(shots.as_path()),
+        "configured screenshot folder"
+    );
+    assert_eq!(
+        second.parent(),
+        Some(shots.as_path()),
+        "configured screenshot folder"
+    );
+    assert_ne!(first, second, "repeated saves must have unique paths");
+    let mut ide = frame.clone();
+    let ide_dir = tmp.path().join("logcat");
+    ide["output_dir"] = json!(ide_dir);
+    assert_eq!(
+        export(client, &ide).parent(),
+        Some(ide_dir.as_path()),
+        "IDE folder takes precedence"
+    );
+    ide["output_dir"] = json!(shots.join("..").join("escape"));
+    assert_eq!(
+        client.call_err("export.frame_png", &ide).0,
+        -32602,
+        "reject directory traversal"
+    );
+    let mut explicit = frame;
+    explicit["output_path"] = json!(png_path);
+    assert_eq!(
+        client.call_err("export.png", &explicit).0,
+        -32002,
+        "preserve explicit destination on conflict"
+    );
+}
+
 fn verify_mid_gop_trim_and_png(client: &mut TestIpcClient, bundle_id: &str, tmp: &TempDir) {
     let trim_res = client.call(
         "export.trim",
@@ -741,6 +811,7 @@ fn verify_mid_gop_trim_and_png(client: &mut TestIpcClient, bundle_id: &str, tmp:
         png_res["report"]["frame_index"], 43,
         "PNG report must be frame 43"
     );
+    verify_frame_png_destinations(client, bundle_id, tmp, &png_path);
     let png_file = File::open(&png_path).expect("open exported PNG");
     let mut reader = png::Decoder::new(BufReader::new(png_file))
         .read_info()

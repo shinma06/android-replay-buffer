@@ -44,6 +44,7 @@ import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.state.ArbSettingsDraft
 import io.github.shinma06.arb.state.StorageSizeUnit
 import io.github.shinma06.arb.state.StorageSizeValue
+import io.github.shinma06.arb.ui.ArbIcons
 import io.github.shinma06.arb.ui.ArbJewelPalette
 import io.github.shinma06.arb.ui.ArbLabeledCheckbox
 import io.github.shinma06.arb.ui.ArbScrollableColumn
@@ -55,7 +56,6 @@ import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
-import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Path
@@ -999,7 +999,7 @@ internal fun ArbSettingsContent(
                 }
                 ArbSubtleAction(
                     label = "自動検出",
-                    iconKey = AllIconsKeys.Actions.Refresh,
+                    iconKey = ArbIcons.Retry.key,
                     compact = true,
                     tooltip = "自動検出に戻す",
                     onClick = { form.customArbdPathText.setTextAndPlaceCursorAtEnd("") },

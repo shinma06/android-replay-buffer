@@ -108,11 +108,11 @@ import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.Orientation
 import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Divider
+import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconActionButton
 import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
-import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
 import java.awt.Cursor
 import java.awt.Rectangle
@@ -231,7 +231,7 @@ fun ArbStudioContent(controller: ArbStudioController) {
                 )
                 ArbSubtleAction(
                     label = "再読込",
-                    iconKey = AllIconsKeys.Actions.Refresh,
+                    iconKey = ArbIcons.Retry.key,
                     compact = true,
                     tooltip = "${failure.stream.label}を再取得します",
                     onClick = { controller.retryAuxStream(failure.stream) },
@@ -252,7 +252,7 @@ fun ArbStudioContent(controller: ArbStudioController) {
                 ArbSubtleAction(
                     label = "再保存",
                     enabled = !controller.editRetryBusy,
-                    iconKey = AllIconsKeys.Actions.Refresh,
+                    iconKey = ArbIcons.Retry.key,
                     compact = true,
                     tooltip = "IN/OUT 範囲をもう一度保存します",
                     onClick = { controller.retryEditSave() },
@@ -425,15 +425,15 @@ private fun StudioHeaderBar(
         ) {
             ArbSubtleAction(
                 label = "PNG",
-                iconKey = AllIconsKeys.Actions.Dump,
+                iconKey = ArbIcons.Screenshot.key,
                 enabled = controller.hasVideo,
-                tooltip = "現在フレームを静止画 PNG として保存",
+                tooltip = "現在のフレームを PNG として即時保存します",
                 compact = true,
                 onClick = { controller.requestPngExport() },
             )
             ArbSubtleAction(
                 label = "フォルダ",
-                iconKey = AllIconsKeys.Nodes.Folder,
+                iconKey = ArbIcons.OpenFolder.key,
                 enabled = state != null,
                 tooltip = "バンドルフォルダをファイルマネージャで表示",
                 compact = true,
@@ -453,11 +453,14 @@ private fun StudioHeaderBar(
                 onClick = { controller.triggerExport() },
                 enabled = controller.isExportButtonEnabled,
             ) {
-                Text(
-                    text = controller.exportButtonLabel,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(ArbIcons.Export.key, null, Modifier.size(14.dp))
+                    Text(
+                        text = controller.exportButtonLabel,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
             }
         }
     }
@@ -484,20 +487,20 @@ private fun ExportCompletionStrip(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        ArbSubtleAction(label = "フォルダを開く", iconKey = AllIconsKeys.Nodes.Folder, compact = true, onClick = onReveal)
-        ArbSubtleAction(label = "パスをコピー", iconKey = AllIconsKeys.Actions.Copy, compact = true, onClick = onCopy)
+        ArbSubtleAction(label = "フォルダを開く", iconKey = ArbIcons.OpenFolder.key, compact = true, onClick = onReveal)
+        ArbSubtleAction(label = "パスをコピー", iconKey = ArbIcons.CopyPath.key, compact = true, onClick = onCopy)
         if (info.isTrimBundle && !info.bundleId.isNullOrBlank()) {
-            ArbSubtleAction(label = "結果を開く", iconKey = AllIconsKeys.Actions.Execute, compact = true, onClick = onOpenTab)
+            ArbSubtleAction(label = "結果を開く", iconKey = ArbIcons.OpenViewer.key, compact = true, onClick = onOpenTab)
         }
         ArbSubtleAction(
             label = "タブを閉じる",
-            iconKey = AllIconsKeys.Actions.Cancel,
+            iconKey = ArbIcons.Close.key,
             compact = true,
             tooltip = "このスタジオタブを閉じます",
             onClick = onCloseTab,
         )
         IconActionButton(
-            key = AllIconsKeys.Actions.Close,
+            key = ArbIcons.Close.key,
             contentDescription = "バナーを隠す",
             onClick = onDismiss,
             modifier = Modifier.size(20.dp),
@@ -719,7 +722,7 @@ private fun TransportBar(controller: ArbStudioController) {
         ) {
             ArbSubtleAction(
                 label = controller.playPauseLabel,
-                iconKey = if (controller.isPlaying) AllIconsKeys.Actions.Pause else AllIconsKeys.Actions.Execute,
+                iconKey = if (controller.isPlaying) ArbIcons.Pause.key else ArbIcons.Play.key,
                 enabled = controller.hasVideo,
                 tooltip = "再生 / 一時停止 (Space)",
                 compact = true,
@@ -727,7 +730,7 @@ private fun TransportBar(controller: ArbStudioController) {
             )
             ArbSubtleAction(
                 label = "-1f",
-                iconKey = AllIconsKeys.Actions.Back,
+                iconKey = ArbIcons.PreviousFrame.key,
                 enabled = controller.hasVideo,
                 tooltip = "1 フレーム戻る (←)",
                 compact = true,
@@ -735,7 +738,7 @@ private fun TransportBar(controller: ArbStudioController) {
             )
             ArbSubtleAction(
                 label = "+1f",
-                iconKey = AllIconsKeys.Actions.Forward,
+                iconKey = ArbIcons.NextFrame.key,
                 enabled = controller.hasVideo,
                 tooltip = "1 フレーム進む (→)",
                 compact = true,
@@ -757,7 +760,7 @@ private fun TransportBar(controller: ArbStudioController) {
             )
             ArbSubtleAction(
                 label = "ループ",
-                iconKey = AllIconsKeys.Actions.Refresh,
+                iconKey = ArbIcons.Loop.key,
                 active = controller.isLoopEnabled,
                 enabled = controller.hasVideo,
                 tooltip = controller.loopTooltip,
@@ -1338,7 +1341,7 @@ private fun BottomMultiTrackDock(
                 if (controller.isSelectAroundCrashVisible) {
                     ArbSubtleAction(
                         label = ArbFormatters.PRESET_CRASH_RANGE_LABEL,
-                        iconKey = AllIconsKeys.General.Error,
+                        iconKey = ArbIcons.Crash.key,
                         enabled = controller.hasVideo,
                         compact = true,
                         tint = ArbJewelPalette.recRed(),

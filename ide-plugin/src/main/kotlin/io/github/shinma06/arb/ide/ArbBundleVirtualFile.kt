@@ -1,6 +1,5 @@
 package io.github.shinma06.arb.ide
 
-import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.testFramework.LightVirtualFile
 
 /**
@@ -10,7 +9,7 @@ class ArbBundleVirtualFile(
     val bundleIdOrPath: String,
     val displayTitle: String,
     val isLegacyHint: Boolean = false,
-) : LightVirtualFile("$displayTitle.arb", PlainTextFileType.INSTANCE, "") {
+) : LightVirtualFile("$displayTitle.arbstudio", ArbBundleFileType, "") {
     init {
         isWritable = false
     }

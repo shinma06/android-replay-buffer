@@ -28,7 +28,7 @@ Android Replay Buffer（ARB）は Android Studio、CLI、MCP、トレイから�
 ### 変更時の構造契約
 
 - **RS-1〜3** は純粋コアの依存、ストレージ・ADB・メディア間の横依存、CLI／トレイのエンジン依存を検査する。OS 分岐は OS 層・コーデック・ネイティブトレイ境界に限定。unsafe の許容範囲をクレート別に固定する。
-- **RS-4〜5** は直接の `fs::rename` を OS 層に限定し、ライブラリ本番の `unwrap`／`expect` と RPC の呼び出し先を検査する。全 45 RPC に少なくとも一つのクライアント経路が必要で、GC と forget は GUI・CLI・MCP の各入口で必要。基準版の RS-5 の名前抽出は英小文字と `_` に限られ、報告値は 44。数字を含む `export.share_mp4` はディスパッチと CLI／MCP 呼び出しも照合する。[全 RPC 一覧](SPEC-03-protocol-media.md)
+- **RS-4〜5** は直接の `fs::rename` を OS 層に限定し、ライブラリ本番の `unwrap`／`expect` と RPC の呼び出し先を検査する。同義名を含む全 46 RPC に少なくとも一つのクライアント経路が必要で、GC と forget は GUI・CLI・MCP の各入口で必要。基準版の RS-5 の名前抽出は英小文字と `_` に限られ、報告値は 45。数字を含む `export.share_mp4` はディスパッチと CLI／MCP 呼び出しも照合する。[全 RPC 一覧](SPEC-03-protocol-media.md)
 - **KON-1〜3** は UI のファイル書込み・プロセス起動・DB 操作、アクションの更新や Compose 本文のブロッキング操作、本番の Swing ウィジェット／UI DSL を制限する。IDE の子プロセス所有はアプリケーションサービスとプロセスマネージャーに集約する。
 - **KON-4〜7** は OS 判定を `HostOs` に集約し、client-core を IDE/UI 非依存に保つ。旧設定移行の呼び出し元を限定し、音声ラベルと構造化操作結果の解釈を共有ポリシーに委ねる。[Rust 構造ガード](../../core/scripts/check-architecture.py)・[Kotlin 構造ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ArchitectureKonsistTest.kt)
 

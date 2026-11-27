@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,10 +41,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeCanvas
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +65,11 @@ import org.jetbrains.jewel.ui.component.Tooltip
 import org.jetbrains.jewel.ui.component.styling.ScrollbarVisibility
 import org.jetbrains.jewel.ui.icon.IconKey
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.Canvas
+import org.jetbrains.skia.ImageInfo
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /**
  * Native Android Studio Islands / IntUI JetBrains Jewel design tokens and borderless primitives.
@@ -458,22 +464,7 @@ fun ArbSpacerH(width: Dp) = Spacer(Modifier.width(width))
 @Composable
 fun ArbSpacerV(height: Dp) = Spacer(Modifier.height(height))
 
-/**
- * Jewel's own `CheckboxRow` optically renders its checkbox box a touch higher than the
- * label's glyph center — most visible with CJK/Japanese text, whose em-box sits lower than
- * Latin cap-height (see upstream JEWEL-1073, "CheckboxRow should align the first line to the
- * checkbox"). A plain `Row(verticalAlignment = CenterVertically)` around `Checkbox` + `Text`
- * does NOT fix this: `CenterVertically` centers each child's *measured layout box*, but
- * `Checkbox`'s box and `Text`'s line box carry different internal/optical padding, so a small
- * residual upward offset remains on the checkbox.
- *
- * This nudges the checkbox down by [CHECKBOX_OPTICAL_OFFSET] — the exact clean correction —
- * and trims/centers the label's own line box via [LineHeightStyle], so the checkbox and the
- * label's glyphs align dead-center. Fix this ONCE here; every checkbox + label pairing in
- * Settings, Studio and the Tool Window must use this instead of a raw `CheckboxRow`/`Checkbox`.
- */
-private val CHECKBOX_OPTICAL_OFFSET: Dp = 1.dp
-
+/** Align the indicator to the first line even when the label wraps in a narrow panel. */
 @Composable
 fun ArbLabeledCheckbox(
     checked: Boolean,
@@ -484,6 +475,7 @@ fun ArbLabeledCheckbox(
     muted: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    var firstLineCenter by remember(text) { mutableStateOf(0) }
     Row(
         modifier = modifier
             .toggleable(
@@ -509,8 +501,11 @@ fun ArbLabeledCheckbox(
             // `Row.toggleable` is the single keyboard & accessibility target.
             interactionSource = interactionSource,
             modifier = Modifier
-                .align(Alignment.CenterVertically)
-                .offset(y = CHECKBOX_OPTICAL_OFFSET)
+                .alignBy { indicator ->
+                    // Classic uses a 20 x 19dp slot for its 19dp glyph. New UI has a square slot.
+                    val slotInset = (indicator.measuredWidth - indicator.measuredHeight) / 2f
+                    (indicator.measuredHeight / 2f - slotInset).roundToInt()
+                }
                 .focusProperties { canFocus = false }
                 .clearAndSetSemantics {},
         )
@@ -529,7 +524,30 @@ fun ArbLabeledCheckbox(
                         trim = LineHeightStyle.Trim.Both,
                     ),
                 ),
-            modifier = Modifier.align(Alignment.CenterVertically),
+            onTextLayout = { firstLineCenter = it.firstLineInkCenter() },
+            modifier = Modifier.alignBy { firstLineCenter },
         )
+    }
+}
+
+/**
+ * Measure the glyphs after Compose has chosen the fallback fonts and wrapped the label.
+ * Rasterize only the first line into a small CPU alpha mask when text layout changes.
+ */
+private fun TextLayoutResult.firstLineInkCenter(): Int {
+    val width = ceil(getLineRight(0)).toInt()
+    val height = ceil(getLineBottom(0)).toInt()
+    if (width <= 0 || height <= 0) return height / 2
+    val info = ImageInfo.makeA8(width, height)
+    Bitmap().use { mask ->
+        if (!mask.allocPixels(info, width)) return height / 2
+        mask.erase(0)
+        Canvas(mask).use { canvas -> multiParagraph.paint(canvas.asComposeCanvas(), Color.Black) }
+        val alpha = mask.readPixels(info, width) ?: return height / 2
+        val top = alpha.indexOfFirst { (it.toInt() and 0xff) >= 96 }
+        if (top < 0) return height / 2
+        val bottom = alpha.indexOfLast { (it.toInt() and 0xff) >= 96 }
+        // Pixel centers are half a pixel inside each raster row.
+        return ((top / width + bottom / width + 1) / 2f).roundToInt()
     }
 }

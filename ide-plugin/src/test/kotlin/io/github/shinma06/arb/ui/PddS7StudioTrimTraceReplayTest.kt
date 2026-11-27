@@ -58,7 +58,7 @@ class PddS7StudioTrimTraceReplayTest {
         private val studio = ArbStudioController(
             onScrub = { error("unexpected frame scrub") },
             onSeekExact = { error("unexpected frame seek") },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
             onTrimExport = { _, _ -> },
             onTimeSeek = { time, _ -> now = time },
             displayPositionNs = { now },

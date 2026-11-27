@@ -3,8 +3,6 @@ package io.github.shinma06.arb.ide
 import androidx.compose.ui.graphics.ImageBitmap
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileChooser.FileChooserFactory
-import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorLocation
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -142,7 +140,7 @@ class ArbBundleFileEditor internal constructor(
         onTimeSeek = { time, settled -> performTimeSeek(time, settled) },
         onScrub = { frameIndex -> performScrub(frameIndex) },
         onSeekExact = { frameIndex -> performSeekExact(frameIndex) },
-        onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
+        onPngExport = ::performPngExport,
         onTrimPreviewFrame = ::requestTrimPreview,
         onTrimPreviewEnded = ::endTrimPreview,
         onTimeRangeChanged = { range, playhead ->
@@ -209,25 +207,6 @@ class ArbBundleFileEditor internal constructor(
         },
         onTimeRangeExport = { range, format ->
             performExport(range, format)
-        },
-        onChoosePngOutputPath = { bundleId, frameIndex, onChosen ->
-            // Default the native IntelliJ save dialog to the same screenshot destination as the
-            // Tool Window / Running Devices screenshot (Logcat inheritance or custom folder).
-            runOffEdt {
-                val baseDir = runCatching { ArbScreenshotDestinationResolver.resolveOutputDir(project) }
-                    .getOrNull()
-                    ?.let { runCatching { Path.of(it) }.getOrNull() }
-                    ?.takeIf { Files.isDirectory(it) }
-                publishEdt {
-                    val p = project
-                    if (disposed || p == null || p.isDisposed) return@publishEdt
-                    val descriptor = FileSaverDescriptor("フレーム #$frameIndex の PNG 保存先を選択", "", "png")
-                    val wrapper = FileChooserFactory.getInstance()
-                        .createSaveFileDialog(descriptor, p)
-                        .save(baseDir, "$bundleId-frame-$frameIndex.png")
-                    wrapper?.let { onChosen(it.file.toPath()) }
-                }
-            }
         },
         onAppPackageFilterChanged = { packageName -> performAppPackageFilter(packageName) },
         onRetryAuxStream = { stream -> retryAuxStream(stream) },
@@ -994,16 +973,17 @@ class ArbBundleFileEditor internal constructor(
         }
     }
 
-    private fun performPngExport(frameIndex: Long, outputPath: Path) {
+    private fun performPngExport(frameIndex: Long) {
         val current = viewerState ?: return
         submitWork {
             try {
+                val outputDir = runCatching { ArbScreenshotDestinationResolver.resolveOutputDir(project) }.getOrNull()
                 val res = daemonService.withClient {
                     it.exportPng(
                         ExportPngParams(
                             bundleIdOrPath = current.bundleId,
                             frameIndex = frameIndex,
-                            outputPath = outputPath.toAbsolutePath().toString(),
+                            outputDir = outputDir,
                         ),
                     )
                 }
@@ -1020,7 +1000,6 @@ class ArbBundleFileEditor internal constructor(
                     imagePath = res.outputPath,
                     width = res.report.width,
                     height = res.report.height,
-                    kindLabel = "フレーム画像",
                 )
             } catch (t: Throwable) {
                 logger.warn("ARB export.png failed", t)

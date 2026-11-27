@@ -4,15 +4,16 @@ import com.intellij.ide.actions.RevealFileAction
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindowManager
 import io.github.shinma06.arb.state.ArbFormatters
+import io.github.shinma06.arb.ui.ArbIcons
 import java.awt.Desktop
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -20,15 +21,15 @@ import java.nio.file.Files
 import java.nio.file.Path
 import javax.swing.SwingUtilities
 
-enum class ArbNotificationActionId {
-    OPEN_VIEWER,
-    OPEN_IMAGE,
-    OPEN_FOLDER,
-    COPY_PATH,
-    MOVE_TO_TRASH,
-    UNDO_TRASH,
-    RESTORE_ORIGINAL,
-    OPEN_ARB_PANEL,
+enum class ArbNotificationActionId(val icon: ArbIcons) {
+    OPEN_VIEWER(ArbIcons.OpenViewer),
+    OPEN_IMAGE(ArbIcons.OpenImage),
+    OPEN_FOLDER(ArbIcons.OpenFolder),
+    COPY_PATH(ArbIcons.CopyPath),
+    MOVE_TO_TRASH(ArbIcons.Trash),
+    UNDO_TRASH(ArbIcons.Restore),
+    RESTORE_ORIGINAL(ArbIcons.Restore),
+    OPEN_ARB_PANEL(ArbIcons.Panel),
 }
 
 data class ArbNotificationActionSpec(
@@ -394,7 +395,7 @@ object ArbNotifications {
                 notification.addAction(
                     NotificationAction.createSimpleExpiring(actionSpec.label) {
                         if (project?.isDisposed != true) onAction(actionSpec.id)
-                    },
+                    }.apply { templatePresentation.icon = actionSpec.id.icon.swing },
                 )
             }
             notification.notify(project)

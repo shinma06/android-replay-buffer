@@ -1131,8 +1131,10 @@ pub struct ExportPngParams {
     pub bundle_id_or_path: String,
     /// Exact integer frame index to export.
     pub frame_index: u64,
-    /// Output PNG file path.
-    pub output_path: PathBuf,
+    /// Explicit destination. An omitted or empty path requests automatic naming.
+    pub output_path: Option<PathBuf>,
+    /// Optional screenshot directory for automatically named images.
+    pub output_dir: Option<PathBuf>,
 }
 
 /// Response payload for `export.png`.

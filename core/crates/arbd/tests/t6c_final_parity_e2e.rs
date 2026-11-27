@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -520,6 +520,39 @@ fn t6c_screenshot_dir_override_output_dir_and_config_wifi_serial() {
     );
     assert_eq!(code, i64::from(RPC_ERR_INVALID_PARAMS));
 
+    server.shutdown();
+}
+
+#[test]
+fn screenshot_fallback_supports_relative_data_and_managed_bundle_output_directories() {
+    let cwd = std::env::current_dir().unwrap();
+    let tmp = TempDir::new_in(&cwd).unwrap();
+    let mut paths = isolated_paths(&tmp);
+    let data = paths.data_dir.clone();
+    paths.data_dir = data.strip_prefix(&cwd).unwrap().join("..").join("data");
+    // Keep the IPC endpoint short regardless of the checkout path.
+    let ipc = TempDir::new().unwrap();
+    paths.runtime_dir = ipc.path().join("run");
+    let config = DaemonConfig::new(paths).with_screenshot_provider(SharedScreenshotProvider::new(
+        Arc::new(StubScreenshotProvider {
+            png: valid_1x1_png(),
+        }),
+    ));
+    let server = DaemonServer::start(config).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let screenshot = |rpc: &mut RpcClient| {
+        let shot = rpc.call("save.screenshot", &json!({}));
+        let path = PathBuf::from(shot["path"].as_str().unwrap());
+        assert!(path.is_file());
+        path
+    };
+    assert_eq!(
+        screenshot(&mut rpc).parent(),
+        Some(data.join("screenshots").canonicalize().unwrap().as_path())
+    );
+    let bundles = data.join("bundles");
+    rpc.call("config.update", &json!({"output_dir_override": bundles}));
+    assert_eq!(screenshot(&mut rpc).parent(), Some(bundles.as_path()));
     server.shutdown();
 }
 
