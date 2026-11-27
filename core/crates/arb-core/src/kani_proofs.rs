@@ -1,5 +1,5 @@
-//! Layer-1 PDD: Kani bounded model-checking harnesses for `arb-core` (K1–K7, and K11 in
-//! `kani_proofs/k11_audio_policy.rs`).
+//! Layer-1 PDD: Kani bounded model-checking harnesses for `arb-core` (K1–K7, K11 in
+//! `kani_proofs/k11_audio_policy.rs` and K14 in `kani_proofs/k14_coverage.rs`).
 //!
 //! Compiled only under `cargo kani` (`cfg(kani)`); unwinding assertions stay enabled.
 //!
@@ -11,6 +11,8 @@
 
 // K11 (PDD G8): live audio policy harnesses, kept in their own file.
 mod k11_audio_policy;
+// K14 (#564 / #570): stream coverage ledger and static-screen carry-in.
+mod k14_coverage;
 
 use crate::gesture::{TouchPoint, classify_stroke, decimate, map_touch_to_frame, touch_slop};
 use crate::selection::{

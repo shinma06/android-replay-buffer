@@ -3278,29 +3278,47 @@ fn long_preroll_and_sparse_vfr_measured_from_published_evidence() {
         "save.trigger",
         &json!({"duration_sec":90,"drain_timeout_ms":0}),
     );
+    // #564: beacons kept the static screen covered, so the IDR on screen at W0 (63 s) is
+    // carried in and displayed from W0; its capture time stays 0 s in the frame record.
     assert_eq!(
-        full["video_frame_count"], 2,
-        "old IDR is decoder context only"
+        full["video_frame_count"], 3,
+        "carried-in frame + the two in-window frames"
     );
+    assert_eq!(full["carried_in_frame"], true, "{full}");
     assert!(
-        (50000..50100).contains(
+        (90000..90100).contains(
             &full["actual_video_duration_ms"]
                 .as_u64()
                 .expect("MP4 duration")
         ),
         "{full}"
     );
-    assert_eq!(full["window_shortfall"], true, "short video");
+    assert_eq!(
+        full["video_shortfall"], false,
+        "static hold is not a shortfall"
+    );
+    assert_eq!(
+        full["window_shortfall"], false,
+        "logcat covered the window too"
+    );
+    assert_eq!(
+        full["warning_codes"].as_array().map(Vec::len),
+        full["warnings"].as_array().map(Vec::len),
+        "warnings are one to one"
+    );
     let word = client.call(
         "bundle.query_logs",
         &json!({"bundle_id":full["bundle_id"],"keyword":"stu","level":"Info","whole_word":true}),
     );
     assert_eq!(word["total_matched"], 1, "exclude studio and STU_more");
     assert_eq!(
-        word["logs"][0]["frame_index"], 0,
-        "earlier VFR frame is held until 153s"
+        word["logs"][0]["frame_index"], 1,
+        "the 103 s frame is held until 153 s"
     );
-    assert_eq!(word["logs"][0]["offset_ms"], 12000, "relative to 103s");
+    assert_eq!(
+        word["logs"][0]["offset_ms"], 52000,
+        "relative to the media origin W0 = 63 s"
+    );
     for level in ["ERRX", "BOGUS", ""] {
         let (code, _) = client.call_err(
             "timeline.query_logs",

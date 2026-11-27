@@ -302,6 +302,26 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
     /// Returns [`StorageError`] if reading or decoding frame rows fails.
     fn frames(&self) -> Result<Vec<FrameRecord>, StorageError>;
 
+    /// [`Self::frames`] as readers map time: a carried-in first frame (#564) is placed at its
+    /// display start `W0`, the media time origin, through
+    /// [`arb_core::bundle::frame_display_start_ns`]. The stored rows are not modified.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::frames`].
+    fn display_frames(&self) -> Result<Vec<FrameRecord>, StorageError> {
+        let carried = self
+            .manifest_summary()
+            .streams
+            .video
+            .as_ref()
+            .and_then(|v| v.carried_in.as_ref());
+        Ok(arb_core::bundle::display_aligned_frames(
+            self.frames()?,
+            carried,
+        ))
+    }
+
     /// Returns all recorded timeline discontinuities ordered chronologically.
     ///
     /// # Errors
@@ -3136,6 +3156,7 @@ fn build_legacy_summary(
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
             display_width: None,
             display_height: None,
+            carried_in: None,
         }),
         audio: None,
         logcat: Some(LogcatStreamMeta {
@@ -3366,6 +3387,7 @@ mod tests {
                     semantics: TimestampSemantics::VideoEncoderInputEstimate,
                     display_width: None,
                     display_height: None,
+                    carried_in: None,
                 }),
                 audio: None,
                 logcat: Some(LogcatStreamMeta {
@@ -3579,6 +3601,7 @@ mod tests {
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
             display_width: None,
             display_height: None,
+            carried_in: None,
         });
         draft.streams.audio = Some(arb_core::bundle::AudioStreamMeta {
             status: StreamStatus::Absent,

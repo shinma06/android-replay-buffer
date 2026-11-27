@@ -22,7 +22,10 @@ use arb_media::audio::{
     AacMuxInput, AacPacket, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
 };
 use arb_media::codec::{DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat};
-use arb_media::mp4::{Mp4VideoTrack, RawH264Packet, inspect_mp4_atoms, mux_raw_h264_to_mp4};
+use arb_media::mp4::{
+    Mp4VideoTrack, RawH264Packet, inspect_mp4_atoms, mux_raw_h264_to_mp4,
+    mux_raw_h264_to_mp4_with_last_duration,
+};
 use arb_media::mux_av::mux_share_mp4;
 use arb_media::playback::FilmstripCache;
 use arb_media::trim::trim_video;
@@ -324,6 +327,72 @@ proptest! {
         prop_assert_eq!(report.output_duration_ns, Some(measured));
         prop_assert!(measured.abs_diff(stop-start) <= 1_000_000_000u64.div_ceil(u64::from(track.timescale())));
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(8), ..ProptestConfig::default() })]
+    /// #564: a static screen saved as one carried-in frame (optionally followed by a short
+    /// burst) whose last sample is held for 30 s through the explicit last-sample duration.
+    /// The file reopens with that exact length, has no edit list, and any sub-frame real-time
+    /// cut keeps the held picture for exactly the selected time.
+    #[test]
+    fn g3_static_hold_30s_reopen_and_subframe_trim(
+        burst in 0u8..3,
+        a in 0u64..30_000_000_000,
+        b in 0u64..30_000_000_000,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("hold.mp4");
+        let output = tmp.path().join("cut.mp4");
+        let frames = 1 + burst;
+        let packets = encode_vfr(&[frames], &[40]);
+        let hold_ticks = 30 * 90_000;
+        mux_raw_h264_to_mp4_with_last_duration(&src, 64, 48, 90_000, 3_000, Some(hold_ticks), &packets)
+            .unwrap();
+        let track = Mp4VideoTrack::open(&src).unwrap();
+        let atoms = inspect_mp4_atoms(&src).unwrap();
+        prop_assert_eq!((atoms.edts_count, atoms.elst_count, atoms.avc1_count), (0, 0, 1));
+        prop_assert_eq!(track.frame_count(), u64::from(frames));
+        prop_assert_eq!(track.last_presentation_duration_ns().unwrap(), Some(30_000_000_000));
+        let total = u64::from(burst) * 40_000_000 + 30_000_000_000;
+        prop_assert_eq!(track.duration_ticks() * 1_000_000_000 / 90_000, total);
+        // Any sub-frame cut inside the held tail.
+        let held_from = u64::from(burst) * 40_000_000;
+        let start = held_from + a.min(b);
+        let stop = (held_from + a.max(b) + 1).min(total);
+        let backend = OpenH264Backend::new();
+        let report = arb_media::trim::trim_video_time_range(&src, &output, start, stop, &backend).unwrap();
+        let cut = Mp4VideoTrack::open(&output).unwrap();
+        let cut_atoms = inspect_mp4_atoms(&output).unwrap();
+        prop_assert_eq!((cut_atoms.edts_count, cut_atoms.elst_count), (0, 0));
+        prop_assert_eq!(cut.frame_count(), 1, "one held picture covers the cut");
+        let measured = cut.duration_ticks() * 1_000_000_000 / u64::from(cut.timescale());
+        prop_assert_eq!(report.output_duration_ns, Some(measured));
+        prop_assert!(measured.abs_diff(stop - start) <= 1_000_000_000u64.div_ceil(u64::from(cut.timescale())));
+        let decoded = arb_media::codec::VideoCodecBackend::decode_frame(&backend, &cut, 0, PixelFormat::Yuv420p).unwrap();
+        let bar = decoded.data[..64].iter().position(|&px| px > 128);
+        prop_assert_eq!(bar, Some(usize::from(frames - 1)), "the last captured picture is held");
+    }
+}
+
+#[test]
+fn explicit_last_sample_duration_must_be_positive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let packets = encode_vfr(&[1], &[40]);
+    let err = mux_raw_h264_to_mp4_with_last_duration(
+        tmp.path().join("z.mp4"),
+        64,
+        48,
+        90_000,
+        3_000,
+        Some(0),
+        &packets,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, arb_media::MediaError::InvalidArgument(_)),
+        "{err:?}"
+    );
 }
 
 #[test]

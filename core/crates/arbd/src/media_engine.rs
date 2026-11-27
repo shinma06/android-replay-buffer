@@ -158,18 +158,17 @@ impl MediaEngine {
         let bundle_id = bundle_id_override.unwrap_or(&summary.bundle_id).to_owned();
         let video_path = required_video_path(reader.as_ref(), &bundle_id)?;
         let track = Mp4VideoTrack::open(&video_path)?;
-        let frames = reader.frames().unwrap_or_default();
+        // Media time 0 is the display start of frame 0 (`W0` for a carried-in frame).
+        let frames = reader.display_frames().unwrap_or_default();
         let frame_boottimes: Vec<i64> = frames
             .iter()
-            .map(|f| match &f.alignment {
-                TimeAlignment::Anchored { boottime_ns, .. } => *boottime_ns,
-                TimeAlignment::Bounded {
-                    min_boottime_ns, ..
-                } => *min_boottime_ns,
-                TimeAlignment::Unanchored {
-                    pc_ingest_cont_ns, ..
-                } => *pc_ingest_cont_ns,
-                _ => f.pts_device_mono_ns,
+            .map(|f| {
+                frame_boottime_ns(f).unwrap_or(match &f.alignment {
+                    TimeAlignment::Unanchored {
+                        pc_ingest_cont_ns, ..
+                    } => *pc_ingest_cont_ns,
+                    _ => f.pts_device_mono_ns,
+                })
             })
             .collect();
 
@@ -609,7 +608,8 @@ pub fn export_trim(
     let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
     let video_path = required_video_path(reader.as_ref(), &parent_bundle_id)?;
 
-    let source_frames = reader.frames()?;
+    // Time mapping uses display starts so a carried-in frame 0 starts at media time 0 (`W0`).
+    let source_frames = reader.display_frames()?;
     let track = Mp4VideoTrack::open(&video_path)?;
     let range = crate::trim_range::TrimRange::resolve(
         &track,
@@ -1103,6 +1103,7 @@ fn build_trimmed_bundle_draft(
                     .video
                     .as_ref()
                     .and_then(|v| v.display_height),
+                carried_in: None,
             }),
             audio: summary.streams.audio.clone().map(|mut audio| {
                 if let Some(trimmed) = &trimmed_audio {
@@ -1450,14 +1451,9 @@ pub(crate) fn compute_epoch_frame_ranges(
     ranges
 }
 
+/// Display start of a frame read through `BundleReader::display_frames` (single time origin).
 fn frame_boottime_ns(frame: &FrameRecord) -> Option<i64> {
-    match &frame.alignment {
-        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
-        TimeAlignment::Bounded {
-            min_boottime_ns, ..
-        } => Some(*min_boottime_ns),
-        _ => None,
-    }
+    arb_core::bundle::frame_display_start_ns(frame, None)
 }
 
 /// Computes a unified [`crate::protocol::TimelineSummaryResponse`] from any [`BundleReader`].
@@ -1470,7 +1466,7 @@ pub fn build_timeline_summary(
     bundle_dir: &Path,
 ) -> Result<crate::protocol::TimelineSummaryResponse, DaemonError> {
     let summary = reader.manifest_summary();
-    let frames = reader.frames()?;
+    let frames = reader.display_frames()?;
     let keyframe_count = frames.iter().filter(|f| f.is_keyframe).count();
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
     let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;

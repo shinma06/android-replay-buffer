@@ -187,6 +187,96 @@ pub struct VideoStreamMeta {
     /// touch coordinates onto downscaled video. `None` on legacy or pre-T-6A bundles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_height: Option<u32>,
+    /// Frame carried in from before the save window because coverage proved it was still on
+    /// screen at the window start (#564). `None` when the first frame was captured in the window
+    /// and on bundles written before carry-in existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_in: Option<CarriedInFrame>,
+}
+
+/// Evidence that justified displaying a frame from before the save window.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarryInEvidence {
+    /// One continuous video coverage interval spans the frame's capture and the window start.
+    Coverage,
+}
+
+/// A frame captured before the window start and displayed from the window start (#564).
+///
+/// The frame's own [`FrameRecord::alignment`] keeps its capture time; only the display start
+/// recorded here moves to the window start. Readers map media time through
+/// [`frame_display_start_ns`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CarriedInFrame {
+    /// Frame index of the carried-in frame (always the first frame, `0`).
+    pub frame_index: u64,
+    /// Capture time of the frame on `DeviceBoottime` (unchanged).
+    pub captured_boottime_ns: i64,
+    /// Display start on `DeviceBoottime`: the window start `W0` (media time 0).
+    pub display_start_boottime_ns: i64,
+    /// Why the frame was carried in.
+    pub evidence: CarryInEvidence,
+}
+
+/// Device boottime at which `frame` starts being displayed (media time origin for frame 0).
+///
+/// A carried-in frame starts at its recorded display start (`W0`); every other frame starts at
+/// its capture time (`Anchored` center, `Bounded` lower bound). `None` for unanchored frames.
+#[must_use]
+pub fn frame_display_start_ns(
+    frame: &FrameRecord,
+    carried_in: Option<&CarriedInFrame>,
+) -> Option<i64> {
+    if let Some(c) = carried_in
+        && c.frame_index == frame.frame_index
+    {
+        return Some(c.display_start_boottime_ns);
+    }
+    match &frame.alignment {
+        TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
+        TimeAlignment::Bounded {
+            min_boottime_ns, ..
+        } => Some(*min_boottime_ns),
+        TimeAlignment::Unanchored { .. } => None,
+    }
+}
+
+/// Read-side view of `frames` whose carried-in frame is placed at its display start.
+///
+/// The stored rows stay WORM; this copy shifts only the carried-in frame's alignment and
+/// device-mono stamp by `display_start - captured` so every reader (log coordinates, screens,
+/// viewport times, real-time trim) shares the single media origin `W0`.
+#[must_use]
+pub fn display_aligned_frames(
+    mut frames: Vec<FrameRecord>,
+    carried_in: Option<&CarriedInFrame>,
+) -> Vec<FrameRecord> {
+    let Some(c) = carried_in else {
+        return frames;
+    };
+    let shift = c
+        .display_start_boottime_ns
+        .saturating_sub(c.captured_boottime_ns);
+    if let Some(frame) = frames.iter_mut().find(|f| f.frame_index == c.frame_index) {
+        frame.pts_device_mono_ns = frame.pts_device_mono_ns.saturating_add(shift);
+        match &mut frame.alignment {
+            TimeAlignment::Anchored { boottime_ns, .. } => {
+                *boottime_ns = boottime_ns.saturating_add(shift);
+            }
+            TimeAlignment::Bounded {
+                min_boottime_ns,
+                max_boottime_ns,
+                ..
+            } => {
+                *min_boottime_ns = min_boottime_ns.saturating_add(shift);
+                *max_boottime_ns = max_boottime_ns.saturating_add(shift);
+            }
+            TimeAlignment::Unanchored { .. } => {}
+        }
+    }
+    frames
 }
 
 /// Calibration status of audio-to-video synchronization offset.
@@ -822,6 +912,7 @@ mod tests {
                     semantics: TimestampSemantics::VideoEncoderInputEstimate,
                     display_width: Some(1080),
                     display_height: Some(2400),
+                    carried_in: None,
                 }),
                 audio: Some(AudioStreamMeta {
                     status: StreamStatus::Partial,
@@ -946,6 +1037,100 @@ mod tests {
         );
         let parsed: ManifestV2 = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, m);
+    }
+
+    #[test]
+    fn carried_in_is_optional_and_round_trips() {
+        let m = valid_manifest();
+        let json = serde_json::to_string(&m).expect("serialize");
+        assert!(!json.contains("carried_in"), "absent carry-in is omitted");
+        let mut carried = m;
+        if let Some(video) = carried.streams.video.as_mut() {
+            video.carried_in = Some(super::CarriedInFrame {
+                frame_index: 0,
+                captured_boottime_ns: 1_000,
+                display_start_boottime_ns: 30_000,
+                evidence: super::CarryInEvidence::Coverage,
+            });
+        }
+        let json = serde_json::to_string(&carried).expect("serialize");
+        assert!(json.contains(r#""evidence":"coverage""#));
+        let parsed: ManifestV2 = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, carried);
+        carried
+            .validate()
+            .expect("a carried-in manifest stays valid");
+    }
+
+    #[test]
+    fn display_start_moves_only_the_carried_in_frame() {
+        use super::{
+            CarriedInFrame, CarryInEvidence, FrameRecord, display_aligned_frames,
+            frame_display_start_ns,
+        };
+        use crate::time::{TimeAlignment, TimestampSemantics, UncertaintyReason};
+        let frame = |index: u64, alignment: TimeAlignment| FrameRecord {
+            frame_index: index,
+            boot_id: "b".into(),
+            pts_device_mono_ns: 100 * i64::try_from(index).unwrap_or(0),
+            pc_ingest_cont_ns: 0,
+            alignment,
+            is_keyframe: index == 0,
+            gop_id: 0,
+            mp4_sample_offset: 0,
+            mp4_sample_size: 0,
+        };
+        let frames = vec![
+            frame(
+                0,
+                TimeAlignment::Bounded {
+                    boot_id: "b".into(),
+                    min_boottime_ns: 10,
+                    max_boottime_ns: 12,
+                    reason: UncertaintyReason::UnbracketedMonotonicExtrapolation,
+                },
+            ),
+            frame(
+                1,
+                TimeAlignment::Anchored {
+                    boot_id: "b".into(),
+                    boottime_ns: 500,
+                    half_width_ns: 1,
+                    semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                },
+            ),
+            frame(
+                2,
+                TimeAlignment::Unanchored {
+                    pc_ingest_cont_ns: 9,
+                    reason: UncertaintyReason::PcIngestOnly,
+                },
+            ),
+        ];
+        let carried = CarriedInFrame {
+            frame_index: 0,
+            captured_boottime_ns: 10,
+            display_start_boottime_ns: 300,
+            evidence: CarryInEvidence::Coverage,
+        };
+        assert_eq!(frame_display_start_ns(&frames[0], None), Some(10));
+        assert_eq!(
+            frame_display_start_ns(&frames[0], Some(&carried)),
+            Some(300)
+        );
+        assert_eq!(
+            frame_display_start_ns(&frames[1], Some(&carried)),
+            Some(500)
+        );
+        assert_eq!(frame_display_start_ns(&frames[2], None), None);
+        let view = display_aligned_frames(frames.clone(), Some(&carried));
+        assert_eq!(frame_display_start_ns(&view[0], None), Some(300));
+        assert_eq!(
+            view[0].pts_device_mono_ns, 290,
+            "mono moves with the display start"
+        );
+        assert_eq!(&view[1..], &frames[1..], "other frames are untouched");
+        assert_eq!(display_aligned_frames(frames.clone(), None), frames);
     }
 
     #[test]

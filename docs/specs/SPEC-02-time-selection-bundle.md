@@ -33,7 +33,28 @@ satisfies:
 | 実時間トリム | バンドル先頭からの整数 ns の半開区間 `[IN, OUT)`。表示中の先頭・末尾フレームから同一 boot のデバイス時刻へ写し、閉区間の選別器には最後の対象 ns（OUT − 1）を渡す | 境界をまたぐ同期済みスワイプは端点を補間。主ログ・入力の `relative_time_ns` は選択先頭基準とし、元の時計情報と親の選択区間も保存する |
 | フレーム指定トリム | IN・OUT とも含む。対応する映像フレームの採否はインデックスで決める | 既存の隔離記録を優先して引き継ぎ、上限超過を計上する |
 
-隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。`drain_timeout_ms` は整数 0〜5000 ms（両端を含む）。範囲外は RPC・MCP とも `-32602`。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓外の時計アンカーや IDR は時刻変換・復号に使えるが、表示フレームの余白は 0 枚。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
+隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。`drain_timeout_ms` は整数 0〜5000 ms（両端を含む）。範囲外は RPC・MCP とも `-32602`。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓より前の時刻は表示しない。窓外の時計アンカーや IDR は時刻変換・復号だけに使う。例外は次節の引き継ぎフレームで、窓先頭 `W0` から表示が始まるので、この原則を守る。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
+
+### ストリーム被覆台帳と引き継ぎフレーム
+
+フレームやログ行の出現幅（最後−最初）は、ストリームが窓を被覆した時間ではない。静止画面は映像フレームを送らず、静かなアプリはログ行を書かない。`arbd` は端末ごとに映像と logcat の連続被覆区間を [`arb-core::coverage`](../../core/crates/arb-core/src/coverage.rs) で記録する。時間軸はホストの受信時刻（`PcContinuousMono`）。
+
+| ストリーム | 区間を開く・延ばす | 閉じる |
+| --- | --- | --- |
+| 映像 | フレームで開始・延長。端末ビーコンは直前の証拠から `beacon_timeout`（既定 1.5 秒）以内に届く間だけ、開いている区間を静止として延長する。ビーコンだけでは開かない | 映像の `stream_gap`、`ConnectionLost`、`Shutdown`、記録容量不足、boot の変化、`VideoSession` の再生成・解像度変更、`Hello`、停止、新しい取得世代、ビーコン途絶 |
+| logcat | ログ行、または logcat が `Running` と報告するビーコンで開始・延長 | logcat の `stream_gap`・停止・エラー・再起動、上と同じ接続断・boot 変化・停止・世代交代、ビーコン途絶 |
+
+古い世代の通知は新しい世代の被覆を延ばさない。`logcat_overflow`、`dropped_count`、`tail_may_be_incomplete` は被覆とは別に完全性として報告する。保存時は pin と同時に、窓に交わる被覆区間をジョブパラメータへ永続化し、ドレイン後に更新する。再試行・出力先変更・起動回復は同じ記録から同じ判定を再現する。記録のない旧ジョブは従来の行・フレームの幅で判定し、引き継ぎをしない。
+
+窓先頭 `W0` で表示中だったフレーム `f_prev` は、次の条件をすべて満たすときだけ、`W0` から表示する先頭フレームとして 1 枚保存する（K14）。
+
+1. `f_prev` は `W0` より前で最も遅いフレーム。窓内にフレームがあれば、その直前のフレームである。
+2. 同じ boot、同じ映像セッション、同じ寸法。
+3. `f_prev` の受信から `W0` までが 1 本の映像被覆区間に含まれる。切断・ギャップ・未開始なら引き継がない。
+4. 直前の IDR から `f_prev` までが同じ boot・寸法で pin 済み（既存の遡りで満たす）。
+5. 同じ boot の後続フレーム（受信順は撮影順と一致しない）がすべて `W0` の 1 tick 以上後に撮影されている。`W0` 前に撮影され `W0` 後に届いたフレームや、ちょうど `W0` に撮影されたフレームがあれば `f_prev` は `W0` の画面ではないので引き継がない。
+
+保存は既存の preroll 経路で `[IDR..f_prev)` を復号準備に使い、`f_prev` を IDR として再符号化する。`timeline.sqlite` の `f_prev` の撮影時刻は書き換えない。manifest の `video.carried_in` に `frame_index: 0`、`captured_boottime_ns`、`display_start_boottime_ns: W0`、`evidence: "coverage"` を記録する。最後のフレームは `min(T, 映像被覆の終端)` まで表示を保持し、MP4 の最終 `stts` に実時間長を書く。`edts`／`elst` は 0 個で単一 `avc1` のまま。30 秒静止して 30 秒保存すると 1 枚で約 30,000 ms の映像になり、20 秒で接続が切れれば 20 秒で打ち切って `video_shortfall` を立てる。旧形式（schema 3/4）と `carried_in` のないバンドルの読取は変わらない。
 
 ### 要求尺と測定結果
 
@@ -41,12 +62,14 @@ satisfies:
 | --- | --- |
 | `requested_duration_secs` | 利用者の要求秒数。実際の録画尺とは独立 |
 | `actual_video_duration_ms` | MP4 の最終サンプルの表示時間まで含む再生尺。測定済みで映像なしなら 0 |
-| `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない |
-| `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。各尺は独立に `actual_ms + 1000 < requested_secs × 1000` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
+| `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない。行の出現幅であり、被覆時間ではない |
+| `log_coverage_ms` | 保存窓のうち logcat ストリームが動作していた時間（窓 ∩ logcat 被覆区間）。ギャップ・切断・未開始の区間を含めない。被覆の記録がない旧ジョブでは省略 |
+| `video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` | 映像の被覆時間、引き継ぎフレームの有無、窓の両端で同じフレームを保持した時間。静止の保持は警告ではなく `info_codes` の `video_static_hold` で示す（ログ単体では省略） |
+| `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。映像は MP4 の再生尺、ログは `log_coverage_ms`（記録がない旧ジョブは `actual_log_duration_ms`）で、それぞれ `actual_ms + 1000 < requested_secs × 1000` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
 | `video_frame_count`・`log_count`・`unanchored_log_count` | 映像枚数、隔離分を含むログ総数、そのうち隔離ログ数。未測定と確認済みの 0 を区別する |
 | `truncated_unanchored_count`・`discontinuity_count`・`warnings` | 全ストリームの隔離切り捨て、不連続の数、短尺・音声なし・末尾未確認などの警告。空の警告だけでは完全取得を保証しない |
 
-`warning_codes` は機械判定用。`video_shortfall`、`log_shortfall`、`window_shortfall`、`logcat_overflow`、`unanchored_truncated`、`audio_absent`、`stream_discontinuity`、`tail_unconfirmed` を該当時に返す。`warnings` は表示文。`logcat_completeness` は `status`、`dropped_count`、`overflow_events`、`unanchored_count`、`unanchored_truncated_count` を分ける。破損チャンク等で窓内のログに欠損の可能性があれば既知の 0 を撤回し `dropped_count=null` とする。端末の送信キューで失われたフレーム数も失われたログ行数へ換算できない。完全性を裏付けられなければ `unverified`、溢れを観測した場合の `overflow_detected` は件数不明でも保持する。[端末統計のワイヤ](../../device-agent/PROTOCOL.md)・[保存時の完全性判定](../../core/crates/arbd/src/capture.rs)
+警告の正本は `warning_details`（`code` と `message` の組の配列）。`warning_codes`（機械判定用）と `warnings`（表示文）は、これを同じ順序で射影した同じ長さの配列で、`window_shortfall` にも文がある。順序は `video_shortfall`、`log_shortfall`、`window_shortfall`、`logcat_overflow`、`unanchored_truncated`、`audio_absent`、`stream_discontinuity`、`tail_unconfirmed`。`logcat_completeness` は `status`、`dropped_count`、`overflow_events`、`unanchored_count`、`unanchored_truncated_count` を分ける。破損チャンク等で窓内のログに欠損の可能性があれば既知の 0 を撤回し `dropped_count=null` とする。端末の送信キューで失われたフレーム数も失われたログ行数へ換算できない。完全性を裏付けられなければ `unverified`、溢れを観測した場合の `overflow_detected` は件数不明でも保持する。[端末統計のワイヤ](../../device-agent/PROTOCOL.md)・[保存時の完全性判定](../../core/crates/arbd/src/capture.rs)
 
 未発行や旧デーモンで測定値が省略され得る。発行後のカタログ登録に失敗して測定結果が返っても保存成功の判定は別に行う。一覧の `duration_ms` は映像があれば映像尺、なければ確定ログ尺。欠損時はカタログに残る集計を使う。新規保存の `created_at_utc` はミリ秒 UTC、RPC の `created_utc` は互換用の別名。`memo` は保存時のメモで未指定なら null。[保存結果の型](../../core/crates/arbd/src/protocol.rs)・[共有契約表](ui-feedback-contract-table.json)
 
@@ -84,6 +107,10 @@ satisfies:
 | 出力先の容量不足 | 再試行待ちと pin を保持 | 失敗を成功と通知する、または古い WORM を消す |
 | 退避直後の通常 GC | 既定 24 時間保護 | 直後に物理削除する |
 | 管理域外のドライブが外れた | 一時利用不能として保持 | `--all-missing` で登録を消す |
-| 保存窓の先頭に非 IDR がある | 復号準備用データだけ窓外から参照 | 保存映像を再生すると窓より前のフレームが現れる |
+| 保存窓の先頭に非 IDR がある | 復号準備用データだけ窓外から参照 | 保存映像を再生すると窓より前の時刻が表示される |
+| 30 秒静止した画面を 30 秒保存 | 被覆が続いていれば引き継ぎフレーム 1 枚を約 30 秒保持。`video_shortfall=false`、`carried_in_frame=true` | 映像 0 枚、または末尾が最後の画面変化から約 33 ms で終わる |
+| 最後のフレームの後に切断・ギャップ | 引き継がず、または被覆の終端で打ち切り、`video_shortfall=true` | 切断中も同じ画が表示され続ける映像を作る |
+| 健全な 30 秒保存で両端 0.5 秒に行がない | `log_coverage_ms≈30000` で `log_shortfall=false`。`actual_log_duration_ms` は 28,999 のまま | 行の幅だけで `log_shortfall=true` にする |
+| 警告の配列 | `warning_codes`・`warnings`・`warning_details` が同じ長さ・順序 | `window_shortfall` だけ表示文がない |
 
-根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554。K1〜K5、S2・S3、G1・G2・G4・G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
+根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570。K1〜K5・K14、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)

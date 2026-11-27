@@ -35,6 +35,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K11 | `k11_g8_1_api_33_plus_is_never_api_below_min`、`k11_g8_2_unknown_api_is_never_api_below_min`、`k11_g8_4_api_28_to_32_degrades_to_video_and_logs`、`k11_g8_9_disabled_modes_ignore_every_outcome`、`k11_g8_6_fatal_audio_failure_is_sticky_until_restart`、`k11_output_compat_api_floor`、`k11_explicit_source_change_retries_audio`（PDD G8。API は `u32` 全域、モード・音声要求・ラッチ・`scrcpy-server` の音声結果 8 種はすべて記号値。G8-6 は再接続 4 回までの有界な監視モデルで、端末の起動は前進のみ・各回の前に停止→開始が入りうる。期待値はハーネス内の独立オラクルで、本番の `is_fatal` や `label_class` を使わない） | なし | `core/crates/arb-core/src/kani_proofs/k11_audio_policy.rs` |
 | K12 | `k12_frame_and_gop_byte_budget_no_overflow_and_bounded`（`u16` 全域の寸法・全 4 画素形式・任意 GOP 長と予算で溢れなし、128 MiB での GOP ストリーミング判定が `len > budget / frame` と厳密一致）、`k12_forward_window_eviction_keeps_cached_bytes_within_budget`（任意 `usize` のフレーム 3 枚・任意の確保可能予算で `cached_bytes == 保持バイト ≤ max_bytes`、窓は連続で復号位置で終わり、返すのは常に `target`）、`k12_sequential_forward_decode_avoids_idr_restart_even_over_128mib`（最大 `u32::MAX` 枚の GOP で、冷えたシークは IDR から 1 回だけ、保持 3 枚までの任意の窓から `+1` 要求は再起動なしで 1 枚だけ復号。帰納法で `k` 歩は `k` 回の復号）、`k12_backward_or_cross_gop_seek_restarts_from_target_idr_and_bounds`（逆方向・別 GOP・別形式は対象 GOP の IDR から `IDR..=target` だけ復号、窓内の逆方向は復号 0）、`k12_filmstrip_cache_rejects_mismatched_content_digest`（`ARBFS002` でファイル長・フレーム数・SHA-256 指紋の 3 つが一致したときだけ受理、指紋だけの不一致と旧 `ARBFS001` は拒否） | なし | `core/crates/arb-media/src/playback.rs`、`core/crates/arb-media/src/kani_proofs.rs` |
 | K13 | 実時間トリムの範囲と正長、ns 総尺保存、任意の相対時刻での表示フレーム同値、不正範囲の拒否、ティックの正長と総和 | VFR 3 枚の各間隔 1〜65536 ns と全有効区間。量子化は各 1〜256 ns の 3 枚、8 ns/tick で丸め・予約・表現不能の各分岐を検証する。MP4 の復号結果と timescale 切替は G3 とバーコード試験で検査する | `arb-media/src/timeline.rs`、`arb-media/src/kani_proofs.rs` |
+| K14 | `k14_carry_in_none_without_coverage`（同じキーの 1 本の被覆区間が `[f_prev, W0]` を含まなければ必ず `None`、含めば必ず `f_prev` を選ぶ）、`k14_carry_in_selects_latest_valid_pre_window_frame`（選ぶのは `W0` より前で位置・時刻とも最も遅いフレームだけで、後続に窓前フレームがない）、`k14_carry_in_rejects_boot_session_or_dims_mismatch`（boot・セッション・寸法のキーが一致する被覆区間なしでは選ばず、最遅フレームが不一致なら古い一致フレームに戻らない）、`k14_coverage_duration_bounded_and_monotone`（`0 ≤ 被覆 ≤ 窓長`、区間の追加で減らない、1 区間は切り取り長に一致、窓全体を覆えば窓長）、`k14_ledger_beacon_extends_only_within_gap`（ビーコンだけでは開かず、途絶前のビーコンだけが区間を延ばし、遅れたビーコンは閉じる） | フレーム 3 枚（時刻は `i16` 全域、受信順で非減少）・被覆区間 2 本・キー 3 種・`W0` と窓端は `i16` 全域、途絶判定の幅は `u8` 全域。本番の `select_carry_in`・`coverage_duration_in_window`・`StreamCoverage` を直接実行する。保存経路の時刻軸の対応、MP4 の書き出し、端末のビーコン・切断の意味は保存の端から端までの試験（`capture_coverage_tests.rs`）と G3 で確認する | `arb-core/src/coverage.rs`、`arb-core/src/kani_proofs/k14_coverage.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -75,7 +76,7 @@ S6 は `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright
 |---|---|---|
 | G1 | 実 SQLite/WAL `Catalog`（2 接続、1–32 操作列）と独立参照モデル、暦日・オフセット厳格拒否、ゴミ箱 24h 猶予 | `core/crates/arb-storage/tests/pdd_g1_catalog_props.rs` |
 | G2 | 実 `RingStore` + 偽ディスク + 再起動でリセットする偽時計 + 各境界での障害注入 → 再オープン → retry/retarget、pin チャンク SHA-256 不変、レガシー schema 3/4 フィクスチャ不変 | `core/crates/arb-storage/tests/pdd_g2_ring_crash_props.rs` |
-| G3 | 破損 MP4・深い入れ子・巨大テーブルで panic/OOM/スタック溢れなし、可変 GOP / VFR の mux → open → trim → share 往復（`edts`/`elst` なし、faststart） | `core/crates/arb-media/tests/pdd_g3_media_props.rs` |
+| G3 | 破損 MP4・深い入れ子・巨大テーブルで panic/OOM/スタック溢れなし、可変 GOP / VFR の mux → open → trim → share 往復（`edts`/`elst` なし、faststart）、30 秒の静止保持（最終サンプル長を明示した 1〜3 枚の MP4）の生成 → 再オープン → 保持区間内の任意のサブフレーム実時間トリム（`elst=0`、保持中の画を維持） | `core/crates/arb-media/tests/pdd_g3_media_props.rs` |
 | G4 | 複数ストリーム（ログ・音声・タップ・巨大ストローク・部分重複・別 boot）の保存 → 全範囲トリム保存則と非アンカー予算 | `core/crates/arbd/tests/pdd_g4_multistream_props.rs` |
 | G5 | `SaveJobMaterializeParams` の過去 JSON 互換（全追加フィールドの `#[serde(default)]` 検査）、リングチャンクの符号化往復と任意バイト非 panic | `core/crates/arbd/src/capture_pdd_g5_tests.rs`、`core/crates/arbd/tests/fixtures/pdd_g5_params_v2_minimal.json` |
 | G6 | wire / scrcpy ストリームの任意分割と `Interrupted`/`TimedOut`/EOF 注入（連続解析と一致、完全レコード接頭辞 + 明示ギャップ） | `core/crates/arb-adb/tests/pdd_g6_stream_fault_props.rs` |
@@ -124,6 +125,8 @@ PDD G8 で K11 の 5 本を `arb-core` の必須集合に加えた（2026-11-25�
 
 K13 の macOS arm64 実測（2026-11-26、Kani 0.68 / CBMC 6.11）。arb-media 必須集合は既存 20 本と新設 5 本の計 25/25 が成功し、最長は 44.21 秒。範囲と正長 1.45 秒、総尺保存 4.09 秒、表示同値 4.59 秒、不正範囲 1.89 秒、量子化 6.42 秒。6 個の cover はすべて SATISFIED、ハーネス本体の性質表明で UNREACHABLE は 0 件。区間の証明では本番の `trim_intervals` が返す列を直接走査する。`Vec` の確保、MP4 の読み書き、コーデックは証明範囲の外にある。
 
+K14 の macOS arm64 実測（2026-11-27、Kani 0.68 / CBMC 6.11）。`cargo kani -p arb-core -Z stubbing --harness k14_` は 5/5 成功（実時間 14.2 秒）。`none_without_coverage` 0.74 秒、`selects_latest_valid_pre_window_frame` 0.79 秒、`rejects_boot_session_or_dims_mismatch` 0.81 秒、`coverage_duration_bounded_and_monotone` 2.35 秒、`ledger_beacon_extends_only_within_gap` 4.00 秒。8 個の cover（引き継ぎの成立・拒否、後続フレームがある中間フレームの選択、古い一致フレームが存在する不一致、2 本目の区間による被覆増加、窓全体の被覆、ビーコンによる延長・途絶による終了）はすべて SATISFIED、K14 ファイル内の性質表明で UNREACHABLE は 0 件。必須集合は 138 本から 143 本になった（`arb-core` 96 → 101）。`arb-media` 必須集合 25/25 は本変更後も成功した。
+
 K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10・K11 追加前の比較記録。
 
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
@@ -158,6 +161,11 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | K12 | `playback.rs` `from_bytes`: 指紋比較から `&source_digest != expected_source_digest` を削除 | `k12_filmstrip_cache_rejects_mismatched_content_digest` | `accepted exactly on ARBFS002 with a full fingerprint match` |
 | K13 | OUT の二分探索で `p < out_time_ns` を `p <= out_time_ns` に変更 | `k13_time_range_trim_valid_bounds_and_positive_durations` | OUT が第 2 フレームの開始 48870 ns と一致すると、末尾に 0 ns のフレームを含む |
 | K13 | 不正範囲判定で `in_time_ns >= out_time_ns` を `in_time_ns > out_time_ns` に変更 | `k13_time_range_trim_rejects_invalid_ranges` | IN = OUT = 70816 ns の空区間を受理する。両変異とも concrete playback で反例を取得し、復元済み |
+| K14 | `coverage.rs` `select_carry_in`: `c.contains_span(f_prev.ts_ns, w0_ns)` → `c.start_ns <= f_prev.ts_ns`（`W0` までの被覆を見ない） | `k14_carry_in_none_without_coverage` | `uncovered span must never carry in` |
+| K14 | `select_carry_in`: `rposition` → `position`（最も古い窓前フレームを選ぶ） | `k14_carry_in_selects_latest_valid_pre_window_frame` | `a later pre-window frame replaced it` |
+| K14 | `select_carry_in`: キー一致 `c.key == f_prev.key &&` を削除 | `k14_carry_in_rejects_boot_session_or_dims_mismatch` | `selected frame must share the covering interval's key` |
+| K14 | `coverage_duration_in_window`: `cursor = end` → `cursor = start`（重なりを二重計上） | `k14_coverage_duration_bounded_and_monotone` | `0 <= cov <= window_len` |
+| K14 | `StreamCoverage::observe_alive`: 途絶判定 `<= self.max_gap_ns` を常に真にする | `k14_ledger_beacon_extends_only_within_gap` | `snap[0].end_ns == t0`。5 変異とも反例を取得し、元のファイルとバイト一致で復元済み |
 | K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
@@ -179,7 +187,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 |---|---|
 | Stateright | S1 一意状態 1,016,640（総 7,330,826、2.5 秒）、S2 74,988（587,713、0.4 秒）、S2 GC 56（125、1 ms）、S3 16,590（78,470、0.1 秒）、S3 attach 54（112、1 ms）、S4 405（1,277、4 ms）、S5 72（241、1 ms）。`always` 全性質に反例なし、`sometimes` 全性質に到達例あり。S2 の「レガシーと非 ARB staging は不変」と「物理削除は管理下・非レガシーのみ」は、GC 判定から形式（`!legacy`）を外す変異、場所（`managed`）を外す変異、staging 清掃から所有者印の確認を外す変異のいずれでも反例が出ることを確かめた |
 | Proptest | G1〜G7 は `cargo test --workspace` で全件成功（既定試行回数） |
-| Miri | M1 `arb-os shm::` 5 件成功・FS/mmap の 7 件は除外（109 秒）、M2 `arb-core` 70 件成功（`PROPTEST_CASES=8`、24 秒）、M2 `arb-media mp4::` 2 件成功・FS の 2 件は除外（23 秒）。未定義動作・データ競合の報告なし |
+| Miri | M1 `arb-os shm::` 5 件成功・FS/mmap の 7 件は除外（109 秒）、M2 `arb-core` 94 件成功（`PROPTEST_CASES=8`、87 秒、2026-11-27。被覆台帳・引き継ぎ選択・表示開始の試験を含む）、M2 `arb-media mp4::` 2 件成功・FS の 2 件は除外（23 秒）。未定義動作・データ競合の報告なし |
 | Konsist | `ArchitectureKonsistTest` 7 件成功（KON-1〜KON-6 と走査範囲の確認。KON-6 は PDD G8 で追加し、`ArbViewModels.kt` に「音声キャプチャ非対応」の文字列を書き戻すと失敗することを確認）。`buildPlugin` の配布 ZIP に `konsist` も JUnit などのテスト専用 JAR も含まれない |
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |

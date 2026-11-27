@@ -1331,6 +1331,7 @@
       "additionalProperties": false
     },
     "SaveOutcomeResponse": {"allOf":[{"$ref":"#/$defs/SaveFields"}],"unevaluatedProperties":false},
+    "WarningDetail": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "required": ["code", "message"], "additionalProperties": false},
     "SaveFields": {
       "type": "object",
       "properties": {
@@ -1346,7 +1347,13 @@
         "warning_codes": {"type": "array", "items": {"type": "string"}},
         "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type": "null"}]},
         "window_shortfall": {"type": ["boolean", "null"]},
-        "warnings": {"type": ["array", "null"], "items": {"type": "string"}},
+        "warnings": {"type": ["array", "null"], "items": {"type": "string"}, "description": "warning_details の表示文。"},
+        "warning_details": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}, "description": "警告の正本。各 code・message が順に warning_codes・warnings に対応。"},
+        "log_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓内の logcat 稼働時間（ms）。log_shortfall の判定値。ログ行の時刻幅は actual_log_duration_ms。"},
+        "video_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓内の映像稼働時間（ms、静止中も含む）。"},
+        "carried_in_frame": {"type": ["boolean", "null"], "description": "被覆に基づき窓前フレームを先頭に引き継いだか。"},
+        "static_hold_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓両端の同一フレーム表示時間（ms、参考値）。"},
+        "info_codes": {"type": ["array", "null"], "items": {"type": "string"}, "description": "静止保持は video_static_hold（情報）。"},
         "requested_duration_secs": {"type": ["integer", "null"], "minimum": 0},
         "job": {"$ref": "#/$defs/SaveJobView"},
         "bundle_id": {"type": ["string", "null"]},
@@ -1373,7 +1380,7 @@
         "warning_codes", "video_shortfall", "log_shortfall", "logcat_completeness",
         "window_shortfall",
         "warnings"
-      ]
+      , "warning_details"]
     },
     "SaveScreenshotResponse": {
       "type": "object",
