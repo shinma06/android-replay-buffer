@@ -38,10 +38,16 @@ impl Violation {
         )
     }
     fn range(field: &str, got: &Value, min: &Value, max: &Value) -> Self {
+        Self::bounds(field, got, min, max, "値", "")
+    }
+    fn count(field: &str, got: &Value, min: &Value, max: &Value) -> Self {
+        Self::bounds(field, got, min, max, "件数", " 件")
+    }
+    fn bounds(field: &str, got: &Value, min: &Value, max: &Value, noun: &str, unit: &str) -> Self {
         let range = match (min.is_null(), max.is_null()) {
-            (false, false) => format!("{min}..={max}"),
-            (true, _) => format!("{max} 以下"),
-            _ => format!("{min} 以上"),
+            (false, false) => format!("{min}..={max}{unit}"),
+            (true, _) => format!("{max}{unit} 以下"),
+            _ => format!("{min}{unit} 以上"),
         };
         let mut details = json!({"field":field,"got":got});
         if !min.is_null() {
@@ -51,7 +57,7 @@ impl Violation {
             details["max"] = max.clone();
         }
         Self::new(
-            format!("{field} の値 {got} は許容範囲 {range} の外です。"),
+            format!("{field} の{noun} {got} は許容範囲 {range} の外です。"),
             details,
             format!("{field} は {range} の範囲で指定してください。"),
         )
@@ -130,7 +136,7 @@ fn validate_node(schema: &Value, v: &Value, path: &str, root: &Value) -> Result<
         if schema["minItems"].as_u64().is_some_and(|n| len < n)
             || schema["maxItems"].as_u64().is_some_and(|n| len > n)
         {
-            return Err(Violation::range(
+            return Err(Violation::count(
                 field,
                 &json!(len),
                 &schema["minItems"],
@@ -267,6 +273,18 @@ fn validate_value(schema: &Value, v: &Value, field: &str) -> Result<(), Violatio
             .expect("valid schema pattern")
             .is_match(s)
     {
+        if let Some(words) = case_insensitive_words(p) {
+            let allowed = json!(words);
+            return Err(Violation::new(
+                format!(
+                    "{field} の値 {v} は候補 {allowed} に含まれません（大文字・小文字は区別しません）。"
+                ),
+                json!({"field":field,"allowed":allowed,"got":v}),
+                format!(
+                    "{field} は {allowed} から選んでください（大文字・小文字は区別しません）。"
+                ),
+            ));
+        }
         return Err(Violation::new(
             format!("{field} の値 {v} は書式 {p} に一致しません。"),
             json!({"field":field,"pattern":p,"got":v}),
@@ -291,6 +309,28 @@ fn validate_value(schema: &Value, v: &Value, field: &str) -> Result<(), Violatio
         ));
     }
     Ok(())
+}
+
+/// Words of a case-insensitive enumeration written as `^([Aa]|[Bb][Cc])$`, in upper case.
+fn case_insensitive_words(pattern: &str) -> Option<Vec<String>> {
+    let body = pattern.strip_prefix("^(")?.strip_suffix(")$")?;
+    body.split('|')
+        .map(|word| {
+            let chars: Vec<char> = word.chars().collect();
+            let letters: Option<String> = chars
+                .chunks(4)
+                .map(|c| match c {
+                    ['[', upper, lower, ']']
+                        if upper.is_ascii_uppercase() && upper.to_ascii_lowercase() == *lower =>
+                    {
+                        Some(*upper)
+                    }
+                    _ => None,
+                })
+                .collect();
+            letters.filter(|w| !w.is_empty())
+        })
+        .collect()
 }
 
 // Our closed composed record schemas declare fields in properties and allOf/$ref branches.

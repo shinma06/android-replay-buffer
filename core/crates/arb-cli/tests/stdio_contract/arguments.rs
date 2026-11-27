@@ -82,6 +82,35 @@ pub(super) fn verify(c: &mut Client) {
         &["state", "nope", "active", "trashed", "purging"],
         &allowed,
     );
+    let legacy_assert =
+        c.schemas["arb_query_logs"]["inputSchema"]["properties"]["level"]["pattern"]
+            .as_str()
+            .unwrap()
+            .starts_with("^([Aa]|");
+    let levels: Vec<&str> = legacy_assert
+        .then_some("A")
+        .into_iter()
+        .chain([
+            "V", "D", "I", "W", "E", "F", "VERBOSE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR",
+            "FATAL", "ASSERT",
+        ])
+        .collect();
+    rejected(
+        c,
+        "arb_query_logs",
+        &json!({"bundle_id":"fixture","level":"Z"}),
+        &json!({"field":"level","allowed":levels,"got":"Z"}),
+        &["level", "Z", "VERBOSE", "ERROR", "大文字"],
+        &["ERROR", "ASSERT"],
+    );
+    rejected(
+        c,
+        "arb_inspect_frames",
+        &json!({"bundle_id":"fixture","mode":"single","frame_indices":[]}),
+        &json!({"field":"frame_indices","min":1,"max":16,"got":0}),
+        &["frame_indices", "件数 0", "1..=16"],
+        &["1..=16 件"],
+    );
     for (tool, first, second, args) in [
         (
             "arb_save",
