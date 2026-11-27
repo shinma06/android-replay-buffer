@@ -3,6 +3,7 @@ use crate::absolutize_path;
 use crate::mcp::{
     args::{absolutize_optional_path_field, optional_abs_path},
     image_block,
+    project::time::Zone,
 };
 use arb_core::base64_encode;
 use serde_json::{Map, Value, json};
@@ -101,6 +102,11 @@ impl McpServer {
         } else {
             None
         };
+        Zone::from_args(args).localize_unix_ms(
+            &mut resp,
+            "captured_at_unix_ms",
+            "captured_at_local",
+        );
         let output = ToolOutput::new(resp);
         Ok(match image {
             Some(image) => output.with_image(image),

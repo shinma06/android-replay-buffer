@@ -1641,7 +1641,8 @@ impl DaemonState {
         let parsed: BundleRefParams = parse_params(params)?;
         let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         let reader = open_bundle(&path)?;
-        let screens = reader.screens()?;
+        let screens =
+            inspect_export::screens_with_offsets(reader.as_ref(), &reader.display_frames()?)?;
         Ok(serde_json::to_value(TimelineScreensResponse { screens })?)
     }
 

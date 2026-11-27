@@ -164,6 +164,31 @@ pub(super) fn verify(c: &mut Client) {
         &["bundle_id", "all_missing"],
         &["bundle_id", "all_missing"],
     );
+    // #572: exactly one PNG destination, and no way to replace an existing file.
+    rejected(
+        c,
+        "arb_export_frame_png",
+        &json!({"bundle_id":"fixture","frame_index":0,"output_path":"a.png","output_dir":"d"}),
+        &json!({"conflicts":["output_path","output_dir"]}),
+        &["output_path", "output_dir"],
+        &["output_path", "output_dir"],
+    );
+    rejected(
+        c,
+        "arb_export_frame_png",
+        &json!({"bundle_id":"fixture","frame_index":0}),
+        &json!({"one_of_required":["output_path","output_dir"]}),
+        &["output_path", "output_dir"],
+        &["output_path", "output_dir"],
+    );
+    rejected(
+        c,
+        "arb_export_frame_png",
+        &json!({"bundle_id":"fixture","frame_index":0,"output_path":"a.png","overwrite":true}),
+        &json!({"field":"overwrite","unknown":"overwrite"}),
+        &["overwrite"],
+        &["上書きされません", "output_dir"],
+    );
     rejected(
         c,
         "arb_timeline_overview",

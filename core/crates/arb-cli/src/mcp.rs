@@ -2,7 +2,7 @@
 //!
 //! Exposes Android Replay Buffer live capture, WORM bundle inspection, contact-sheet /
 //! tap-crop AI visual framing, and strict integer-frame trimming (`share.mp4` / WORM bundle)
-//! over newline-delimited JSON-RPC 2.0 on stdin/stdout (2024-11-05 through 2025-11-25).
+//! over newline-delimited JSON-RPC 2.0 on stdin/stdout (every revision in [`ProtocolVersion`]).
 //!
 //! Strict stdio discipline: **ZERO** logs or non-JSON-RPC bytes are ever written to stdout;
 //! diagnostics go exclusively to stderr.
@@ -21,6 +21,7 @@ mod catalog;
 mod errors;
 mod output;
 use output::ToolOutput;
+mod project;
 mod tools;
 mod version;
 pub(crate) use errors::Failure;
@@ -136,7 +137,7 @@ impl McpServer {
         };
 
         if let Some(batch) = msg.as_array() {
-            // JSON-RPC batch (required by MCP 2025-03-26): answer each element, omit notifications.
+            // JSON-RPC batch (revisions that `supports_batch`): answer each element, omit notifications.
             if !self.version.supports_batch() {
                 return Some(rpc_error(
                     &Value::Null,

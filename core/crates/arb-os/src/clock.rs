@@ -72,6 +72,88 @@ pub const fn detect_pc_sleep(
     }
 }
 
+/// UTC offset of the host's local time zone at `unix_secs`, in seconds east of UTC.
+///
+/// Used only to render opt-in local wall-clock fields; stored evidence always stays UTC.
+/// Returns `None` when the platform cannot resolve the zone for that instant.
+#[must_use]
+pub fn host_utc_offset_secs(unix_secs: i64) -> Option<i32> {
+    local_zone::utc_offset_secs(unix_secs)
+}
+
+#[cfg(unix)]
+mod local_zone {
+    use std::mem::MaybeUninit;
+
+    unsafe extern "C" {
+        fn tzset();
+    }
+
+    pub(super) fn utc_offset_secs(unix_secs: i64) -> Option<i32> {
+        let time = libc::time_t::try_from(unix_secs).ok()?;
+        let mut tm = MaybeUninit::<libc::tm>::zeroed();
+        // SAFETY: `tzset` takes no arguments and only refreshes the process time-zone state.
+        unsafe { tzset() };
+        // SAFETY: both pointers reference valid stack storage for the call's duration.
+        let out = unsafe { libc::localtime_r(&raw const time, tm.as_mut_ptr()) };
+        if out.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null result means `localtime_r` initialized `tm`.
+        let tm = unsafe { tm.assume_init() };
+        i32::try_from(tm.tm_gmtoff).ok()
+    }
+}
+
+#[cfg(windows)]
+mod local_zone {
+    use std::mem::MaybeUninit;
+
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+    };
+
+    const WINDOWS_TO_UNIX_EPOCH_100NS: i128 = 116_444_736_000_000_000;
+    const TICKS_PER_SEC: i128 = 10_000_000;
+
+    fn file_time(ticks: i128) -> Option<FILETIME> {
+        let ticks = u64::try_from(ticks).ok()?;
+        Some(FILETIME {
+            dwLowDateTime: u32::try_from(ticks & 0xFFFF_FFFF).ok()?,
+            dwHighDateTime: u32::try_from(ticks >> 32).ok()?,
+        })
+    }
+
+    pub(super) fn utc_offset_secs(unix_secs: i64) -> Option<i32> {
+        let utc_ticks = i128::from(unix_secs) * TICKS_PER_SEC + WINDOWS_TO_UNIX_EPOCH_100NS;
+        let utc_file = file_time(utc_ticks)?;
+        let mut utc = MaybeUninit::<SYSTEMTIME>::uninit();
+        let mut local = MaybeUninit::<SYSTEMTIME>::uninit();
+        let mut local_file = MaybeUninit::<FILETIME>::uninit();
+        // SAFETY: both pointers reference valid stack storage for the call's duration.
+        if unsafe { FileTimeToSystemTime(&raw const utc_file, utc.as_mut_ptr()) } == 0 {
+            return None;
+        }
+        // SAFETY: `utc` was initialized above; a null zone selects the host's active time zone.
+        if unsafe {
+            SystemTimeToTzSpecificLocalTime(std::ptr::null(), utc.as_ptr(), local.as_mut_ptr())
+        } == 0
+        {
+            return None;
+        }
+        // SAFETY: `local` was initialized above and `local_file` is writable stack storage.
+        if unsafe { SystemTimeToFileTime(local.as_ptr(), local_file.as_mut_ptr()) } == 0 {
+            return None;
+        }
+        // SAFETY: `SystemTimeToFileTime` succeeded and initialized `local_file`.
+        let local_file = unsafe { local_file.assume_init() };
+        let local_ticks =
+            (i128::from(local_file.dwHighDateTime) << 32) | i128::from(local_file.dwLowDateTime);
+        i32::try_from((local_ticks - utc_ticks) / TICKS_PER_SEC).ok()
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use std::io;
@@ -269,6 +351,15 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_utc_offset_is_a_real_zone_offset() {
+        for unix_secs in [0, 1_704_067_200, 1_798_000_000] {
+            let offset = super::host_utc_offset_secs(unix_secs).expect("host zone resolves");
+            // Historical zones may use second-level offsets (Africa/Monrovia 1970: -00:44:30).
+            assert!(offset.abs() <= 18 * 3600, "{offset}");
+        }
+    }
+
     use std::thread;
     use std::time::Duration;
 

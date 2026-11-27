@@ -1,6 +1,9 @@
 use super::{JSONRPC_INVALID_PARAMS, validate::Violation, version::ProtocolVersion};
 use crate::rpc::RpcClientError;
 use serde_json::{Value, json};
+/// PNG export never replaces a file, so the remedy is always a new destination.
+const EXPORT_PNG_CONFLICT: &str = "既存のファイルは上書きされません。別の output_path、または自動命名の output_dir を指定してください。";
+
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(super) rpc_code: i32,
@@ -54,6 +57,7 @@ impl Failure {
     pub(super) fn from_violation(tool: &str, violation: Violation) -> Self {
         let hint = match (tool, violation.details["unknown"].as_str()) {
             ("arb_screenshot", Some("overwrite")) => "別の output_path を指定してください。".into(),
+            ("arb_export_frame_png", Some("overwrite")) => EXPORT_PNG_CONFLICT.into(),
             ("arb_export_trim", Some("trash_original")) => {
                 "元バンドルをごみ箱に移すには arb_trash_bundle を実行してください。".into()
             }
@@ -87,7 +91,7 @@ impl Failure {
                         Some("別の output_path を指定してください。")
                     }
                 }
-                "arb_export_frame_png" => Some("別の output_path を指定してください。"),
+                "arb_export_frame_png" => Some(EXPORT_PNG_CONFLICT),
                 _ => None,
             };
             self.hint = hint.map(str::to_owned);

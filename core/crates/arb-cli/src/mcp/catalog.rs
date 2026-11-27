@@ -25,8 +25,8 @@ struct Overlay {
 }
 #[derive(Deserialize)]
 enum Capability {
-    #[serde(rename = "legacyErrorRows")]
-    ErrorRows,
+    #[serde(rename = "legacyFullLogRows")]
+    FullLogRows,
     #[serde(rename = "legacyScreenshotInline")]
     ScreenshotInline,
     #[serde(rename = "legacyScreenshotOverwrite")]
@@ -39,7 +39,7 @@ enum Capability {
 impl Capability {
     fn applies(&self, version: ProtocolVersion) -> bool {
         match self {
-            Self::ErrorRows => version.legacy_error_rows(),
+            Self::FullLogRows => !version.default_compact_logs(),
             Self::ScreenshotInline => version.legacy_screenshot_inline(),
             Self::ScreenshotOverwrite => version.allows_legacy_screenshot_overwrite(),
             Self::TrashOriginal => version.allows_legacy_trash_original(),
@@ -118,10 +118,39 @@ fn build_catalog(version: ProtocolVersion) -> Vec<Value> {
             .chain(errors.as_array().expect("error types").iter())
             .map(|t| json!({"$ref":format!("#/$defs/{}",t.as_str().expect("definition name"))}))
             .collect();
-        tool["outputSchema"] =
-            local_output_schema(json!({"type":"object","oneOf":variants}), &defs);
+        let mut output = local_output_schema(json!({"type":"object","oneOf":variants}), &defs);
+        drop_implied_object_type(&mut output);
+        tool["outputSchema"] = output;
     }
     tools
+}
+
+/// The root already requires an object, so its inlined variants (and their `allOf` parts) do not
+/// need to repeat `"type": "object"`. Validation results are unchanged.
+fn drop_implied_object_type(root: &mut Value) {
+    fn strip(node: &mut Value) {
+        if let Some(obj) = node.as_object_mut()
+            && obj.get("type").is_some_and(|t| t == "object")
+        {
+            obj.remove("type");
+        }
+    }
+    for variant in root
+        .get_mut("oneOf")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        strip(variant);
+        for part in variant
+            .get_mut("allOf")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            strip(part);
+        }
+    }
 }
 
 /// Inline single-use definitions and keep repeated structures once within each tool's schema.

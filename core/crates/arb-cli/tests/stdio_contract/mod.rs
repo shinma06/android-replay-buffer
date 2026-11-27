@@ -1,7 +1,11 @@
 //! All-tool contract test against an isolated arbd with synthetic capture and ADB discovery.
-use super::{build_minimal_valid_png, seed_bundle};
+use super::{
+    BASE_BT_NS, FRAME_STEP_NS, build_minimal_valid_png, seed_bundle, seed_bundle_with_logs,
+};
 use arb_adb::mock::FaultScenario;
+use arb_core::bundle::{LogRecord, RecordBucket};
 use arb_core::config::CaptureMode;
+use arb_core::time::{TimeAlignment, TimestampSemantics};
 use arb_os::paths::ArbPaths;
 use arb_os::rpc::RpcClient;
 use arbd::{DaemonConfig, DaemonServer};
@@ -247,6 +251,10 @@ fn registry(c: &mut Client) {
         }
         if input["properties"].get("bundle_id").is_some() {
             base["bundle_id"] = json!("fixture");
+        }
+        if name == "arb_export_frame_png" {
+            // Exactly one destination is required (`oneOf`).
+            base["output_path"] = json!("out.png");
         }
         validate::normalize_integers(input, &mut base);
         validate::validate(input, &base, name).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -557,7 +565,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     for (version, inline, expected) in [
         ("2024-11-05", None, true),
         ("2025-03-26", None, true),
-        ("2025-06-18", None, true),
+        ("2025-06-18", None, false),
         ("2025-11-25", None, false),
         ("2025-11-25", Some(true), true),
     ] {
@@ -590,10 +598,28 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         let hint = body["hint"].as_str().unwrap();
         assert!(hint.contains("output_path"), "{hint}");
         assert_eq!(hint.contains("overwrite"), version != "2025-11-25");
+        // The CONFLICT hint offers overwrite exactly where the schema accepts it.
+        let accepts = c.result("tools/list", json!({}))["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "arb_screenshot")
+            .unwrap()["inputSchema"]["properties"]
+            .get("overwrite")
+            .is_some();
+        assert_eq!(hint.contains("overwrite"), accepts, "{version}");
     }
+    c.init("2025-11-25");
+    let shot = c.tool(
+        "arb_screenshot",
+        json!({"serial":"contract-device","output_dir":root.path().join("shots"),"time_zone":"host"}),
+    );
+    assert_local_time(&shot["captured_at_local"]);
     fs::remove_file(adb_dir.join("devices")).unwrap();
     let overview = c.tool("arb_timeline_overview", target.clone());
     assert!(overview["logcat_completeness"].is_object());
+    assert_eq!(overview["noise_candidates"], json!([]));
+    noise_and_local_time(&mut c, root.path(), &paths);
     c.tool(
         "arb_query_logs",
         json!({"bundle_id":id,"level":"eRrOr","whole_word":true,"keyword":"failed","limit":1}),
@@ -613,6 +639,8 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
                 .insert(def["name"].as_str().unwrap().into(), def.clone());
         }
         arguments::verify(&mut c);
+        log_fields(&mut c, id, version);
+        inspect_shape(&mut c, id);
         let dest = root.path().join(format!("external-{version}"));
         fs::create_dir(&dest).unwrap();
         for (tool, args) in [
@@ -622,7 +650,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             ),
             (
                 "arb_save_and_inspect",
-                json!({"dest_dir":dest,"drain_timeout_ms":0,"logs_only":version<"2025-06-18","memo":"調査"}),
+                json!({"dest_dir":dest,"drain_timeout_ms":0,"logs_only":version<"2025-06-18","memo":"調査","exclude_tags":["VendorHal"],"max_errors":5}),
             ),
         ] {
             let result = c.result("tools/call", json!({"name":tool,"arguments":args}));
@@ -651,6 +679,13 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
                 let path = Path::new(checked["save"]["bundle_path"].as_str().unwrap());
                 assert!(path.is_dir() && path.starts_with(&dest));
                 assert_eq!(checked["save"]["note"], "調査");
+                same_errors_as_overview(
+                    &mut c,
+                    &mut rpc,
+                    &checked,
+                    &json!({"exclude_tags":["VendorHal"]}),
+                    5,
+                );
             } else {
                 assert_eq!(checked["frames"][0]["frame_index"], 0);
             }
@@ -670,12 +705,26 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     );
     let collision=c.result("tools/call",json!({"name":"arb_export_frame_png","arguments":{"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}}));
     assert_eq!(collision["structuredContent"]["rpc_code"], -32002);
-    assert!(
-        collision["structuredContent"]["hint"]
-            .as_str()
-            .unwrap()
-            .contains("output_path")
-    );
+    let hint = collision["structuredContent"]["hint"].as_str().unwrap();
+    for word in ["上書きされません", "output_path", "output_dir"] {
+        assert!(hint.contains(word), "{hint}");
+    }
+    // Automatic names never collide with each other or with existing files.
+    let pngs = root.path().join("pngs");
+    let written: Vec<_> = (0..2)
+        .map(|_| {
+            let out = c.tool(
+                "arb_export_frame_png",
+                json!({"bundle_id":id,"frame_index":2,"output_dir":pngs}),
+            );
+            let path = std::path::PathBuf::from(out["output_path"].as_str().unwrap());
+            assert!(path.starts_with(&pngs) && path.is_file(), "{out}");
+            assert_eq!(out["report"]["frame_index"], 2);
+            path
+        })
+        .collect();
+    assert_ne!(written[0], written[1]);
+    assert!(written.iter().all(|p| p.is_file()));
     let reversed=c.result("tools/call",json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"contact_sheet","start_frame":12,"end_frame":4}}));
     assert_eq!(reversed["structuredContent"]["rpc_code"], -32602);
     for format in ["share_mp4", "bundle"] {
@@ -830,4 +879,259 @@ fn tasks(c: &mut Client) {
         "CANCELLED"
     );
     assert_eq!(c.result("tasks/get", params)["status"], "cancelled");
+}
+
+/// `time_zone: "host"` adds RFC 3339 local time with an explicit numeric offset.
+fn assert_local_time(value: &Value) {
+    let text = value
+        .as_str()
+        .unwrap_or_else(|| panic!("local time: {value}"));
+    let b = text.as_bytes();
+    assert_eq!(b.len(), 29, "{text}");
+    assert!(
+        matches!(b[23], b'+' | b'-') && b[26] == b':' && b[10] == b'T' && b[19] == b'.',
+        "{text}"
+    );
+}
+
+/// #574: repeated non-fatal tags are suggested, never removed; fatal tags are never suggested.
+fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
+    let row = |seq: u64, level: &str, tag: &str, message: &str| {
+        let frame = i64::try_from(seq % 17).unwrap();
+        let bt = BASE_BT_NS + frame * FRAME_STEP_NS;
+        LogRecord {
+            seq,
+            boot_id: Some("boot-mcp".into()),
+            header_epoch_ns: Some(
+                1_795_829_025_123_000_000 + i64::try_from(seq).unwrap() * 1_000_000,
+            ),
+            device_read_boottime_ns: Some(bt),
+            pc_ingest_cont_ns: bt,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-mcp".into(),
+                boottime_ns: bt,
+                half_width_ns: 1_000_000,
+                semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+            },
+            bucket: RecordBucket::Main,
+            level: Some(level.into()),
+            tag: Some(tag.into()),
+            pid: Some(42),
+            tid: Some(42),
+            uid: None,
+            package_name: None,
+            message: message.into(),
+        }
+    };
+    let mut extra = Vec::new();
+    for i in 0..12 {
+        extra.push(row(
+            10 + i,
+            "E",
+            "VendorHal",
+            if i % 2 == 0 {
+                "poll failed: -110"
+            } else {
+                "poll failed: -11"
+            },
+        ));
+    }
+    for i in 0..8 {
+        extra.push(row(30 + i, "E", "AudioHal", "underrun"));
+    }
+    extra.push(row(40, "F", "audiohal", "fatal underrun"));
+    extra.push(row(41, "E", "MyApp", "request failed"));
+    extra.push(row(42, "E", "MyApp", "retry failed"));
+    let bundle = seed_bundle_with_logs(
+        work,
+        &paths.data_dir.join("external-noise"),
+        "bundle-noise",
+        extra,
+    );
+    c.init("2025-11-25");
+    let target = json!({"bundle_id":bundle,"time_zone":"host"});
+    let all = c.tool("arb_timeline_overview", target.clone());
+    assert_eq!(
+        all["noise_candidates"],
+        json!([{"tag":"VendorHal","total_count":12,"unique_messages":2,"sample_message":"poll failed: -11"}])
+    );
+    assert_eq!(all["total_error_logs"], 24);
+    assert_eq!(all["unique_error_logs"], 7);
+    let highlights = all["error_log_highlights"].as_array().unwrap();
+    assert!(
+        highlights.iter().any(|h| h["tag"] == "VendorHal"),
+        "suggesting a tag hides nothing"
+    );
+    for h in highlights.iter().filter(|h| h["tag"] == "VendorHal") {
+        assert_local_time(&h["timestamp_local"]);
+    }
+    // Excluding is the caller's explicit choice and removes exactly that tag's rows.
+    let mut args = target;
+    args["exclude_tags"] = json!(["vendorhal"]);
+    let excluded = c.tool("arb_timeline_overview", args);
+    assert_eq!(excluded["total_error_logs"], 12);
+    assert_eq!(excluded["noise_candidates"], json!([]));
+    assert_eq!(excluded["crashes"], all["crashes"]);
+    let rows = c.tool(
+        "arb_query_logs",
+        json!({"bundle_id":bundle,"tag":"VendorHal","time_zone":"host"}),
+    );
+    assert_eq!(
+        rows["returned_count"], 12,
+        "query_logs is never filtered by suggestions"
+    );
+    assert_eq!(rows["fields"], "compact");
+    assert_eq!(rows["boot_id"], "boot-mcp");
+    for log in rows["logs"].as_array().unwrap() {
+        assert_local_time(&log["timestamp_local"]);
+        assert!(log.get("boot_id").is_none() && log.get("alignment").is_none());
+    }
+    let utc = c.tool(
+        "arb_query_logs",
+        json!({"bundle_id":bundle,"tag":"VendorHal"}),
+    );
+    assert!(
+        utc["logs"][0].get("timestamp_local").is_none(),
+        "UTC is the default"
+    );
+    let listed = c.tool("arb_list_bundles", json!({"time_zone":"host"}));
+    for entry in listed["bundles"].as_array().unwrap() {
+        assert_local_time(&entry["created_local"]);
+    }
+    let listed = c.tool("arb_list_bundles", json!({}));
+    assert!(listed["bundles"][0].get("created_local").is_none());
+}
+
+/// #571: `fields` defaults to compact only where structured content exists.
+fn log_fields(c: &mut Client, id: &str, version: &str) {
+    let compact = version >= "2025-06-18";
+    let page = c.tool("arb_query_logs", json!({"bundle_id":id}));
+    assert_eq!(page["fields"], if compact { "compact" } else { "full" });
+    assert_eq!(
+        page["logs"][0].get("alignment").is_none(),
+        compact,
+        "{version}"
+    );
+    let full = c.tool("arb_query_logs", json!({"bundle_id":id,"fields":"full"}));
+    let light = c.tool("arb_query_logs", json!({"bundle_id":id,"fields":"compact"}));
+    assert_eq!(light["boot_id"], "boot-mcp");
+    assert_eq!(full["total_matched"], light["total_matched"]);
+    for (f, l) in full["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(light["logs"].as_array().unwrap())
+    {
+        for key in [
+            "seq",
+            "timestamp_utc",
+            "offset_ms",
+            "frame_index",
+            "level",
+            "tag",
+            "message",
+        ] {
+            assert_eq!(f[key], l[key], "{key}");
+        }
+        assert_eq!(f["boot_id"], "boot-mcp");
+    }
+}
+
+/// #571: `include_images` adds a PNG block; the body keeps one shape.
+fn inspect_shape(c: &mut Client, id: &str) {
+    let args = json!({"bundle_id":id,"mode":"contact_sheet","start_frame":0,"end_frame":5});
+    let meta = c.tool("arb_inspect_frames", args.clone());
+    let mut inline_args = args;
+    inline_args["include_images"] = json!(true);
+    let r = c.result(
+        "tools/call",
+        json!({"name":"arb_inspect_frames","arguments":inline_args}),
+    );
+    let images = r["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["type"] == "image")
+        .count();
+    assert_eq!(images, 1);
+    let with = c.check_tool("arb_inspect_frames", r);
+    for key in [
+        "resource_links",
+        "mode",
+        "bundle_id",
+        "frame_indices_rendered",
+        "width",
+        "height",
+        "screens",
+        "frames",
+    ] {
+        assert_eq!(with[key], meta[key], "{key}");
+    }
+    assert!(meta.get("png_path").is_none());
+    assert!(with["png_path"].is_string() && with["png_bytes_len"].as_u64() > Some(0));
+    let screens = meta["screens"].as_array().unwrap();
+    let mut previous = None;
+    for frame in meta["frames"].as_array().unwrap() {
+        if let Some(i) = frame["screen_index"].as_u64() {
+            assert!(usize::try_from(i).unwrap() < screens.len());
+        }
+        let ns = frame["offset_ns"].as_u64().unwrap();
+        assert_eq!(frame["offset_ms"].as_u64(), Some(ns / 1_000_000));
+        assert!(previous < Some(ns));
+        previous = Some(ns);
+    }
+    assert_eq!(meta["frames"][0]["offset_ns"], 0);
+}
+
+/// #563: the saved bundle's error view equals `arb_timeline_overview` with the same filters.
+fn same_errors_as_overview(
+    c: &mut Client,
+    rpc: &mut RpcClient,
+    checked: &Value,
+    filters: &Value,
+    max: u64,
+) {
+    // The shared table names which arguments correspond and which fields must be equal.
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/specs/mcp-tools-table.json"
+    ))
+    .unwrap();
+    let parity = &table["investigationParity"];
+    let saved = &checked["save"]["bundle_id"];
+    let mut args = json!({"bundle_id":saved});
+    for (save_arg, overview_arg) in parity["arguments"].as_object().unwrap() {
+        let value = filters
+            .get(save_arg)
+            .cloned()
+            .or_else(|| (save_arg == "max_errors").then(|| json!(max)));
+        if let Some(value) = value {
+            args[overview_arg.as_str().unwrap()] = value;
+        }
+    }
+    let ov = c.tool("arb_timeline_overview", args);
+    for (save_path, overview_path) in parity["fields"].as_object().unwrap() {
+        let mine = checked
+            .pointer(save_path)
+            .unwrap_or_else(|| panic!("{save_path}"));
+        let theirs = ov.pointer(overview_path.as_str().unwrap());
+        assert_eq!(Some(mine), theirs, "{save_path}");
+    }
+    let groups = &checked["error_logs"];
+    assert_eq!(
+        groups["returned_count"],
+        json!(ov["error_log_highlights"].as_array().unwrap().len())
+    );
+    assert_eq!(
+        groups["continuation"].is_null(),
+        groups["has_more"] == false
+    );
+    assert_eq!(groups["raw_query"]["tool"], "arb_query_logs");
+    assert_eq!(&groups["raw_query"]["arguments"]["bundle_id"], saved);
+    let summary = rpc
+        .call("timeline.summary", json!({"bundle_id_or_path":saved}))
+        .unwrap();
+    assert_eq!(
+        checked["summary"], summary,
+        "summary is the daemon response verbatim"
+    );
 }

@@ -44,11 +44,13 @@ impl ProtocolVersion {
     pub(super) fn allows_legacy_screenshot_overwrite(self) -> bool {
         self <= Self::V2025_06_18
     }
+    /// Before structured content, screenshots returned their PNG inline by default.
     pub(super) fn legacy_screenshot_inline(self) -> bool {
-        self <= Self::V2025_06_18
+        self <= Self::V2025_03_26
     }
-    pub(super) fn legacy_error_rows(self) -> bool {
-        self <= Self::V2025_06_18
+    /// Structured-content clients get light log rows unless they ask for `fields: "full"`.
+    pub(super) fn default_compact_logs(self) -> bool {
+        self >= Self::V2025_06_18
     }
     pub(super) fn legacy_result_fields(self) -> bool {
         self <= Self::V2025_06_18

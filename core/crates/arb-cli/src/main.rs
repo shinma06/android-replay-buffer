@@ -217,6 +217,14 @@ fn absolutize_bundle_target(target: &str) -> Result<String, CliError> {
     Ok(abs.to_string_lossy().into_owned())
 }
 
+/// Where `png` writes: an explicit new file, or an automatically named file in a directory.
+/// Neither form replaces an existing file (same contract as MCP `arb_export_frame_png`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PngDest {
+    File(PathBuf),
+    Dir(PathBuf),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandSpec {
     Help,
@@ -332,7 +340,7 @@ enum CommandSpec {
     Png {
         target: String,
         frame: u64,
-        out: PathBuf,
+        dest: PngDest,
     },
     ScrubBench {
         target: String,
@@ -1248,11 +1256,13 @@ fn parse_share_mp4_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 
 fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let raw = args.first().ok_or_else(|| {
-        CliError::usage("usage: arb-cli png <bundle-id-or-path> --frame <n> --out <file.png>")
+        CliError::usage(
+            "usage: arb-cli png <bundle-id-or-path> --frame <n> (--out <file.png> | --out-dir <dir>)",
+        )
     })?;
     let target = absolutize_bundle_target(raw)?;
     let mut frame = None;
-    let mut out = None;
+    let mut dest = None;
     let mut i = 1_usize;
 
     while i < args.len() {
@@ -1261,8 +1271,18 @@ fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 frame = Some(parse_u64(require_val(args, i, "--frame")?, "--frame")?);
                 i += 2;
             }
-            "--out" => {
-                out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
+            flag @ ("--out" | "--out-dir") => {
+                if dest.is_some() {
+                    return Err(CliError::usage(
+                        "png takes either --out or --out-dir, not both",
+                    ));
+                }
+                let path = absolutize_path(Path::new(require_val(args, i, flag)?))?;
+                dest = Some(if flag == "--out" {
+                    PngDest::File(path)
+                } else {
+                    PngDest::Dir(path)
+                });
                 i += 2;
             }
             other => return Err(CliError::usage(format!("unknown png option `{other}`"))),
@@ -1270,8 +1290,13 @@ fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 
     let frame = frame.ok_or_else(|| CliError::usage("png requires --frame <n>"))?;
-    let out = out.ok_or_else(|| CliError::usage("png requires --out <file.png>"))?;
-    Ok(CommandSpec::Png { target, frame, out })
+    let dest =
+        dest.ok_or_else(|| CliError::usage("png requires --out <file.png> or --out-dir <dir>"))?;
+    Ok(CommandSpec::Png {
+        target,
+        frame,
+        dest,
+    })
 }
 
 fn parse_scrub_bench_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
@@ -1545,11 +1570,21 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "trim result",
         ),
         CommandSpec::ShareMp4 { .. } => share_mp4_to_rpc(cmd),
-        CommandSpec::Png { target, frame, out } => (
-            "export.png",
-            json!({ "bundle_id_or_path": target, "frame_index": frame, "output_path": out }),
-            "png export",
-        ),
+        CommandSpec::Png {
+            target,
+            frame,
+            dest,
+        } => {
+            let (out, out_dir) = match dest {
+                PngDest::File(path) => (Some(path), None),
+                PngDest::Dir(path) => (None, Some(path)),
+            };
+            (
+                "export.png",
+                json!({ "bundle_id_or_path": target, "frame_index": frame, "output_path": out, "output_dir": out_dir }),
+                "png export",
+            )
+        }
         CommandSpec::Help
         | CommandSpec::Version
         | CommandSpec::PrepareUpgrade { .. }
@@ -1909,7 +1944,7 @@ COMMANDS:\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
-  png <BUNDLE_ID_OR_PATH> --frame <N> --out <FILE.png>\n  \
+  png <BUNDLE_ID_OR_PATH> --frame <N> (--out <FILE.png> | --out-dir <DIR>)   (never overwrites)\n  \
   scrub-bench <BUNDLE_ID_OR_PATH> [--frame <N>]\n  \
   mcp                    Run stdio JSON-RPC 2.0 MCP server (auto-starts arbd)\n  \
   -V, --version          Print the arb-cli version\n\n\
@@ -1932,7 +1967,7 @@ mod tests {
 
     use super::{
         CliError, CommandSpec, EXIT_CONFLICT, EXIT_GENERAL_ERROR, EXIT_NOT_FOUND,
-        EXIT_SAVE_FAILED_RETRYABLE, EXIT_USAGE_ERROR, OutputFormat, RPC_ERR_CONFLICT,
+        EXIT_SAVE_FAILED_RETRYABLE, EXIT_USAGE_ERROR, OutputFormat, PngDest, RPC_ERR_CONFLICT,
         RPC_ERR_INVALID_PARAMS, RPC_ERR_NOT_FOUND, format_error, parse_args, save_outcome_failed,
     };
     use crate::rpc::{AutoStartMode, RpcClientError};
@@ -2093,10 +2128,42 @@ mod tests {
             CommandSpec::Png {
                 target: abs_string("/tmp/b1"),
                 frame: 23,
-                out: abs("/tmp/f23.png"),
+                dest: PngDest::File(abs("/tmp/f23.png")),
             },
             "png command must match"
         );
+        let png_dir = parse_args(&vec_str(&[
+            "png",
+            "/tmp/b1",
+            "--frame",
+            "1",
+            "--out-dir",
+            "/tmp/pngs",
+        ]))
+        .expect("png --out-dir must parse");
+        assert_eq!(
+            png_dir.1,
+            CommandSpec::Png {
+                target: abs_string("/tmp/b1"),
+                frame: 1,
+                dest: PngDest::Dir(abs("/tmp/pngs")),
+            }
+        );
+        for bad in [
+            &["png", "/tmp/b1", "--frame", "1"][..],
+            &[
+                "png",
+                "/tmp/b1",
+                "--frame",
+                "1",
+                "--out",
+                "/tmp/a.png",
+                "--out-dir",
+                "/tmp/d",
+            ][..],
+        ] {
+            assert!(parse_args(&vec_str(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -2185,7 +2252,11 @@ mod tests {
         ]))
         .expect("png parses");
         match png_cmd {
-            CommandSpec::Png { target, frame, out } => {
+            CommandSpec::Png {
+                target,
+                frame,
+                dest: PngDest::File(out),
+            } => {
                 assert!(
                     PathBuf::from(&target).is_absolute(),
                     "relative bundle path must be absolutized: {target}"
