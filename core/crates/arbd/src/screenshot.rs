@@ -224,7 +224,7 @@ pub enum ScreenshotOverwrite {
 /// # Errors
 ///
 /// Returns [`DaemonError::InvalidParams`] if `png_bytes` fails PNG validation or `dest_path`
-/// has no parent directory, [`DaemonError::Conflict`] when `overwrite == ScreenshotOverwrite::NoReplace`
+/// has no parent directory, [`DaemonError::OutputExists`] when `overwrite == ScreenshotOverwrite::NoReplace`
 /// and `dest_path` already exists, or [`DaemonError::Io`] / [`DaemonError::Os`] on write failure.
 pub fn write_screenshot_atomic(
     dest_path: &Path,

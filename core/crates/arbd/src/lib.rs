@@ -633,10 +633,13 @@ impl DaemonState {
 
     fn handle_system_status(&self) -> Result<Value, DaemonError> {
         let (cfg, capture_view, ring_chunks, ring_bytes, ring_pinned, buffered_secs) = {
+            // Keep the configured preference stable until the capture snapshot is taken.
+            let _guard = self.lock(&self.config_update_lock, "config update")?;
+            let config = self.lock(&self.user_config, "user config")?.clone();
             let cap = self.lock_capture()?;
             let (chunks, bytes, pinned) = cap.ring_stats()?;
             (
-                self.lock(&self.user_config, "user config")?.clone(),
+                config,
                 cap.status_view(),
                 chunks,
                 bytes,
@@ -917,13 +920,13 @@ impl DaemonState {
         explicit: Option<&str>,
     ) -> Result<CaptureConfigChanges, DaemonError> {
         let enabled = intent == CaptureIntent::Armed;
-        let mut cfg = self.lock(&self.user_config, "user config")?;
+        let mut candidate = self.lock(&self.user_config, "user config")?.clone();
         let changes = CaptureConfigChanges {
-            capture_enabled: (cfg.capture_enabled != enabled)
-                .then_some((cfg.capture_enabled, enabled)),
+            capture_enabled: (candidate.capture_enabled != enabled)
+                .then_some((candidate.capture_enabled, enabled)),
             device_serial: explicit
-                .filter(|serial| Some(*serial) != cfg.device_serial.as_deref())
-                .map(|serial| (cfg.device_serial.clone(), Some(serial.to_owned()))),
+                .filter(|serial| Some(*serial) != candidate.device_serial.as_deref())
+                .map(|serial| (candidate.device_serial.clone(), Some(serial.to_owned()))),
         };
         if changes != CaptureConfigChanges::default() {
             if self.config_unreadable {
@@ -931,13 +934,12 @@ impl DaemonState {
                     "config.json could not be read".into(),
                 ));
             }
-            let mut candidate = cfg.clone();
             candidate.capture_enabled = enabled;
             if let Some((_, new)) = &changes.device_serial {
                 candidate.device_serial.clone_from(new);
             }
             self.config_store.save_atomic(&candidate)?;
-            *cfg = candidate;
+            *self.lock(&self.user_config, "user config")? = candidate;
         }
         Ok(changes)
     }

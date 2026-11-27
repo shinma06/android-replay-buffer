@@ -1123,7 +1123,8 @@
       "failure": {
         "kind": "rpc_error",
         "code": -32602,
-        "error_code": "NO_VIDEO"
+        "error_code": "NO_VIDEO",
+        "details": {"bundle_id": "logs-only"}
       },
       "expected": {
         "cli_exit_code": 2,

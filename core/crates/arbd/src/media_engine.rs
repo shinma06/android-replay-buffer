@@ -43,9 +43,26 @@ pub(super) fn required_video_path(
     reader: &dyn BundleReader,
     bundle_id: &str,
 ) -> Result<PathBuf, DaemonError> {
-    reader
-        .video_path()
-        .ok_or_else(|| DaemonError::NoVideo(bundle_id.to_owned()))
+    reader.video_path().ok_or_else(|| {
+        let manifest = reader.manifest_summary();
+        if manifest.streams.video.as_ref().is_some_and(|video| {
+            video.status == StreamStatus::Present
+                || (video.status == StreamStatus::Partial && video.frame_count > 0)
+        }) {
+            return arb_storage::StorageError::IntegrityMismatch {
+                path: manifest
+                    .legacy_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.files.video.clone())
+                    .unwrap_or_else(|| arb_storage::bundle_io::VIDEO_MP4_FILE.to_owned()),
+                reason: format!(
+                    "bundle {bundle_id} declares a video track but its file is unavailable"
+                ),
+            }
+            .into();
+        }
+        DaemonError::NoVideo(bundle_id.to_owned())
+    })
 }
 
 const DEFAULT_GOP_CACHE_GOPS: usize = 4;

@@ -1699,6 +1699,7 @@
         "hint": {"type": "string"},
         "retryable": {"type": "boolean"},
         "rpc_code": {"type": "integer"},
+        "details": {"type": "object"},
         "message": {"type": "string"}
       },
       "required": ["error_code", "rpc_code", "message", "hint", "retryable", "kind"]

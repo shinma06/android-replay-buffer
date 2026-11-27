@@ -1,5 +1,7 @@
 package io.github.shinma06.arb.model
 
+import com.google.gson.JsonObject
+
 const val IPC_PROTOCOL_VERSION: Int = 1
 const val JSONRPC_VERSION: String = "2.0"
 
@@ -16,6 +18,7 @@ data class RpcErrorDetails(
     val kind: String? = null,
     val hint: String? = null,
     val retryable: Boolean? = null,
+    val details: JsonObject? = null,
 )
 
 class ArbdRpcException(

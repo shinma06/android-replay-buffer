@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.ide
 
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.state.AuxStream
 import io.github.shinma06.arb.state.StreamLoadState
 import io.github.shinma06.arb.testsupport.Fault
@@ -26,6 +27,13 @@ import kotlin.test.assertTrue
  * The EDT is replaced by direct execution, so every assertion is deterministic.
  */
 class ArbStudioSilentFailureTest {
+    @Test
+    fun missingBundleRecoveryUsesTheRpcCodeAndSupportsFilesystemErrors() {
+        assertTrue(ArbdRpcException(-32001, "指定されたバンドルが見つかりません。").isMissingBundle())
+        assertFalse(ArbdRpcException(-32602, "video not found").isMissingBundle())
+        assertTrue(java.io.IOException("No such file or directory").isMissingBundle())
+    }
+
     private fun methodOf(stream: AuxStream) = when (stream) {
         AuxStream.FILMSTRIP -> "media.filmstrip"
         AuxStream.DISCONTINUITIES -> "timeline.discontinuities"

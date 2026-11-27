@@ -158,6 +158,8 @@ pub enum RpcClientError {
     Rpc {
         /// Application-specific error code from JSON-RPC error.data, when available.
         error_code: Option<String>,
+        /// Structured daemon context, including the diagnostic cause when available.
+        details: Option<Value>,
         /// Numeric JSON-RPC error code.
         code: i32,
         /// Human-readable server error message.
@@ -269,6 +271,12 @@ fn parse_response(raw: &str, id: u64) -> Result<Value, RpcClientError> {
         (None, Some(error)) => {
             let error: IncomingError = serde_json::from_value(error)?;
             Err(RpcClientError::Rpc {
+                details: error
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("details"))
+                    .filter(|v| v.is_object())
+                    .cloned(),
                 error_code: error
                     .data
                     .and_then(|d| d["error_code"].as_str().map(str::to_owned)),
@@ -489,6 +497,7 @@ impl RpcClient {
             && self.verify_hello()?["gc_dry_run"] != true
         {
             return Err(RpcClientError::Rpc {
+                details: None,
                 error_code: None,
                 code: -32601,
                 message: "GC プレビューには arbd の更新が必要です".into(),
@@ -501,6 +510,7 @@ impl RpcClient {
             && self.verify_hello()?["realtime_trim"] != true
         {
             return Err(RpcClientError::Rpc {
+                details: None,
                 error_code: None,
                 code: -32601,
                 message: "実時間トリムには arbd の更新が必要です".into(),
@@ -514,6 +524,7 @@ impl RpcClient {
             && self.verify_hello()?["standalone_share_trim"] != true
         {
             return Err(RpcClientError::Rpc {
+                details: None,
                 error_code: None,
                 code: -32601,
                 message: "共有 MP4 の出力方式を選ぶには arbd の更新が必要です".into(),

@@ -19,7 +19,7 @@ satisfies:
 
 `tools/list` は `initialize` で交渉した版に従い、全 20 ツールを 1 応答で返す（`nextCursor` なし）。各ツールの入出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
 
-公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は `structuredContent` と後方互換の JSON テキストで同じ値を伝える。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE` を識別する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/contract.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は `structuredContent` と後方互換の JSON テキストで同じ値を伝える。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE`、映像トラックのない入力 `NO_VIDEO` を識別する。CLI の JSON と MCP のエラー本体はデーモンの `error.data.details` を任意の `details` オブジェクトとして保持する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/contract.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
 | 用途 | `tools/list` の公開名（20 件） |
 | --- | --- |

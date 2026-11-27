@@ -187,7 +187,7 @@ fn build_real_audio_m4a(path: &Path, sample_rate_hz: u32, channels: u16, pcm_fra
 
 /// Seeds a rich WORM v2 bundle directly inside `dest_dir` with real H.264 video, optional real
 /// 48 kHz stereo AAC-LC audio, screen transitions, taps, crash markers, error logs, and gaps.
-fn seed_rich_v2_bundle(
+fn seed_rich_bundle(
     work_tmp: &Path,
     dest_dir: &Path,
     bundle_id: &str,
@@ -467,8 +467,8 @@ fn t2b_decode_audio_pcm_decodes_real_aac_caches_and_handles_no_audio_cleanly() {
     let mut rpc = RpcClient::connect(server.endpoint());
 
     let managed_bundles = paths.data_dir.join("bundles");
-    let with_audio_dir = seed_rich_v2_bundle(tmp.path(), &managed_bundles, "b-audio", true);
-    let no_audio_dir = seed_rich_v2_bundle(tmp.path(), &managed_bundles, "b-silent", false);
+    let with_audio_dir = seed_rich_bundle(tmp.path(), &managed_bundles, "b-audio", true);
+    let no_audio_dir = seed_rich_bundle(tmp.path(), &managed_bundles, "b-silent", false);
 
     // Register both bundles via `bundle.open` (simulating active viewer lease).
     let open1 = rpc.call(
@@ -532,7 +532,7 @@ fn t2b_decode_audio_pcm_decodes_real_aac_caches_and_handles_no_audio_cleanly() {
     // A restored external recording can keep the original ID while containing different audio.
     let external = tmp.path().join("external");
     fs::create_dir(&external).unwrap();
-    let copy = seed_rich_v2_bundle(&external, &external, "b-audio", false);
+    let copy = seed_rich_bundle(&external, &external, "b-audio", false);
     build_real_audio_m4a(&copy.join("audio.m4a"), 48_000, 2, 24_000);
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(with_audio_dir.join("manifest.json")).unwrap()).unwrap();
@@ -581,7 +581,7 @@ fn t2b_export_share_mp4_full_trimmed_trash_original_and_legacy_refusal() {
     let mut rpc = RpcClient::connect(server.endpoint());
 
     let managed_bundles = paths.data_dir.join("bundles");
-    let src_dir = seed_rich_v2_bundle(tmp.path(), &managed_bundles, "b-share-src", true);
+    let src_dir = seed_rich_bundle(tmp.path(), &managed_bundles, "b-share-src", true);
     let open = rpc.call(
         "bundle.open",
         &json!({
@@ -759,7 +759,7 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
     let mut rpc = RpcClient::connect(server.endpoint());
 
     let managed_bundles = paths.data_dir.join("bundles");
-    let bundle_dir = seed_rich_v2_bundle(tmp.path(), &managed_bundles, "b-overview", true);
+    let bundle_dir = seed_rich_bundle(tmp.path(), &managed_bundles, "b-overview", true);
     let open = rpc.call(
         "bundle.open",
         &json!({
@@ -1181,7 +1181,7 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
     );
 
     let managed = paths.data_dir.join("bundles");
-    let src_dir = seed_rich_v2_bundle(tmp.path(), &managed, "t6i-source-01", true);
+    let src_dir = seed_rich_bundle(tmp.path(), &managed, "t6i-source-01", true);
     let opened = rpc.call(
         "bundle.open",
         &json!({
@@ -1392,10 +1392,27 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
 }
 
 #[test]
+fn a_missing_declared_video_file_is_a_storage_failure() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let source = seed_rich_bundle(
+        tmp.path(),
+        &paths.data_dir.join("bundles"),
+        "missing-video-file",
+        false,
+    );
+    fs::remove_file(source.join("video.mp4")).unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(paths)).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let rejected = rpc.send_raw("media.open_viewport", &json!({"bundle_id_or_path":source}));
+    assert_eq!(rejected["error"]["code"], arbd::error::RPC_ERR_STORAGE);
+}
+
+#[test]
 fn trim_stops_before_commit_when_source_clock_anchors_cannot_be_read() {
     let tmp = TempDir::new().unwrap();
     let paths = isolated_paths(&tmp);
-    let source = seed_rich_v2_bundle(
+    let source = seed_rich_bundle(
         tmp.path(),
         &paths.data_dir.join("bundles"),
         "bad-clock",
