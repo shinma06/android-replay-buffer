@@ -272,7 +272,7 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> exports++ },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
             initialBurnTapsOnExport = true,
             onBurnTapsToggled = { persistedBurnTaps = it },
             onCloseTab = { closedCount++ },

@@ -33,6 +33,31 @@ class ArbStudioSilentFailureTest {
         AuxStream.SCREENS -> "timeline.screens"
     }
 
+    @Test
+    fun seekScreenshotSavesImmediatelyAndReportsTheDaemonResult(@TempDir tmp: Path) {
+        val daemon = Daemon(tmp)
+        val editor = openStudioEditor(daemon)
+        try {
+            editor.awaitReady()
+            editor.awaitAuxSettled()
+            val studio = editor.studioController
+            editor.playbackControllerForTest()!!.seekToFrame(4)
+            awaitTrue { studio.viewerState?.currentFrameIndex == 4L }
+            studio.requestPngExport()
+            editor.awaitQueuedWorkForTest()
+            val call = daemon.transport.calls.single { it.method == "export.frame_png" }
+            assertEquals(4L, call.params["frame_index"].asLong)
+            assertFalse(call.params.has("output_path"))
+            assertEquals("saved.png", studio.viewerState?.exportCompletion?.outputPath)
+            daemon.faults["export.frame_png"] = Fault.BUSINESS_ERROR
+            studio.requestPngExport()
+            editor.awaitQueuedWorkForTest()
+            assertTrue(studio.errorMessage.orEmpty().contains("boom-export.frame_png"))
+        } finally {
+            editor.dispose()
+        }
+    }
+
     // ---------------- A10 ----------------
 
     @Test

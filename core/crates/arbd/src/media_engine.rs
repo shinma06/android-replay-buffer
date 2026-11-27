@@ -33,9 +33,9 @@ use arb_storage::catalog::{Catalog, CatalogFormatVersion, LeaseHolderKind, NewBu
 use crate::capture::FaultInjection;
 use crate::error::DaemonError;
 use crate::protocol::{
-    EpochFrameRange, ExportPngParams, ExportPngResponse, ExportTrimParams, ExportTrimResponse,
-    FilmstripEntryMeta, MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse,
-    MediaFrameRequestParams, MediaOpenViewportResponse, MediaScrubResponse, MediaSeekFrameResponse,
+    EpochFrameRange, ExportPngResponse, ExportTrimParams, ExportTrimResponse, FilmstripEntryMeta,
+    MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse, MediaFrameRequestParams,
+    MediaOpenViewportResponse, MediaScrubResponse, MediaSeekFrameResponse,
 };
 use crate::time_util::{next_id, utc_now_iso8601};
 
@@ -496,7 +496,7 @@ pub(super) fn acquire_export_lease<'a>(
 /// Exports an exact integer `frame_index` as a PNG with `arb:*` provenance `tEXt` chunks.
 ///
 /// Holds an `ExportJob` lease on the source bundle for the whole decode (R3 S7). The caller
-/// must already have validated `params.output_path` (absolute, outside every bundle and the
+/// must already have validated `output_path` (absolute, outside every bundle and the
 /// daemon's private directories); the parent directory is only created afterwards.
 ///
 /// # Errors
@@ -506,7 +506,8 @@ pub fn export_png(
     ctx: &ExportContext<'_>,
     bundle_dir: &Path,
     source_catalog_id: Option<&str>,
-    params: &ExportPngParams,
+    frame_index: u64,
+    output_path: &Path,
 ) -> Result<ExportPngResponse, DaemonError> {
     let _lease_guard = acquire_export_lease(ctx.catalog, source_catalog_id, std::process::id())?;
     let reader = open_bundle(bundle_dir)?;
@@ -520,7 +521,7 @@ pub fn export_png(
     let frames = reader.frames().unwrap_or_default();
     let boottime_ns = frames
         .iter()
-        .find(|f| f.frame_index == params.frame_index)
+        .find(|f| f.frame_index == frame_index)
         .and_then(|f| match &f.alignment {
             TimeAlignment::Anchored { boottime_ns, .. } => Some(*boottime_ns),
             TimeAlignment::Bounded {
@@ -528,7 +529,7 @@ pub fn export_png(
             } => Some(*min_boottime_ns),
             _ => None,
         });
-    if let Some(parent) = params.output_path.parent()
+    if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
@@ -537,15 +538,10 @@ pub fn export_png(
         boottime_ns,
         source_bundle_id: Some(summary.bundle_id.clone()),
     };
-    let report = export_frame_png_with_metadata(
-        &video_path,
-        params.frame_index,
-        &params.output_path,
-        &meta,
-        ctx.backend,
-    )?;
+    let report =
+        export_frame_png_with_metadata(&video_path, frame_index, output_path, &meta, ctx.backend)?;
     Ok(ExportPngResponse {
-        output_path: params.output_path.clone(),
+        output_path: output_path.to_owned(),
         report,
     })
 }

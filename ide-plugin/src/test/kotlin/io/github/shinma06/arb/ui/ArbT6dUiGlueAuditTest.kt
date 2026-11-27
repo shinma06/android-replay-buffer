@@ -565,7 +565,7 @@ class ArbT6dUiGlueAuditTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
             onAppPackageFilterChanged = { requested += it },
         )
         val apps = listOf(
@@ -609,12 +609,12 @@ class ArbT6dUiGlueAuditTest {
 
     @Test
     fun studioPerAppFilterHiddenForLegacyAndBundlesWithoutAppLogs() {
-        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         studio.renderState(studioState(emptyList()), image = null)
         assertFalse(studio.isAppPackageFilterVisible)
         assertTrue(studio.appPackageFilterOptions.isEmpty())
 
-        val legacy = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        val legacy = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         legacy.renderState(
             studioState(listOf(AppLogSummary("com.example.app", "app-logs/x.jsonl", 1L, 0L, "aa")), legacy = true),
             image = null,

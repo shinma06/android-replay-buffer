@@ -1,7 +1,11 @@
 package io.github.shinma06.arb.ide
 
 import com.google.gson.JsonParser
+import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.options.ConfigurationException
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.io.ByteArraySequence
+import com.intellij.testFramework.LightVirtualFile
 import io.github.shinma06.arb.ipc.HostOs
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
@@ -20,6 +24,7 @@ import io.github.shinma06.arb.ui.StudioExportFormat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
+import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -31,6 +36,28 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ArbT5IdeIntegrationTest {
+    @Test
+    fun studioTabIdentityAndTypeLeaveFlutterTranslationsAlone() {
+        val file = ArbBundleVirtualFile("id", "収録.arb")
+        val legacy = ArbBundleVirtualFile("id", "旧形式", isLegacyHint = true)
+        assertEquals("収録.arb", file.presentableName)
+        assertEquals("旧形式 [Legacy (RO)]", legacy.presentableName)
+        assertEquals(file, legacy)
+        assertEquals(file.hashCode(), legacy.hashCode())
+        assertEquals("arbstudio", file.extension)
+        // Platform FileTypeManager reads the assigned type. The headless registry returns a dummy.
+        assertEquals(ArbBundleFileType, file.assignedFileType)
+        val project = Proxy.newProxyInstance(
+            javaClass.classLoader, arrayOf(Project::class.java),
+        ) { _, _, _ -> error("accept must only inspect the file") } as Project
+        val json = """{"@@locale":"en","hello":"Hello"}"""
+        val flutter = LightVirtualFile("app_en.arb", PlainTextFileType.INSTANCE, json)
+        val bytes = ByteArraySequence(json.toByteArray())
+        assertTrue(ArbBundleFileEditorProvider().accept(project, file))
+        assertFalse(ArbBundleFileEditorProvider().accept(project, flutter))
+        assertNull(ArbBundleFileTypeDetector().detect(flutter, bytes, json))
+    }
+
     private fun repoRoot(): Path {
         val prop = System.getProperty("arb.repo.root")
         if (!prop.isNullOrBlank()) return Paths.get(prop).toAbsolutePath().normalize()
@@ -372,7 +399,7 @@ class ArbT5IdeIntegrationTest {
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
-            onPngExport = { _, _ -> },
+            onPngExport = {},
         )
         assertEquals(StudioExportFormat.SHARE_MP4, studio.selectedExportFormat)
         studio.selectExportFormat(StudioExportFormat.WORM_BUNDLE_ONLY)

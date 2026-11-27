@@ -28,7 +28,7 @@ satisfies:
 | 保存・調査開始 | `arb_save`、`arb_save_logs`、`arb_screenshot`、`arb_save_and_inspect` |
 | ライブラリ | `arb_list_bundles`、`arb_trash_bundle`、`arb_restore_bundle`、`arb_gc_bundles`、`arb_forget_bundle` |
 | 保存物の調査 | `arb_timeline_overview`、`arb_query_logs`、`arb_inspect_frames` |
-| 書き出し | `arb_export_trim`、`arb_export_frame_png` |
+| 書き出し | `arb_export_trim`、`arb_export_frame_png`（4 版とも `output_path` 必須。既存ファイルとの衝突は `-32002`） |
 
 `2025-11-25` の `arb_export_trim` は `trash_original`、`arb_screenshot` は `overwrite` の指定自体を拒否する。以前の 3 版はこれらを受理し破壊性ヒントを立てる。保存秒数の正本は `duration_secs`、バンドル指定は `bundle_id`。`arb_export_trim` の既定形式 `share_mp4` は `export.share_mp4` に渡し、`keep_bundle=false` が既定。`format=bundle` は `export.trim`。呼び出し別名 `arb_export_share_mp4` と `arb_trim_bundle` は列挙数に含めない。CLI の `--in-time-ns`／`--out-time-ns` と MCP の `in_time_ns`／`out_time_ns` は同じ実時間の対で、フレーム指定との優先順位・端点・成果物は [SPEC-03](SPEC-03-protocol-media.md) に従う。[stdio 実装](../../core/crates/arb-cli/src/mcp.rs)
 

@@ -75,7 +75,7 @@ class PddS6PlaybackTraceReplayTest {
         private val sockets = CopyOnWriteArrayList<ScriptedTransport>()
         private val leases = mutableMapOf<String, ScriptedTransport>()
         private val disposed = AtomicBoolean()
-        private val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = { _, _ -> })
+        private val studio = ArbStudioController(onScrub = {}, onSeekExact = {}, onTrimExport = { _, _ -> }, onPngExport = {})
         private val seekCount = AtomicInteger()
         private val now = AtomicLong()
         private val shm = writeValidShmFile(Files.createTempFile(tmp, "s6", ".shm"))

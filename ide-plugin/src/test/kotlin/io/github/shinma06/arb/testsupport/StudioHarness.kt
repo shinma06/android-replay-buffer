@@ -62,6 +62,8 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
                 if (loseEditResponse) throw TransportDown("response lost")
                 """{"session":$json}"""
             }
+            "export.frame_png" ->
+                """{"output_path":"saved.png","report":{"frame_index":${params["frame_index"]},"width":2,"height":2}}"""
             "export.trim" -> {
                 exportGate?.await(10, java.util.concurrent.TimeUnit.SECONDS)
                 val share = if (params["include_share_mp4"]?.asBoolean == true) {

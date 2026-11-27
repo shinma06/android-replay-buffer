@@ -27,7 +27,7 @@
 | アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
 | カタログ・リース・ゴミ箱・再試行 | 01・02・05・06 | catalog／bundle_io → `arbd` → CLI／MCP・IDE。切断・パス置換・閲覧中に実体を保護し、全結果区分を表示するか | K5、S2、G1、RS-4、KON-7、操作結果表 |
 | トリム・シーク・ループ | 02・03・05・06 | Kotlin の三状態・時計 → edit／export → `trim_range.rs` → 映像・音声・ログ・入力。静止中に両端を置き、再読込・ループ・Studio 同梱と MCP 単独出力を比較 | K10・K13、S6・S7、G3、PlaybackControllerTest、四ストリーム統合試験 |
-| 書き出し形式・共有ファイル名 | 02・03・05・06 | Studio のエディタ／CLI／MCP → `export.trim` または `export.share_mp4` → 公開・登録。元の WORM、共有動画の場所、追加カタログ行数を確認 | S2・S4、K13、G3、実 stdio スキーマ検査 |
+| 書き出し形式・共有ファイル名 | 02・03・05・06 | Studio のエディタ／CLI／MCP → `export.trim` または `export.share_mp4` → 公開・登録。元の WORM、共有動画の場所、追加カタログ行数を確認。フレーム PNG は `save.screenshot` と保存先を共有し、既存ファイルを保護する | S2・S4、K13、G3、実 stdio スキーマ検査 |
 | Android API 下限・音声方式 | 03・05・07 | 方針表 → arb-core → arb-adb／scrcpy 引数 → arbd の実状態 → Studio／CLI／MCP。API 32・33、取得失敗、明示互換時の消音を比較 | K11、G8、S3、KON-6、端末スモーク |
 | 軸校正・ジェスチャー・焼き込み | 02・03・05・07 | device-agent → touch_calibration → bundle_io → 概要／クロップ・Studio・共有動画。旧記録の読取、軸端、静止フレーム内の操作を照合 | K6・K7・K13、G3、ストレージ読取・メディア統合試験 |
 | RPC・MCP の引数・エラー・表示名 | 01・03・04・05・06 | ディスパッチ → CLI／MCP 契約表・4 版 → Kotlin IPC・表示。新旧版と未知引数、失敗後の接続、表示テキストを照合 | RS-5、KON-5〜7、共有表、実 stdio、ArbBrandingGuardTest |

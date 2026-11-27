@@ -20,7 +20,7 @@ satisfies:
 
 ホストの制御は同一ユーザーのローカル IPC 上の JSON-RPC 2.0、1 行 1 メッセージ。Unix はランタイムディレクトリの `arbd.sock`、Windows はランタイムディレクトリから導くハッシュ名の Named Pipe を使用し、所有者 SID を検査する。一つの要求に対応する応答は同じ ID、`jsonrpc="2.0"`、`result` または `error` の片方だけを持つ。Rust クライアントは `result: null` を受理し、通知・不正応答・期限切れ・伝送断で接続を破棄する。[エンドポイント](../../core/crates/arb-os/src/paths.rs)・[IPC クライアント](../../core/crates/arb-os/src/rpc.rs)
 
-### RPC 一覧（45 メソッド）
+### RPC 一覧（同義名を含む 46 ワイヤ名）
 
 | 領域 | ワイヤ名 |
 | --- | --- |
@@ -32,8 +32,10 @@ satisfies:
 | bundle | `bundle.manifest`、`bundle.list`、`bundle.open`、`bundle.lease_renew`、`bundle.close`、`bundle.trash`、`bundle.restore`、`bundle.gc`、`bundle.forget`、`bundle.query_logs` |
 | timeline | `timeline.summary`、`timeline.overview`、`timeline.query_logs`、`timeline.query_taps`、`timeline.discontinuities`、`timeline.crashes`、`timeline.screens` |
 | edit | `edit.get_session`、`edit.update_session` |
-| export | `export.trim`、`export.png`、`export.share_mp4` |
+| export | `export.trim`、`export.png`（同義名 `export.frame_png`）、`export.share_mp4` |
 | media | `media.open_viewport`、`media.filmstrip`、`media.scrub`、`media.seek_frame`、`media.close_viewport`、`media.decode_audio_pcm`、`media.inspect_frames` |
+
+フレーム PNG の `output_path` が省略または空文字なら、`save.screenshot` と共通の保存処理が `output_dir`、`screenshot_dir_override`、`output_dir_override`、`<data_dir>/screenshots` の順に保存先を選び、一意名を付ける。応答の `output_path` は保存したファイルのパス。明示したパスに既存ファイルがあれば `-32002` を返す。
 
 `system.hello` は `protocol_version`、`build_id`、`parent_bound`、`gc_dry_run`、`realtime_trim`、`standalone_share_trim` 等を返す。CLI／MCP の Rust クライアントは実時間引数を送る前に同じ接続で能力を確認する。旧デーモンが余分なバンドルを作りうるフレーム範囲指定等は単独共有能力も確認し、未対応なら `-32601` と更新案内を返す。終了引継ぎの拒否は成功応答内の `ok: false`。`system.status` の `recovery` は起動時の物理削除完了件数・失敗件数・失敗 ID を伝える。保存・カタログは [SPEC-02](SPEC-02-time-selection-bundle.md)、検索・MCP 側の既定値は [SPEC-06](SPEC-06-mcp-cli-contracts.md)。[ディスパッチ](../../core/crates/arbd/src/lib.rs)・[要求・応答の型](../../core/crates/arbd/src/protocol.rs)
 

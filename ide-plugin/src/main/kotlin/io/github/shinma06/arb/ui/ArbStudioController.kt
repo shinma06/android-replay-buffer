@@ -95,7 +95,7 @@ class ArbStudioController(
     private val onScrub: (frameIndex: Long) -> Unit,
     private val onSeekExact: (frameIndex: Long) -> Unit,
     private val onTrimExport: (inFrameIndex: Long, outFrameIndex: Long) -> Unit = { _, _ -> },
-    private val onPngExport: (frameIndex: Long, outputPath: Path) -> Unit,
+    private val onPngExport: (frameIndex: Long) -> Unit,
     private val onRangeChanged: (inFrameIndex: Long, outFrameIndex: Long, playhead: Long) -> Unit = { _, _, _ -> },
     private val onPlayPauseToggle: () -> Unit = {},
     private val onStepFrame: ((delta: Int) -> Unit)? = null,
@@ -110,7 +110,6 @@ class ArbStudioController(
     private val onOpenExportedBundle: (bundleIdOrPath: String, title: String) -> Unit = { _, _ -> },
     private val onSourceJump: (SourceJumpTarget) -> Unit = {},
     private val onExportRequested: ((inFrameIndex: Long, outFrameIndex: Long, format: StudioExportFormat) -> Unit)? = null,
-    private val onChoosePngOutputPath: ((bundleId: String, frameIndex: Long, onChosen: (Path) -> Unit) -> Unit)? = null,
     private val clipboardWriter: (String) -> Unit = ::copyPathToClipboard,
     /** Re-queries `timeline.query_logs(package = ...)` off the EDT (`null` = all apps). */
     private val onAppPackageFilterChanged: (packageName: String?) -> Unit = {},
@@ -827,12 +826,7 @@ class ArbStudioController(
 
     fun requestPngExport() {
         val s = viewerState ?: return
-        val chooser = onChoosePngOutputPath
-        if (chooser != null) {
-            chooser(s.bundleId, s.currentFrameIndex) { chosen ->
-                onPngExport(s.currentFrameIndex, chosen)
-            }
-        }
+        onPngExport(s.currentFrameIndex)
     }
 
     fun revealBundleInFinder() {
