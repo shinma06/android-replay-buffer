@@ -39,6 +39,32 @@ use crate::protocol::{
 };
 use crate::time_util::{next_id, utc_now_iso8601};
 
+pub(super) fn required_video_path(
+    reader: &dyn BundleReader,
+    bundle_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    reader.video_path().ok_or_else(|| {
+        let manifest = reader.manifest_summary();
+        if manifest.streams.video.as_ref().is_some_and(|video| {
+            video.status == StreamStatus::Present
+                || (video.status == StreamStatus::Partial && video.frame_count > 0)
+        }) {
+            return arb_storage::StorageError::IntegrityMismatch {
+                path: manifest
+                    .legacy_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.files.video.clone())
+                    .unwrap_or_else(|| arb_storage::bundle_io::VIDEO_MP4_FILE.to_owned()),
+                reason: format!(
+                    "bundle {bundle_id} declares a video track but its file is unavailable"
+                ),
+            }
+            .into();
+        }
+        DaemonError::NoVideo(bundle_id.to_owned())
+    })
+}
+
 const DEFAULT_GOP_CACHE_GOPS: usize = 4;
 const DEFAULT_GOP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MIN_SHM_SLOT_CAPACITY: usize = 4096;
@@ -116,7 +142,7 @@ impl MediaEngine {
     /// # Errors
     ///
     /// Returns [`DaemonError::Conflict`] when [`MAX_VIEWPORTS`] viewports are already open
-    /// (R3 M7), [`DaemonError::NotFound`] if the bundle has no video track, or OS/media errors.
+    /// (R3 M7), [`DaemonError::NoVideo`] if the bundle has no video track, or OS/media errors.
     pub fn open_viewport(
         &self,
         bundle_dir: &Path,
@@ -130,9 +156,7 @@ impl MediaEngine {
         let reader = open_bundle(bundle_dir)?;
         let summary = reader.manifest_summary();
         let bundle_id = bundle_id_override.unwrap_or(&summary.bundle_id).to_owned();
-        let video_path = reader.video_path().ok_or_else(|| {
-            DaemonError::NotFound(format!("bundle `{bundle_id}` has no video.mp4 track"))
-        })?;
+        let video_path = required_video_path(reader.as_ref(), &bundle_id)?;
         let track = Mp4VideoTrack::open(&video_path)?;
         let frames = reader.frames().unwrap_or_default();
         let frame_boottimes: Vec<i64> = frames
@@ -512,12 +536,7 @@ pub fn export_png(
     let _lease_guard = acquire_export_lease(ctx.catalog, source_catalog_id, std::process::id())?;
     let reader = open_bundle(bundle_dir)?;
     let summary = reader.manifest_summary();
-    let video_path = reader.video_path().ok_or_else(|| {
-        DaemonError::NotFound(format!(
-            "bundle `{}` has no video track for PNG export",
-            summary.bundle_id
-        ))
-    })?;
+    let video_path = required_video_path(reader.as_ref(), &summary.bundle_id)?;
     let frames = reader.frames().unwrap_or_default();
     let boottime_ns = frames
         .iter()
@@ -588,14 +607,7 @@ pub fn export_trim(
     }
 
     let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
-    let video_path = reader.video_path().ok_or_else(|| {
-        if times.is_some() {
-            return DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into());
-        }
-        DaemonError::NotFound(format!(
-            "source bundle `{parent_bundle_id}` has no video.mp4"
-        ))
-    })?;
+    let video_path = required_video_path(reader.as_ref(), &parent_bundle_id)?;
 
     let source_frames = reader.frames()?;
     let track = Mp4VideoTrack::open(&video_path)?;

@@ -72,18 +72,18 @@ use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
 use crate::protocol::{
     BundleEntryView, BundleForgetParams, BundleForgetResponse, BundleGcFailure, BundleGcParams,
     BundleGcResponse, BundleIdParams, BundleListParams, BundleListResponse, BundleOpenParams,
-    BundleOpenResponse, BundleRefParams, CaptureStartParams, CaptureStartResponse,
-    CaptureStopResponse, ConfigResponse, CrashAutoSaveStatusView, DEFAULT_QUERY_LIMIT,
-    DeviceListResponse, EditGetSessionParams, EditSessionView, EditUpdateSessionParams,
-    ExportPngParams, ExportShareMp4Params, ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION,
-    LeaseIdParams, MAX_QUERY_LIMIT, MediaCloseViewportParams, MediaDecodeAudioPcmParams,
-    MediaFilmstripParams, MediaFrameRequestParams, MediaInspectFramesParams,
-    MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
-    SaveJobIdParams, SaveListJobsResponse, SaveLogsParams, SaveMode, SaveOutcomeResponse,
-    SaveRetargetParams, SaveScreenshotParams, SaveScreenshotResponse, SaveTriggerParams,
-    SystemHelloResponse, SystemStatusResponse, TimelineCrashesResponse,
-    TimelineDiscontinuitiesResponse, TimelineOverviewParams, TimelineQueryParams,
-    TimelineScreensResponse, TimelineTapsResponse,
+    BundleOpenResponse, BundleRefParams, CaptureConfigChanges, CaptureStartParams,
+    CaptureStartResponse, CaptureStopResponse, ConfigResponse, CrashAutoSaveStatusView,
+    DEFAULT_QUERY_LIMIT, DeviceListResponse, EditGetSessionParams, EditSessionView,
+    EditUpdateSessionParams, ExportPngParams, ExportShareMp4Params, ExportTrimParams,
+    IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MAX_QUERY_LIMIT,
+    MediaCloseViewportParams, MediaDecodeAudioPcmParams, MediaFilmstripParams,
+    MediaFrameRequestParams, MediaInspectFramesParams, MediaOpenViewportParams, QueryBucket,
+    RecoverySummaryView, RpcRequest, RpcResponse, SaveJobIdParams, SaveListJobsResponse,
+    SaveLogsParams, SaveMode, SaveOutcomeResponse, SaveRetargetParams, SaveScreenshotParams,
+    SaveScreenshotResponse, SaveTriggerParams, SerialSource, SystemHelloResponse,
+    SystemStatusResponse, TimelineCrashesResponse, TimelineDiscontinuitiesResponse,
+    TimelineOverviewParams, TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
 };
 use crate::screenshot::{ScreenshotOverwrite, SharedScreenshotProvider, write_screenshot_atomic};
 use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
@@ -361,6 +361,7 @@ impl DaemonState {
         let was_active = was_running || cap.is_active();
         cap.mark_stopped_if_current(generation);
         Ok(CaptureStopResponse {
+            config_changed: CaptureConfigChanges::default(),
             stopped: was_active,
             capture: cap.status_view(),
         })
@@ -586,8 +587,10 @@ impl DaemonState {
             "capture.start" => self.handle_capture_start(params),
             "capture.stop" => {
                 let _guard = self.lock(&self.config_update_lock, "config update")?;
-                self.persist_capture_enabled(CaptureIntent::Stopped)?;
-                Ok(serde_json::to_value(self.stop_active_capture()?)?)
+                let changes = self.persist_capture_intent(CaptureIntent::Stopped, None)?;
+                let mut response = self.stop_active_capture()?;
+                response.config_changed = changes;
+                Ok(serde_json::to_value(response)?)
             }
             "save.trigger" => self.handle_save_trigger(params),
             "save.logs" => self.handle_save_logs(params),
@@ -629,10 +632,14 @@ impl DaemonState {
     }
 
     fn handle_system_status(&self) -> Result<Value, DaemonError> {
-        let (capture_view, ring_chunks, ring_bytes, ring_pinned, buffered_secs) = {
+        let (cfg, capture_view, ring_chunks, ring_bytes, ring_pinned, buffered_secs) = {
+            // Keep the configured preference stable until the capture snapshot is taken.
+            let _guard = self.lock(&self.config_update_lock, "config update")?;
+            let config = self.lock(&self.user_config, "user config")?.clone();
             let cap = self.lock_capture()?;
             let (chunks, bytes, pinned) = cap.ring_stats()?;
             (
+                config,
                 cap.status_view(),
                 chunks,
                 bytes,
@@ -648,7 +655,6 @@ impl DaemonState {
             .filter(|j| !j.job.state.is_terminal())
             .count();
         let uptime_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let cfg = self.lock(&self.user_config, "user config")?.clone();
         let mut crash_autosave = self
             .lock(&self.crash_autosave_status, "crash autosave status")?
             .clone();
@@ -657,6 +663,14 @@ impl DaemonState {
 
         Ok(serde_json::to_value(SystemStatusResponse {
             capture_enabled: cfg.capture_enabled,
+            serial_mismatch: capture_view.active
+                && capture_view.connected
+                && cfg
+                    .device_serial
+                    .as_ref()
+                    .zip(capture_view.serial.as_ref())
+                    .is_some_and(|(configured, actual)| configured != actual),
+            configured_device_serial: cfg.device_serial,
             pid: std::process::id(),
             uptime_ms,
             capture: capture_view,
@@ -748,7 +762,7 @@ impl DaemonState {
 
     fn handle_capture_start(self: &Arc<Self>, params: Value) -> Result<Value, DaemonError> {
         let request: CaptureStartParams = parse_optional_params(params)?;
-        let (reservation, parsed) = {
+        let (reservation, parsed, mut response) = {
             let _guard = self.lock(&self.config_update_lock, "config update")?;
             if self.is_shutting_down() {
                 return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
@@ -760,24 +774,68 @@ impl DaemonState {
                 ));
             }
             let parsed = self.capture_options(request.clone())?;
-            self.persist_capture_enabled(CaptureIntent::Armed)?;
+            let explicit = request
+                .serial
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let serial_source = if explicit.is_some() {
+                SerialSource::Argument
+            } else if parsed.serial.is_some() {
+                SerialSource::Config
+            } else {
+                SerialSource::Auto
+            };
+            let config_changed = self.persist_capture_intent(CaptureIntent::Armed, explicit)?;
+            let response = CaptureStartResponse {
+                serial_source: Some(serial_source),
+                config_changed,
+                selection: None,
+                serial: parsed.serial.clone().unwrap_or_default(),
+                capture_mode: parsed.capture_mode.unwrap_or_default(),
+                started: false,
+                connected: Some(false),
+                wait_timed_out: Some(false),
+                audio_state: Some(protocol::AudioCaptureState::Unknown),
+                audio_cause: None,
+            };
             self.lock_capture()?.clear_storage_pressure_stop();
             live.request = request;
             let ticket = Arc::new(());
             live.reservation = Some(Arc::clone(&ticket));
-            (ticket, parsed)
+            (ticket, parsed, response)
         };
-        if !parsed.wait_connected {
-            let (value, generation) = self.attach_reserved(&reservation, &parsed)?;
-            return self.wait_for_connection(value, generation, None);
+        let deadline = parsed.wait_connected.then(|| {
+            Instant::now()
+                + Duration::from_millis(parsed.wait_timeout_ms.unwrap_or(5000).min(30_000))
+        });
+        let outcome = if let Some(deadline) = deadline {
+            self.attach_with_deadline(&reservation, parsed, deadline)?
+        } else {
+            Some(self.attach_reserved(&reservation, &parsed)?)
+        };
+        let Some((selection, generation)) = outcome else {
+            response.wait_timed_out = Some(true);
+            return Ok(serde_json::to_value(response)?);
+        };
+        if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
+            response.started = true;
+            response.serial = serial;
+        } else {
+            response.selection = Some(selection);
         }
-        let timeout = Duration::from_millis(parsed.wait_timeout_ms.unwrap_or(5000).min(30_000));
-        let deadline = Instant::now() + timeout;
+        self.wait_for_connection(serde_json::to_value(response)?, generation, deadline)
+    }
+
+    fn attach_with_deadline(
+        self: &Arc<Self>,
+        reservation: &Arc<()>,
+        parsed: CaptureStartParams,
+        deadline: Instant,
+    ) -> Result<Option<AttachResult>, DaemonError> {
         let (tx, rx) = mpsc::channel();
         let state = Arc::clone(self);
-        let serial = parsed.serial.clone().unwrap_or_default();
-        let mode = parsed.capture_mode;
-        let worker_ticket = Arc::clone(&reservation);
+        let worker_ticket = Arc::clone(reservation);
         let spawned = thread::Builder::new()
             .name("arbd-connect-wait".into())
             .spawn(move || {
@@ -788,19 +846,13 @@ impl DaemonState {
             if live
                 .reservation
                 .as_ref()
-                .is_some_and(|ticket| Arc::ptr_eq(ticket, &reservation))
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, reservation))
             {
                 live.reservation = None;
             }
             return Err(err.into());
         }
-        let Some((result, generation)) = self.await_attach(&rx, deadline)? else {
-            return Ok(
-                json!({"serial": serial, "capture_mode":mode, "started":false,"connected":false,
-            "wait_timed_out":true,"audio_state":"unknown","audio_cause":null}),
-            );
-        };
-        self.wait_for_connection(result, generation, Some(deadline))
+        self.await_attach(&rx, deadline)
     }
 
     /// Waits for the attach worker; `None` means the deadline passed first.
@@ -808,7 +860,7 @@ impl DaemonState {
         &self,
         rx: &Receiver<AttachOutcome>,
         deadline: Instant,
-    ) -> Result<Option<(Value, Option<u64>)>, DaemonError> {
+    ) -> Result<Option<AttachResult>, DaemonError> {
         loop {
             if self.is_shutting_down() {
                 return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
@@ -862,21 +914,34 @@ impl DaemonState {
         }
     }
 
-    fn persist_capture_enabled(&self, intent: CaptureIntent) -> Result<(), DaemonError> {
+    fn persist_capture_intent(
+        &self,
+        intent: CaptureIntent,
+        explicit: Option<&str>,
+    ) -> Result<CaptureConfigChanges, DaemonError> {
         let enabled = intent == CaptureIntent::Armed;
-        let mut cfg = self.lock(&self.user_config, "user config")?;
-        if cfg.capture_enabled != enabled {
+        let mut candidate = self.lock(&self.user_config, "user config")?.clone();
+        let changes = CaptureConfigChanges {
+            capture_enabled: (candidate.capture_enabled != enabled)
+                .then_some((candidate.capture_enabled, enabled)),
+            device_serial: explicit
+                .filter(|serial| Some(*serial) != candidate.device_serial.as_deref())
+                .map(|serial| (candidate.device_serial.clone(), Some(serial.to_owned()))),
+        };
+        if changes != CaptureConfigChanges::default() {
             if self.config_unreadable {
                 return Err(DaemonError::Conflict(
                     "config.json could not be read".into(),
                 ));
             }
-            let mut candidate = cfg.clone();
             candidate.capture_enabled = enabled;
+            if let Some((_, new)) = &changes.device_serial {
+                candidate.device_serial.clone_from(new);
+            }
             self.config_store.save_atomic(&candidate)?;
-            *cfg = candidate;
+            *self.lock(&self.user_config, "user config")? = candidate;
         }
-        Ok(())
+        Ok(changes)
     }
 
     fn capture_options(
@@ -924,11 +989,7 @@ impl DaemonState {
         Ok(parsed)
     }
 
-    fn attach_reserved(
-        &self,
-        ticket: &Arc<()>,
-        parsed: &CaptureStartParams,
-    ) -> Result<(Value, Option<u64>), DaemonError> {
+    fn attach_reserved(&self, ticket: &Arc<()>, parsed: &CaptureStartParams) -> AttachOutcome {
         let discovery = AdbClient::discover()
             .map_err(DaemonError::from)
             .and_then(|adb| {
@@ -945,29 +1006,17 @@ impl DaemonState {
             return Err(DaemonError::Conflict("capture start was cancelled".into()));
         }
         live.reservation = None;
-        let capture_mode = parsed.capture_mode.unwrap_or_default();
         let (adb, selection) = discovery?;
         if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
             let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
             live.handle = Some(handle);
             let generation = self.lock_capture()?.session_generation();
             return Ok((
-                serde_json::to_value(CaptureStartResponse {
-                    connected: None,
-                    wait_timed_out: None,
-                    audio_state: None,
-                    audio_cause: None,
-                    serial,
-                    started: true,
-                    capture_mode,
-                })?,
+                arb_core::device::DeviceSelectionOutcome::Selected { serial },
                 Some(generation),
             ));
         }
-        Ok((
-            json!({"serial":parsed.serial.as_deref().unwrap_or_default(),"started":false,"capture_mode":capture_mode,"selection":selection}),
-            None,
-        ))
+        Ok((selection, None))
     }
 
     fn auto_attach(&self) -> Result<(), DaemonError> {
@@ -979,7 +1028,7 @@ impl DaemonState {
                 return Ok(());
             }
             if self.lock_capture()?.is_storage_pressure_stopped() {
-                self.persist_capture_enabled(CaptureIntent::Stopped)?;
+                self.persist_capture_intent(CaptureIntent::Stopped, None)?;
                 self.stop_active_capture()?;
                 return Ok(());
             }
@@ -2591,7 +2640,8 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
     state.close_client_viewports(&owned_viewports);
 }
 
-type AttachOutcome = Result<(Value, Option<u64>), DaemonError>;
+type AttachResult = (arb_core::device::DeviceSelectionOutcome, Option<u64>);
+type AttachOutcome = Result<AttachResult, DaemonError>;
 
 /// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
 fn effective_query_limit(requested: Option<usize>) -> usize {

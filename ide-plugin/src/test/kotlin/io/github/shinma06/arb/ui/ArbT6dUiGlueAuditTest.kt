@@ -353,10 +353,32 @@ class ArbT6dUiGlueAuditTest {
         }
     }
 
+    @Test
+    fun captureToggleKeepsAnAutomaticallySelectedDeviceUnpinned() {
+        val responder = defaultResponder(devices = listOf(online("PIXEL-A")))
+        val transport = RecordingTransport { method, params ->
+            if (method == "config.update") {
+                """{"config":{"capture_enabled":true},"config_path":"/tmp/config.json"}"""
+            } else {
+                responder(method, params)
+            }
+        }
+        val (service, rpc) = stubDaemon(transport)
+        try {
+            val outcome = setCaptureEnabled(service, enable = true, currentlyActive = false, serial = "PIXEL-A")
+            assertTrue(outcome.armed)
+            val start = transport.calls.single { it.method == "capture.start" }.params
+            assertNull(start.get("serial"), "the automatically selected online device must not be pinned")
+        } finally {
+            rpc.close()
+            service.dispose()
+        }
+    }
+
     // ---------------- Part 1.1: CaptureMode::LogsOnly toggle ----------------
 
     @Test
-    fun captureModeToggleUpdatesConfigAndRestartsActiveCaptureOnSameDevice() {
+    fun captureModeToggleRestartsUsingTheConfiguredSelectionPolicy() {
         val transport = RecordingTransport(
             defaultResponder(devices = listOf(online("PIXEL-A")), captureActive = true, captureSerial = "PIXEL-A"),
         )
@@ -390,7 +412,7 @@ class ArbT6dUiGlueAuditTest {
             assertEquals("logs_only", transport.calls[updateIdx].params.get("capture_mode").asString)
             val start = transport.calls[startIdx].params
             assertEquals("logs_only", start.get("capture_mode").asString)
-            assertEquals("PIXEL-A", start.get("serial").asString, "restart must stay on the same device")
+            assertNull(start.get("serial"), "a mode change must preserve automatic selection")
             awaitTrue { !controller.captureModeBusy }
         } finally {
             controller.dispose()

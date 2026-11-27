@@ -10,6 +10,7 @@ import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleForgetResponse
 import io.github.shinma06.arb.model.BundleGcResponse
 import io.github.shinma06.arb.model.CaptureMode
+import io.github.shinma06.arb.model.CaptureStartResponse
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.DeviceListResponse
 import io.github.shinma06.arb.model.ProtocolJson
@@ -119,6 +120,30 @@ class PddContractTablesTest {
             assertEquals(ide["selected_device_online"].asBoolean, bar.isSelectedDeviceOnline, "$id: selected device online")
             assertEquals(outcome, bar.deviceSelection, "$id: reducer uses the shared policy")
             assertEquals(armed, bar.config.captureEnabled, "$id: capture_enabled is never dropped")
+        }
+    }
+
+    @Test
+    fun captureIntentRowsDecodePersistedPreferencesAndChanges() {
+        for (row in table("device-selection-policy-table.json").rows("capture_intent_rows", 5)) {
+            val changes = row.getAsJsonObject("config_changed")
+            val wire = JsonObject().apply {
+                addProperty("serial", row.str("persisted").orEmpty())
+                addProperty("started", false)
+                add("serial_source", row["serial_source"])
+                add("config_changed", changes)
+            }
+            val start = ProtocolJson.gson.fromJson(wire, CaptureStartResponse::class.java)
+            assertEquals(row.str("serial_source"), start.serialSource)
+            assertEquals(changes.getAsJsonArray("capture_enabled")?.map { it.asBoolean }, start.configChanged?.captureEnabled)
+            assertEquals(changes.getAsJsonArray("device_serial")?.map { it.takeUnless { value -> value.isJsonNull }?.asString }, start.configChanged?.deviceSerial)
+            val status = ProtocolJson.gson.toJsonTree(idleStatus()).asJsonObject.apply {
+                add("configured_device_serial", row["persisted"])
+                addProperty("serial_mismatch", false)
+            }
+            val decoded = ProtocolJson.gson.fromJson(status, SystemStatusResponse::class.java)
+            assertEquals(row.str("persisted"), decoded.configuredDeviceSerial)
+            assertEquals(false, decoded.serialMismatch)
         }
     }
 

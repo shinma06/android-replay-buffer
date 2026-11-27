@@ -57,6 +57,15 @@ import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
+internal fun Throwable.isMissingBundle(): Boolean {
+    if (this is ArbdRpcException) return code == -32001
+    val msg = message.orEmpty()
+    return msg.contains("canonicalize_bundle", ignoreCase = true) ||
+        msg.contains("not found", ignoreCase = true) ||
+        msg.contains("No such file", ignoreCase = true) ||
+        msg.contains("cannot find the path", ignoreCase = true)
+}
+
 /**
  * Thin IntelliJ [FileEditor] for the Integrated Viewer & Trim Studio (ARB and Legacy RO bundles),
  * rendered natively with JetBrains Jewel Compose (`JewelComposePanel`).
@@ -474,10 +483,7 @@ class ArbBundleFileEditor internal constructor(
                 if (disposed) return@submitWork
                 logger.warn("Failed to open ARB bundle $bundleIdOrPath", t)
                 val msg = t.message.orEmpty()
-                val looksMissing = msg.contains("canonicalize_bundle", ignoreCase = true) ||
-                    msg.contains("not found", ignoreCase = true) ||
-                    msg.contains("No such file", ignoreCase = true) ||
-                    msg.contains("cannot find the path", ignoreCase = true)
+                val looksMissing = t.isMissingBundle()
                 if (looksMissing) {
                     daemonService.notifyCatalogChanged()
                 }

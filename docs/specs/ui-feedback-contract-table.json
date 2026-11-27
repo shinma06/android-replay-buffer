@@ -1116,6 +1116,25 @@
         "mcp_error_code": "ALREADY_ACTIVE",
         "retryable": false
       }
+    },
+    {
+      "id": "ER-N1",
+      "description": "映像トラックのないバンドルでの映像操作は接続を維持する",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32602,
+        "error_code": "NO_VIDEO",
+        "details": {"bundle_id": "logs-only"}
+      },
+      "expected": {
+        "cli_exit_code": 2,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "NO_VIDEO",
+        "retryable": false
+      }
     }
   ],
   "capture_evidence_rows": [
@@ -1188,13 +1207,13 @@
     }
   ],
   "rpc_parameter_rows": [
-    {"method":"save.trigger","params":{"drain_timeout_ms":5001},"code":-32602,"message":"drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
-    {"method":"save.logs","params":{"drain_timeout_ms":999999},"code":-32602,"message":"drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
+    {"method":"save.trigger","params":{"drain_timeout_ms":5001},"code":-32602,"message":"指定された引数を確認してください。 drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
+    {"method":"save.logs","params":{"drain_timeout_ms":999999},"code":-32602,"message":"指定された引数を確認してください。 drain_timeout_ms は 0～5000 ミリ秒で指定してください"},
     {
       "method": "bundle.trash",
       "params": {},
       "code": -32602,
-      "message": "missing required field 'bundle_id'"
+      "message": "指定された引数を確認してください。 missing required field 'bundle_id'"
     },
     {
       "method": "bundle.trash",
@@ -1202,7 +1221,7 @@
         "bundle_id": null
       },
       "code": -32602,
-      "message": "missing required field 'bundle_id'"
+      "message": "指定された引数を確認してください。 missing required field 'bundle_id'"
     },
     {
       "method": "bundle.trash",
@@ -1210,14 +1229,15 @@
         "bundle_id": 123
       },
       "code": -32602,
-      "message": "invalid type for 'bundle_id': expected string, got number"
+      "message": "指定された引数を確認してください。 invalid type for 'bundle_id': expected string, got number"
     },
     {
       "method": "bundle.forget",
       "params": {
         "bundle_id": "nonexistent"
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     },
     {
       "method": "edit.update_session",
@@ -1225,14 +1245,16 @@
         "bundle_id": "nonexistent",
         "session_id": "s"
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     },
     {
       "method": "bundle.restore",
       "params": {
         "bundle_id": "nonexistent"
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     },
     {
       "method": "media.inspect_frames",
@@ -1241,7 +1263,8 @@
         "mode": "single",
         "frame_index": 0
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     },
     {
       "method": "timeline.query_logs",
@@ -1250,7 +1273,7 @@
         "limit": 0
       },
       "code": -32602,
-      "message": "limit must be positive"
+      "message": "指定された引数を確認してください。 limit must be positive"
     },
     {
       "method": "timeline.query_logs",
@@ -1259,7 +1282,7 @@
         "limit": 100001
       },
       "code": -32602,
-      "message": "limit must not exceed 100000"
+      "message": "指定された引数を確認してください。 limit must not exceed 100000"
     },
     {
       "method": "timeline.query_logs",
@@ -1269,7 +1292,7 @@
         "after_seq": 1
       },
       "code": -32602,
-      "message": "cursor and after_seq cannot be combined"
+      "message": "指定された引数を確認してください。 cursor and after_seq cannot be combined"
     },
     {
       "method": "timeline.query_logs",
@@ -1278,7 +1301,7 @@
         "cursor": "x"
       },
       "code": -32602,
-      "message": "cursor must be a decimal sequence"
+      "message": "指定された引数を確認してください。 cursor must be a decimal sequence"
     },
     {
       "method": "timeline.query_logs",
@@ -1286,7 +1309,8 @@
         "bundle_id": "nonexistent",
         "limit": 10
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     },
     {
       "method": "bundle.query_logs",
@@ -1295,7 +1319,7 @@
         "limit": 0
       },
       "code": -32602,
-      "message": "limit must be positive"
+      "message": "指定された引数を確認してください。 limit must be positive"
     },
     {
       "method": "bundle.query_logs",
@@ -1304,7 +1328,7 @@
         "limit": 100001
       },
       "code": -32602,
-      "message": "limit must not exceed 100000"
+      "message": "指定された引数を確認してください。 limit must not exceed 100000"
     },
     {
       "method": "bundle.query_logs",
@@ -1314,7 +1338,7 @@
         "after_seq": 1
       },
       "code": -32602,
-      "message": "cursor and after_seq cannot be combined"
+      "message": "指定された引数を確認してください。 cursor and after_seq cannot be combined"
     },
     {
       "method": "bundle.query_logs",
@@ -1323,7 +1347,7 @@
         "cursor": "x"
       },
       "code": -32602,
-      "message": "cursor must be a decimal sequence"
+      "message": "指定された引数を確認してください。 cursor must be a decimal sequence"
     },
     {
       "method": "bundle.query_logs",
@@ -1331,7 +1355,8 @@
         "bundle_id": "nonexistent",
         "limit": 10
       },
-      "code": -32001
+      "code": -32001,
+      "message": "指定された対象が見つかりません。"
     }
   ]
 }

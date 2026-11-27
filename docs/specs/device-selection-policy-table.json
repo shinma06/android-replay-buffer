@@ -726,6 +726,13 @@
       }
     }
   ],
+  "capture_intent_rows": [
+    {"id": "CI-01", "enabled": false, "configured": "A", "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"capture_enabled": [false, true], "device_serial": ["A", "B"]}},
+    {"id": "CI-02", "enabled": true, "configured": "A", "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"device_serial": ["A", "B"]}},
+    {"id": "CI-03", "enabled": true, "configured": "A", "argument": null, "serial_source": "config", "persisted": "A", "config_changed": {}},
+    {"id": "CI-04", "enabled": false, "configured": null, "argument": null, "serial_source": "auto", "persisted": null, "config_changed": {"capture_enabled": [false, true]}},
+    {"id": "CI-05", "enabled": true, "configured": null, "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"device_serial": [null, "B"]}}
+  ],
   "serial_validation_rows": [
     {
       "serial": "emulator-5554",

@@ -41,6 +41,8 @@ satisfies:
 
 ログの生行（`bundle.query_logs`／`timeline.query_logs`）と概要（`timeline.overview`）は同じ `LogCoordinates` で、同じ boot の主ログの ns 時刻から表示中の VFR フレームを引く。生行の `frame_index` と概要の代表行の `frame_index_hint` は同じ行なら一致する。`timestamp_utc` はログヘッダのミリ秒 UTC。検索・集約の件数とフィルタ、版別の MCP 投影は [SPEC-06](SPEC-06-mcp-cli-contracts.md)、保存尺・ログ完全性・ドレイン・GC は [SPEC-02](SPEC-02-time-selection-bundle.md)、タップ座標の取得・読取時校正は [SPEC-07](SPEC-07-device-capture-audio-input.md) を参照する。
 
+映像トラックを持たないバンドルのトリム・MP4 共有・フレーム調査・viewport・PNG 出力は、範囲の有無にかかわらず `-32602` と `error.data.error_code=NO_VIDEO` を返す。利用者向けの文は分類器で統一し、内部原因は必要に応じて `error.data.details.cause` に載せる。既存のスクリーンショット出力先との衝突は `CONFLICT`、詳細は `path` と `reason=already_exists`。
+
 ### エラーと再送
 
 | ワイヤ結果 | 呼び出し元の必須動作 |

@@ -416,7 +416,7 @@ class ArbToolWindowController(
 
     /**
      * Switches between `映像＋ログ` and `ログのみ` via `config.update(capture_mode)`. A running capture
-     * is restarted on the same device (`capture.stop` + `capture.start(capture_mode)`) because the
+     * is restarted with its configured selection policy (`capture.stop` + `capture.start(capture_mode)`) because the
      * mode only takes effect when a capture starts.
      */
     fun setCaptureMode(mode: CaptureMode) {
@@ -425,7 +425,6 @@ class ArbToolWindowController(
         val wasActive = snapshot.capture?.active == true
         val runningMode = snapshot.capture?.captureMode
         if (snapshot.config.captureMode == mode && (!wasActive || runningMode == mode)) return
-        val serial = if (wasActive) snapshot.capture?.serial ?: selectedDeviceSerial else selectedDeviceSerial
         runGuarded(captureModeInFlight, { captureModeBusy = it }) {
             val label = captureModeLabel(mode)
             try {
@@ -435,10 +434,9 @@ class ArbToolWindowController(
                 daemonService.notifyConfigUpdated(updated)
                 if (wasActive && runningMode != mode) {
                     daemonService.withClient { it.captureStop() }
-                    daemonService.withClient {
-                        it.captureStart(CaptureStartParams(serial = serial, captureMode = mode))
-                    }
-                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に切り替え、録画を再開しました")
+                    val start = daemonService.withClient { it.captureStart(CaptureStartParams(captureMode = mode)) }
+                    val result = if (start.started) "録画を再開しました" else "録画対象の端末を待っています"
+                    ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に切り替え、$result")
                 } else {
                     ArbNotifications.notifyInfo(project, "キャプチャモードを「$label」に設定しました")
                 }
@@ -1307,7 +1305,10 @@ internal fun setCaptureEnabled(
     val armed = persistCaptureEnabled(daemonService, enabled = true) == true
     val started = if (!currentlyActive && !serial.isNullOrBlank()) {
         val attempt = runCatching {
-            daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
+            // Current daemons resolve the stored pin or choose the sole online device.
+            // Only legacy daemons need the observed serial as an explicit one-shot target.
+            val params = if (armed) CaptureStartParams() else CaptureStartParams(serial = serial)
+            daemonService.withClient { it.captureStart(params) }
         }
         if (!armed) attempt.getOrThrow()
         attempt.getOrNull()?.takeIf { it.started }?.serial
