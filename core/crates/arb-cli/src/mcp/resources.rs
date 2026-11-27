@@ -66,13 +66,35 @@ fn decode_segment(segment: &str) -> Result<String, Failure> {
     Ok(id)
 }
 
-pub(super) fn bundle_link(id: &Value, kind: &str) -> Value {
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ResourceLink {
+    uri: String,
+    name: String,
+    mime_type: &'static str,
+    #[serde(skip)]
+    description: String,
+}
+impl ResourceLink {
+    pub(super) fn block(&self) -> Value {
+        let mut block = json!(self);
+        block["type"] = json!("resource_link");
+        block["description"] = json!(self.description);
+        block
+    }
+}
+pub(super) fn bundle_link(id: &Value, kind: &str) -> ResourceLink {
     let id = id.as_str().unwrap_or_default();
     let description = TEMPLATES
         .iter()
         .find(|(t, _)| t.split('/').next() == kind.split('/').next())
         .map_or(kind, |(_, label)| *label);
-    json!({"type":"resource_link","uri":format!("arb://bundles/{}/{kind}",encode_segment(id)),"name":format!("{id}/{kind}"),"mimeType":mime(kind),"description":description})
+    ResourceLink {
+        uri: format!("arb://bundles/{}/{kind}", encode_segment(id)),
+        name: format!("{id}/{kind}"),
+        mime_type: mime(kind),
+        description: description.into(),
+    }
 }
 
 fn prompts() -> Value {

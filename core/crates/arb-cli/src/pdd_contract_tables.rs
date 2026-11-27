@@ -42,7 +42,9 @@ fn save_rows_match_cli_exit_code_and_mcp_is_error() {
         );
         let echoed = match mcp {
             Ok(output) => output.body,
-            Err(failure) => failure.result()["structuredContent"].clone(),
+            Err(failure) => {
+                failure.result(mcp::ProtocolVersion::default())["structuredContent"].clone()
+            }
         };
         assert_eq!(
             echoed["error_code"], expected["mcp_error_code"],
@@ -90,7 +92,7 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
             },
             _ => RpcClientError::UnexpectedEof,
         };
-        let body = mcp::Failure::from_rpc(duplicate).result();
+        let body = mcp::Failure::from_rpc(duplicate).result(mcp::ProtocolVersion::default());
         assert_eq!(
             body["structuredContent"]["details"], failure["details"],
             "{id}"

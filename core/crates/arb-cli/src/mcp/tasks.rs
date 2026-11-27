@@ -190,7 +190,11 @@ impl Session {
         Some(match method {
             "tasks/get" => rpc_ok(id, &t.view),
             "tasks/cancel" if t.result.is_none() => {
-                let replies = t.settle("cancelled", "キャンセル", cancelled().result());
+                let replies = t.settle(
+                    "cancelled",
+                    "キャンセル",
+                    cancelled().result(super::ProtocolVersion::V2025_11_25),
+                );
                 let view = t.view.clone();
                 drop(tasks);
                 send_replies(replies);
@@ -272,7 +276,7 @@ impl McpServer {
         let mut worker = Self {
             paths: self.paths.clone(),
             client: None,
-            version: self.version.clone(),
+            version: self.version,
             session: Arc::clone(&self.session),
             activity,
             external_bundles: BTreeMap::new(),
@@ -281,7 +285,7 @@ impl McpServer {
         let spawned = std::thread::Builder::new()
             .name("mcp-task".into())
             .spawn(move || {
-                let def = super::contract::for_version(&worker.version)
+                let def = super::catalog::for_version(worker.version)
                     .iter()
                     .find(|d| d["name"] == name)
                     .expect("accepted tool");

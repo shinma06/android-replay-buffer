@@ -188,7 +188,7 @@ def main() -> int:
     for source in (
         next((REPO / "ide-plugin").rglob("src/main/kotlin/**/ArbdRpcClient.kt")),
         CRATES / "arb-cli/src/main.rs",
-        CRATES / "arb-cli/src/mcp.rs",
+        CRATES / "arb-cli/src/mcp/tools/library.rs",
     ):
         for method in sorted({"bundle.gc", "bundle.forget"} - set(RPC_NAME.findall(source.read_text(encoding="utf-8")))):
             fail("RS-5", f"{source.name} lacks catalog RPC `{method}`")
