@@ -299,7 +299,7 @@
             "description": "完全一致（大小無視）。V/D/I/W/E/F、VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT。",
             "pattern": "^([Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"
           },
-          "min_level": {"type":"string","enum":["V","D","I","W","E","F"],"description":"指定優先度以上。E は E・F。level と排他。"},
+          "min_level": {"enum":["V","D","I","W","E","F"],"description":"下限。E は E・F。level と排他。"},
           "limit": {"maximum": 100000, "minimum": 1, "type": "integer", "default": 100, "description": "ページの最大行数。"},
           "package": {"description": "Android パッケージ名（完全一致）。", "type": "string"},
           "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
@@ -1373,6 +1373,7 @@
       "type": "object",
       "properties": {
         "realtime_trim": {"type": "boolean"},
+        "log_min_level": {"type": "boolean"},
         "standalone_share_trim": {"type": "boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"$ref":"#/$defs/UInt"},

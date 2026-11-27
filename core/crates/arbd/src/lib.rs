@@ -522,6 +522,7 @@ impl DaemonState {
     fn handle_system_hello(&self) -> Result<Value, DaemonError> {
         Ok(serde_json::to_value(SystemHelloResponse {
             protocol_version: IPC_PROTOCOL_VERSION,
+            log_min_level: true,
             gc_dry_run: true,
             standalone_share_trim: true,
             realtime_trim: true,

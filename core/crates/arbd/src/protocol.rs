@@ -114,6 +114,9 @@ impl RpcResponse {
     reason = "independent negotiated wire capabilities"
 )]
 pub struct SystemHelloResponse {
+    /// Log queries support an inclusive minimum Android priority.
+    #[serde(default)]
+    pub log_min_level: bool,
     /// Exact half-open time ranges are supported by session writes and both exports.
     #[serde(default)]
     pub realtime_trim: bool,

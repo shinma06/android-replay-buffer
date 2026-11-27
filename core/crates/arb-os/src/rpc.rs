@@ -496,6 +496,17 @@ impl RpcClient {
     ///
     /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
+            && !params["min_level"].is_null()
+            && self.verify_hello()?["log_min_level"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                details: None,
+                error_code: None,
+                code: -32601,
+                message: "ログレベルの下限を指定するには arbd の更新が必要です".into(),
+            });
+        }
         // Older daemons ignore unknown GC parameters. Verify this socket before any preview.
         if method == "bundle.gc"
             && params["dry_run"] == true
@@ -1286,6 +1297,49 @@ mod tests {
             Duration::from_millis(5_000),
             "invalid env var must fall back to default"
         );
+    }
+
+    #[test]
+    fn previous_daemon_never_receives_unsupported_log_priority_queries() {
+        let dir = TestDir::new("log-min-level");
+        let endpoint = ArbPaths {
+            data_dir: dir.0.clone(),
+            cache_dir: dir.0.clone(),
+            runtime_dir: dir.0.clone(),
+        }
+        .ipc_endpoint();
+        let listener = LocalIpcListener::bind(&endpoint).unwrap();
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap());
+            for _ in 0..2 {
+                let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                    .unwrap()
+                    .unwrap();
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let resp = json!({"jsonrpc":"2.0", "id":req["id"], "result":{"protocol_version":EXPECTED_IPC_PROTOCOL_VERSION}});
+                write_frame_line(
+                    reader.get_mut(),
+                    &resp.to_string(),
+                    DEFAULT_MAX_IPC_LINE_BYTES,
+                )
+                .unwrap();
+                assert_eq!(req["method"], "system.hello");
+            }
+            reader.get_mut().drain().unwrap();
+        });
+        let mut client = RpcClient::connect_endpoint(&endpoint).unwrap();
+        for method in ["bundle.query_logs", "timeline.query_logs"] {
+            let err = client
+                .call(
+                    method,
+                    json!({"bundle_id_or_path":"bundle", "min_level":"E"}),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(err, RpcClientError::Rpc {code: -32601, message, ..} if message.contains("arbd の更新"))
+            );
+        }
+        server.join().unwrap();
     }
 
     #[test]
