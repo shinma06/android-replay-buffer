@@ -2386,7 +2386,14 @@ fn evidence_warnings(flags: WarningFlags) -> Vec<crate::protocol::WarningDetail>
 const STATIC_HOLD_INFO_MS: u64 = 2_000;
 
 /// Window coverage of the video and logcat streams from the persisted ledger snapshot.
-fn window_coverage_ms(params: &SaveJobMaterializeParams) -> (Option<u64>, Option<u64>) {
+///
+/// `video_from` is the earliest ingest time the saved `video.mp4` shows (`i64::MIN` for a
+/// carried-in head displayed from `W0`), or `None` when no video was written. Coverage before
+/// the first written frame (for example orphan head frames dropped under K15) is not counted.
+fn window_coverage_ms(
+    params: &SaveJobMaterializeParams,
+    video_from: Option<i64>,
+) -> (Option<u64>, Option<u64>) {
     let Some(coverage) = params.coverage.as_ref() else {
         return (None, None);
     };
@@ -2399,8 +2406,11 @@ fn window_coverage_ms(params: &SaveJobMaterializeParams) -> (Option<u64>, Option
         .filter(|c| c.key.boot_id == boot)
         .cloned()
         .collect();
+    let video_ms = video_from.map_or(0, |from| {
+        coverage_duration_in_window(&video, lo.max(from), hi) / 1_000_000
+    });
     (
-        Some(coverage_duration_in_window(&video, lo, hi) / 1_000_000),
+        Some(video_ms),
         Some(coverage_duration_for_key(&coverage.logcat, &boot, lo, hi) / 1_000_000),
     )
 }
@@ -2449,7 +2459,19 @@ fn measure_saved_evidence(
     let video = summary
         .duration_ms
         .filter(|_| summary.has_video == Some(true));
-    let (video_coverage_ms, log_coverage_ms) = window_coverage_ms(params);
+    let carried_in = manifest
+        .streams
+        .video
+        .as_ref()
+        .and_then(|v| v.carried_in.as_ref());
+    let video_from = if reader.video_path().is_none() {
+        None
+    } else if carried_in.is_some() {
+        Some(i64::MIN)
+    } else {
+        reader.frames()?.iter().map(|f| f.pc_ingest_cont_ns).min()
+    };
+    let (video_coverage_ms, log_coverage_ms) = window_coverage_ms(params, video_from);
     let (video_shortfall, log_shortfall) = stream_shortfalls(
         params.mode,
         params.duration_sec,
@@ -2461,11 +2483,6 @@ fn measure_saved_evidence(
     let completeness = crate::protocol::LogcatEvidence::from(manifest);
     let discontinuity_count = reader.discontinuities()?.len();
     let full = params.mode == SaveMode::Full;
-    let carried_in = manifest
-        .streams
-        .video
-        .as_ref()
-        .and_then(|v| v.carried_in.as_ref());
     let carried_in_frame = carried_in.is_some();
     let static_hold_ms = if full {
         saved_static_hold_ms(reader.as_ref(), carried_in)
@@ -3750,7 +3767,6 @@ fn build_full_media_tracks(
 ) -> Result<SelectedMediaTracks, DaemonError> {
     let selected_video = ReplayCollector::select_video(timeline, raw_video, params);
     let selected_audio = ReplayCollector::select_audio(timeline, raw_audio, params);
-    let av_lead_in_offset_ns = av_lead_in_offset_ns(&selected_video, &selected_audio);
     for (kind, label, excluded) in [
         (
             StreamKind::Video,
@@ -3778,7 +3794,12 @@ fn build_full_media_tracks(
         }),
         last_sample_ticks: tail_hold_ticks(&selected_video.main, carried_in.as_ref(), params),
     };
-    let (video_mp4, frames, video_status) = mux_selected_video(
+    let head_span = selected_video
+        .main
+        .iter()
+        .map(|v| v.record.pc_ingest_cont_ns)
+        .collect::<Vec<_>>();
+    let muxed = mux_selected_video(
         job_id,
         data_dir,
         video_width,
@@ -3787,8 +3808,15 @@ fn build_full_media_tracks(
         selected_video.main,
         timing,
     )?;
+    if muxed.dropped_head > 0 {
+        push_orphan_head_gap(discontinuities, params, &head_span, muxed.dropped_head);
+    }
     // A carried-in frame exists only when the track was actually written with it.
-    let carried_in = carried_in.filter(|_| video_mp4.is_some() && !frames.is_empty());
+    let carried_in = carried_in.filter(|_| muxed.mp4.is_some() && muxed.dropped_head == 0);
+    // R4 M4: the A/V origin is the first frame actually written to `video.mp4`.
+    let av_lead_in_offset_ns =
+        av_lead_in_offset_ns(muxed.frames.first(), carried_in.as_ref(), &selected_audio);
+    let (video_mp4, frames, video_status) = (muxed.mp4, muxed.frames, muxed.status);
     let (audio_m4a, audio_status) = mux_selected_audio(
         job_id,
         data_dir,
@@ -3817,20 +3845,21 @@ fn build_full_media_tracks(
 }
 
 /// R4 M4: exact lead-in skew `D` between the two rebased file timelines —
-/// `first_selected_audio_pts_device_mono_ns - first_selected_video_pts_device_mono_ns`.
-/// `video.mp4` pts0 = first selected frame's device-mono pts; `audio.m4a` pts0 = first
-/// selected packet's device-mono pts (`AacPacket::pts_us` is microseconds on the same
-/// clock — `select_audio` maps `pts_us * 1000` as device-mono ns). `0` when either stream
-/// selected nothing (no shared origin exists).
-fn av_lead_in_offset_ns(video: &SelectedVideo, audio: &SelectedAudio) -> i64 {
-    match (audio.main.first(), video.main.first()) {
+/// `first_selected_audio_pts_device_mono_ns - first_written_video_pts_device_mono_ns`.
+/// `video.mp4` pts0 = first written frame's device-mono pts (after any orphan head was
+/// dropped, K15); `audio.m4a` pts0 = first selected packet's device-mono pts
+/// (`AacPacket::pts_us` is microseconds on the same clock — `select_audio` maps
+/// `pts_us * 1000` as device-mono ns). `0` when either stream has nothing (no shared origin).
+fn av_lead_in_offset_ns(
+    first_video: Option<&FrameRecord>,
+    carried_in: Option<&CarriedInFrame>,
+    audio: &SelectedAudio,
+) -> i64 {
+    match (audio.main.first(), first_video) {
         (Some(first_audio), Some(first_video)) => {
             // A carried-in frame starts its display (media time 0) at `W0`.
-            let video_origin = first_video.record.pts_device_mono_ns.saturating_add(
-                video
-                    .carried_in
-                    .as_ref()
-                    .map_or(0, |c| c.display_start_boottime_ns - c.captured_boottime_ns),
+            let video_origin = first_video.pts_device_mono_ns.saturating_add(
+                carried_in.map_or(0, |c| c.display_start_boottime_ns - c.captured_boottime_ns),
             );
             first_audio
                 .pts_us
@@ -3839,6 +3868,39 @@ fn av_lead_in_offset_ns(video: &SelectedVideo, audio: &SelectedAudio) -> i64 {
         }
         _ => 0,
     }
+}
+
+/// Records the orphan head frames dropped from the saved video (K15) as a video stream gap,
+/// from the first dropped frame to the first written one (or the last dropped one).
+fn push_orphan_head_gap(
+    discontinuities: &mut Vec<DiscontinuityEvent>,
+    params: &SaveJobMaterializeParams,
+    ingest_ns: &[i64],
+    dropped: usize,
+) {
+    let start = ingest_ns
+        .first()
+        .copied()
+        .unwrap_or_else(|| params.window.ingest_start_cont_ns());
+    let end = ingest_ns
+        .get(dropped)
+        .or_else(|| ingest_ns.last())
+        .copied()
+        .unwrap_or(start)
+        .max(start);
+    discontinuities.push(DiscontinuityEvent {
+        kind: DiscontinuityKind::StreamGap,
+        stream: Some(StreamKind::Video),
+        boot_id: Some(params.window.boot_id().to_owned()),
+        start_boottime_ns: None,
+        end_boottime_ns: None,
+        pc_cont_start_ns: start,
+        pc_cont_end_ns: Some(end),
+        delta_ns: None,
+        detail: Some(format!(
+            "保存範囲の先頭の映像フレーム {dropped} 枚は参照する IDR がリングから失われ復号できないため破棄しました"
+        )),
+    });
 }
 
 struct StreamSummaryCounts {
@@ -3985,6 +4047,77 @@ impl Drop for TempFileGuard {
     }
 }
 
+/// Saved video track: the written `video.mp4`, its frame rows, and how many orphan head frames
+/// were dropped because no decoder could show them (K15).
+#[derive(Debug)]
+struct MuxedVideo {
+    mp4: Option<MediaPayload>,
+    frames: Vec<FrameRecord>,
+    status: StreamStatus,
+    dropped_head: usize,
+}
+
+impl MuxedVideo {
+    /// No decodable frame: nothing is declared, so no frame rows are kept (K15).
+    const fn absent(dropped_head: usize) -> Self {
+        Self {
+            mp4: None,
+            frames: Vec::new(),
+            status: StreamStatus::Absent,
+            dropped_head,
+        }
+    }
+}
+
+/// Muxes `packets` (preroll, then the selected frames from `trim_start`) into an MP4 under
+/// `tmp_dir` and returns the path of the trimmed track.
+fn mux_video_attempt(
+    tmp_mp4: &Path,
+    trimmed: &Path,
+    width: u16,
+    height: u16,
+    packets: &[RawH264Packet],
+    trim_start: u64,
+    last_sample_ticks: Option<u32>,
+) -> Result<PathBuf, MediaError> {
+    let decodable_head = packets.first().is_some_and(|p| {
+        arb_media::mp4::split_annexb_nals(&p.annex_b)
+            .iter()
+            .any(|n| n.first().is_some_and(|b| b & 31 == 5))
+    });
+    if !decodable_head {
+        return Err(MediaError::InvalidContainer("missing initial IDR".into()));
+    }
+    let report = mux_raw_h264_to_mp4_with_last_duration(
+        tmp_mp4,
+        width.max(16),
+        height.max(16),
+        MP4_TIMESCALE,
+        MP4_DEFAULT_FRAME_DURATION_TICKS,
+        last_sample_ticks,
+        packets,
+    )?;
+    if trim_start == 0 {
+        return Ok(tmp_mp4.to_path_buf());
+    }
+    arb_media::trim::trim_video(
+        tmp_mp4,
+        trimmed,
+        trim_start,
+        report.frame_count - 1,
+        &arb_media::codec::OpenH264Backend::new(),
+    )?;
+    Ok(trimmed.to_path_buf())
+}
+
+/// Writes the selected frames as `video.mp4` (K15).
+///
+/// The head is muxed with its preroll first. When no decoder can start there (the IDR was
+/// evicted from the ring, or the reference chain is broken), the orphan head frames up to the
+/// first selected keyframe are dropped and the decodable suffix is written as `Partial`. When
+/// no selected frame is decodable, the track is `Absent` with no frame rows, so a bundle never
+/// declares video without `video.mp4`. I/O and unexpected mux failures propagate so Phase 2
+/// ends in `FailedRetryable` with the pins kept (R3 M3).
 fn mux_selected_video(
     job_id: &str,
     data_dir: &Path,
@@ -3993,12 +4126,12 @@ fn mux_selected_video(
     mut packets: Vec<RawH264Packet>,
     mut selected: Vec<AlignedVideoItem>,
     timing: VideoMuxTiming,
-) -> Result<(Option<MediaPayload>, Vec<FrameRecord>, StreamStatus), DaemonError> {
+) -> Result<MuxedVideo, DaemonError> {
     if selected.is_empty() {
-        return Ok((None, Vec::new(), StreamStatus::Absent));
+        return Ok(MuxedVideo::absent(0));
     }
 
-    let trim_start = u64::try_from(packets.len()).unwrap_or(u64::MAX);
+    let mut trim_start = packets.len();
     let (width, height) = selected
         .iter()
         .map(|v| v.dimensions)
@@ -4021,43 +4154,43 @@ fn mux_selected_video(
     fs::create_dir_all(&tmp_dir)?;
     let tmp_mp4 = tmp_dir.join(format!("mux-{job_id}.mp4"));
     let _tmp_guard = TempFileGuard(tmp_mp4.clone());
-
     let trimmed = tmp_dir.join(format!("head-{job_id}.mp4"));
     let _trim_guard = TempFileGuard(trimmed.clone());
-    let decodable_head = packets.first().is_some_and(|p| {
-        arb_media::mp4::split_annexb_nals(&p.annex_b)
-            .iter()
-            .any(|n| n.first().is_some_and(|b| b & 31 == 5))
-    });
-    let muxed = if decodable_head {
-        mux_raw_h264_to_mp4_with_last_duration(
+
+    let attempt = |packets: &[RawH264Packet], trim_start: usize| {
+        mux_video_attempt(
             &tmp_mp4,
-            width.max(16),
-            height.max(16),
-            MP4_TIMESCALE,
-            MP4_DEFAULT_FRAME_DURATION_TICKS,
+            &trimmed,
+            width,
+            height,
+            packets,
+            u64::try_from(trim_start).unwrap_or(u64::MAX),
             timing.last_sample_ticks,
-            &packets,
         )
-        .and_then(|report| {
-            if trim_start == 0 {
-                return Ok(&tmp_mp4);
-            }
-            arb_media::trim::trim_video(
-                &tmp_mp4,
-                &trimmed,
-                trim_start,
-                report.frame_count - 1,
-                &arb_media::codec::OpenH264Backend::new(),
-            )?;
-            Ok(&trimmed)
-        })
-    } else {
-        Err(MediaError::InvalidContainer("missing initial IDR".into()))
     };
+    let mut dropped_head = 0;
+    let mut muxed = attempt(&packets, trim_start);
+    if matches!(
+        muxed,
+        Err(MediaError::InvalidContainer(_) | MediaError::Codec(_))
+    ) {
+        // The head cannot be decoded: restart from the first selected keyframe, without the
+        // preroll, and drop the orphan frames before it.
+        let keys: Vec<bool> = selected.iter().map(|v| v.record.is_keyframe).collect();
+        let retry = arb_core::video_commit::decodable_start(&keys, false)
+            .filter(|&first| first > 0 || trim_start > 0);
+        let Some(first) = retry else {
+            return Ok(MuxedVideo::absent(selected.len()));
+        };
+        packets.drain(..trim_start + first);
+        selected.drain(..first);
+        trim_start = 0;
+        dropped_head = first;
+        muxed = attempt(&packets, trim_start);
+    }
     match muxed {
         Ok(path) => {
-            let track = Mp4VideoTrack::open(path)?;
+            let track = Mp4VideoTrack::open(&path)?;
             let indexed = track.frames();
             let mut frames = Vec::with_capacity(selected.len());
             for (idx, item) in selected.into_iter().enumerate() {
@@ -4071,29 +4204,30 @@ fn mux_selected_video(
                 }
                 frames.push(rec);
             }
-            let mp4_bytes = fs::read(path)?;
-            Ok((
-                Some(MediaPayload::Bytes(mp4_bytes)),
-                frames,
-                StreamStatus::Present,
-            ))
-        }
-        // Only an elementary stream without parameter sets / slices (synthetic stub streams)
-        // falls back to timeline-only `Partial` video. Every I/O or unexpected mux failure is
-        // propagated so Phase 2 ends in `FailedRetryable` with the pins kept (R3 M3).
-        Err(MediaError::InvalidContainer(_) | MediaError::Codec(_)) => {
-            let mut gop_id = 0_u64;
-            let mut frames = Vec::with_capacity(selected.len());
-            for (idx, item) in selected.into_iter().enumerate() {
-                let mut rec = item.record;
-                if rec.is_keyframe && idx > 0 {
-                    gop_id += 1;
-                }
-                rec.frame_index = u64::try_from(idx).unwrap_or(0);
-                rec.gop_id = gop_id;
-                frames.push(rec);
+            if frames.len() != indexed.len() {
+                return Err(DaemonError::Internal(format!(
+                    "video mux wrote {} samples for {} frames",
+                    indexed.len(),
+                    frames.len()
+                )));
             }
-            Ok((None, frames, StreamStatus::Partial))
+            let mp4_bytes = fs::read(&path)?;
+            let (status, _) = arb_core::video_commit::saved_video_track(
+                u64::try_from(frames.len() + dropped_head).unwrap_or(u64::MAX),
+                u64::try_from(dropped_head).unwrap_or(u64::MAX),
+                true,
+            );
+            Ok(MuxedVideo {
+                mp4: Some(MediaPayload::Bytes(mp4_bytes)),
+                frames,
+                status,
+                dropped_head,
+            })
+        }
+        // Only an elementary stream without decodable slices (synthetic stub streams, or a
+        // suffix whose IDR is unusable) ends with no video at all.
+        Err(MediaError::InvalidContainer(_) | MediaError::Codec(_)) => {
+            Ok(MuxedVideo::absent(dropped_head + selected.len()))
         }
         Err(other) => Err(other.into()),
     }
@@ -4785,16 +4919,44 @@ mod tests {
         }
     }
 
+    /// K15: a broken reference chain with no keyframe in the window leaves nothing decodable,
+    /// so the track is `Absent` with no frame rows instead of a file-less `Partial`.
     #[test]
-    fn missing_reference_before_window_reports_partial_video() {
+    fn missing_reference_before_window_without_keyframe_reports_absent_video() {
         let (_, draft) = draft_for_video_window(
             &[(64, 64, 30, 7)],
             79_000_000,
             121_000_000,
             Some(40_000_000),
         );
-        assert_eq!(draft.streams.video.unwrap().status, StreamStatus::Partial);
+        let video = draft.streams.video.unwrap();
+        assert_eq!(video.status, StreamStatus::Absent);
+        assert_eq!(video.frame_count, 0);
+        assert_eq!(draft.frames.len(), 0);
         assert!(draft.video_mp4.is_none());
+    }
+
+    /// K15: with a keyframe later in the window, the frames with a broken reference chain are
+    /// dropped and the decodable suffix is written as `Partial`.
+    #[test]
+    fn missing_reference_before_window_keeps_the_decodable_suffix() {
+        let (_, draft) = draft_for_video_window(
+            &[(64, 64, 30, 7)],
+            79_000_000,
+            241_000_000,
+            Some(40_000_000),
+        );
+        let video = draft.streams.video.clone().unwrap();
+        assert_eq!(video.status, StreamStatus::Partial);
+        // Frames at 80 / 120 / 160 ms are dropped; the IDR at 200 ms and 240 ms are written.
+        assert_eq!(video.frame_count, 2);
+        assert_eq!(draft.frames.len(), 2);
+        assert!(draft.frames[0].is_keyframe);
+        assert!(draft.video_mp4.is_some());
+        assert!(draft.discontinuities.iter().any(|d| {
+            d.stream == Some(super::StreamKind::Video)
+                && d.detail.as_deref().is_some_and(|m| m.contains("3 枚"))
+        }));
     }
 
     #[test]
@@ -4859,14 +5021,14 @@ mod tests {
     }
 
     #[test]
-    fn r3_m3_stub_stream_without_parameter_sets_falls_back_to_partial() {
+    fn r3_m3_stub_stream_without_parameter_sets_falls_back_to_absent() {
         let tmp = TempDir::new().expect("tempdir");
         let stub = aligned_items(vec![arb_media::mp4::RawH264Packet {
             annex_b: vec![0, 0, 0, 1, 0x09, 0xF0],
             pts_ns: 1,
             is_keyframe: true,
         }]);
-        let (mp4, frames, status) = mux_selected_video(
+        let muxed = mux_selected_video(
             "job-stub",
             tmp.path(),
             64,
@@ -4876,9 +5038,14 @@ mod tests {
             super::VideoMuxTiming::default(),
         )
         .expect("stub stream must fall back cleanly");
-        assert!(mp4.is_none(), "stub stream must not produce an MP4");
-        assert_eq!(frames.len(), 1, "timeline metadata must be kept");
-        assert_eq!(status, StreamStatus::Partial, "stub video must be Partial");
+        assert!(muxed.mp4.is_none(), "stub stream must not produce an MP4");
+        // K15: no frame rows may be declared without `video.mp4`.
+        assert!(muxed.frames.is_empty(), "no frame rows without a file");
+        assert_eq!(
+            muxed.status,
+            StreamStatus::Absent,
+            "stub video must be Absent"
+        );
         assert!(
             !tmp.path().join("tmp").join("mux-job-stub.mp4").exists(),
             "temporary MP4 must be cleaned up"

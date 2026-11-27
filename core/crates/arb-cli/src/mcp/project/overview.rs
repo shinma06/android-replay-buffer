@@ -73,10 +73,9 @@ pub(in crate::mcp) fn error_groups(
     for key in FILTERS.into_iter().chain(["time_zone"]) {
         if let Some(value) = args.get(key) {
             next.insert(key.into(), value.clone());
-            // arb_query_logs has no exclusion filter; its raw rows are never pre-filtered.
-            if key != "exclude_tags" {
-                raw.insert(key.into(), value.clone());
-            }
+            // `arb_query_logs` applies `exclude_tags` with the overview's rule, so the raw rows
+            // are the ungrouped rows behind the same groups.
+            raw.insert(key.into(), value.clone());
         }
     }
     json!({
@@ -143,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             groups["raw_query"],
-            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","min_level":"E","bucket":"main","package":"com.example","tag":"Auth"}})
+            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","min_level":"E","bucket":"main","package":"com.example","tag":"Auth","exclude_tags":["Vendor"]}})
         );
         assert_eq!(
             (

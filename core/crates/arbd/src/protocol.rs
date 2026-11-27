@@ -117,6 +117,9 @@ pub struct SystemHelloResponse {
     /// Log queries support an inclusive minimum Android priority.
     #[serde(default)]
     pub log_min_level: bool,
+    /// Log queries support `exclude_tags`.
+    #[serde(default)]
+    pub log_exclude_tags: bool,
     /// Exact half-open time ranges are supported by session writes and both exports.
     #[serde(default)]
     pub realtime_trim: bool,
@@ -938,6 +941,10 @@ pub struct TimelineQueryParams {
     pub level: Option<String>,
     /// Inclusive Android log priority threshold, mutually exclusive with the exact level.
     pub min_level: Option<String>,
+    /// Excluded exact tag names, case-insensitive, as in `timeline.overview`. Omitted or empty
+    /// excludes nothing.
+    #[serde(default)]
+    pub exclude_tags: Option<Vec<String>>,
     /// Optional case-insensitive substring filter on `LogRecord::message` or `tag`.
     #[serde(default)]
     pub keyword: Option<String>,

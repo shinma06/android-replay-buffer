@@ -805,6 +805,250 @@ fn frame_exactly_at_w0_is_not_preceded_by_a_carried_in_frame() {
     );
 }
 
+/// Real H.264 frames with an IDR every `gop` frames, as `(config, picture, is_keyframe)`.
+fn encoded_frames(count: usize, gop: u32) -> Vec<(Vec<u8>, Vec<u8>, bool)> {
+    let decoded: Vec<DecodedFrame> = (0..count)
+        .map(|i| DecodedFrame {
+            frame_index: u64::try_from(i).unwrap(),
+            width: 64,
+            height: 64,
+            format: PixelFormat::Yuv420p,
+            // A small moving marker on a flat picture keeps the encoder on P-frames.
+            data: {
+                let mut data = vec![80_u8; 64 * 64 * 3 / 2];
+                for row in 0..8 {
+                    let start = row * 64 + (i % 7) * 8;
+                    data[start..start + 8].fill(200);
+                }
+                data
+            },
+        })
+        .collect();
+    let packets = OpenH264Backend::new()
+        .encode_yuv420p_sequence(&decoded, gop, 40_000_000, EncodeParams::default())
+        .unwrap();
+    let gop = usize::try_from(gop).unwrap();
+    for (i, p) in packets.iter().enumerate() {
+        assert_eq!(p.is_keyframe, i % gop == 0, "frame {i}");
+    }
+    packets
+        .into_iter()
+        .map(|pkt| {
+            let mut config = Vec::new();
+            let mut picture = Vec::new();
+            for nal in arb_media::mp4::split_annexb_nals(&pkt.annex_b) {
+                let out = if matches!(nal[0] & 31, 7 | 8) {
+                    &mut config
+                } else {
+                    &mut picture
+                };
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(nal);
+            }
+            (config, picture, pkt.is_keyframe)
+        })
+        .collect()
+}
+
+/// Ring whose oldest chunks were evicted: the IDR of the first GOP in the window is gone, so the
+/// window starts with `skip`.. orphan P-frames. Frames are 40 ms apart from 2 s, beacons run to
+/// 31 s and the last 30 s are saved (`W0` = 1 s, no frame before it).
+fn save_with_evicted_head_idr(
+    tmp: &TempDir,
+    name: &str,
+    count: usize,
+    gop: u32,
+    skip: usize,
+) -> SaveOutcomeResponse {
+    let mut cap = pipeline(tmp);
+    beacons(&mut cap, 0, 900_000_000);
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: 2 * SEC,
+        boot_id: BOOT.into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 64,
+            height: 64,
+        },
+    })
+    .unwrap();
+    let encoded = encoded_frames(count, gop);
+    let mut t = 2 * SEC;
+    for frame in &encoded[skip..] {
+        push_frame(&mut cap, frame, t, t);
+        t += 40_000_000;
+    }
+    cap.ingest_event(log_row(t, "after video")).unwrap();
+    beacons(&mut cap, t + 100_000_000, 31 * SEC);
+    let (outcome, _) = save(&mut cap, tmp, name, 30, SaveMode::Full, Ledger::Keep);
+    outcome
+}
+
+/// Runs the post-save video tools on `bundle` and returns their results.
+fn video_tool_results(
+    tmp: &TempDir,
+    bundle: &Path,
+) -> (
+    Result<crate::protocol::MediaInspectFramesResponse, crate::error::DaemonError>,
+    Result<crate::protocol::ExportPngResponse, crate::error::DaemonError>,
+    Result<crate::protocol::ExportTrimResponse, crate::error::DaemonError>,
+) {
+    let catalog = Catalog::open(tmp.path().join("tools-cat"), tmp.path().join("tools")).unwrap();
+    let backend = OpenH264Backend::new();
+    let faults = super::FaultInjection::default();
+    let ctx = crate::media_engine::ExportContext {
+        catalog: &catalog,
+        data_dir: tmp.path(),
+        backend: &backend,
+        faults: &faults,
+    };
+    let inspect = serde_json::from_value(serde_json::json!({
+        "bundle_id": "orphan",
+        "mode": "contact_sheet",
+    }))
+    .unwrap();
+    let inspected = crate::inspect_export::inspect_frames(
+        &ctx,
+        &tmp.path().join("cache"),
+        bundle,
+        None,
+        &inspect,
+    );
+    let png = crate::media_engine::export_png(&ctx, bundle, None, 0, &tmp.path().join("f0.png"));
+    let trim = serde_json::from_value(serde_json::json!({
+        "bundle_id_or_path": bundle.display().to_string(),
+        "in_frame_index": 0,
+        "out_frame_index": 3,
+    }))
+    .unwrap();
+    let trimmed =
+        crate::media_engine::export_trim(&ctx, bundle, None, &tmp.path().join("trims"), &trim);
+    (inspected, png, trimmed)
+}
+
+/// W3B / K15 reproduction A: 10 orphan P-frames (their IDR evicted from the ring) followed by a
+/// healthy 20-frame GOP. Before the fix the bundle declared 30 frames as `partial` without
+/// `video.mp4` and every video tool failed with an integrity mismatch. Now the orphan head is
+/// dropped and the 20 decodable frames are written as an honest `Partial` track.
+#[test]
+fn w3b_orphan_head_p_frames_are_dropped_and_the_decodable_suffix_is_saved() {
+    let tmp = TempDir::new().unwrap();
+    // 40 frames with IDRs at 0 and 20; frames 0..10 never reach the pinned ring.
+    let outcome = save_with_evicted_head_idr(&tmp, "orphan", 40, 20, 10);
+    assert_warnings_one_to_one(&outcome);
+    let e = &outcome.evidence;
+    let path = outcome.bundle_path.clone().unwrap();
+    let reader = arb_storage::bundle_io::open_bundle(&path).unwrap();
+    arb_storage::bundle_io::V2BundleReader::open(&path)
+        .unwrap()
+        .verify_integrity()
+        .unwrap();
+    let video = reader.manifest_summary().streams.video.clone().unwrap();
+    let frames = reader.frames().unwrap();
+    let track = arb_media::mp4::Mp4VideoTrack::open(
+        reader
+            .video_path()
+            .expect("the decodable suffix must be written as video.mp4"),
+    )
+    .unwrap();
+    assert_eq!(video.status, arb_core::bundle::StreamStatus::Partial);
+    assert_eq!(video.frame_count, 20);
+    assert_eq!(frames.len(), 20);
+    assert_eq!(track.frame_count(), 20);
+    assert!(frames[0].is_keyframe, "frame 0 is the first decodable IDR");
+    assert_eq!(
+        frames.iter().map(|f| f.frame_index).collect::<Vec<_>>(),
+        (0..20).collect::<Vec<u64>>()
+    );
+    assert_eq!(frames[0].pts_device_mono_ns, 2 * SEC + 10 * 40_000_000);
+    assert_eq!(video.carried_in, None);
+    assert_eq!(e.video_frame_count, Some(20));
+    assert!(e.actual_video_duration_ms.unwrap() > 0);
+    assert_eq!(e.video_shortfall, Some(true));
+    // Coverage starts at the first written frame (2.4 s), not at the dropped orphans (2.0 s).
+    let coverage = e.video_coverage_ms.unwrap();
+    assert!(
+        coverage <= 31_000 - 2_400 && coverage > 0,
+        "coverage {coverage} ms must not count the dropped orphan head"
+    );
+    assert!(
+        reader
+            .discontinuities()
+            .unwrap()
+            .iter()
+            .any(|d| d.detail.as_deref().is_some_and(|m| m.contains("10 枚"))),
+        "the dropped head is recorded as a video stream gap"
+    );
+    // The display origin is the IDR: the first frame starts at its capture time.
+    let display = reader.display_frames().unwrap();
+    assert_eq!(
+        arb_core::bundle::frame_display_start_ns(&display[0], None),
+        Some(2 * SEC + 10 * 40_000_000)
+    );
+    let decoded = OpenH264Backend::new()
+        .decode_frame(&track, 0, PixelFormat::Yuv420p)
+        .unwrap();
+    // Frame 20 has its marker in the 7th column block (20 % 7 == 6).
+    assert!(
+        decoded.data[6 * 8 + 2].abs_diff(200) <= 8,
+        "marker luma {}",
+        decoded.data[50]
+    );
+    assert!(
+        decoded.data[2].abs_diff(80) <= 8,
+        "background luma {}",
+        decoded.data[2]
+    );
+
+    let (inspected, png, trimmed) = video_tool_results(&tmp, &path);
+    assert_eq!(inspected.unwrap().frame_indices_rendered.first(), Some(&0));
+    png.unwrap();
+    trimmed.unwrap();
+}
+
+/// W3B / K15 reproduction B: every frame in the window is an orphan P-frame (no IDR at all).
+/// The bundle commits with an `Absent` video track, no frame rows and no `video.mp4`, and the
+/// video tools answer `NO_VIDEO` instead of an integrity mismatch.
+#[test]
+fn w3b_window_of_only_orphan_p_frames_commits_absent_video() {
+    let tmp = TempDir::new().unwrap();
+    // One IDR at frame 0, which never reaches the pinned ring.
+    let outcome = save_with_evicted_head_idr(&tmp, "orphan", 30, 60, 1);
+    assert_warnings_one_to_one(&outcome);
+    let e = &outcome.evidence;
+    let path = outcome.bundle_path.clone().unwrap();
+    let reader = arb_storage::bundle_io::open_bundle(&path).unwrap();
+    arb_storage::bundle_io::V2BundleReader::open(&path)
+        .unwrap()
+        .verify_integrity()
+        .unwrap();
+    let video = reader.manifest_summary().streams.video.clone().unwrap();
+    assert_eq!(video.status, arb_core::bundle::StreamStatus::Absent);
+    assert_eq!(video.frame_count, 0);
+    assert_eq!(reader.frames().unwrap().len(), 0);
+    assert!(reader.video_path().is_none());
+    assert!(!path.join("video.mp4").exists());
+    assert_eq!(e.video_frame_count, Some(0));
+    assert_eq!(e.actual_video_duration_ms, Some(0));
+    assert_eq!(e.video_coverage_ms, Some(0));
+    assert_eq!(e.video_shortfall, Some(true));
+    assert!(
+        e.warning_codes
+            .as_ref()
+            .unwrap()
+            .contains(&"video_shortfall".to_owned())
+    );
+
+    let (inspected, png, trimmed) = video_tool_results(&tmp, &path);
+    for err in [inspected.unwrap_err(), png.unwrap_err()] {
+        assert!(
+            matches!(err, crate::error::DaemonError::NoVideo(_)),
+            "expected NO_VIDEO, got {err:?}"
+        );
+    }
+    assert!(trimmed.is_err());
+}
+
 proptest::proptest! {
     /// #570: for every combination of warning conditions, `warnings` and `warning_codes` have
     /// the same length and order as `warning_details`, every message is non-empty, and

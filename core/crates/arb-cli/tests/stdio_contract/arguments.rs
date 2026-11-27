@@ -109,7 +109,7 @@ pub(super) fn verify(c: &mut Client) {
         &json!({"bundle_id":"fixture","mode":"single","frame_indices":[]}),
         &json!({"field":"frame_indices","min":1,"max":16,"got":0}),
         &["frame_indices", "件数 0", "1..=16 件の範囲外です"],
-        &["1..=16 件"],
+        &["frame_indices は 1..=16 件の範囲で指定してください。"],
     );
     for (tool, first, second, args) in [
         (

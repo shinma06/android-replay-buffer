@@ -372,6 +372,7 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
 fn query_params(bundle_dir: &Path, after_seq: Option<u64>, package: &str) -> TimelineQueryParams {
     TimelineQueryParams {
         min_level: None,
+        exclude_tags: None,
         tail: false,
         whole_word: false,
         cursor: None,

@@ -636,9 +636,15 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         if let Some(block) = link_blocks.first() {
             assert_eq!(block["uri"], link["uri"]);
         }
+        let modern = version >= ProtocolVersion::V2025_06_18.as_str();
+        let shot = c.check_tool("arb_screenshot", result);
+        assert_eq!(shot["resource_links"], json!([link]));
+        assert_eq!(shot["path"], json!(out));
+        // W3B: both structured-content versions return the same `file_uri` as the link.
         assert_eq!(
-            c.check_tool("arb_screenshot", result)["resource_links"],
-            json!([link])
+            shot.get("file_uri"),
+            modern.then_some(&link["uri"]),
+            "{version}: {shot}"
         );
         assert!(out.is_file());
         let png = c.result("resources/read", json!({"uri":link["uri"]}));
@@ -1074,6 +1080,42 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
         utc["logs"][0].get("timestamp_local").is_none(),
         "UTC is the default"
     );
+    // W3B: `arb_query_logs` applies `exclude_tags` with the overview's rule on every version,
+    // so the raw E+F rows are exactly the rows behind the excluded overview's groups.
+    for version in [
+        ProtocolVersion::V2024_11_05,
+        ProtocolVersion::V2025_03_26,
+        ProtocolVersion::V2025_06_18,
+        ProtocolVersion::V2025_11_25,
+    ] {
+        c.init(version.as_str());
+        let raw = c.tool(
+            "arb_query_logs",
+            json!({"bundle_id":bundle,"min_level":"E","bucket":"main","exclude_tags":["vendorhal"]}),
+        );
+        let logs = raw["logs"].as_array().unwrap();
+        assert_eq!(
+            raw["total_matched"], excluded["total_error_logs"],
+            "{version:?}"
+        );
+        assert_eq!(logs.len(), 12, "{version:?}");
+        assert!(logs.iter().all(|r| r["tag"] != "VendorHal"), "{version:?}");
+        let tags: BTreeSet<_> = logs.iter().map(|r| r["tag"].as_str().unwrap()).collect();
+        assert!(
+            ["AudioHal", "audiohal", "MyApp"]
+                .iter()
+                .all(|t| tags.contains(t))
+        );
+        let unfiltered = c.tool(
+            "arb_query_logs",
+            json!({"bundle_id":bundle,"min_level":"E","bucket":"main"}),
+        );
+        assert_eq!(
+            unfiltered["total_matched"], all["total_error_logs"],
+            "{version:?}"
+        );
+    }
+    c.init(ProtocolVersion::V2025_11_25.as_str());
     let listed = c.tool("arb_list_bundles", json!({"time_zone":"host"}));
     for entry in listed["bundles"].as_array().unwrap() {
         assert_local_time(&entry["created_local"]);
@@ -1230,6 +1272,11 @@ fn same_errors_as_overview(
         "raw_query",
     )
     .unwrap();
+    // W3B: the raw rows behind the groups use the same exclusion as the groups.
+    assert_eq!(
+        call["arguments"].get("exclude_tags"),
+        filters.get("exclude_tags")
+    );
     let page = c.tool(name, call["arguments"].clone());
     let levels: Vec<_> = page["logs"]
         .as_array()
@@ -1240,6 +1287,14 @@ fn same_errors_as_overview(
     assert_eq!(levels, ["E", "F"]);
     assert_eq!(page["total_matched"], groups["total_matched"]);
     assert_eq!(page["has_more"], false);
+    // Excluding the tag of those rows (any case) leaves none of them.
+    let mut hidden = call["arguments"].clone();
+    hidden["exclude_tags"] = json!([page["logs"][0]["tag"].as_str().unwrap().to_uppercase()]);
+    let none = c.tool(name, hidden);
+    assert_eq!(
+        (&none["total_matched"], &none["returned_count"]),
+        (&json!(0), &json!(0))
+    );
     let exact = c.tool(name, json!({"bundle_id":saved,"level":"E"}));
     assert_eq!(exact["total_matched"], 1);
     let summary = rpc

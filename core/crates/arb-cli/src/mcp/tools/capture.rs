@@ -103,7 +103,7 @@ impl McpServer {
         };
         let link = crate::mcp::resources::ResourceLink::screenshot(path, uri.clone());
         self.remember_screenshot(&uri, digest);
-        if !self.version.legacy_result_fields() {
+        if self.version.screenshot_file_uri() {
             resp["file_uri"] = json!(uri.as_str());
         }
         Zone::from_args(args).localize_unix_ms(

@@ -1039,10 +1039,15 @@ fn scenario_04_partial_audio_stop_video_and_logs_continue() {
         summary["streams"]["audio"]["status"], "partial",
         "audio stream must be honestly marked Partial after audio stop"
     );
+    let status = client.call("system.status", &json!({}));
     assert!(
-        summary["frame_count"].as_u64().unwrap_or(0) > 0,
+        status["capture"]["video_frames"].as_u64().unwrap_or(0) > 0,
         "video frames must continue after audio stop"
     );
+    // K15: the mock's synthetic video has no parameter sets, so no decoder can show it. The
+    // bundle commits it as an `absent` track with no frame rows instead of a file-less one.
+    assert_eq!(summary["streams"]["video"]["status"], "absent");
+    assert_eq!(summary["frame_count"], 0);
     assert!(
         summary["log_main_count"].as_u64().unwrap_or(0) > 0,
         "logs must continue after audio stop"

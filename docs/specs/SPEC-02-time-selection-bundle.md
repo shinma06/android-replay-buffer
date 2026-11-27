@@ -58,6 +58,16 @@ satisfies:
 
 保存は既存の preroll 経路で `[IDR..f_prev)` を復号準備に使い、`f_prev` を IDR として再符号化する。`timeline.sqlite` の `f_prev` の撮影時刻は書き換えない。manifest の `video.carried_in` に `frame_index: 0`、`captured_boottime_ns`、`display_start_boottime_ns: W0`、`evidence: "coverage"` を記録する。最後のフレームは `min(T, 映像被覆の終端)` まで表示を保持し、MP4 の最終 `stts` に実時間長を書く。`edts`／`elst` は 0 個で単一 `avc1` のまま。30 秒静止して 30 秒保存すると 1 枚で約 30,000 ms の映像になり、20 秒で接続が切れれば 20 秒で打ち切って `video_shortfall` を立てる。概要と保存後調査の `carried_in` はこの記録をそのまま返し、引き継ぎがないときは null。旧形式（schema 3/4）と `carried_in` のないバンドルの読取は変わらない。
 
+### 孤立した先頭フレームと映像コミットの整合
+
+リングが古いチャンクを回収すると、窓の先頭が IDR を失った P フレームで始まることがある。復号準備用の preroll も引き継ぎフレームもなく、先頭から復号できない場合、保存は次のように映像を確定する（K15）。
+
+1. 窓内で最初のキーフレーム（IDR）より前の孤立した P フレームを破棄し、そこから先を `video.mp4` に書く。番号は 0 から振り直し、0 番は IDR になる。`streams.video.status` は先頭が欠けたことを示す `partial`。破棄した区間は映像の `stream_gap` として記録し、`video_coverage_ms` は書いた先頭フレームより前を数えない。`actual_video_duration_ms` は書いた MP4 の再生尺で、不足すれば `video_shortfall` が立つ。
+2. 窓内に復号できる IDR がなければ映像を書かない。`status: absent`、`frame_count: 0`、`frames` 0 行、`video.mp4` なし、`actual_video_duration_ms`・`video_coverage_ms` は 0、`video_shortfall` は true。映像ツールは整合性エラーではなく `NO_VIDEO` を返す。
+3. `timeline.sqlite` の `frames`、`streams.video.frame_count`、MP4 のサンプル数は常に一致する。ログ・タップの表示フレーム、画面区間、音声との原点（`audio_lead_in_offset_ns`）は書いたフレーム列から求める。
+
+確定前に `arb-storage` のバンドル書き込みが映像の宣言を検査する。`status` が `absent`・`excluded` 以外、または `frame_count > 0` なら、0 バイトより大きい `video.mp4` と `frame_count` と同数の `frames` 行が必要。`absent` なら `frame_count`・`frames` 行は 0 で `video.mp4` はない。違反したバンドルは公開せず、保存は再試行可能な失敗になる。[判定](../../core/crates/arb-core/src/video_commit.rs)・[MP4 化](../../core/crates/arbd/src/capture.rs)・[確定前検査](../../core/crates/arb-storage/src/bundle_io.rs)
+
 ### 要求尺と測定結果
 
 | 結果 | 読み方 |
@@ -66,7 +76,7 @@ satisfies:
 | `actual_video_duration_ms` | MP4 の最終サンプルの表示時間まで含む再生尺。測定済みで映像なしなら 0 |
 | `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない。行の出現幅であり、被覆時間ではない |
 | `log_coverage_ms` | 保存窓のうち logcat ストリームが動作していた時間（窓 ∩ logcat 被覆区間）。ギャップ・切断・未開始の区間を含めない。被覆の記録がない旧ジョブでは省略 |
-| `video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` | 映像の被覆時間、引き継ぎフレームの有無、窓の両端で同じフレームを保持した時間。静止の保持は警告ではなく `info_codes` の `video_static_hold` で示す（ログ単体では省略） |
+| `video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` | 映像の被覆時間（書いた先頭フレームより前と、映像を書かなかった保存は数えない）、引き継ぎフレームの有無、窓の両端で同じフレームを保持した時間。静止の保持は警告ではなく `info_codes` の `video_static_hold` で示す（ログ単体では省略） |
 | `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。映像は MP4 の再生尺、ログは `log_coverage_ms`（記録がない旧ジョブは `actual_log_duration_ms`）で、それぞれ `actual_ms + 1000 < requested_secs × 1000` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
 | `video_frame_count`・`log_count`・`unanchored_log_count` | 映像枚数、隔離分を含むログ総数、そのうち隔離ログ数。未測定と確認済みの 0 を区別する |
 | `truncated_unanchored_count`・`discontinuity_count`・`warnings` | 全ストリームの隔離切り捨て、不連続の数、短尺・音声なし・末尾未確認などの警告。空の警告だけでは完全取得を保証しない |
@@ -110,9 +120,10 @@ satisfies:
 | 退避直後の通常 GC | 既定 24 時間保護 | 直後に物理削除する |
 | 管理域外のドライブが外れた | 一時利用不能として保持 | `--all-missing` で登録を消す |
 | 保存窓の先頭に非 IDR がある | 復号準備用データだけ窓外から参照 | 保存映像を再生すると窓より前の時刻が表示される |
+| 先頭の IDR がリングから回収済みで窓が P フレームから始まる | 最初の IDR より前を破棄し、残りを `partial` で `video.mp4` に書く。IDR がなければ `absent`・0 枚 | `video.mp4` なしで `partial`・`frame_count > 0` を確定し、映像ツールが整合性エラーになる |
 | 30 秒静止した画面を 30 秒保存 | 被覆が続いていれば引き継ぎフレーム 1 枚を約 30 秒保持。`video_shortfall=false`、`carried_in_frame=true` | 映像 0 枚、または末尾が最後の画面変化から約 33 ms で終わる |
 | 最後のフレームの後に切断・ギャップ | 引き継がず、または被覆の終端で打ち切り、`video_shortfall=true` | 切断中も同じ画が表示され続ける映像を作る |
 | 健全な 30 秒保存で両端 0.5 秒に行がない | `log_coverage_ms≈30000` で `log_shortfall=false`。`actual_log_duration_ms` は 28,999 のまま | 行の幅だけで `log_shortfall=true` にする |
 | 警告の配列 | `warning_codes`・`warnings`・`warning_details` が同じ長さ・順序 | `window_shortfall` だけ表示文がない |
 
-根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570。K1〜K5・K14、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
+根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570、Round 3B の 600 秒保存（W3B）。K1〜K5・K14・K15、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)

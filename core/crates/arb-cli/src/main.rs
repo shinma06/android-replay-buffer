@@ -957,6 +957,14 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
                 params["limit"] = json!(limit);
                 i += 2;
             }
+            "--exclude-tag" => {
+                let tag = require_val(args, i, flag)?;
+                match params["exclude_tags"].as_array_mut() {
+                    Some(tags) => tags.push(json!(tag)),
+                    None => params["exclude_tags"] = json!([tag]),
+                }
+                i += 2;
+            }
             "--bucket" | "--cursor" | "--keyword" | "--tag" | "--level" | "--min-level"
             | "--package" => {
                 params[flag[2..].replace('-', "_")] = json!(require_val(args, i, flag)?);
@@ -1941,7 +1949,7 @@ COMMANDS:\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
@@ -2025,6 +2033,35 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    /// W3B: `--exclude-tag` repeats and maps to the same `exclude_tags` as MCP.
+    #[test]
+    fn logs_exclude_tag_repeats_into_one_list() {
+        let args = vec_str(&[
+            "logs",
+            "bundle-1",
+            "--min-level",
+            "E",
+            "--exclude-tag",
+            "VendorHal",
+            "--exclude-tag",
+            "chatty",
+        ]);
+        let (_, cmd) = parse_args(&args).expect("logs args must parse");
+        let CommandSpec::Logs { params } = cmd else {
+            panic!("expected logs, got {cmd:?}");
+        };
+        assert_eq!(params["exclude_tags"], json!(["VendorHal", "chatty"]));
+        assert_eq!(params["min_level"], "E");
+        let (_, plain) = parse_args(&vec_str(&["logs", "bundle-1"])).unwrap();
+        let CommandSpec::Logs { params } = plain else {
+            panic!("expected logs");
+        };
+        assert!(
+            params.get("exclude_tags").is_none(),
+            "omitted excludes nothing"
+        );
     }
 
     #[test]
