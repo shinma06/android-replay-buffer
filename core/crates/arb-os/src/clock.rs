@@ -355,8 +355,8 @@ mod tests {
     fn host_utc_offset_is_a_real_zone_offset() {
         for unix_secs in [0, 1_704_067_200, 1_798_000_000] {
             let offset = super::host_utc_offset_secs(unix_secs).expect("host zone resolves");
+            // Historical zones may use second-level offsets (Africa/Monrovia 1970: -00:44:30).
             assert!(offset.abs() <= 18 * 3600, "{offset}");
-            assert_eq!(offset % 60, 0, "zone offsets are whole minutes: {offset}");
         }
     }
 

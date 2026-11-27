@@ -61,7 +61,12 @@ impl Zone {
 }
 
 /// RFC 3339 local time with millisecond precision and an explicit `±HH:MM` offset.
+///
+/// RFC 3339 offsets have minute resolution, so a historical second-level offset (for example
+/// -00:44:30) is truncated toward zero and the clock is shifted by that same minute offset: the
+/// text always names exactly the instant `unix_ms`.
 pub(in crate::mcp) fn format_local(unix_ms: i64, offset_secs: i32) -> String {
+    let offset_secs = offset_secs / 60 * 60;
     let shifted = unix_ms.saturating_add(i64::from(offset_secs) * 1000);
     let mut text = arb_core::time::format_unix_ms_iso8601(shifted);
     text.pop();
@@ -153,6 +158,8 @@ mod tests {
             "2026-11-27T21:53:45.123-03:30"
         );
         assert_eq!(format_local(-1, 0), "1969-12-31T23:59:59.999+00:00");
+        // Monrovia 1970 (-00:44:30): the label keeps minute resolution and the same instant.
+        assert_eq!(format_local(0, -2670), "1969-12-31T23:16:00.000-00:44");
         let mut row = json!({"timestamp_utc":"2026-11-28T01:23:45.123Z","created":"2026-11-28T01:23:45Z","ms":1_795_829_025_123_i64});
         Zone::fixed(TOKYO).localize(&mut row, "timestamp_utc", "timestamp_local");
         Zone::fixed(ST_JOHNS).localize(&mut row, "created", "created_local");
@@ -190,12 +197,12 @@ mod tests {
         #[test]
         fn local_and_utc_renderings_name_the_same_instant(
             ms in -2_208_988_800_000_i64..32_503_680_000_000,
-            quarter_hours in -48_i32..=56,
+            raw_offset in -(14 * 3600)..=(14 * 3600),
         ) {
-            let offset = quarter_hours * 900;
+            let offset = raw_offset / 60 * 60;
             let utc = arb_core::time::format_unix_ms_iso8601(ms);
             proptest::prop_assert_eq!(parse_ms(&utc), Some(ms));
-            let local = format_local(ms, offset);
+            let local = format_local(ms, raw_offset);
             proptest::prop_assert_eq!(parse_ms(&local), Some(ms));
             let sign = if offset < 0 { '-' } else { '+' };
             let suffix = format!("{sign}{:02}:{:02}", offset.unsigned_abs() / 3600, offset.unsigned_abs() % 3600 / 60);

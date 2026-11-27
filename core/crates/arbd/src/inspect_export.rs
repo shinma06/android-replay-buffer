@@ -1849,18 +1849,62 @@ fn nearest_frame_index_for_epoch(
     best.map(|(_, idx)| idx)
 }
 
-/// Screen spans with offsets from the origin shared by overview taps and log rows.
+/// Screen spans with offsets from their own boot's origin, the same origin log rows use
+/// (first displayed frame of that boot, else that boot's epoch start). Boottime restarts at each
+/// boot, so with several boots a span is placed only when its first frame names the boot;
+/// otherwise its offsets stay `None` rather than being measured against another boot.
 pub(super) fn screens_with_offsets(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
 ) -> Result<Vec<arb_core::analytics::ScreenSpan>, DaemonError> {
-    let origin = first_bundle_boottime_ns(frames, &reader.manifest_summary().epochs);
     let mut screens = reader.screens()?;
-    for span in &mut screens {
+    place_screens(&mut screens, frames, &reader.manifest_summary().epochs);
+    Ok(screens)
+}
+
+/// Pure placement used by [`screens_with_offsets`].
+fn place_screens(
+    screens: &mut [arb_core::analytics::ScreenSpan],
+    frames: &[FrameRecord],
+    epochs: &[arb_core::bundle::EpochSpan],
+) {
+    let boots: std::collections::BTreeSet<&str> = frames
+        .iter()
+        .map(|f| f.boot_id.as_str())
+        .chain(epochs.iter().map(|e| e.boot_id.as_str()))
+        .collect();
+    let single = (boots.len() <= 1)
+        .then(|| first_bundle_boottime_ns(frames, epochs))
+        .flatten();
+    for span in screens {
+        let origin = if boots.len() <= 1 {
+            single
+        } else {
+            span.start_frame_index
+                .and_then(|i| frames.iter().find(|f| f.frame_index == i))
+                .and_then(|f| boot_origin_ns(frames, epochs, &f.boot_id))
+        };
         span.start_offset_ms = origin.map(|o| span.start_ns.saturating_sub(o) / 1_000_000);
         span.end_offset_ms = origin.map(|o| span.end_ns.saturating_sub(o) / 1_000_000);
     }
-    Ok(screens)
+}
+
+/// Origin of one boot on the shared display timeline (see [`LogCoordinates::locate`]).
+fn boot_origin_ns(
+    frames: &[FrameRecord],
+    epochs: &[arb_core::bundle::EpochSpan],
+    boot_id: &str,
+) -> Option<i64> {
+    frames
+        .iter()
+        .filter(|f| f.boot_id == boot_id)
+        .find_map(frame_boottime_ns)
+        .or_else(|| {
+            epochs
+                .iter()
+                .find(|e| e.boot_id == boot_id)
+                .map(|e| e.start_boottime_ns)
+        })
 }
 
 fn first_bundle_boottime_ns(
@@ -2340,6 +2384,70 @@ mod tests {
                 proptest::prop_assert!(c.total_count >= 5);
             }
         }
+    }
+
+    #[test]
+    fn screen_offsets_use_their_own_boot_origin() {
+        use arb_core::analytics::ScreenSpan;
+        use arb_core::bundle::{EpochSpan, FrameRecord};
+        use arb_core::time::{TimeAlignment, TimestampSemantics};
+        let frame = |i: u64, boot: &str, ns: i64| FrameRecord {
+            frame_index: i,
+            boot_id: boot.into(),
+            pts_device_mono_ns: ns,
+            pc_ingest_cont_ns: ns,
+            alignment: TimeAlignment::Anchored {
+                boot_id: boot.into(),
+                boottime_ns: ns,
+                half_width_ns: 0,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: true,
+            gop_id: 0,
+            mp4_sample_offset: 0,
+            mp4_sample_size: 1,
+        };
+        let span = |start_ns: i64, start_frame: Option<u64>| ScreenSpan {
+            start_ns,
+            end_ns: start_ns + 2_000_000_000,
+            start_frame_index: start_frame,
+            end_frame_index: start_frame,
+            package_name: "p".into(),
+            activity_name: "p.A".into(),
+            short_name: "A".into(),
+            start_offset_ms: None,
+            end_offset_ms: None,
+        };
+        let epoch = |boot: &str, start| EpochSpan {
+            boot_id: boot.into(),
+            start_boottime_ns: start,
+            end_boottime_ns: start + 10_000_000_000,
+        };
+        // Boot b restarts its clock: its first frame at 5 s is offset 0, not -95 s.
+        let frames = [frame(0, "a", 100_000_000_000), frame(1, "b", 5_000_000_000)];
+        let epochs = [epoch("a", 100_000_000_000), epoch("b", 5_000_000_000)];
+        let mut screens = [
+            span(100_500_000_000, Some(0)),
+            span(5_000_000_000, Some(1)),
+            span(6_000_000_000, None),
+        ];
+        super::place_screens(&mut screens, &frames, &epochs);
+        let offsets: Vec<_> = screens
+            .iter()
+            .map(|s| (s.start_offset_ms, s.end_offset_ms))
+            .collect();
+        assert_eq!(
+            offsets,
+            [
+                (Some(500), Some(2_500)),
+                (Some(0), Some(2_000)),
+                (None, None)
+            ]
+        );
+        // A single boot needs no frame to be placed.
+        let mut one = [span(101_000_000_000, None)];
+        super::place_screens(&mut one, &frames[..1], &epochs[..1]);
+        assert_eq!(one[0].start_offset_ms, Some(1_000));
     }
 
     #[test]

@@ -63,7 +63,8 @@ pub(in crate::mcp) fn error_groups(
     let has_more = overview["error_logs_truncated"].as_bool().unwrap_or(false);
     let mut next = Map::new();
     next.insert("bundle_id".into(), bundle_id.clone());
-    next.insert("max_error_logs".into(), json!(unique.min(MAX_GROUPS)));
+    let next_limit = unique.min(MAX_GROUPS);
+    next.insert("max_error_logs".into(), json!(next_limit));
     let mut raw = Map::new();
     raw.insert("bundle_id".into(), bundle_id.clone());
     raw.insert("level".into(), json!("E"));
@@ -83,7 +84,8 @@ pub(in crate::mcp) fn error_groups(
         "unique_count": unique,
         "returned_count": returned,
         "has_more": has_more,
-        "continuation": if has_more {
+        // Only a call that returns more groups; past the cap, `raw_query` pages the raw rows.
+        "continuation": if has_more && next_limit > u64::try_from(returned).unwrap_or(u64::MAX) {
             json!({"tool":"arb_timeline_overview","arguments":next})
         } else {
             Value::Null
@@ -97,6 +99,20 @@ mod tests {
     use super::{error_groups, params, project};
     use crate::mcp::{project::time::Zone, version::ProtocolVersion};
     use serde_json::{Value, json};
+
+    #[test]
+    fn continuation_is_null_when_the_cap_is_already_returned() {
+        let rows: Vec<_> = (0..200).map(|i| json!({"seq":i})).collect();
+        let mut capped = json!({"error_log_highlights":rows,"total_error_logs":400,"unique_error_logs":202,"error_logs_truncated":true});
+        let groups = error_groups(&mut capped, &json!("b1"), &serde_json::Map::new());
+        assert_eq!(groups["has_more"], true);
+        assert_eq!(groups["continuation"], Value::Null);
+        assert_eq!(groups["raw_query"]["tool"], "arb_query_logs");
+        let rows: Vec<_> = (0..20).map(|i| json!({"seq":i})).collect();
+        let mut short = json!({"error_log_highlights":rows,"total_error_logs":400,"unique_error_logs":202,"error_logs_truncated":true});
+        let groups = error_groups(&mut short, &json!("b1"), &serde_json::Map::new());
+        assert_eq!(groups["continuation"]["arguments"]["max_error_logs"], 200);
+    }
 
     /// An overview whose `unique` groups exceed the single returned one when `unique > 1`.
     fn overview(unique: u64) -> Value {
