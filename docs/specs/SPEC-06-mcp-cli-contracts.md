@@ -19,7 +19,7 @@ satisfies:
 
 `tools/list` は `initialize` で交渉した版に従い、全 20 ツールを 1 応答で返す（`nextCursor` なし）。各ツールの入出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
 
-公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は `structuredContent` と後方互換の JSON テキストで同じ値を伝える。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE`、映像トラックのない入力 `NO_VIDEO` を識別する。CLI の JSON と MCP のエラー本体はデーモンの `error.data.details` を任意の `details` オブジェクトとして保持する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/contract.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は全版で JSON テキストに入り、2025-06-18 以降は同じ値を `structuredContent` にも載せる。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE`、映像トラックのない入力 `NO_VIDEO` を識別する。CLI の JSON と MCP のエラー本体はデーモンの `error.data.details` を任意の `details` オブジェクトとして保持する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/catalog.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
 | 用途 | `tools/list` の公開名（20 件） |
 | --- | --- |
@@ -31,6 +31,10 @@ satisfies:
 | 書き出し | `arb_export_trim`、`arb_export_frame_png`（4 版とも `output_path` 必須。既存ファイルとの衝突は `-32002`） |
 
 `2025-11-25` の `arb_export_trim` は `trash_original`、`arb_screenshot` は `overwrite` の指定自体を拒否する。以前の 3 版はこれらを受理し破壊性ヒントを立てる。保存秒数の正本は `duration_secs`、バンドル指定は `bundle_id`。`arb_export_trim` の既定形式 `share_mp4` は `export.share_mp4` に渡し、`keep_bundle=false` が既定。`format=bundle` は `export.trim`。呼び出し別名 `arb_export_share_mp4` と `arb_trim_bundle` は列挙数に含めない。CLI の `--in-time-ns`／`--out-time-ns` と MCP の `in_time_ns`／`out_time_ns` は同じ実時間の対で、フレーム指定との優先順位・端点・成果物は [SPEC-03](SPEC-03-protocol-media.md) に従う。[stdio 実装](../../core/crates/arb-cli/src/mcp.rs)
+
+別名と正本、または排他引数を同時に渡すと、値が同じでも `INVALID_PARAMS`（-32602）となる。保存 3 ツールは duration_secs（window_secs、duration_sec）、note（memo）、dest_dir、drain_timeout_ms を共通に受理する。調査・書き出し 5 ツールは bundle_id（bundle_id_or_path）を使う。cursor と after_seq、スクリーンショットの output_path と output_dir は各組で片方だけ指定する。検証失敗の details には衝突引数名、許容範囲と入力値、列挙候補、型または必須キーを入れ、message と hint で修正方法を示す。
+
+管理域（データディレクトリ配下の bundles）外への保存（dest_dir、output_dir_override）は unmanaged で arb_gc_bundles の物理削除対象外です。実体を手動で移動・削除し、元の保存先が missing になったら arb_forget_bundle で登録を解除します。
 
 ## 証跡を保存し調査する
 
@@ -52,8 +56,8 @@ satisfies:
 | --- | --- |
 | Resources 2 件 | `arb://status` と `arb://bundles` は JSON |
 | Templates 5 件 | `arb://bundles/{bundle_id}/` 以下の `manifest`、`screens`、`crashes`、`logs`（先頭 100 件）、`frame/{frame_index}`（PNG） |
-| スクリーンショット | `arb_screenshot` は `2025-11-25` で `include_image=false` が既定（保存パスとメタデータ）。true なら PNG を同梱。旧 3 版はインライン返却が既定 |
-| 画像 | `arb_inspect_frames` の `include_images` は既定 false。メタデータと `resource_link` を返し、必要な画像だけ `resources/read` で取得。明示 true はインライン画像。2025-06-18 より古い版には URI をテキストで渡す |
+| スクリーンショット | `arb_screenshot` は `2025-11-25` で `include_image=false` が既定（保存パスとメタデータ）。true なら PNG を同梱。旧 3 版はインライン返却が既定。保存先の衝突時は旧 3 版に限り overwrite も案内し、全版で別の output_path を案内する |
+| 画像 | `arb_inspect_frames` の `include_images` は既定 false。メタデータと `resource_link` を返し、必要な画像だけ `resources/read` で取得。明示 true はインライン画像。保存系 3 ツールとフレーム調査は全版の本文先頭で `resource_links`（uri、name、mimeType の配列）を返す。2025-06-18 以降は同じ参照を resource_link ブロックにも載せる |
 | Prompts | `investigate_crash`、`triage_recent_bug`、`safe_cleanup_review`。`completion/complete` は参照・引数を検証し、バンドル ID の前方一致を最大 100 件返す |
 | 進捗・ログ | 進捗トークンがあれば `notifications/progress` はそのトークンと増加する値を返す。`logging/setLevel` は RFC 5424 の debug／info／notice／warning／error／critical／alert／emergency を受け付ける。しきい値以上を `notifications/message` で送る。失敗は error、トークンのない詳細な段階通知は debug |
 | Tasks | 2025-11-25 の任意機能。開始・保存・保存して調査・トリム／共有出力が対応。`tasks/get`、`tasks/list`、`tasks/result`、`tasks/cancel`。セッションあたり上限 64、保持期限は作成時から既定 60 秒、指定時 1〜3,600,000 ms。実行中は期限だけで消さない |

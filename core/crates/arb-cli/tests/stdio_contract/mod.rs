@@ -13,8 +13,10 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tempfile::TempDir;
 
-#[path = "../../src/mcp/schema.rs"]
-mod schema;
+mod arguments;
+
+#[path = "../../src/mcp/validate.rs"]
+mod validate;
 
 struct Client {
     child: Child,
@@ -99,22 +101,22 @@ impl Client {
     }
     fn check_tool(&mut self, name: &str, mut r: Value) -> Value {
         assert_eq!(r["isError"], false, "{name}: {r}");
-        let body = r["structuredContent"].take();
-        schema::validate(&self.schemas[name]["outputSchema"], &body, name)
-            .unwrap_or_else(|e| panic!("{e}: {body}"));
-        let text = r["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|b| b["type"] == "text")
-            .unwrap()["text"]
-            .as_str()
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(text).unwrap(),
-            body,
-            "{name}: legacy text"
-        );
+        let body: Value = serde_json::from_str(
+            r["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["type"] == "text")
+                .unwrap()["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        if let Some(structured) = r.get_mut("structuredContent") {
+            assert_eq!(body, structured.take());
+        }
+        validate::validate(&self.schemas[name]["outputSchema"], &body, name)
+            .unwrap_or_else(|e| panic!("{e} ({}, {}): {body}", e.details, e.hint));
         self.covered.insert(name.to_owned());
         body
     }
@@ -130,7 +132,7 @@ fn assert_rejected(c: &mut Client, name: &str, args: &Value) {
     let r = c.result("tools/call", json!({"name":name,"arguments":args}));
     assert_eq!(r["isError"], true, "{name} {args}");
     if let Some(def) = c.schemas.get(name) {
-        schema::validate(&def["outputSchema"], &r["structuredContent"], name)
+        validate::validate(&def["outputSchema"], &r["structuredContent"], name)
             .expect("structured error matches output schema");
     }
     assert_eq!(
@@ -246,8 +248,8 @@ fn registry(c: &mut Client) {
         if input["properties"].get("bundle_id").is_some() {
             base["bundle_id"] = json!("fixture");
         }
-        schema::normalize_integers(input, &mut base);
-        schema::validate(input, &base, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        validate::normalize_integers(input, &mut base);
+        validate::validate(input, &base, name).unwrap_or_else(|e| panic!("{name}: {e}"));
         if base.get("bundle_id").is_some() {
             let mut absent = base.clone();
             absent["bundle_id"] = json!("no-such-bundle-contract");
@@ -256,7 +258,7 @@ fn registry(c: &mut Client) {
             let error = &result["structuredContent"];
             assert_eq!(error["error_code"], "BUNDLE_NOT_FOUND", "{name}: {error}");
             assert_eq!(error["rpc_code"], -32001, "{name}");
-            schema::validate(&def["outputSchema"], error, name).unwrap();
+            validate::validate(&def["outputSchema"], error, name).unwrap();
         }
         for (k, field) in input["properties"].as_object().unwrap() {
             let mut args = base.clone();
@@ -513,7 +515,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             assert_eq!(response["isError"], true);
             assert_eq!(error["error_code"], "NO_VIDEO");
             assert_eq!(error["details"]["bundle_id"], saved["bundle_id"]);
-            schema::validate(
+            validate::validate(
                 &c.schemas["arb_inspect_frames"]["outputSchema"],
                 error,
                 "arb_inspect_frames",
@@ -554,6 +556,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
     for (version, inline, expected) in [
         ("2024-11-05", None, true),
+        ("2025-03-26", None, true),
         ("2025-06-18", None, true),
         ("2025-11-25", None, false),
         ("2025-11-25", Some(true), true),
@@ -576,6 +579,17 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         assert_eq!(image, expected);
         c.check_tool("arb_screenshot", result);
         assert!(out.is_file());
+        let collision = c.result(
+            "tools/call",
+            json!({"name":"arb_screenshot","arguments":args}),
+        );
+        let body: Value =
+            serde_json::from_str(collision["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["error_code"], "CONFLICT");
+        assert_eq!(body["details"]["reason"], "already_exists");
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("output_path"), "{hint}");
+        assert_eq!(hint.contains("overwrite"), version != "2025-11-25");
     }
     fs::remove_file(adb_dir.join("devices")).unwrap();
     let overview = c.tool("arb_timeline_overview", target.clone());
@@ -591,16 +605,57 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         json!({"bundle_id":id,"limit":1,"cursor":page["next_cursor"]}),
     );
     assert_eq!(page["has_more"], false);
-    let r = c.result(
-        "tools/call",
-        json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"single"}}),
-    );
-    assert_eq!(r["content"][1]["type"], "resource_link");
-    assert_eq!(r["content"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        c.check_tool("arb_inspect_frames", r)["frames"][0]["frame_index"],
-        0
-    );
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        c.init(version);
+        let tools = c.result("tools/list", json!({}));
+        for def in tools["tools"].as_array().unwrap() {
+            c.schemas
+                .insert(def["name"].as_str().unwrap().into(), def.clone());
+        }
+        arguments::verify(&mut c);
+        let dest = root.path().join(format!("external-{version}"));
+        fs::create_dir(&dest).unwrap();
+        for (tool, args) in [
+            (
+                "arb_inspect_frames",
+                json!({"bundle_id_or_path":id,"mode":"single"}),
+            ),
+            (
+                "arb_save_and_inspect",
+                json!({"dest_dir":dest,"drain_timeout_ms":0,"logs_only":version<"2025-06-18","memo":"調査"}),
+            ),
+        ] {
+            let result = c.result("tools/call", json!({"name":tool,"arguments":args}));
+            let blocks = result["content"].as_array().unwrap();
+            let body: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
+            let links = body["resource_links"]
+                .as_array()
+                .expect("body resource_links");
+            assert_ne!(links.len(), 0);
+            assert_eq!(blocks.iter().filter(|b| b["type"] == "text").count(), 1);
+            let modern = version >= "2025-06-18";
+            assert_eq!(result.get("structuredContent").is_some(), modern);
+            assert_eq!(blocks.len(), if modern { links.len() + 1 } else { 1 });
+            for (i, link) in links.iter().enumerate() {
+                assert!(link["uri"].as_str().unwrap().starts_with("arb://"));
+                for k in ["uri", "name", "mimeType"] {
+                    assert!(link[k].is_string());
+                    if modern {
+                        assert_eq!(blocks[i + 1]["type"], "resource_link");
+                        assert_eq!(blocks[i + 1][k], link[k]);
+                    }
+                }
+            }
+            let checked = c.check_tool(tool, result);
+            if tool == "arb_save_and_inspect" {
+                let path = Path::new(checked["save"]["bundle_path"].as_str().unwrap());
+                assert!(path.is_dir() && path.starts_with(&dest));
+                assert_eq!(checked["save"]["note"], "調査");
+            } else {
+                assert_eq!(checked["frames"][0]["frame_index"], 0);
+            }
+        }
+    }
     c.tool(
         "arb_export_trim",
         json!({"bundle_id":id,"output_path":root.path().join("clip.mp4")}),
@@ -615,6 +670,12 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     );
     let collision=c.result("tools/call",json!({"name":"arb_export_frame_png","arguments":{"bundle_id":id,"frame_index":2,"output_path":root.path().join("frame.png")}}));
     assert_eq!(collision["structuredContent"]["rpc_code"], -32002);
+    assert!(
+        collision["structuredContent"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("output_path")
+    );
     let reversed=c.result("tools/call",json!({"name":"arb_inspect_frames","arguments":{"bundle_id":id,"mode":"contact_sheet","start_frame":12,"end_frame":4}}));
     assert_eq!(reversed["structuredContent"]["rpc_code"], -32602);
     for format in ["share_mp4", "bundle"] {

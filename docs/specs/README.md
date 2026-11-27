@@ -17,7 +17,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版 | デーモン業務エラー／伝送断、RPC 名／公開ツール名 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答で列挙。GC・forget は全非空区分と件数、保存成功は共有判定から投影 | RS-1〜5、KON-1〜7、実 stdio・スキーマ検査、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版 | デーモン業務エラー／伝送断、RPC 名／公開ツール名 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影 | RS-1〜5、KON-1〜7、実 stdio・スキーマ検査、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -57,7 +57,7 @@
 | [音声方針](audio-policy-table.json) | API・方式・端末側の結果から起動引数、状態、原因、表示分類を引く |
 | [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化、再起動後の候補選択（S3） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
-| [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの入力・出力型・注釈・タスク対応 |
+| [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの別名・排他・入力・出力型・注釈・タスク対応 |
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 20 ツールと実書き出し、IDE と仕様書の表示名 |

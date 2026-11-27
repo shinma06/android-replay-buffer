@@ -602,20 +602,23 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let content = sheet_resp["result"]["content"]
         .as_array()
         .expect("content blocks");
-    assert_eq!(content.len(), 2, "inspect_frames returns [image, text]");
-    assert_eq!(content[0]["type"], "image", "first block must be MCP image");
+    assert_eq!(content.len(), 2, "inspect_frames returns [text, image]");
     assert_eq!(
-        content[0]["mimeType"], "image/png",
+        content[1]["type"], "image",
+        "second block must be MCP image"
+    );
+    assert_eq!(
+        content[1]["mimeType"], "image/png",
         "mimeType must be image/png"
     );
     assert!(
-        content[0]["data"]
+        content[1]["data"]
             .as_str()
             .is_some_and(|b64| b64.starts_with("iVBORw0KGgo")),
         "base64 data must encode a valid PNG header"
     );
     let sheet_meta: Value =
-        serde_json::from_str(content[1]["text"].as_str().expect("meta text")).expect("meta json");
+        serde_json::from_str(content[0]["text"].as_str().expect("meta text")).expect("meta json");
     assert_eq!(
         sheet_meta["frame_indices_rendered"]
             .as_array()

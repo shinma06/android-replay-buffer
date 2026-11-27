@@ -35,6 +35,8 @@ satisfies:
 
 隔離の既定は PC 受信窓の前後 2 秒、50,000 件、16 MiB。境界ドレインは有効なストリームの水位到達または既定 500 ms まで。`drain_timeout_ms` は整数 0〜5000 ms（両端を含む）。範囲外は RPC・MCP とも `-32602`。末尾の到達を裏付けられない場合は `tail_may_be_incomplete` を立てる。窓より前の時刻は表示しない。窓外の時計アンカーや IDR は時刻変換・復号だけに使う。例外は次節の引き継ぎフレームで、窓先頭 `W0` から表示が始まるので、この原則を守る。[選別・ドレイン](../../core/crates/arb-core/src/selection.rs)・[保存経路](../../core/crates/arbd/src/capture.rs)
 
+管理域（データディレクトリ配下の bundles）外への保存（dest_dir、output_dir_override）は unmanaged で arb_gc_bundles の物理削除対象外です。実体を手動で移動・削除し、元の保存先が missing になったら arb_forget_bundle で登録を解除します。
+
 ### ストリーム被覆台帳と引き継ぎフレーム
 
 フレームやログ行の出現幅（最後−最初）は、ストリームが窓を被覆した時間ではない。静止画面は映像フレームを送らず、静かなアプリはログ行を書かない。`arbd` は端末ごとに映像と logcat の連続被覆区間を [`arb-core::coverage`](../../core/crates/arb-core/src/coverage.rs) で記録する。時間軸はホストの受信時刻（`PcContinuousMono`）。

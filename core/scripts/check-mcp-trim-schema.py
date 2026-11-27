@@ -12,15 +12,18 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 
 
-def check_refs(node):
+def check_refs(node, root):
     if isinstance(node, dict):
         if "$ref" in node:
             assert node["$ref"].startswith("#/"), node["$ref"]
+            target = root
+            for key in node["$ref"][2:].split("/"):
+                target = target[key.replace("~1", "/").replace("~0", "~")]
         for child in node.values():
-            check_refs(child)
+            check_refs(child, root)
     elif isinstance(node, list):
         for child in node:
-            check_refs(child)
+            check_refs(child, root)
 
 
 def check_version(cli, flags, fixture, version):
@@ -53,7 +56,7 @@ def check_version(cli, flags, fixture, version):
             for tool in tools:
                 for key in ("inputSchema", "outputSchema"):
                     schema = tool[key]
-                    check_refs(schema)
+                    check_refs(schema, schema)
                     Draft202012Validator.check_schema(schema)
             trim = next(t for t in tools if t["name"] == "arb_export_trim")
             inputs = Draft202012Validator(trim["inputSchema"], registry=Registry())
@@ -64,7 +67,9 @@ def check_version(cli, flags, fixture, version):
                 inputs.validate(args)
                 exported, _ = call("tools/call", {"name": trim["name"], "arguments": args})
                 assert exported["isError"] is False, exported
-                body = exported["structuredContent"]
+                body = json.loads(exported["content"][0]["text"])
+                if version >= "2025-06-18":
+                    assert exported["structuredContent"] == body
                 outputs.validate(body)
                 for key in ("in_time_ns", "out_time_ns"):
                     assert body[key] == args[key]
