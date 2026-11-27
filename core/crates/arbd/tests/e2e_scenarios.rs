@@ -686,7 +686,13 @@ fn verify_frame_png_destinations(
     let default = export(client, &frame);
     assert_eq!(
         default.parent(),
-        Some(tmp.path().join("data/screenshots").as_path()),
+        Some(
+            tmp.path()
+                .join("data/screenshots")
+                .canonicalize()
+                .expect("default screenshot directory")
+                .as_path()
+        ),
         "default screenshot folder"
     );
     let shots = tmp.path().join("custom-shots");

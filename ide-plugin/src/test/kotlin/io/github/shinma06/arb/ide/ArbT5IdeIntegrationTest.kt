@@ -37,7 +37,7 @@ import kotlin.test.assertTrue
 
 class ArbT5IdeIntegrationTest {
     @Test
-    fun studioTabIdentityAndTypeLeaveFlutterTranslationsAlone() {
+    fun studioTabIdentityAndTypeLeaveFlutterTranslationsAlone(@TempDir dir: Path) {
         val file = ArbBundleVirtualFile("id", "収録.arb")
         val legacy = ArbBundleVirtualFile("id", "旧形式", isLegacyHint = true)
         assertEquals("収録.arb", file.presentableName)
@@ -52,6 +52,7 @@ class ArbT5IdeIntegrationTest {
         ) { _, _, _ -> error("accept must only inspect the file") } as Project
         val json = """{"@@locale":"en","hello":"Hello"}"""
         val flutter = LightVirtualFile("app_en.arb", PlainTextFileType.INSTANCE, json)
+        assertNull(ArbBundleDetector.detectPath(Files.writeString(dir.resolve("app_en.arb"), json)))
         val bytes = ByteArraySequence(json.toByteArray())
         assertTrue(ArbBundleFileEditorProvider().accept(project, file))
         assertFalse(ArbBundleFileEditorProvider().accept(project, flutter))
@@ -390,6 +391,9 @@ class ArbT5IdeIntegrationTest {
         assertFalse(xml.contains("ArbLogcatTitleActions"), "Logcat title bar listener must be removed per owner decision")
         assertTrue(xml.contains("""id="io.github.shinma06.arb.settings""""))
         assertTrue(xml.contains("""parentId="tools""""))
+        val extensionLists = Regex("""\bextensions="([^"]*)"""").findAll(xml)
+        val registeredExtensions = extensionLists.flatMap { it.groupValues[1].split(';') }
+        assertFalse(registeredExtensions.any { it.trim().equals("arb", ignoreCase = true) })
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"))
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundlePreCloseCheck"))
         assertTrue(xml.contains("io.github.shinma06.arb.LaunchTray"))

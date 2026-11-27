@@ -1119,23 +1119,35 @@ impl DaemonState {
         output_dir: Option<&Path>,
         source_bundle: Option<&Path>,
     ) -> Result<PathBuf, DaemonError> {
-        if explicit_path.is_some() && output_dir.is_some() {
-            return Err(DaemonError::InvalidParams(
-                "pass either output_path or output_dir, not both".to_owned(),
-            ));
+        if let Some(path) = explicit_path {
+            if output_dir.is_some() {
+                return Err(DaemonError::InvalidParams(
+                    "pass either output_path or output_dir, not both".to_owned(),
+                ));
+            }
+            self.validate_output_location(path, "output_path", source_bundle)?;
+            self.reject_data_dir_state_file(path, "output_path")?;
+            return Ok(path.to_owned());
         }
-        let path = if let Some(path) = explicit_path {
-            path.to_path_buf()
+
+        let name = format!("{}.png", next_id("screenshot"));
+        let path = if let Some(dir) = output_dir.or(config.screenshot_dir_override.as_deref()) {
+            let path = dir.join(name);
+            self.reject_data_dir_state_file(&path, "output_dir")?;
+            path
+        } else if let Some(dir) = &config.output_dir_override {
+            // The configured bundle output root may itself be under data_dir. Only an
+            // automatically named, no-replace PNG may use this fallback.
+            dir.join(name)
         } else {
-            let default_dir = self.paths.data_dir.join("screenshots");
-            let dir = output_dir
-                .or(config.screenshot_dir_override.as_deref())
-                .or(config.output_dir_override.as_deref())
-                .unwrap_or(&default_dir);
-            dir.join(format!("{}.png", next_id("screenshot")))
+            // The daemon's own --data-dir may be relative. RPC-supplied paths must be absolute.
+            let path = std::fs::canonicalize(&self.paths.data_dir)?
+                .join("screenshots")
+                .join(name);
+            self.reject_data_dir_state_file(&path, "output_dir")?;
+            path
         };
-        self.validate_output_location(&path, "output_path", source_bundle)?;
-        self.reject_data_dir_state_file(&path, "output_path")?;
+        self.validate_output_location(&path, "output_dir", source_bundle)?;
         Ok(path)
     }
 
@@ -1166,7 +1178,7 @@ impl DaemonState {
             .screenshot_provider
             .capture_png(requested_serial.as_deref())?;
         let captured_at_unix_ms = current_unix_millis();
-        let overwrite = if parsed.overwrite {
+        let overwrite = if parsed.output_path.is_some() && parsed.overwrite {
             ScreenshotOverwrite::Replace
         } else {
             ScreenshotOverwrite::NoReplace
