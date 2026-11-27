@@ -33,6 +33,7 @@ use arb_storage::sha256_hex;
 use crate::error::DaemonError;
 use crate::media_engine::{
     ExportContext, acquire_export_lease, compute_epoch_frame_ranges, export_trim,
+    required_video_path,
 };
 use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
@@ -195,15 +196,10 @@ pub fn export_share_mp4(
     }
 
     let times = crate::trim_range::time_pair(params.in_time_ns, params.out_time_ns)?;
-    let source_video = reader.video_path().ok_or_else(|| {
-        if times.is_some() {
-            return DaemonError::InvalidParams("動画のないバンドルには範囲を指定できません".into());
-        }
-        DaemonError::NotFound(format!(
-            "source bundle `{}` has no video.mp4 track",
-            source_catalog_id.unwrap_or(&summary.bundle_id)
-        ))
-    })?;
+    let source_video = required_video_path(
+        reader.as_ref(),
+        source_catalog_id.unwrap_or(&summary.bundle_id),
+    )?;
     let src_track = Mp4VideoTrack::open(&source_video)?;
     let range = crate::trim_range::TrimRange::resolve(
         &src_track,
@@ -538,9 +534,7 @@ pub(super) fn inspect_metadata(
     let reader = open_bundle(path)?;
     let manifest = reader.manifest_summary();
     let id = source_id.unwrap_or(&manifest.bundle_id);
-    let video = reader
-        .video_path()
-        .ok_or_else(|| DaemonError::NotFound(format!("{id}: video")))?;
+    let video = required_video_path(reader.as_ref(), id)?;
     let track = Mp4VideoTrack::open(&video)?;
     if track.frame_count() == 0 {
         return Err(DaemonError::NotFound(format!("{id}: no frames")));
@@ -604,9 +598,7 @@ pub fn inspect_frames(
     let summary = reader.manifest_summary();
     let bundle_id = source_catalog_id.unwrap_or(&summary.bundle_id).to_owned();
 
-    let video_path = reader.video_path().ok_or_else(|| {
-        DaemonError::NotFound(format!("bundle `{bundle_id}` has no video.mp4 track"))
-    })?;
+    let video_path = required_video_path(reader.as_ref(), &bundle_id)?;
     let track = Mp4VideoTrack::open(&video_path)?;
     let frame_count = track.frame_count();
     if frame_count == 0 {

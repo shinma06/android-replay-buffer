@@ -55,6 +55,7 @@ struct CliError {
     exit_code: u8,
     rpc_code: Option<i32>,
     error_code: Option<String>,
+    details: Option<Value>,
     message: String,
     already_emitted: bool,
 }
@@ -64,6 +65,7 @@ impl CliError {
         Self {
             exit_code: EXIT_USAGE_ERROR,
             rpc_code: None,
+            details: None,
             error_code: None,
             message: message.into(),
             already_emitted: false,
@@ -74,6 +76,7 @@ impl CliError {
         Self {
             exit_code: EXIT_GENERAL_ERROR,
             rpc_code: None,
+            details: None,
             error_code: None,
             message: message.into(),
             already_emitted: false,
@@ -84,6 +87,7 @@ impl CliError {
         Self {
             exit_code: EXIT_SAVE_FAILED_RETRYABLE,
             rpc_code: None,
+            details: None,
             error_code: None,
             message: "save failed (retryable); see emitted job status".to_owned(),
             already_emitted: true,
@@ -91,13 +95,14 @@ impl CliError {
     }
 
     fn from_rpc(err: RpcClientError) -> Self {
-        let (code, message, error_code) = match err {
+        let (code, message, error_code, details) = match err {
             RpcClientError::Rpc {
                 code,
                 message,
                 error_code,
-            } => (code, message, error_code),
-            RpcClientError::Rejected { code, message } => (code, message, None),
+                details,
+            } => (code, message, error_code, details),
+            RpcClientError::Rejected { code, message } => (code, message, None, None),
             other => return Self::general(other.to_string()),
         };
         Self {
@@ -105,6 +110,7 @@ impl CliError {
             rpc_code: Some(code),
             error_code: Some(error_code.unwrap_or_else(|| arb_os::rpc::error_label(code).into())),
             message,
+            details,
             already_emitted: false,
         }
     }
@@ -347,6 +353,9 @@ fn format_error(output: OutputFormat, err: &CliError) -> String {
                 data["kind"] = json!(kind);
                 data["hint"] = json!(hint);
                 data["retryable"] = json!(retryable);
+            }
+            if let Some(details) = &err.details {
+                data["details"] = details.clone();
             }
             json!({"error":data}).to_string()
         }
@@ -2304,6 +2313,7 @@ mod tests {
     #[test]
     fn r3_s17_maps_rpc_errors_and_failed_save_to_distinct_exit_codes_and_json_errors() {
         let not_found = CliError::from_rpc(RpcClientError::Rpc {
+            details: None,
             error_code: None,
             code: RPC_ERR_NOT_FOUND,
             message: "missing".to_owned(),
@@ -2311,6 +2321,7 @@ mod tests {
         assert_eq!(not_found.exit_code, EXIT_NOT_FOUND, "not found exit code");
 
         let conflict = CliError::from_rpc(RpcClientError::Rpc {
+            details: None,
             error_code: Some("ALREADY_TRASHED".into()),
             code: RPC_ERR_CONFLICT,
             message: "busy".to_owned(),
@@ -2323,6 +2334,7 @@ mod tests {
         assert_eq!(structured["error"]["retryable"], false);
 
         let invalid = CliError::from_rpc(RpcClientError::Rpc {
+            details: None,
             error_code: None,
             code: RPC_ERR_INVALID_PARAMS,
             message: "bad path".to_owned(),

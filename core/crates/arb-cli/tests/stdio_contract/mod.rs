@@ -470,12 +470,13 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     let mut c = Client::open(&paths);
     registry(&mut c);
     let target = json!({"bundle_id":id});
-    for name in [
-        "arb_status",
-        "arb_devices",
-        "arb_config_get",
-        "arb_list_bundles",
-    ] {
+    let status = c.tool("arb_status", json!({}));
+    assert_eq!(
+        status["status"].get("configured_device_serial"),
+        Some(&Value::Null)
+    );
+    assert_eq!(status["status"]["serial_mismatch"], false);
+    for name in ["arb_devices", "arb_config_get", "arb_list_bundles"] {
         c.tool(name, json!({}));
     }
     c.tool("arb_config_update", json!({"save_window_secs":10}));
@@ -484,7 +485,13 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         json!({"wait_connected":true,"wait_timeout_ms":1000,"capture_mode":"logs_only"}),
     );
     assert!(cap["connected"].is_boolean());
-    c.tool("arb_capture_stop", json!({}));
+    assert_eq!(cap["serial_source"], "auto");
+    assert!(cap["config_changed"].is_object());
+    let stopped = c.tool("arb_capture_stop", json!({}));
+    assert_eq!(
+        stopped["config_changed"]["capture_enabled"],
+        json!([true, false])
+    );
     for name in ["arb_save", "arb_save_logs"] {
         let r = c.result(
             "tools/call",
@@ -500,6 +507,19 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             3
         );
         let saved = c.check_tool(name, r);
+        if name == "arb_save_logs" {
+            let response = c.result("tools/call", json!({"name":"arb_inspect_frames","arguments":{"bundle_id":saved["bundle_id"],"mode":"single"}}));
+            let error = &response["structuredContent"];
+            assert_eq!(response["isError"], true);
+            assert_eq!(error["error_code"], "NO_VIDEO");
+            assert_eq!(error["details"]["bundle_id"], saved["bundle_id"]);
+            schema::validate(
+                &c.schemas["arb_inspect_frames"]["outputSchema"],
+                error,
+                "arb_inspect_frames",
+            )
+            .unwrap();
+        }
         assert_eq!(saved["requested_duration_secs"], 5);
         assert_eq!(saved["note"], "調査記録");
         assert!(saved["warning_codes"].is_array());

@@ -55,7 +55,7 @@
 | 正本・台帳 | 照合するデータ |
 | --- | --- |
 | [音声方針](audio-policy-table.json) | API・方式・端末側の結果から起動引数、状態、原因、表示分類を引く |
-| [端末選択](device-selection-policy-table.json) | serial の検証と候補選択 |
+| [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化、再起動後の候補選択（S3） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
 | [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの入力・出力型・注釈・タスク対応 |
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |

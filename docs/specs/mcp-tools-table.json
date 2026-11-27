@@ -15,7 +15,7 @@
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "選択した端末で直前の画面・音声・ログの記録を開始します。",
+      "description": "選択した端末で記録を開始し、config の capture_enabled を true に永続更新します。明示した serial は device_serial にも保存します。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -41,7 +41,7 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "録画を停止し、バッファ内の記録を保持します。",
+      "description": "録画を停止し、config の capture_enabled を false に永続更新します。device_serial とバッファ内の記録は保持します。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_capture_stop",
       "outputType": "CaptureStopResponse",
@@ -671,11 +671,21 @@
       "additionalProperties": false
     },
     "CaptureMode": {"type": "string", "enum": ["video_and_logs", "logs_only"]},
+    "CaptureConfigChanges": {
+      "type": "object",
+      "properties": {
+        "capture_enabled": {"type": "array", "items": {"type": "boolean"}, "minItems": 2, "maxItems": 2},
+        "device_serial": {"type": "array", "items": {"type": ["string", "null"]}, "minItems": 2, "maxItems": 2}
+      },
+      "additionalProperties": false
+    },
     "CaptureStartResponse": {
       "type": "object",
       "properties": {
         "connected": {"type": "boolean"},
         "wait_timed_out": {"type": "boolean"},
+        "config_changed": {"$ref": "#/$defs/CaptureConfigChanges"},
+        "serial_source": {"enum": ["argument", "config", "auto"]},
         "audio_state": {"$ref": "#/$defs/AudioCaptureState"},
         "audio_cause": {"anyOf": [{"$ref": "#/$defs/AudioCause"}, {"type": "null"}]},
         "serial": {"type": "string"},
@@ -731,7 +741,7 @@
     },
     "CaptureStopResponse": {
       "type": "object",
-      "properties": {"stopped": {"type": "boolean"}, "capture": {"$ref": "#/$defs/CaptureStatusView"}},
+      "properties": {"config_changed": {"$ref": "#/$defs/CaptureConfigChanges"}, "stopped": {"type": "boolean"}, "capture": {"$ref": "#/$defs/CaptureStatusView"}},
       "required": ["stopped", "capture"],
       "additionalProperties": false
     },
@@ -1337,13 +1347,13 @@
         "warning_codes": {"type": "array", "items": {"type": "string"}},
         "logcat_completeness": {"anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"type": "null"}]},
         "window_shortfall": {"type": ["boolean", "null"]},
-        "warnings": {"type": ["array", "null"], "items": {"type": "string"}, "description": "warning_details の message を同じ順序で並べた表示文。warning_codes と同じ長さ。"},
-        "warning_details": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}, "description": "警告の正本。code と message の組。warning_codes・warnings はこれを同じ順序で射影する。"},
-        "log_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "保存窓のうち logcat ストリームが動作していたミリ秒。log_shortfall はこの値で判定する。行の最小〜最大時刻の差は actual_log_duration_ms。"},
-        "video_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "保存窓のうち映像ストリームが生存していたミリ秒（静止画面を含む）。"},
-        "carried_in_frame": {"type": ["boolean", "null"], "description": "窓の先頭で表示中だった窓前のフレームを、被覆の裏付けにより先頭フレームとして引き継いだか。"},
-        "static_hold_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓の両端で同じフレームを保持して表示したミリ秒（情報。警告ではない）。"},
-        "info_codes": {"type": ["array", "null"], "items": {"type": "string"}, "description": "警告ではない情報コード。静止画面の保持は video_static_hold。"},
+        "warnings": {"type": ["array", "null"], "items": {"type": "string"}, "description": "warning_details の表示文。"},
+        "warning_details": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}, "description": "警告の正本。各 code・message が順に warning_codes・warnings に対応。"},
+        "log_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓内の logcat 稼働時間（ms）。log_shortfall の判定値。ログ行の時刻幅は actual_log_duration_ms。"},
+        "video_coverage_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓内の映像稼働時間（ms、静止中も含む）。"},
+        "carried_in_frame": {"type": ["boolean", "null"], "description": "被覆に基づき窓前フレームを先頭に引き継いだか。"},
+        "static_hold_ms": {"type": ["integer", "null"], "minimum": 0, "description": "窓両端の同一フレーム表示時間（ms、参考値）。"},
+        "info_codes": {"type": ["array", "null"], "items": {"type": "string"}, "description": "静止保持は video_static_hold（情報）。"},
         "requested_duration_secs": {"type": ["integer", "null"], "minimum": 0},
         "job": {"$ref": "#/$defs/SaveJobView"},
         "bundle_id": {"type": ["string", "null"]},
@@ -1454,6 +1464,8 @@
       "type": "object",
       "properties": {
         "capture_enabled": {"type": "boolean"},
+        "configured_device_serial": {"type": ["string", "null"]},
+        "serial_mismatch": {"type": "boolean"},
         "pid": {"type": "integer", "minimum": 0},
         "uptime_ms": {"type": "integer", "minimum": 0},
         "capture": {"$ref": "#/$defs/CaptureStatusView"},
@@ -1683,6 +1695,7 @@
             "CONFLICT",
             "ALREADY_TRASHED",
             "ALREADY_ACTIVE",
+            "NO_VIDEO",
             "DAEMON_UNAVAILABLE",
             "FAILED_RETRYABLE",
             "OPERATION_FAILED",
@@ -1693,6 +1706,7 @@
         "hint": {"type": "string"},
         "retryable": {"type": "boolean"},
         "rpc_code": {"type": "integer"},
+        "details": {"type": "object"},
         "message": {"type": "string"}
       },
       "required": ["error_code", "rpc_code", "message", "hint", "retryable", "kind"]

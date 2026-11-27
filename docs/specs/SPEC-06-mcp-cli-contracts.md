@@ -19,7 +19,7 @@ satisfies:
 
 `tools/list` は `initialize` で交渉した版に従い、全 20 ツールを 1 応答で返す（`nextCursor` なし）。各ツールの入出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
 
-公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は `structuredContent` と後方互換の JSON テキストで同じ値を伝える。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE` を識別する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/contract.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。`tools/call` の本体は `structuredContent` と後方互換の JSON テキストで同じ値を伝える。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE`、映像トラックのない入力 `NO_VIDEO` を識別する。CLI の JSON と MCP のエラー本体はデーモンの `error.data.details` を任意の `details` オブジェクトとして保持する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/contract.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
 | 用途 | `tools/list` の公開名（20 件） |
 | --- | --- |
@@ -43,6 +43,8 @@ satisfies:
 7. 新規記録は一覧の `created_at_utc` もミリ秒 UTC。退避・復元の応答行も一覧と同じ集計を持つ。最新 MCP では保存結果・概要に同型の `logcat_completeness` を返す。保存結果の警告は `warning_details`（`code` と `message`）が正本で、`warning_codes`・`warnings` は同じ順序・同じ長さの射影。旧デーモンの応答で `warning_details` がなければ MCP が同じ位置の組から補う。`log_coverage_ms`・`video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` は [SPEC-02](SPEC-02-time-selection-bundle.md) の被覆と引き継ぎをそのまま返す。概要 RPC は状態名に加え `logcat_completeness_detail` を返す。状態・停止ツールの `audio_reason` は先頭の要約を最大 256 文字にする。`drain_timeout_ms` の有効範囲は 0〜5000 ms。
 
 [検索・出力](../../core/crates/arbd/src/inspect_export.rs)・[CLI の入口](../../core/crates/arb-cli/src/main.rs)・[保存尺の定義](SPEC-02-time-selection-bundle.md)
+
+開始・停止は変更した設定を `config_changed` の各キーに [変更前, 変更後] で返す。変更なしは空オブジェクト。開始の `serial_source` は引数・設定・自動選択をそれぞれ `argument`・`config`・`auto` とする。状態と録画対象の意味は [SPEC-07](SPEC-07-device-capture-audio-input.md) に従う。旧デーモンではこれらの追加項目を省略できる。
 
 ### Resources・Prompts・Tasks
 

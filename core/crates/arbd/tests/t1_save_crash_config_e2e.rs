@@ -518,11 +518,14 @@ fn t1_save_screenshot_atomic_validation_and_overwrite_guard() {
     assert_eq!(shot2["serial"], "usb-device-9", "explicit serial honored");
     assert!(explicit.is_file(), "explicit screenshot created");
 
-    let (conflict_code, _) =
-        client.call_err("save.screenshot", &json!({ "output_path": explicit }));
+    let response = client.send_raw("save.screenshot", &json!({"output_path": explicit}));
+    let error = &response["error"];
+    assert_eq!(error["code"], -32_002);
+    assert_eq!(error["data"]["error_code"], "CONFLICT");
+    assert!(!error["message"].as_str().unwrap().contains("overwrite"));
     assert_eq!(
-        conflict_code, -32_002,
-        "must refuse overwrite without overwrite=true"
+        error["data"]["details"],
+        json!({"path":explicit, "reason":"already_exists"})
     );
 
     let shot3 = client.call(
@@ -533,6 +536,64 @@ fn t1_save_screenshot_atomic_validation_and_overwrite_guard() {
 
     drop(client);
     server.shutdown();
+}
+
+fn assert_no_video_responses(client: &mut RpcClient, id: &str) {
+    let mut requests = vec![
+        ("media.open_viewport", json!({})),
+        ("export.png", json!({"frame_index":0})),
+        ("export.frame_png", json!({"frame_index":0})),
+    ];
+    for method in ["export.trim", "export.share_mp4"] {
+        for range in [
+            json!({}),
+            json!({"in_frame_index":0,"out_frame_index":1}),
+            json!({"in_time_ns":0,"out_time_ns":1}),
+        ] {
+            requests.push((method, range));
+        }
+    }
+    for metadata_only in [true, false] {
+        for mut params in [json!({}), json!({"start_frame":0,"end_frame":1})] {
+            params["mode"] = json!("contact_sheet");
+            params["metadata_only"] = json!(metadata_only);
+            requests.push(("media.inspect_frames", params));
+        }
+    }
+    let mut unexpected = Vec::new();
+    for (method, mut params) in requests {
+        params["bundle_id_or_path"] = json!(id);
+        let response = client.send_raw(method, &params);
+        let error = &response["error"];
+        if error["code"] != -32602
+            || error["data"]["error_code"] != "NO_VIDEO"
+            || error["data"]["details"]["bundle_id"] != id
+        {
+            unexpected.push(format!("{method} {params}: {error}"));
+        }
+    }
+    assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
+}
+
+#[test]
+fn serial_mismatch_tracks_the_connected_device() {
+    let tmp = TempDir::new().unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    for (configured, mismatch) in [(None, false), (Some("A"), false), (Some("B"), true)] {
+        client.call("config.update", &json!({"device_serial": configured}));
+        assert_eq!(
+            client.call("system.status", &json!({}))["serial_mismatch"],
+            false
+        );
+        let mut source =
+            VecEventSource::new("A", hello_and_heartbeat_events("boot-A", SEC_NS, SEC_NS));
+        server.ingest_device_source(&mut source).unwrap();
+        let status = client.call("system.status", &json!({}));
+        assert_eq!(status["capture"]["connected"], true);
+        assert_eq!(status["configured_device_serial"], json!(configured));
+        assert_eq!(status["serial_mismatch"], mismatch);
+    }
 }
 
 #[test]
@@ -603,6 +664,8 @@ fn t1_save_logs_and_logs_only_trigger_keep_video_running_and_honor_worm_leases()
         arb_core::bundle::BundleKind::LogsOnly,
         "manifest must be logs_only"
     );
+
+    assert_no_video_responses(&mut client, &bundle_id);
 
     // 2. Also verify `save.trigger` with `mode = "logs_only"`.
     let saved2 = client.call(

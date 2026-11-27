@@ -7,6 +7,7 @@ use arb_core::selection::SelectionError;
 use arb_media::MediaError;
 use arb_os::OsError;
 use arb_storage::StorageError;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 /// JSON-RPC 2.0 standard error code: parse error.
@@ -66,6 +67,12 @@ pub enum DaemonError {
     /// Caller supplied invalid parameters.
     #[error("{0}")]
     InvalidParams(String),
+    /// The requested bundle exists but contains no video track.
+    #[error("bundle {0} has no video track")]
+    NoVideo(String),
+    /// Atomic publication refused to replace an existing file.
+    #[error("output file already exists: {0}")]
+    OutputExists(std::path::PathBuf),
     /// Requested entity was not found.
     #[error("not found: {0}")]
     NotFound(String),
@@ -80,43 +87,51 @@ pub enum DaemonError {
     Internal(String),
 }
 
+/// Public RPC failure with a separate diagnostic cause.
+#[derive(Debug)]
+pub struct ClassifiedError {
+    /// Stable application label.
+    pub code: &'static str,
+    /// JSON-RPC numeric code used by existing clients.
+    pub rpc_code: i32,
+    /// Message suitable for display to the caller.
+    pub user_message: String,
+    /// Structured context for this failure.
+    pub details: Value,
+    /// Internal diagnostic, separate from the public message.
+    pub cause: Option<String>,
+}
+
 impl DaemonError {
-    pub(crate) fn into_response(self, id: serde_json::Value) -> crate::protocol::RpcResponse {
-        let mut response = crate::protocol::RpcResponse::err(id, self.rpc_code(), self.to_string());
-        if let Some(error) = &mut response.error {
-            let label = self
-                .lifecycle_code()
-                .unwrap_or_else(|| arb_os::rpc::error_label(error.code));
-            let (kind, hint, retryable) = arb_os::rpc::error_guidance(label);
-            error.data = Some(
-                serde_json::json!({"error_code":label,"kind":kind,"hint":hint,"retryable":retryable}),
-            );
-        }
-        response
-    }
-
-    fn lifecycle_code(&self) -> Option<&'static str> {
-        use arb_core::state::{BundleLifecycleState, StateTransitionError};
-        if let Self::Storage(StorageError::StateTransition(
-            StateTransitionError::InvalidBundleTransition { from, to },
-        )) = self
-            && from == to
-        {
-            return match to {
-                BundleLifecycleState::Trashed => Some("ALREADY_TRASHED"),
-                BundleLifecycleState::Active => Some("ALREADY_ACTIVE"),
-                _ => None,
-            };
-        }
-        None
-    }
-
-    /// Maps this error to a stable JSON-RPC 2.0 numeric error code.
+    /// Classifies a failure once for all RPC consumers.
     #[must_use]
-    pub fn rpc_code(&self) -> i32 {
-        match self {
-            Self::MethodNotFound(_) => RPC_ERR_METHOD_NOT_FOUND,
-            Self::Storage(StorageError::NotFound { .. }) | Self::NotFound(_) => RPC_ERR_NOT_FOUND,
+    pub fn classify(&self) -> ClassifiedError {
+        use arb_core::state::{BundleLifecycleState, StateTransitionError};
+        let mut details = json!({});
+        let mut diagnostic = true;
+        let (rpc_code, label, message) = match self {
+            Self::NoVideo(id) => {
+                details = json!({"bundle_id": id});
+                diagnostic = false;
+                (
+                    RPC_ERR_INVALID_PARAMS,
+                    Some("NO_VIDEO"),
+                    "このバンドルには映像トラックがありません。",
+                )
+            }
+            Self::OutputExists(path) => {
+                details = json!({"path":path, "reason":"already_exists"});
+                diagnostic = false;
+                (RPC_ERR_CONFLICT, None, "保存先に同名のファイルがあります。")
+            }
+            Self::MethodNotFound(_) => (
+                RPC_ERR_METHOD_NOT_FOUND,
+                None,
+                "このデーモンは指定された操作に対応していません。",
+            ),
+            Self::Storage(StorageError::NotFound { .. }) | Self::NotFound(_) => {
+                (RPC_ERR_NOT_FOUND, None, "指定された対象が見つかりません。")
+            }
             Self::InvalidParams(_)
             | Self::Selection(_)
             | Self::Media(
@@ -124,15 +139,160 @@ impl DaemonError {
             )
             | Self::Storage(
                 StorageError::InvalidArgument { .. } | StorageError::ConfigValidation(_),
-            ) => RPC_ERR_INVALID_PARAMS,
-            Self::Storage(StorageError::StateTransition(_)) | Self::Conflict(_) => RPC_ERR_CONFLICT,
-            Self::Storage(_) => RPC_ERR_STORAGE,
-            Self::Media(MediaError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                RPC_ERR_CONFLICT
+            ) => (
+                RPC_ERR_INVALID_PARAMS,
+                None,
+                "指定された引数を確認してください。",
+            ),
+            Self::Storage(StorageError::StateTransition(
+                StateTransitionError::InvalidBundleTransition { from, to },
+            )) if from == to && *to == BundleLifecycleState::Trashed => (
+                RPC_ERR_CONFLICT,
+                Some("ALREADY_TRASHED"),
+                "このバンドルは既にごみ箱にあります。",
+            ),
+            Self::Storage(StorageError::StateTransition(
+                StateTransitionError::InvalidBundleTransition { from, to },
+            )) if from == to && *to == BundleLifecycleState::Active => (
+                RPC_ERR_CONFLICT,
+                Some("ALREADY_ACTIVE"),
+                "このバンドルは既に復元されています。",
+            ),
+            Self::Storage(StorageError::StateTransition(_)) | Self::Conflict(_) => (
+                RPC_ERR_CONFLICT,
+                None,
+                "現在の状態ではこの操作を実行できません。",
+            ),
+            Self::Storage(_) => (
+                RPC_ERR_STORAGE,
+                None,
+                "保存データを読み書きできませんでした。",
+            ),
+            Self::Media(MediaError::Io(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                (RPC_ERR_CONFLICT, None, "保存先に同名のファイルがあります。")
             }
-            Self::Media(_) => RPC_ERR_MEDIA,
-            Self::Adb(_) | Self::CaptureSource(_) | Self::Wire(_) => RPC_ERR_ADB,
-            Self::Os(_) | Self::Json(_) | Self::Io(_) | Self::Internal(_) => RPC_ERR_INTERNAL,
+            Self::Media(_) => (RPC_ERR_MEDIA, None, "メディアを処理できませんでした。"),
+            Self::Adb(_) | Self::CaptureSource(_) | Self::Wire(_) => {
+                (RPC_ERR_ADB, None, "端末との通信に失敗しました。")
+            }
+            Self::Os(_) | Self::Json(_) | Self::Io(_) | Self::Internal(_) => (
+                RPC_ERR_INTERNAL,
+                None,
+                "デーモンが操作を完了できませんでした。",
+            ),
+        };
+        let user_message = match self {
+            // Parameter validation explains the rejected field/type/range to the caller.
+            Self::InvalidParams(reason)
+                if !reason.is_empty()
+                    && !["error:", "not found:", "conflict:"]
+                        .iter()
+                        .any(|prefix| reason.contains(prefix)) =>
+            {
+                format!("{message} {reason}")
+            }
+            _ => message.to_owned(),
+        };
+        ClassifiedError {
+            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
+            rpc_code,
+            user_message,
+            details,
+            cause: diagnostic.then(|| self.to_string()),
+        }
+    }
+
+    pub(crate) fn into_response(self, id: Value) -> crate::protocol::RpcResponse {
+        let ClassifiedError {
+            code,
+            rpc_code,
+            user_message,
+            mut details,
+            cause,
+        } = self.classify();
+        if let Some(cause) = cause {
+            details["cause"] = Value::String(cause);
+        }
+        let (kind, hint, retryable) = arb_os::rpc::error_guidance(code);
+        let mut response = crate::protocol::RpcResponse::err(id, rpc_code, user_message);
+        if let Some(error) = &mut response.error {
+            error.data = Some(
+                json!({"error_code":code,"kind":kind,"hint":hint,"retryable":retryable,"details":details}),
+            );
+        }
+        response
+    }
+
+    /// Maps this error to a stable JSON-RPC 2.0 numeric error code.
+    #[must_use]
+    pub fn rpc_code(&self) -> i32 {
+        self.classify().rpc_code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    proptest::proptest! {
+        #[test]
+        fn daemon_errors_have_public_messages_without_internal_prefixes(suffix in ".{0,32}") {
+            check_public_messages(&format!("storage error: {suffix}"));
+        }
+    }
+
+    fn check_public_messages(reason: &str) {
+        let io = || std::io::Error::other(reason.to_owned());
+        let errors = [
+            DaemonError::Os(OsError::ClockOverflow { clock: "clock" }),
+            StorageError::CatalogPoisoned.into(),
+            StorageError::StateTransition(
+                arb_core::state::StateTransitionError::EmptyDestinationPath,
+            )
+            .into(),
+            MediaError::Io(io()).into(),
+            AdbError::AdbNotFound.into(),
+            CaptureSourceError::Io(io()).into(),
+            WireError::Io(io()).into(),
+            SelectionError::FrameNotFound { frame_index: 0 }.into(),
+            serde_json::from_str::<bool>("?").unwrap_err().into(),
+            io().into(),
+            DaemonError::InvalidParams(reason.into()),
+            DaemonError::NotFound("bundle fixture".into()),
+            DaemonError::Conflict(reason.into()),
+            DaemonError::MethodNotFound(reason.into()),
+            DaemonError::Internal(reason.into()),
+            DaemonError::NoVideo(reason.into()),
+            DaemonError::OutputExists("fixture.png".into()),
+            StorageError::NotFound {
+                entity: "bundle",
+                id: reason.into(),
+            }
+            .into(),
+        ];
+        for err in errors {
+            let message = err.classify().user_message;
+            assert_eq!(err.into_response(1.into()).error.unwrap().message, message);
+            assert_ne!(message.trim(), "");
+            for prefix in [
+                "os error:",
+                "storage error:",
+                "media error:",
+                "adb error:",
+                "wire error:",
+                "json error:",
+                "io error:",
+                "i/o error:",
+                "selection error:",
+                "capture source error:",
+                "not found:",
+                "conflict:",
+                "internal error:",
+                "state transition error:",
+                "method not found:",
+            ] {
+                assert!(!message.contains(prefix), "{message}");
+            }
         }
     }
 }

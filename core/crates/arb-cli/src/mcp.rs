@@ -1106,15 +1106,20 @@ impl Failure {
                 code,
                 message,
                 error_code,
-            } => Self::new(
-                code,
-                match (code, error_code.as_deref()) {
-                    (-32002, Some("ALREADY_ACTIVE")) => "ALREADY_ACTIVE",
-                    (-32002, Some("ALREADY_TRASHED")) => "ALREADY_TRASHED",
-                    _ => arb_os::rpc::error_label(code),
-                },
-                message,
-            ),
+                details,
+            } => Self {
+                detail: details.map(|details| json!({"details": details})),
+                ..Self::new(
+                    code,
+                    match (code, error_code.as_deref()) {
+                        (-32602, Some("NO_VIDEO")) => "NO_VIDEO",
+                        (-32002, Some("ALREADY_ACTIVE")) => "ALREADY_ACTIVE",
+                        (-32002, Some("ALREADY_TRASHED")) => "ALREADY_TRASHED",
+                        _ => arb_os::rpc::error_label(code),
+                    },
+                    message,
+                )
+            },
             _ => Self::unavailable(e.to_string()),
         }
     }

@@ -111,6 +111,17 @@ impl TestIpcClient {
 
     /// Calls `method` expecting a JSON-RPC error; returns `(code, message)`.
     fn call_err(&mut self, method: &str, params: &Value) -> (i64, String) {
+        let error = self.call_error_object(method, params);
+        (
+            error["code"].as_i64().expect("numeric error code"),
+            error["message"]
+                .as_str()
+                .expect("public error message")
+                .into(),
+        )
+    }
+
+    fn call_error_object(&mut self, method: &str, params: &Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
         let line = serde_json::to_string(&json!({
@@ -130,10 +141,7 @@ impl TestIpcClient {
         let err = resp
             .get("error")
             .unwrap_or_else(|| panic!("RPC `{method}` unexpectedly succeeded: {resp}"));
-        (
-            err["code"].as_i64().expect("error code"),
-            err["message"].as_str().unwrap_or_default().to_owned(),
-        )
+        err.clone()
     }
 }
 
@@ -1876,10 +1884,13 @@ fn r3_m1_crash_and_catalog_error_after_register_retry_idempotently() {
     faults
         .crash_after_register_once
         .store(true, Ordering::Release);
-    let (_code, msg) = client.call_err("save.trigger", &json!({ "duration_sec": 30 }));
+    let error = client.call_error_object("save.trigger", &json!({ "duration_sec": 30 }));
     assert!(
-        msg.contains("injected crash"),
-        "expected injected crash error, got `{msg}`"
+        error["data"]["details"]["cause"]
+            .as_str()
+            .unwrap()
+            .contains("injected crash"),
+        "expected injected crash error, got {error}"
     );
     drop(client);
     server.shutdown();

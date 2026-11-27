@@ -65,6 +65,7 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         let failure = &row["failure"];
         let err = match failure["kind"].as_str().unwrap() {
             "rpc_error" => RpcClientError::Rpc {
+                details: failure.get("details").cloned(),
                 error_code: failure["error_code"].as_str().map(str::to_owned),
                 code: i32::try_from(failure["code"].as_i64().unwrap()).unwrap(),
                 message: "contract".to_owned(),
@@ -82,19 +83,28 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         );
         let duplicate = match failure["kind"].as_str().unwrap() {
             "rpc_error" => RpcClientError::Rpc {
+                details: failure.get("details").cloned(),
                 error_code: failure["error_code"].as_str().map(str::to_owned),
                 code: i32::try_from(failure["code"].as_i64().unwrap()).unwrap(),
                 message: "contract".into(),
             },
             _ => RpcClientError::UnexpectedEof,
         };
+        let body = mcp::Failure::from_rpc(duplicate).result();
         assert_eq!(
-            mcp::Failure::from_rpc(duplicate).result()["structuredContent"]["error_code"],
-            expected["mcp_error_code"],
+            body["structuredContent"]["details"], failure["details"],
+            "{id}"
+        );
+        let cli = CliError::from_rpc(err);
+        let cli_json: Value =
+            serde_json::from_str(&crate::format_error(crate::OutputFormat::Json, &cli)).unwrap();
+        assert_eq!(cli_json["error"]["details"], failure["details"], "{id}");
+        assert_eq!(
+            body["structuredContent"]["error_code"], expected["mcp_error_code"],
             "{id}: MCP error"
         );
         assert_eq!(
-            Some(u64::from(CliError::from_rpc(err).exit_code)),
+            Some(u64::from(cli.exit_code)),
             expected["cli_exit_code"].as_u64(),
             "{id}: CLI exit code"
         );

@@ -324,7 +324,10 @@ class PddUiFeedbackContractTest {
             val transport = ScriptTransport { rid, method, _ ->
                 check(method == "bundle.trash") { "unexpected $method" }
                 when (kind) {
-                    "rpc_error" -> """{"jsonrpc":"2.0","id":$rid,"error":{"code":${failure["code"].asInt},"message":"contract $id"}}"""
+                    "rpc_error" -> {
+                        val data = JsonObject().apply { failure["error_code"]?.let { add("error_code", it) } }
+                        """{"jsonrpc":"2.0","id":$rid,"error":{"code":${failure["code"]},"message":"contract $id","data":$data}}"""
+                    }
                     "eof" -> null
                     "io" -> throw IOException("Broken pipe")
                     "timeout" -> HANG
