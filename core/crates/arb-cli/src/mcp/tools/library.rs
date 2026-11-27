@@ -1,5 +1,5 @@
 use super::super::{Failure, McpServer, ToolOutput};
-use crate::mcp::{args::require_str, fill_missing};
+use crate::mcp::{args::require_str, fill_missing, project::time::Zone};
 use serde_json::{Map, Value, json};
 impl McpServer {
     pub(super) fn list_bundles(
@@ -8,8 +8,10 @@ impl McpServer {
     ) -> Result<ToolOutput, Failure> {
         let state = args.get("state").cloned().unwrap_or(Value::Null);
         let mut resp = self.call_daemon("bundle.list", &json!({ "state": state }))?;
+        let zone = Zone::from_args(args);
         for row in resp["bundles"].as_array_mut().into_iter().flatten() {
             self.catalog_row(row);
+            zone.localize(row, "created_at_utc", "created_local");
         }
         Ok(ToolOutput::new(resp))
     }

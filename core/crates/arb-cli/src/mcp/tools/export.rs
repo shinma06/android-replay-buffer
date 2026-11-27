@@ -1,8 +1,6 @@
 use super::super::{Failure, McpServer, ToolOutput};
-use crate::absolutize_path;
-use crate::mcp::args::{optional_abs_path, require_bundle_target, require_str};
+use crate::mcp::args::{optional_abs_path, require_bundle_target};
 use serde_json::{Map, Value, json};
-use std::path::Path;
 impl McpServer {
     pub(in crate::mcp) fn tool_export_trim(
         &mut self,
@@ -78,14 +76,14 @@ impl McpServer {
             .get("frame_index")
             .and_then(Value::as_u64)
             .ok_or_else(|| "arb_export_frame_png requires integer `frame_index`".to_owned())?;
-        let out_raw = require_str(args, "output_path")?;
-        let out_abs = absolutize_path(Path::new(out_raw)).map_err(|e| e.message)?;
+        // Exactly one destination (schema `oneOf`). Neither form replaces an existing file.
         let resp = self.call_daemon(
             "export.png",
             &json!({
                 "bundle_id_or_path": bundle_id,
                 "frame_index": frame_index,
-                "output_path": out_abs,
+                "output_path": optional_abs_path(args, "output_path")?,
+                "output_dir": optional_abs_path(args, "output_dir")?,
             }),
         )?;
         Ok(ToolOutput::new(resp))

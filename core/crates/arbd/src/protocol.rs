@@ -1554,6 +1554,21 @@ pub struct ErrorLogHighlight {
     pub message: String,
 }
 
+/// A tag whose non-fatal errors repeat often enough to be worth excluding explicitly.
+///
+/// Advisory only: nothing is hidden. The caller decides whether to pass the tag in `exclude_tags`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoiseCandidate {
+    /// Exact logcat tag, usable as an `exclude_tags` entry.
+    pub tag: String,
+    /// Matching `E` rows with this tag after the caller's filters, before the display cap.
+    pub total_count: usize,
+    /// Distinct messages among those rows.
+    pub unique_messages: usize,
+    /// The most frequent message (ties: lexicographically first), bounded like highlights.
+    pub sample_message: String,
+}
+
 /// One-shot structured bundle overview returned by `timeline.overview` for AI triage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineOverviewResponse {
@@ -1609,6 +1624,9 @@ pub struct TimelineOverviewResponse {
     pub logcat_completeness_detail: Option<LogcatEvidence>,
     /// Bounded E/F error/fatal log highlights.
     pub error_log_highlights: Vec<ErrorLogHighlight>,
+    /// Repeating non-fatal error tags the caller may exclude explicitly (never applied here).
+    #[serde(default)]
+    pub noise_candidates: Vec<NoiseCandidate>,
     /// Count of quarantined `unanchored` records included in the bundle.
     pub unanchored_count: u64,
     /// Count of `unanchored` records truncated by quarantine caps.

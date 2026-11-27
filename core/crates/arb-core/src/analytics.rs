@@ -668,6 +668,13 @@ pub struct ScreenSpan {
     pub activity_name: String,
     /// Short Activity class name (e.g., `MainActivity`).
     pub short_name: String,
+    /// `start_ns` in milliseconds from the bundle origin (display start of the first frame,
+    /// else the first epoch). Filled by the reader that knows the origin; `None` otherwise.
+    #[serde(default)]
+    pub start_offset_ms: Option<i64>,
+    /// `end_ns` in milliseconds from the same bundle origin as `start_offset_ms`.
+    #[serde(default)]
+    pub end_offset_ms: Option<i64>,
 }
 
 /// Parsed Android Activity component identity `(package_name, activity_name, short_name)`.
@@ -1004,6 +1011,8 @@ fn screen_spans_for_epoch(logs: &[&LogRecord], frames: &[&FrameRecord]) -> Vec<S
             package_name: comp.package_name.clone(),
             activity_name: comp.activity_name.clone(),
             short_name: comp.short_name.clone(),
+            start_offset_ms: None,
+            end_offset_ms: None,
         });
     }
     spans

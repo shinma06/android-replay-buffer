@@ -38,8 +38,8 @@ use crate::media_engine::{
 use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
     ExportTrimParams, InspectFramesMode, MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse,
-    MediaInspectFramesParams, MediaInspectFramesResponse, OverviewTapItem, TapCropMeta,
-    TimelineOverviewResponse, TimelineQueryParams,
+    MediaInspectFramesParams, MediaInspectFramesResponse, NoiseCandidate, OverviewTapItem,
+    TapCropMeta, TimelineOverviewResponse, TimelineQueryParams,
 };
 use crate::time_util::next_id;
 
@@ -467,15 +467,19 @@ pub fn build_timeline_overview(
     };
     let fps_estimate = compute_fps_estimate(frame_count, duration_ms);
 
-    let screens = reader.screens()?;
+    let screens = screens_with_offsets(reader.as_ref(), &frames)?;
     let crashes = reader.crashes()?;
     let discontinuities = reader.discontinuities()?;
 
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let taps = build_overview_taps(&main_taps, &frames, base_boottime_ns);
 
-    let (error_log_highlights, total_error_logs, unique_error_logs) =
-        overview_highlights(reader.as_ref(), &frames, params)?;
+    let OverviewErrors {
+        highlights: error_log_highlights,
+        total: total_error_logs,
+        unique: unique_error_logs,
+        noise_candidates,
+    } = overview_highlights(reader.as_ref(), &frames, &crashes, params)?;
 
     let audio_status = summary
         .streams
@@ -516,6 +520,7 @@ pub fn build_timeline_overview(
         unique_error_logs,
         error_logs_truncated: unique_error_logs > error_log_highlights.len(),
         error_log_highlights,
+        noise_candidates,
         unanchored_count: summary.unanchored_summary.included_count,
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
         app_logs: summary.app_logs.clone(),
@@ -560,7 +565,9 @@ pub(super) fn inspect_metadata(
             vec![i]
         }
     };
-    let screens = reader.screens()?;
+    let screens = screens_with_offsets(reader.as_ref(), &reader.display_frames()?)?;
+    // The same media timeline `export.*` resolves `in_time_ns` / `out_time_ns` against.
+    let (media_pts, _) = arb_media::trim::trim_timeline(&track)?;
     let mut frames = Vec::with_capacity(indices.len());
     for &i in &indices {
         let info = track.frame(i)?;
@@ -569,8 +576,12 @@ pub(super) fn inspect_metadata(
                 .zip(s.end_frame_index)
                 .is_some_and(|(a, b)| (a..=b).contains(&i))
         });
+        let offset_ns = usize::try_from(i)
+            .ok()
+            .and_then(|k| media_pts.get(k).copied());
         frames.push(
             json!({"frame_index":i,"timestamp_ms":info.pts_ns/1_000_000,"screen":screen,
+            "offset_ns":offset_ns,"offset_ms":offset_ns.map(|ns| ns / 1_000_000),
             "tap":taps.get(&i).map(|(x,y)|json!({"x":x,"y":y}))}),
         );
     }
@@ -1567,11 +1578,27 @@ impl<'a> LogCoordinates<'a> {
     }
 }
 
+/// Error groups and advisory noise tags drawn from one filtered E/F row set.
+struct OverviewErrors {
+    highlights: Vec<ErrorLogHighlight>,
+    total: usize,
+    unique: usize,
+    noise_candidates: Vec<NoiseCandidate>,
+}
+
+/// Minimum filtered `E` rows before a tag can be suggested as noise.
+const NOISE_MIN_ROWS: usize = 5;
+/// Row count that alone marks a tag as repetitive.
+const NOISE_REPEAT_ROWS: usize = 10;
+/// Maximum suggested tags.
+const MAX_NOISE_CANDIDATES: usize = 5;
+
 fn overview_highlights(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
+    crashes: &[arb_core::analytics::CrashMarker],
     params: &crate::protocol::TimelineOverviewParams,
-) -> Result<(Vec<ErrorLogHighlight>, usize, usize), DaemonError> {
+) -> Result<OverviewErrors, DaemonError> {
     let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let max_errors = params
         .max_error_logs
@@ -1590,13 +1617,112 @@ fn overview_highlights(
         whole_word: false,
     };
     let coordinates = LogCoordinates::new(frames, &reader.manifest_summary().epochs);
-    Ok(build_error_log_highlights(
+    let (highlights, total, unique) = build_error_log_highlights(
         &main_logs,
         &coordinates,
         &filter,
         &params.exclude_tags,
         max_errors,
-    ))
+    );
+    // Computed from the same rows, before the display cap, and never fed back into them.
+    let protected = fatal_tags(&main_logs, crashes);
+    let noise_candidates = noise_candidates(
+        main_logs.iter().filter_map(|log| {
+            error_level(log, &filter, &params.exclude_tags)
+                .map(|level| (level, log.tag.as_deref(), log.message.as_str()))
+        }),
+        &protected,
+    );
+    Ok(OverviewErrors {
+        highlights,
+        total,
+        unique,
+        noise_candidates,
+    })
+}
+
+/// Normalized `E`/`F` level of a main log row that passes the overview filters.
+fn error_level(
+    log: &LogRecord,
+    filter: &CompiledLogFilter<'_>,
+    exclude_tags: &[String],
+) -> Option<&'static str> {
+    let level = match normalize_log_level(log.level.as_deref().unwrap_or("")) {
+        "E" => "E",
+        "F" => "F",
+        _ => return None,
+    };
+    let excluded = log
+        .tag
+        .as_ref()
+        .is_some_and(|tag| exclude_tags.iter().any(|x| x.eq_ignore_ascii_case(tag)));
+    (!excluded && filter.matches(log)).then_some(level)
+}
+
+/// Lower-cased tags that must never be suggested: any tag logged at `F` anywhere in the main
+/// timeline, and the tag of every crash marker's source row.
+fn fatal_tags(
+    main_logs: &[LogRecord],
+    crashes: &[arb_core::analytics::CrashMarker],
+) -> std::collections::BTreeSet<String> {
+    let crash_rows: std::collections::BTreeSet<u64> =
+        crashes.iter().map(|c| c.source_log_seq).collect();
+    main_logs
+        .iter()
+        .filter(|log| {
+            normalize_log_level(log.level.as_deref().unwrap_or("")) == "F"
+                || crash_rows.contains(&log.seq)
+        })
+        .filter_map(|log| log.tag.as_deref().map(str::to_ascii_lowercase))
+        .collect()
+}
+
+/// Deterministic noise suggestion over filtered `(level, tag, message)` error rows.
+///
+/// A tag qualifies when it has no `F` row (here or in `protected`, lower-cased), at least
+/// [`NOISE_MIN_ROWS`] `E` rows, and repeats: [`NOISE_REPEAT_ROWS`] rows or at least two rows
+/// per distinct message. Ordered by count descending then tag, at most
+/// [`MAX_NOISE_CANDIDATES`]. Pure: it reads the rows and changes nothing.
+fn noise_candidates<'a>(
+    rows: impl IntoIterator<Item = (&'a str, Option<&'a str>, &'a str)>,
+    protected: &std::collections::BTreeSet<String>,
+) -> Vec<NoiseCandidate> {
+    let mut fatal = protected.clone();
+    let mut by_tag: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+    for (level, tag, message) in rows {
+        let Some(tag) = tag else { continue };
+        if level == "F" {
+            fatal.insert(tag.to_ascii_lowercase());
+        } else {
+            *by_tag.entry(tag).or_default().entry(message).or_default() += 1;
+        }
+    }
+    let mut out: Vec<NoiseCandidate> = by_tag
+        .into_iter()
+        .filter(|(tag, _)| !fatal.contains(&tag.to_ascii_lowercase()))
+        .filter_map(|(tag, messages)| {
+            let total_count: usize = messages.values().sum();
+            let unique_messages = messages.len();
+            let repeats = total_count >= NOISE_REPEAT_ROWS
+                || total_count >= unique_messages.saturating_mul(2);
+            let (sample, _) = messages
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))?;
+            (total_count >= NOISE_MIN_ROWS && repeats).then(|| NoiseCandidate {
+                tag: tag.to_owned(),
+                total_count,
+                unique_messages,
+                sample_message: truncate_chars(sample, MAX_ERROR_LOG_MESSAGE_CHARS),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.total_count
+            .cmp(&a.total_count)
+            .then_with(|| a.tag.cmp(&b.tag))
+    });
+    out.truncate(MAX_NOISE_CANDIDATES);
+    out
 }
 
 fn build_error_log_highlights(
@@ -1610,16 +1736,9 @@ fn build_error_log_highlights(
     let mut out: Vec<ErrorLogHighlight> = Vec::with_capacity(max_errors);
     let mut total = 0;
     for log in main_logs.iter().rev() {
-        let level = normalize_log_level(log.level.as_deref().unwrap_or(""));
-        if !matches!(level, "E" | "F")
-            || !filter.matches(log)
-            || log
-                .tag
-                .as_ref()
-                .is_some_and(|tag| exclude_tags.iter().any(|x| x.eq_ignore_ascii_case(tag)))
-        {
+        let Some(level) = error_level(log, filter, exclude_tags) else {
             continue;
-        }
+        };
         total += 1;
         let signature = (level, log.tag.as_deref(), log.message.as_str());
         let slot = match groups.entry(signature) {
@@ -1728,6 +1847,20 @@ fn nearest_frame_index_for_epoch(
         }
     }
     best.map(|(_, idx)| idx)
+}
+
+/// Screen spans with offsets from the origin shared by overview taps and log rows.
+pub(super) fn screens_with_offsets(
+    reader: &dyn BundleReader,
+    frames: &[FrameRecord],
+) -> Result<Vec<arb_core::analytics::ScreenSpan>, DaemonError> {
+    let origin = first_bundle_boottime_ns(frames, &reader.manifest_summary().epochs);
+    let mut screens = reader.screens()?;
+    for span in &mut screens {
+        span.start_offset_ms = origin.map(|o| span.start_ns.saturating_sub(o) / 1_000_000);
+        span.end_offset_ms = origin.map(|o| span.end_ns.saturating_sub(o) / 1_000_000);
+    }
+    Ok(screens)
 }
 
 fn first_bundle_boottime_ns(
@@ -1962,7 +2095,9 @@ pub(crate) use arb_core::base64_encode;
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, mapped_tap, prune_cache_dir};
+    use super::{
+        LogRecord, NoiseCandidate, RecordBucket, base64_encode, mapped_tap, prune_cache_dir,
+    };
 
     #[test]
     fn tap_coords_scale_from_display_space_and_refuse_out_of_frame() {
@@ -2045,6 +2180,164 @@ mod tests {
                 proptest::prop_assert_eq!(row.frame_index,expected.map(|i| u64::try_from(i).unwrap()));
                 proptest::prop_assert_eq!(row.frame_index,h.frame_index_hint);
                 proptest::prop_assert_eq!(row.offset_ms,h.t_ms);
+            }
+        }
+    }
+
+    fn error_row(seq: u64, level: &str, tag: Option<&str>, message: &str) -> LogRecord {
+        use arb_core::time::{TimeAlignment, TimestampSemantics};
+        LogRecord {
+            seq,
+            boot_id: Some("boot".into()),
+            header_epoch_ns: Some(1),
+            device_read_boottime_ns: Some(1),
+            pc_ingest_cont_ns: 1,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot".into(),
+                boottime_ns: i64::try_from(seq).unwrap(),
+                half_width_ns: 0,
+                semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+            },
+            bucket: RecordBucket::Main,
+            level: Some(level.into()),
+            tag: tag.map(Into::into),
+            pid: None,
+            tid: None,
+            uid: None,
+            package_name: None,
+            message: message.into(),
+        }
+    }
+
+    fn no_filter() -> super::CompiledLogFilter<'static> {
+        super::CompiledLogFilter {
+            package: None,
+            level: None,
+            tag_lower: None,
+            keyword_lower: None,
+            whole_word: false,
+        }
+    }
+
+    fn candidates_for(logs: &[LogRecord], exclude: &[String]) -> Vec<NoiseCandidate> {
+        let filter = no_filter();
+        super::noise_candidates(
+            logs.iter().filter_map(|log| {
+                super::error_level(log, &filter, exclude)
+                    .map(|level| (level, log.tag.as_deref(), log.message.as_str()))
+            }),
+            &super::fatal_tags(logs, &[]),
+        )
+    }
+
+    #[test]
+    fn noise_candidates_follow_the_published_thresholds_and_order() {
+        let mut logs = Vec::new();
+        let mut push = |level: &str, tag: &str, message: String| {
+            let seq = u64::try_from(logs.len()).unwrap();
+            logs.push(error_row(seq, level, Some(tag), &message));
+        };
+        // 4 identical rows: below the minimum.
+        (0..4).for_each(|_| push("E", "Few", "same".into()));
+        // 5 rows, 2 messages: 5 >= 2 * 2 repeats.
+        (0..5).for_each(|i| push("E", "Pair", format!("m{}", i % 2)));
+        // 9 distinct rows: neither 10 rows nor two per message.
+        (0..9).for_each(|i| push("E", "Unique", format!("u{i}")));
+        // 10 distinct rows: the row count alone qualifies.
+        (0..10).for_each(|i| push("E", "Ten", format!("t{i}")));
+        // Repeating, but the same tag also logged a fatal row (any case).
+        (0..20).for_each(|_| push("E", "Vendor", "spam".into()));
+        push("F", "vendor", "abort".into());
+        // Warnings never count.
+        (0..30).for_each(|_| push("W", "Warn", "w".into()));
+        let got = candidates_for(&logs, &[]);
+        let tags: Vec<_> = got.iter().map(|c| c.tag.as_str()).collect();
+        assert_eq!(tags, ["Ten", "Pair"]);
+        assert_eq!(
+            got[1],
+            NoiseCandidate {
+                tag: "Pair".into(),
+                total_count: 5,
+                unique_messages: 2,
+                sample_message: "m0".into(),
+            }
+        );
+        // A tag the caller already excludes is not suggested again.
+        let excluded = candidates_for(&logs, &["ten".into()]);
+        assert_eq!(
+            excluded.iter().map(|c| c.tag.as_str()).collect::<Vec<_>>(),
+            ["Pair"]
+        );
+    }
+
+    #[test]
+    fn crash_source_tags_and_limit_are_enforced() {
+        let mut logs = Vec::new();
+        for t in 0..7_u64 {
+            for i in 0..(10 + t) {
+                logs.push(error_row(t * 100 + i, "E", Some(&format!("T{t}")), "x"));
+            }
+        }
+        let crash = arb_core::analytics::CrashMarker {
+            boottime_ns: None,
+            frame_index_hint: None,
+            process_name: "app".into(),
+            package_name: "app".into(),
+            pid: None,
+            exception_class: "E".into(),
+            message: "boom".into(),
+            source_log_seq: 600,
+        };
+        let filter = no_filter();
+        let got = super::noise_candidates(
+            logs.iter().filter_map(|log| {
+                super::error_level(log, &filter, &[])
+                    .map(|level| (level, log.tag.as_deref(), log.message.as_str()))
+            }),
+            &super::fatal_tags(&logs, std::slice::from_ref(&crash)),
+        );
+        let tags: Vec<_> = got.iter().map(|c| c.tag.as_str()).collect();
+        // T6 owns the crash row; the rest are ordered by count and capped at five.
+        assert_eq!(tags, ["T5", "T4", "T3", "T2", "T1"]);
+    }
+
+    proptest::proptest! {
+        /// Suggestions never remove or alter evidence: highlights and totals are computed the
+        /// same way with or without them, and every suggestion is an exact, non-fatal count.
+        #[test]
+        fn noise_candidates_never_hide_evidence(
+            rows in proptest::collection::vec((0_usize..3, 0_usize..5, 0_usize..3), 0..120),
+            exclude in proptest::collection::vec(0_usize..5, 0..3),
+        ) {
+            const LEVELS: [&str; 3] = ["E", "F", "W"];
+            const TAGS: [Option<&str>; 5] = [Some("A"), Some("B"), Some("c"), Some("C"), None];
+            let logs: Vec<_> = rows.iter().enumerate().map(|(i, (l, t, m))| {
+                error_row(u64::try_from(i).unwrap(), LEVELS[*l], TAGS[*t], &format!("m{m}"))
+            }).collect();
+            let exclude: Vec<String> =
+                exclude.iter().filter_map(|t| TAGS[*t].map(str::to_owned)).collect();
+            let coordinates = super::LogCoordinates::new(&[], &[]);
+            let filter = no_filter();
+            let before = super::build_error_log_highlights(&logs, &coordinates, &filter, &exclude, 3);
+            let got = candidates_for(&logs, &exclude);
+            let after = super::build_error_log_highlights(&logs, &coordinates, &filter, &exclude, 3);
+            proptest::prop_assert_eq!(&before, &after);
+            let matched = logs.iter().filter(|l| super::error_level(l, &filter, &exclude).is_some()).count();
+            proptest::prop_assert_eq!(before.1, matched);
+            proptest::prop_assert!(got.len() <= 5);
+            for pair in got.windows(2) {
+                proptest::prop_assert!((std::cmp::Reverse(pair[0].total_count), &pair[0].tag)
+                    < (std::cmp::Reverse(pair[1].total_count), &pair[1].tag));
+            }
+            for c in &got {
+                let lower = c.tag.to_ascii_lowercase();
+                proptest::prop_assert!(!exclude.iter().any(|x| x.eq_ignore_ascii_case(&c.tag)));
+                proptest::prop_assert!(!logs.iter().any(|l| l.level.as_deref() == Some("F")
+                    && l.tag.as_deref().is_some_and(|t| t.to_ascii_lowercase() == lower)));
+                let rows = logs.iter().filter(|l| l.level.as_deref() == Some("E")
+                    && l.tag.as_deref() == Some(c.tag.as_str())).count();
+                proptest::prop_assert_eq!(c.total_count, rows);
+                proptest::prop_assert!(c.total_count >= 5);
             }
         }
     }

@@ -21,6 +21,7 @@ arb-adb.workspace = true
 arb-media.workspace = true
 arb-storage.workspace = true
 arbd = { path = "../arbd" }
+proptest = "1"
 rusty_aac = { version = "2", default-features = false }
 tempfile = "3"
 

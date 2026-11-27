@@ -1,5 +1,10 @@
 use super::super::{Failure, McpServer, ToolOutput};
-use crate::mcp::{args::save_params, fill_missing, resources};
+use crate::mcp::{
+    args::save_params,
+    fill_missing,
+    project::{self, time::Zone},
+    resources,
+};
 use serde_json::{Map, Value, json};
 impl McpServer {
     pub(super) fn tool_save(
@@ -28,43 +33,26 @@ impl McpServer {
         Ok(result)
     }
 
+    /// Reads the saved bundle through the same overview as `arb_timeline_overview`, so error
+    /// groups and noise candidates match it exactly for the same filters on every version.
     fn inspect_saved(
         &mut self,
         args: &Map<String, Value>,
         result: &mut ToolOutput,
     ) -> Result<(), Failure> {
         let id = result.body["bundle_id"].clone();
-        let target = json!({"bundle_id_or_path":id});
-        let summary = self.call_daemon("timeline.summary", &target)?;
-        let max_errors = args.get("max_errors").cloned().unwrap_or(json!(20));
-        let (screens, crashes, error_logs) = if self.version.legacy_error_rows() {
-            let screens = self.call_daemon("timeline.screens", &target)?["screens"].take();
-            let crashes = self.call_daemon("timeline.crashes", &target)?["crashes"].take();
-            let errors = self.call_daemon(
-                "bundle.query_logs",
-                &json!({"bundle_id_or_path":id,"level":"ERROR","tail":true,"limit":max_errors}),
-            )?;
-            (screens, crashes, errors)
-        } else {
-            let mut overview = self.call_daemon(
-                "timeline.overview",
-                &json!({"bundle_id":id,"max_error_logs":max_errors}),
-            )?;
-            if !overview["unique_error_logs"].is_u64() {
-                return Err(Failure::unavailable(
-                    "エラーを集約するには arbd を更新してください",
-                ));
-            }
-            let logs = overview["error_log_highlights"].take();
-            let shown = logs.as_array().map_or(0, Vec::len);
-            let errors = json!({"logs":logs,"total_matched":overview["total_error_logs"],
-                "unique_count":overview["unique_error_logs"], "returned_count":shown,"has_more":overview["error_logs_truncated"]});
-            (
-                overview["screens"].take(),
-                overview["crashes"].take(),
-                errors,
-            )
-        };
+        let summary = self.call_daemon("timeline.summary", &json!({"bundle_id_or_path":id}))?;
+        let limit = args.get("max_errors").cloned().unwrap_or(json!(20));
+        let params = project::overview::params(id.clone(), Some(&limit), args);
+        let mut overview = self.call_daemon("timeline.overview", &params)?;
+        if !overview["unique_error_logs"].is_u64() {
+            return Err(Failure::unavailable(
+                "エラーを集約するには arbd を更新してください",
+            ));
+        }
+        project::overview::project(&mut overview, self.version, Zone::from_args(args));
+        let error_logs = project::overview::error_groups(&mut overview, &id, args);
+        let screens = overview["screens"].take();
         result.add_link(resources::bundle_link(&id, "crashes"));
         if args.get("include_key_frame_links") != Some(&Value::Bool(false)) {
             for frame in screens
@@ -76,7 +64,9 @@ impl McpServer {
                 result.add_link(resources::bundle_link(&id, &format!("frame/{frame}")));
             }
         }
-        result.body = json!({"save":result.body,"summary":summary,"screens":screens,"crashes":crashes,"error_logs":error_logs,"memo":args.get("note")});
+        result.body = json!({"save":result.body,"summary":summary,"screens":screens,
+            "crashes":overview["crashes"].take(),"error_logs":error_logs,
+            "noise_candidates":overview["noise_candidates"].take(),"memo":args.get("note")});
         Ok(())
     }
 }

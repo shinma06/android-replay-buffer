@@ -31,6 +31,100 @@ fn tool_registry_matches_known_tools_with_valid_schemas() {
     }
 }
 
+/// One `tools/list` frame stays below 90,000 bytes on every negotiated version (target 86,000).
+#[test]
+fn tools_list_frame_fits_the_budget_on_every_version() {
+    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
+    for version in [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25] {
+        let frame = super::rpc_ok(&json!(2), &json!({"tools":catalog::for_version(version)}));
+        let bytes = frame.to_string().len() + 1;
+        assert!(bytes <= 86_000, "{version:?}: {bytes} bytes");
+    }
+}
+
+/// Only the version predicates choose defaults: inline screenshots end with the March release,
+/// and compact log rows begin with structured content.
+#[test]
+fn defaults_follow_the_version_predicates() {
+    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
+    for (version, inline, compact) in [
+        (V2024_11_05, true, false),
+        (V2025_03_26, true, false),
+        (V2025_06_18, false, true),
+        (V2025_11_25, false, true),
+    ] {
+        let tools = catalog::for_version(version);
+        let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(version.legacy_screenshot_inline(), inline);
+        assert_eq!(version.default_compact_logs(), compact);
+        assert_eq!(
+            tool("arb_screenshot")["inputSchema"]["properties"]["include_image"]["default"],
+            inline
+        );
+        assert_eq!(
+            tool("arb_query_logs")["inputSchema"]["properties"]["fields"]["default"],
+            if compact { "compact" } else { "full" }
+        );
+        // The same ErrorGroups contract and filters on every version (#563).
+        let save = tool("arb_save_and_inspect");
+        let errors = &save["outputSchema"]["oneOf"][0]["properties"]["error_logs"];
+        assert!(errors.to_string().contains("continuation"), "{version:?}");
+        for key in ["package", "tag", "exclude_tags", "time_zone"] {
+            assert_eq!(
+                save["inputSchema"]["properties"][key],
+                tool("arb_timeline_overview")["inputSchema"]["properties"][key],
+                "{key}"
+            );
+        }
+        assert_eq!(
+            save["inputSchema"]["properties"]["max_errors"]["maximum"],
+            200
+        );
+    }
+}
+
+/// #563: the parity table pairs each `arb_save_and_inspect` filter with the overview argument of
+/// the same meaning, type and validation, and the projection forwards exactly those filters.
+#[test]
+fn investigation_parity_table_matches_both_schemas_and_the_projection() {
+    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/specs/mcp-tools-table.json"
+    ))
+    .unwrap();
+    let pairs = table["investigationParity"]["arguments"]
+        .as_object()
+        .unwrap();
+    for version in [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25] {
+        let tools = catalog::for_version(version);
+        let input = |name: &str| {
+            tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"]["properties"].clone()
+        };
+        let (save, overview) = (
+            input("arb_save_and_inspect"),
+            input("arb_timeline_overview"),
+        );
+        for (save_arg, overview_arg) in pairs {
+            let (a, b) = (&save[save_arg], &overview[overview_arg.as_str().unwrap()]);
+            if save_arg == "max_errors" {
+                // Same meaning and cap; the save tool asks for at least one group.
+                assert_eq!(a["description"], b["description"]);
+                assert_eq!(a["maximum"], b["maximum"]);
+                assert!(a["minimum"].as_u64() >= b["minimum"].as_u64());
+            } else {
+                assert_eq!(a, b, "{version:?} {save_arg}");
+            }
+        }
+    }
+    let table_filters: BTreeSet<&str> = pairs
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "max_errors")
+        .collect();
+    let forwarded: BTreeSet<&str> = super::project::overview::FILTERS.into_iter().collect();
+    assert_eq!(table_filters, forwarded);
+}
+
 #[test]
 fn mcp_protocol_initialize_ping_and_notification_silence() {
     let paths = ArbPaths {

@@ -43,6 +43,7 @@ dependencies = [
  "arb-os",
  "arb-storage",
  "arbd",
+ "proptest",
  "regex-lite",
  "rusty_aac",
  "semver",

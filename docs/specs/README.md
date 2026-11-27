@@ -17,7 +17,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版 | デーモン業務エラー／伝送断、RPC 名／公開ツール名 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影 | RS-1〜5、KON-1〜7、実 stdio・スキーマ検査、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答（90,000 バイト未満）で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜5、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -35,6 +35,7 @@
 | Android API 下限・音声方式 | 03・05・07 | 方針表 → arb-core → arb-adb／scrcpy 引数 → arbd の実状態 → Studio／CLI／MCP。API 32・33、取得失敗、明示互換時の消音を比較 | K11、G8、S3、KON-6、端末スモーク |
 | 軸校正・ジェスチャー・焼き込み | 02・03・05・07 | device-agent → touch_calibration → bundle_io → 概要／クロップ・Studio・共有動画。旧記録の読取、軸端、静止フレーム内の操作を照合 | K6・K7・K13、G3、ストレージ読取・メディア統合試験 |
 | RPC・MCP の引数・エラー・表示名 | 01・03・04・05・06 | ディスパッチ → CLI／MCP 契約表・4 版 → Kotlin IPC・表示。新旧版と未知引数、失敗後の接続、表示テキストを照合 | RS-5、KON-5〜7、共有表、実 stdio、ArbBrandingGuardTest |
+| MCP の応答形・既定値・時刻表記 | 03・06 | `mcp-tools-table.json` → `catalog.rs`・`version.rs` → `mcp/project` → 4 版の `tools/list` と実応答。デーモンの追加項目は IDE・CLI の既存 DTO を壊さないか、概要と保存して調査のエラー集約・推薦が一致するか、`tools/list` の大きさを照合 | 実 stdio（4 版）、スキーマ検査、投影の単体・proptest、`tools_list_frame_fits_the_budget_on_every_version` |
 
 <a id="evidence"></a>
 
@@ -112,10 +113,15 @@
 | 再生中に選択端を動かしても現在のループ端は同じ | 仕様 | 新しい区間を次の再生開始に適用する（T-3）。 | [SPEC-05](SPEC-05-ide-studio-ux.md) |
 | 静止画の 15.5〜18 秒を選ぶと、焼き込みなしの出力が 2.5 秒・1 枚 | 仕様 | 元の 1 枚が区間全体を保持。範囲内の音声・ログ・入力も同じ原点を使う。 | [SPEC-03](SPEC-03-protocol-media.md) |
 | 時刻指定に片端しかなく、フレーム指定もあるのに失敗 | 仕様 | 時刻対は両端必須。不正範囲の RPC は `-32602`。 | [SPEC-03](SPEC-03-protocol-media.md) |
+| 保存して調査の `error_logs` と同じ条件の概要でエラーの集約・件数が違う | バグ | 4 版とも同じ `timeline.overview` を同じ条件で読む。続きは `continuation`、生行は `raw_query` の呼び出しで読む。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `noise_candidates` に出たタグのエラーが代表行や件数から消えた | バグ | 推薦は除外を適用しない。除外は `exclude_tags` の明示指定だけ。F 行・クラッシュのタグは推薦しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 既定のログ検索に `alignment` や行ごとの `boot_id` がない | 仕様 | 2025-06-18 以降の既定は `fields: compact`。全項目は `fields: full`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 既定の応答に `timestamp_local` がない | 仕様 | ローカル時刻は `time_zone: host` の指定時だけ。既定は UTC のみでホストに依存しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `arb_export_frame_png` が既存の PNG を置き換えた | バグ | 明示パスの衝突は `-32002`。`output_dir` は一意名。`overwrite` 引数はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 概要のエラー件数と代表行数が違う | 仕様 | フィルタ一致の生行総数とグループ数を区別し、代表行に回数・初回／最終オフセットを表示する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 同じ主ログで概要と検索の表示フレームが異なる | バグ | 同一 boot の ns 時刻・同一 VFR 表を使う。UTC の表示精度はミリ秒。 | [SPEC-03](SPEC-03-protocol-media.md) |
 | ログに影響するチャンク破損後も欠落 0・完全と報告 | バグ | 行数不明は null。送信キューのフレーム欠落数もログ行数に換算しない。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
-| 最新 MCP のスクリーンショットにインライン画像がない | 仕様 | 既定は保存パスとメタデータ。旧版の既定と異なり PNG 本体は明示指定する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 2025-06-18 以降の MCP のスクリーンショットにインライン画像がない | 仕様 | 既定は保存パスとメタデータ。旧 2 版の既定と異なり PNG 本体は明示指定する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | Task 非対応ツール、または不正な taskId で引数エラー | 仕様 | ID の欠落・型違い・未知／期限切れには個別の理由を返す。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | API 37 の軸外タップが画面端に出た | 仕様 | 端へクランプする。校正前の現行形式の記録も既知寸法なら読取時に補正する。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
 

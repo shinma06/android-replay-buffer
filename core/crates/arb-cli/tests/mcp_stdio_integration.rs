@@ -68,6 +68,16 @@ fn build_minimal_valid_png(width: u32, height: u32) -> Vec<u8> {
 }
 
 fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
+    seed_bundle_with_logs(work_dir, dest_dir, bundle_id, Vec::new())
+}
+
+/// The seeded bundle plus `extra` main-timeline log rows.
+fn seed_bundle_with_logs(
+    work_dir: &Path,
+    dest_dir: &Path,
+    bundle_id: &str,
+    extra: Vec<LogRecord>,
+) -> PathBuf {
     let video_src = work_dir.join(format!("{bundle_id}-v.mp4"));
     let frames_raw: Vec<DecodedFrame> = (0..18_u64)
         .map(|i| {
@@ -151,7 +161,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
         })
         .collect();
 
-    let logs = vec![
+    let mut logs = vec![
         LogRecord {
             seq: 1,
             boot_id: Some("boot-mcp".to_owned()),
@@ -195,6 +205,7 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
             message: "Token refresh failed: 401".to_owned(),
         },
     ];
+    logs.extend(extra);
 
     let taps = vec![TapRecord {
         seq: 1,
