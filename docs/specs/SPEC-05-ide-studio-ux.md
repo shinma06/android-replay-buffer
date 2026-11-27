@@ -32,7 +32,7 @@ Tool Window は録画状態・接続端末・保存アクションと、保存�
 
 操作アイコンは意味ごとに `ArbIcons` で一元管理する。同じ操作のデザインを変更する際はこの正本 1 箇所を変更し、パネル、Studio、設定、Running Devices、メニュー、通知で共通のアイコンを使う。Logcat 本体のツールバーには ARB の操作を追加しない。
 
-設定と Studio のチェックボックスは先頭行の説明文字に合わせる。折り返しや補助説明によってチェックの高さを変えない。先頭・末尾のベースラインから先頭行の高さを求める。日本語ラベルの先頭行とチェック矩形の中心差は、Classic／New UI・表示倍率・フォント拡大・チェック状態を変えた実描画で 1 px 以内とする。[実画素テスト](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ui/ArbCheckboxPixelsTest.kt)
+設定と Studio のチェックボックスは先頭行の説明文字に合わせる。折り返しや補助説明によってチェックの高さを変えない。レイアウト確定時に、実際に選ばれたフォントで先頭行だけを小さな CPU マスクに描き、文字の描画中心とチェック矩形の中心を合わせる。日本語ラベルの先頭行とチェック矩形の中心差は、Classic／New UI・表示倍率・フォント拡大・チェック状態を変えた実描画で 1 px 以内とする。[実画素テスト](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ui/ArbCheckboxPixelsTest.kt)
 
 **Running Devices。** Android プラグインが提供する `StreamingToolbarSecondary` に開始／停止、直前の保存、スクリーンショットを登録する。組み込みエミュレータと物理端末ミラーの両パネルが対象。スクリーンショット保存先は Logcat 設定の継承が初期 ON。解決できない環境では ARB の保存先へフォールバックする。継承を OFF にして別のフォルダを指定できる。[登録先](../../ide-plugin/src/main/resources/META-INF/arb-android.xml)・[保存先の解決](../../ide-plugin/src/main/kotlin/io/github/shinma06/arb/ide/ArbIdeHelpers.kt)・[VER-27](../verifications/VER-27-t6i-running-devices-and-burn-taps.md)
 

@@ -41,13 +41,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.FirstBaseline
-import androidx.compose.ui.layout.LastBaseline
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.asComposeCanvas
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +65,10 @@ import org.jetbrains.jewel.ui.component.Tooltip
 import org.jetbrains.jewel.ui.component.styling.ScrollbarVisibility
 import org.jetbrains.jewel.ui.icon.IconKey
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.Canvas
+import org.jetbrains.skia.ImageInfo
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /**
@@ -472,8 +475,7 @@ fun ArbLabeledCheckbox(
     muted: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    // Center the icon on the optical middle of the first text line.
-    val opticalInset = with(LocalDensity.current) { 0.5.dp.toPx() }
+    var firstLineCenter by remember(text) { mutableStateOf(0) }
     Row(
         modifier = modifier
             .toggleable(
@@ -502,7 +504,7 @@ fun ArbLabeledCheckbox(
                 .alignBy { indicator ->
                     // Classic uses a 20 x 19dp slot for its 19dp glyph. New UI has a square slot.
                     val slotInset = (indicator.measuredWidth - indicator.measuredHeight) / 2f
-                    (indicator.measuredHeight / 2f - slotInset - opticalInset).roundToInt()
+                    (indicator.measuredHeight / 2f - slotInset).roundToInt()
                 }
                 .focusProperties { canFocus = false }
                 .clearAndSetSemantics {},
@@ -522,11 +524,30 @@ fun ArbLabeledCheckbox(
                         trim = LineHeightStyle.Trim.Both,
                     ),
                 ),
-            modifier = Modifier.alignBy { label ->
-                // Combine the first ascent and final descent, excluding intervening lines.
-                val firstLineHeight = label[FirstBaseline] + label.measuredHeight - label[LastBaseline]
-                (firstLineHeight + 1) / 2
-            },
+            onTextLayout = { firstLineCenter = it.firstLineInkCenter() },
+            modifier = Modifier.alignBy { firstLineCenter },
         )
+    }
+}
+
+/**
+ * Measure the glyphs after Compose has chosen the fallback fonts and wrapped the label.
+ * Rasterize only the first line into a small CPU alpha mask when text layout changes.
+ */
+private fun TextLayoutResult.firstLineInkCenter(): Int {
+    val width = ceil(getLineRight(0)).toInt()
+    val height = ceil(getLineBottom(0)).toInt()
+    if (width <= 0 || height <= 0) return height / 2
+    val info = ImageInfo.makeA8(width, height)
+    Bitmap().use { mask ->
+        if (!mask.allocPixels(info, width)) return height / 2
+        mask.erase(0)
+        Canvas(mask).use { canvas -> multiParagraph.paint(canvas.asComposeCanvas(), Color.Black) }
+        val alpha = mask.readPixels(info, width) ?: return height / 2
+        val top = alpha.indexOfFirst { (it.toInt() and 0xff) >= 96 }
+        if (top < 0) return height / 2
+        val bottom = alpha.indexOfLast { (it.toInt() and 0xff) >= 96 }
+        // Pixel centers are half a pixel inside each raster row.
+        return ((top / width + bottom / width + 1) / 2f).roundToInt()
     }
 }
