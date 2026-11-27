@@ -472,7 +472,7 @@ fun ArbLabeledCheckbox(
     muted: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    // The classic 19dp glyph is centered half a dp above the geometric midpoint.
+    // Center the icon on the optical middle of the first text line.
     val opticalInset = with(LocalDensity.current) { 0.5.dp.toPx() }
     Row(
         modifier = modifier
@@ -499,7 +499,11 @@ fun ArbLabeledCheckbox(
             // `Row.toggleable` is the single keyboard & accessibility target.
             interactionSource = interactionSource,
             modifier = Modifier
-                .alignBy { (it.measuredHeight / 2f - opticalInset).roundToInt() }
+                .alignBy { indicator ->
+                    // Classic uses a 20 x 19dp slot for its 19dp glyph. New UI has a square slot.
+                    val slotInset = (indicator.measuredWidth - indicator.measuredHeight) / 2f
+                    (indicator.measuredHeight / 2f - slotInset - opticalInset).roundToInt()
+                }
                 .focusProperties { canFocus = false }
                 .clearAndSetSemantics {},
         )
