@@ -48,6 +48,8 @@ Read the [state ownership and invariants](docs/specs/README.md#ownership), the [
 
 ## Rules
 
+- IDE icons are owned by meaning in `ArbIcons`. Change a design there once. Tool Window, Studio, Settings, actions, menus, notifications, and XML descriptors must use the same entry for the same operation.
+
 - Zero GPL/AGPL dependencies (`core/scripts/check-licenses.py`). Third-party code must be permissively licensed and recorded in the relevant `NOTICE`.
 - Behaviour is identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations selected at a single OS-detection point (`arb-os`, `HostOs` in `client-core`); callers never branch on the OS. Tests must not skip by OS unless they exercise a truly OS-only facility.
 - GUI, CLI and MCP behaviour stays identical; a change to one surface updates the others and the relevant `docs/` spec.

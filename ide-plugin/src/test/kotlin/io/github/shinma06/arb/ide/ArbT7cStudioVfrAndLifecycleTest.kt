@@ -1004,7 +1004,7 @@ class ArbT7cStudioVfrAndLifecycleTest {
             assertTrue(presOff.enabled)
             assertFalse(presOff.selected)
             assertTrue(presOff.text.contains("OFF"))
-            assertEquals(AllIcons.Actions.Restart, presOff.icon)
+            assertEquals(AllIcons.Actions.Execute, presOff.icon)
 
             assertTrue(presArmed.enabled)
             assertTrue(presArmed.selected, "DumbAwareToggleAction must stay selected while armed")

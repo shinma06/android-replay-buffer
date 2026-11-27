@@ -347,9 +347,9 @@ class ArbToolWindowController(
 
     val screenshotTooltip: String
         get() = if (isCaptureActive) {
-            "対象端末の現在画面を PNG 保存"
+            "対象端末の現在画面を PNG として即時保存します"
         } else {
-            disabledDeviceHint() ?: "対象端末の現在画面を PNG 保存"
+            disabledDeviceHint() ?: "対象端末の現在画面を PNG として即時保存します"
         }
 
     val displayedBundles: List<BundleCatalogItem>

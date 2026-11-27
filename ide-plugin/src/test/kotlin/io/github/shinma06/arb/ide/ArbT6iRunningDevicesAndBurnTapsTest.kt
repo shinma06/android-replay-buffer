@@ -67,8 +67,8 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
         for (match in actionBlocks) {
             val tag = match.value
             assertTrue(
-                tag.contains("""icon="AllIcons."""),
-                "Every <action> in plugin.xml must declare an explicit AllIcons icon: $tag",
+                tag.contains("""icon="io.github.shinma06.arb.ui.ArbIcons."""),
+                "Every <action> in plugin.xml must declare an explicit ArbIcons field: $tag",
             )
         }
         assertFalse(ArbFormatters.containsEmoji(pluginXml), "plugin.xml must contain zero emoji")
@@ -106,7 +106,7 @@ class ArbT6iRunningDevicesAndBurnTapsTest {
         val toggleNoDev = ArbToolbarPresentationState.toggleCapture(noDevice)
         assertTrue(toggleNoDev.enabled, "ToggleCapture must allow arming capture_enabled=true with 0 devices")
         assertFalse(toggleNoDev.selected)
-        assertEquals(AllIcons.Actions.Restart, toggleNoDev.icon)
+        assertEquals(AllIcons.Actions.Execute, toggleNoDev.icon)
         assertTrue(toggleNoDev.description.contains("端末未検出"))
         assertTrue(toggleNoDev.description.contains("ON・待機中"))
 

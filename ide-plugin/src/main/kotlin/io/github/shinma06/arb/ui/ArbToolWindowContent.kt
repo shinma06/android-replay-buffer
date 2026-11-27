@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -66,7 +67,6 @@ import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconActionButton
 import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.Text
-import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
 
 /**
@@ -138,7 +138,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
 
                 IconActionButton(
-                    key = AllIconsKeys.General.GearPlain,
+                    key = ArbIcons.Settings.key,
                     contentDescription = "ARB 設定",
                     onClick = { controller.openSettings() },
                     modifier = Modifier.size(26.dp),
@@ -208,11 +208,14 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                     .fillMaxWidth()
                     .semantics { contentDescription = capture.primarySaveLabel },
             ) {
-                Text(
-                    text = capture.primarySaveLabel,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(ArbIcons.Save.key, null, Modifier.size(14.dp))
+                    Text(
+                        text = capture.primarySaveLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
             // Row 4: Compact borderless utility row (zero 1px boxed rectangles!)
@@ -223,7 +226,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
             ) {
                 ArbSubtleAction(
                     label = capture.secondarySaveLabel,
-                    iconKey = AllIconsKeys.Actions.Download,
+                    iconKey = ArbIcons.Save.key,
                     enabled = capture.daemonConnected && !controller.saveBusy,
                     tooltip = "エディタを開かず保存（または既定と逆の動作）",
                     compact = true,
@@ -231,7 +234,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
                 ArbSubtleAction(
                     label = ArbFormatters.SECONDARY_SCREENSHOT_LABEL,
-                    iconKey = AllIconsKeys.Actions.Dump,
+                    iconKey = ArbIcons.Screenshot.key,
                     enabled = controller.screenshotEnabled && !controller.screenshotBusy,
                     tooltip = controller.screenshotTooltip,
                     compact = true,
@@ -239,7 +242,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
                 ArbSubtleAction(
                     label = ArbFormatters.SECONDARY_LOGS_ONLY_LABEL,
-                    iconKey = AllIconsKeys.FileTypes.Text,
+                    iconKey = ArbIcons.SaveLogs.key,
                     enabled = capture.daemonConnected && !controller.logSaveBusy,
                     tooltip = "映像キャプチャを中断せず直前のログのみ保存",
                     compact = true,
@@ -247,7 +250,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
                 ArbSubtleAction(
                     label = controller.startStopLabel,
-                    iconKey = if (controller.isCaptureOn) AllIconsKeys.Actions.Suspend else AllIconsKeys.Actions.Execute,
+                    iconKey = if (controller.isCaptureOn) ArbIcons.StopCapture.key else ArbIcons.StartCapture.key,
                     enabled = controller.startStopEnabled,
                     tooltip = controller.startStopTooltip,
                     compact = true,
@@ -260,7 +263,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
                 )
                 ArbSubtleAction(
                     label = "トレイ",
-                    iconKey = AllIconsKeys.Toolwindows.ToolWindowRun,
+                    iconKey = ArbIcons.LaunchTray.key,
                     enabled = true,
                     tooltip = "メニューバー / システムトレイ (arb-tray) を起動",
                     compact = true,
@@ -335,7 +338,7 @@ fun ArbToolWindowContent(controller: ArbToolWindowController) {
             if (controller.showGcAction) {
                 ArbSubtleAction(
                     label = if (controller.gcBusy) "削除中..." else "ゴミ箱を空にする",
-                    iconKey = AllIconsKeys.Actions.GC,
+                    iconKey = ArbIcons.Delete.key,
                     enabled = controller.emptyTrashEnabled,
                     tooltip = "ゴミ箱内のバンドルを完全に削除（使用中・旧形式・外部保存先は保護）",
                     compact = true,
@@ -558,7 +561,7 @@ private fun StaleDaemonBanner(
             )
             ArbSubtleAction(
                 label = if (busy) "再起動中..." else "arbd を再起動",
-                iconKey = AllIconsKeys.Actions.Restart,
+                iconKey = ArbIcons.RestartDaemon.key,
                 enabled = !busy,
                 compact = true,
                 tint = ArbJewelPalette.warningAmber(),
@@ -646,21 +649,21 @@ private fun FailedSaveJobBanner(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 ArbSubtleAction(
                     label = "再試行",
-                    iconKey = AllIconsKeys.Actions.Refresh,
+                    iconKey = ArbIcons.Retry.key,
                     enabled = !busy,
                     compact = true,
                     onClick = onRetry,
                 )
                 ArbSubtleAction(
                     label = "保存先変更",
-                    iconKey = AllIconsKeys.Nodes.Folder,
+                    iconKey = ArbIcons.ChooseFolder.key,
                     enabled = !busy,
                     compact = true,
                     onClick = onRetarget,
                 )
                 ArbSubtleAction(
                     label = "破棄",
-                    iconKey = AllIconsKeys.Actions.Cancel,
+                    iconKey = ArbIcons.DiscardJob.key,
                     enabled = !busy,
                     compact = true,
                     tint = ArbJewelPalette.recRed(),
@@ -694,7 +697,7 @@ private fun EmptyTrashConfirmBanner(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 ArbSubtleAction(
                     label = if (busy) "削除中..." else "完全に削除",
-                    iconKey = AllIconsKeys.Actions.GC,
+                    iconKey = ArbIcons.Delete.key,
                     enabled = !busy,
                     compact = true,
                     tint = ArbJewelPalette.recRed(),
@@ -734,7 +737,7 @@ private fun MissingBundlesBanner(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 ArbSubtleAction(
                     label = if (busy) "整理中..." else "一覧から一括整理",
-                    iconKey = AllIconsKeys.Actions.GC,
+                    iconKey = ArbIcons.Forget.key,
                     enabled = enabled,
                     compact = true,
                     tint = ArbJewelPalette.warningAmber(),
@@ -762,11 +765,11 @@ private fun LibraryBundleRow(
     val shape = RoundedCornerShape(6.dp)
     val rowBg = if (hovered) ArbJewelPalette.subtleHoverFill() else Color.Transparent
     val iconKey = when {
-        item.isMissingOnDisk || item.isStorageUnavailable -> AllIconsKeys.General.Warning
-        item.hasCrash -> AllIconsKeys.General.Error
-        item.bundleKind == BundleKind.LOGS_ONLY -> AllIconsKeys.FileTypes.Text
-        item.isTrimmed -> AllIconsKeys.Actions.Edit
-        else -> AllIconsKeys.Actions.Execute
+        item.isMissingOnDisk || item.isStorageUnavailable -> ArbIcons.Unavailable.key
+        item.hasCrash -> ArbIcons.Crash.key
+        item.bundleKind == BundleKind.LOGS_ONLY -> ArbIcons.LogBundle.key
+        item.isTrimmed -> ArbIcons.TrimmedBundle.key
+        else -> ArbIcons.OpenViewer.key
     }
     val titleColor = when {
         item.isMissingOnDisk -> ArbJewelPalette.dimmedText()
@@ -837,7 +840,7 @@ private fun LibraryBundleRow(
         if (item.canForget) {
             ArbSubtleAction(
                 label = "一覧から削除",
-                iconKey = AllIconsKeys.Actions.Cancel,
+                iconKey = ArbIcons.Forget.key,
                 enabled = !forgetBusy,
                 compact = true,
                 tint = ArbJewelPalette.warningAmber(),
@@ -851,7 +854,7 @@ private fun LibraryBundleRow(
             ) {
                 if (item.canOpen) {
                     IconActionButton(
-                        key = AllIconsKeys.Nodes.Folder,
+                        key = ArbIcons.OpenFolder.key,
                         contentDescription = "フォルダを表示",
                         onClick = onReveal,
                         modifier = Modifier.size(22.dp),
@@ -861,7 +864,7 @@ private fun LibraryBundleRow(
                 }
                 if (item.canTrash) {
                     IconActionButton(
-                        key = AllIconsKeys.Actions.Cancel,
+                        key = ArbIcons.Trash.key,
                         contentDescription = "ゴミ箱へ",
                         onClick = onTrash,
                         modifier = Modifier.size(22.dp),
@@ -871,7 +874,7 @@ private fun LibraryBundleRow(
                 }
                 if (item.canRestore) {
                     IconActionButton(
-                        key = AllIconsKeys.Actions.Rollback,
+                        key = ArbIcons.Restore.key,
                         contentDescription = "復元",
                         onClick = onRestore,
                         modifier = Modifier.size(22.dp),

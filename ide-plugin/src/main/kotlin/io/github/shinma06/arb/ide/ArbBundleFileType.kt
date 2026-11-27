@@ -2,7 +2,6 @@ package io.github.shinma06.arb.ide
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import com.intellij.icons.AllIcons
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeRegistry
@@ -11,6 +10,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.io.ByteSequence
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFilePreCloseCheck
+import io.github.shinma06.arb.ui.ArbIcons
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -206,7 +206,7 @@ object ArbBundleFileType : FileType {
 
     override fun getDefaultExtension(): String = ""
 
-    override fun getIcon(): Icon = AllIcons.Actions.Restart
+    override fun getIcon(): Icon = ArbIcons.Panel.swing
 
     override fun isBinary(): Boolean = false
 }

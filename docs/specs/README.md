@@ -11,6 +11,7 @@
 | 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
 | 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない | K1〜K3、G4、Miri M2 |
 | 保存物・GC | `arb-storage` の確定 manifest と外部カタログ、公開は `arbd` | WORM 本体／編集・リース・退避、媒体切断／恒久欠損 | 実体削除には管理内・現行形式・退避済み・猶予条件・リース 0・対象ジョブ 0・同一性が必要。登録解除は実体に触れない | K5、S2、G1・G2、RS-4、KON-7、TCB-03・TCB-04 |
+| IDE アイコン | 操作の意味ごとの `ArbIcons` | Swing の Icon／Jewel の IconKey／XML の静的フィールド | 同じ操作は全画面で同じアイコンを使い、デザイン変更は正本 1 箇所に集約する | アイコン構造テスト・XML の解決試験 |
 | Studio・再生 | `PlaybackController` の時計、選択リデューサの Selection、`ArbStudioController` の TrimPreview | 再生位置／範囲／一時的な境界画像 | 範囲編集は再生位置を動かさず、tick は選択を動かさない。リリースした ns を保持し、中断でプレビューを解放。再生中の編集は次の開始に適用 | K8・K10・K12、S6・S7 と Kotlin リプレイ、Miri M1（SHM） |
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
@@ -26,6 +27,7 @@
 | 録画開始・停止、リング上限、親終了 | 01・02・05・07 | device-agent → `live_adb.rs`・`capture.rs` → ring／catalog → CLI・MCP・IDE 状態。再接続・保存中に端末や pin を失わないか | K4・K5、S1〜S3・S5、G2・G5 |
 | アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
 | カタログ・リース・ゴミ箱・再試行 | 01・02・05・06 | catalog／bundle_io → `arbd` → CLI／MCP・IDE。切断・パス置換・閲覧中に実体を保護し、全結果区分を表示するか | K5、S2、G1、RS-4、KON-7、操作結果表 |
+| 操作アイコンの追加・変更 | 05 | `ArbIcons` → Tool Window・Studio・設定・Running Devices・メニュー・通知。同じ操作の全入口と XML 宣言を照合 | アイコン構造テスト |
 | トリム・シーク・ループ | 02・03・05・06 | Kotlin の三状態・時計 → edit／export → `trim_range.rs` → 映像・音声・ログ・入力。静止中に両端を置き、再読込・ループ・Studio 同梱と MCP 単独出力を比較 | K10・K13、S6・S7、G3、PlaybackControllerTest、四ストリーム統合試験 |
 | 書き出し形式・共有ファイル名 | 02・03・05・06 | Studio のエディタ／CLI／MCP → `export.trim` または `export.share_mp4` → 公開・登録。元の WORM、共有動画の場所、追加カタログ行数を確認。フレーム PNG は `save.screenshot` と保存先を共有し、既存ファイルを保護する | S2・S4、K13、G3、実 stdio スキーマ検査 |
 | Android API 下限・音声方式 | 03・05・07 | 方針表 → arb-core → arb-adb／scrcpy 引数 → arbd の実状態 → Studio／CLI／MCP。API 32・33、取得失敗、明示互換時の消音を比較 | K11、G8、S3、KON-6、端末スモーク |

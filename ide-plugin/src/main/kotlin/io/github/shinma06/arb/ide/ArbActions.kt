@@ -1,6 +1,5 @@
 package io.github.shinma06.arb.ide
 
-import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -16,6 +15,7 @@ import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
 import io.github.shinma06.arb.state.ArbFormatters
+import io.github.shinma06.arb.ui.ArbIcons
 import io.github.shinma06.arb.ui.CaptureToggleState
 import io.github.shinma06.arb.ui.setCaptureEnabled
 import javax.swing.Icon
@@ -32,13 +32,13 @@ data class ArbActionPresentation(
 
 object ArbToolbarPresentationState {
     fun toggleCapture(snapshot: ArbToolbarDaemonSnapshot): ArbActionPresentation {
-        if (snapshot.deviceChangeBusy) return ArbActionPresentation("ARB: キャプチャ開始 / 停止", "対象端末を変更中です", AllIcons.Actions.Restart, enabled = false)
+        if (snapshot.deviceChangeBusy) return ArbActionPresentation("ARB: キャプチャ開始 / 停止", "対象端末を変更中です", ArbIcons.StartCapture.swing, enabled = false)
         val toggleState = snapshot.captureToggleState
         if (!snapshot.probed) {
             return ArbActionPresentation(
                 text = "ARB: キャプチャを開始",
                 description = "arbd に接続してライブキャプチャを開始します",
-                icon = AllIcons.Actions.Restart,
+                icon = ArbIcons.StartCapture.swing,
                 enabled = true,
                 selected = false,
             )
@@ -47,7 +47,7 @@ object ArbToolbarPresentationState {
             return ArbActionPresentation(
                 text = "ARB: キャプチャを開始",
                 description = "arbd 未接続（クリックで接続・自動起動を試行します）",
-                icon = AllIcons.Actions.Restart,
+                icon = ArbIcons.StartCapture.swing,
                 enabled = true,
                 selected = false,
             )
@@ -57,7 +57,7 @@ object ArbToolbarPresentationState {
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・REC)",
                 description = "ON・REC（取得中）$serialSuffix — クリックでキャプチャを OFF にします",
-                icon = AllIcons.Actions.Suspend,
+                icon = ArbIcons.StopCapture.swing,
                 enabled = true,
                 selected = true,
             )
@@ -67,7 +67,7 @@ object ArbToolbarPresentationState {
             return ArbActionPresentation(
                 text = "ARB: キャプチャを停止 (ON・待機中)",
                 description = "ON・待機中（端末接続で自動開始）$detail — クリックでキャプチャを OFF にします",
-                icon = AllIcons.Actions.Suspend,
+                icon = ArbIcons.StopCapture.swing,
                 enabled = true,
                 selected = true,
             )
@@ -82,7 +82,7 @@ object ArbToolbarPresentationState {
         return ArbActionPresentation(
             text = "ARB: キャプチャを開始 (OFF)",
             description = reason,
-            icon = AllIcons.Actions.Restart,
+            icon = ArbIcons.StartCapture.swing,
             enabled = true,
             selected = false,
         )
@@ -98,7 +98,7 @@ object ArbToolbarPresentationState {
             return ArbActionPresentation(
                 text = text,
                 description = "arbd 経由で設定秒数分の画面・ログ・入力を保存します",
-                icon = AllIcons.Actions.MenuSaveall,
+                icon = ArbIcons.Save.swing,
                 enabled = true,
             )
         }
@@ -111,19 +111,19 @@ object ArbToolbarPresentationState {
         return ArbActionPresentation(
             text = text,
             description = description,
-            icon = AllIcons.Actions.MenuSaveall,
+            icon = ArbIcons.Save.swing,
             enabled = canSave,
         )
     }
 
     fun screenshot(snapshot: ArbToolbarDaemonSnapshot): ArbActionPresentation {
         val text = "ARB: スクリーンショットを保存"
-        if (snapshot.deviceChangeBusy) return ArbActionPresentation(text, "対象端末を変更中です", AllIcons.FileTypes.Image, enabled = false)
+        if (snapshot.deviceChangeBusy) return ArbActionPresentation(text, "対象端末を変更中です", ArbIcons.Screenshot.swing, enabled = false)
         if (!snapshot.probed || !snapshot.daemonConnected) {
             return ArbActionPresentation(
                 text = text,
                 description = "対象端末の現在画面を PNG として即時保存します",
-                icon = AllIcons.FileTypes.Image,
+                icon = ArbIcons.Screenshot.swing,
                 enabled = true,
             )
         }
@@ -137,7 +137,7 @@ object ArbToolbarPresentationState {
         return ArbActionPresentation(
             text = text,
             description = description,
-            icon = AllIcons.FileTypes.Image,
+            icon = ArbIcons.Screenshot.swing,
             enabled = canCapture,
         )
     }
@@ -152,7 +152,7 @@ object ArbToolbarPresentationState {
             return ArbActionPresentation(
                 text = text,
                 description = "映像キャプチャを中断せず直前のログのみを保存します",
-                icon = AllIcons.FileTypes.Text,
+                icon = ArbIcons.SaveLogs.swing,
                 enabled = true,
             )
         }
@@ -164,7 +164,7 @@ object ArbToolbarPresentationState {
             } else {
                 "保存可能なログバッファがありません（先にキャプチャを開始してください）"
             },
-            icon = AllIcons.FileTypes.Text,
+            icon = ArbIcons.SaveLogs.swing,
             enabled = canSave,
         )
     }
@@ -316,7 +316,7 @@ private fun readWindowSecsOrNull(): Int? =
     runCatching { ArbdDaemonService.getInstance().cachedConfig.saveWindowSecs }.getOrNull()
 
 class ArbQuickSaveAction :
-    AnAction("ARB: 直前の記録を保存", "arbd 経由で設定秒数分の画面・ログ・入力を保存します", AllIcons.Actions.MenuSaveall),
+    AnAction("ARB: 直前の記録を保存", "arbd 経由で設定秒数分の画面・ログ・入力を保存します", ArbIcons.Save.swing),
     DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
@@ -339,7 +339,7 @@ class ArbQuickSaveAction :
  * toolbar button renders an unmistakable pressed/toggled state while capture is active.
  */
 class ArbToggleCaptureAction :
-    DumbAwareToggleAction("ARB: キャプチャ開始 / 停止", "arbd のライブキャプチャを開始または停止します", AllIcons.Actions.Restart) {
+    DumbAwareToggleAction("ARB: キャプチャ開始 / 停止", "arbd のライブキャプチャを開始または停止します", ArbIcons.StartCapture.swing) {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun isSelected(e: AnActionEvent): Boolean {
@@ -361,7 +361,7 @@ class ArbToggleCaptureAction :
 }
 
 class ArbScreenshotAction :
-    AnAction("ARB: スクリーンショットを保存", "対象端末の現在画面を PNG として即時保存します", AllIcons.FileTypes.Image),
+    AnAction("ARB: スクリーンショットを保存", "対象端末の現在画面を PNG として即時保存します", ArbIcons.Screenshot.swing),
     DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
@@ -379,7 +379,7 @@ class ArbScreenshotAction :
 }
 
 class ArbLogcatSaveLogsAction :
-    AnAction("ARB: 直前のログのみ保存", "映像キャプチャを中断せず直前のログのみを保存します", AllIcons.FileTypes.Text),
+    AnAction("ARB: 直前のログのみ保存", "映像キャプチャを中断せず直前のログのみを保存します", ArbIcons.SaveLogs.swing),
     DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
@@ -400,7 +400,7 @@ class ArbLaunchTrayAction :
     AnAction(
         "ARB: メニューバー (arb-tray) を起動",
         "同梱の arb-tray をターミナル不要で起動します",
-        AllIcons.Toolwindows.ToolWindowRun,
+        ArbIcons.LaunchTray.swing,
     ),
     DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
@@ -419,7 +419,7 @@ class ArbLaunchTrayAction :
 }
 
 class ArbOpenBundleAction :
-    AnAction("ARB: バンドルフォルダを開く...", "ARB バンドルまたは旧形式フォルダを統合スタジオで開きます", AllIcons.Nodes.Folder),
+    AnAction("ARB: バンドルフォルダを開く...", "ARB バンドルまたは旧形式フォルダを統合スタジオで開きます", ArbIcons.OpenFolder.swing),
     DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 

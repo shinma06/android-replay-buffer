@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,6 +41,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.LastBaseline
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -64,6 +66,7 @@ import org.jetbrains.jewel.ui.component.Tooltip
 import org.jetbrains.jewel.ui.component.styling.ScrollbarVisibility
 import org.jetbrains.jewel.ui.icon.IconKey
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
+import kotlin.math.roundToInt
 
 /**
  * Native Android Studio Islands / IntUI JetBrains Jewel design tokens and borderless primitives.
@@ -458,22 +461,7 @@ fun ArbSpacerH(width: Dp) = Spacer(Modifier.width(width))
 @Composable
 fun ArbSpacerV(height: Dp) = Spacer(Modifier.height(height))
 
-/**
- * Jewel's own `CheckboxRow` optically renders its checkbox box a touch higher than the
- * label's glyph center — most visible with CJK/Japanese text, whose em-box sits lower than
- * Latin cap-height (see upstream JEWEL-1073, "CheckboxRow should align the first line to the
- * checkbox"). A plain `Row(verticalAlignment = CenterVertically)` around `Checkbox` + `Text`
- * does NOT fix this: `CenterVertically` centers each child's *measured layout box*, but
- * `Checkbox`'s box and `Text`'s line box carry different internal/optical padding, so a small
- * residual upward offset remains on the checkbox.
- *
- * This nudges the checkbox down by [CHECKBOX_OPTICAL_OFFSET] — the exact clean correction —
- * and trims/centers the label's own line box via [LineHeightStyle], so the checkbox and the
- * label's glyphs align dead-center. Fix this ONCE here; every checkbox + label pairing in
- * Settings, Studio and the Tool Window must use this instead of a raw `CheckboxRow`/`Checkbox`.
- */
-private val CHECKBOX_OPTICAL_OFFSET: Dp = 1.dp
-
+/** Align the indicator to the first line even when the label wraps in a narrow panel. */
 @Composable
 fun ArbLabeledCheckbox(
     checked: Boolean,
@@ -484,6 +472,8 @@ fun ArbLabeledCheckbox(
     muted: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    // The classic 19dp glyph is centered half a dp above the geometric midpoint.
+    val opticalInset = with(LocalDensity.current) { 0.5.dp.toPx() }
     Row(
         modifier = modifier
             .toggleable(
@@ -509,8 +499,7 @@ fun ArbLabeledCheckbox(
             // `Row.toggleable` is the single keyboard & accessibility target.
             interactionSource = interactionSource,
             modifier = Modifier
-                .align(Alignment.CenterVertically)
-                .offset(y = CHECKBOX_OPTICAL_OFFSET)
+                .alignBy { (it.measuredHeight / 2f - opticalInset).roundToInt() }
                 .focusProperties { canFocus = false }
                 .clearAndSetSemantics {},
         )
@@ -529,7 +518,11 @@ fun ArbLabeledCheckbox(
                         trim = LineHeightStyle.Trim.Both,
                     ),
                 ),
-            modifier = Modifier.align(Alignment.CenterVertically),
+            modifier = Modifier.alignBy { label ->
+                // Combine the first ascent and final descent, excluding intervening lines.
+                val firstLineHeight = label[FirstBaseline] + label.measuredHeight - label[LastBaseline]
+                (firstLineHeight + 1) / 2
+            },
         )
     }
 }
