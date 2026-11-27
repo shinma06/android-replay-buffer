@@ -63,8 +63,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from mcp_versions import VERSIONS
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 
@@ -509,6 +507,9 @@ def load_sibling(name: str) -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+VERSIONS = load_sibling("mcp_versions").VERSIONS
 
 
 # --------------------------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 """Check the live stdio catalog and real trim results with python-jsonschema (Draft 2020-12)."""
 import argparse
 import json
+import runpy
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +12,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from referencing import Registry
 
-from mcp_versions import VERSIONS
+VERSIONS = runpy.run_path(str(Path(__file__).with_name("mcp_versions.py")))["VERSIONS"]
 
 
 def check_refs(node, root):
