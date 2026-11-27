@@ -119,7 +119,7 @@ mod tests {
     fn overview(unique: u64) -> Value {
         let truncated = unique > 1;
         json!({
-            "error_log_highlights":[{"seq":7,"min_level":"E","tag":"A","message":"x","timestamp_utc":"2026-11-28T01:23:45.123Z","frame_index_hint":null,"t_ms":null}],
+            "error_log_highlights":[{"seq":7,"level":"E","tag":"A","message":"x","timestamp_utc":"2026-11-28T01:23:45.123Z","frame_index_hint":null,"t_ms":null}],
             "total_error_logs":40,"unique_error_logs":unique,"error_logs_truncated":truncated,
             "screens":[{"start_ns":1}],"logcat_completeness_detail":{"status":"complete"}
         })
@@ -136,6 +136,7 @@ mod tests {
         assert_eq!(more["logcat_completeness"]["status"], "complete");
         assert_eq!(more["screens"][0]["start_offset_ms"], Value::Null);
         let groups = error_groups(&mut more, &json!("b1"), args);
+        assert_eq!(groups["logs"][0]["level"], "E");
         assert_eq!(
             groups["continuation"],
             json!({"tool":"arb_timeline_overview","arguments":{"bundle_id":"b1","max_error_logs":3,"package":"com.example","tag":"Auth","exclude_tags":["Vendor"]}})
