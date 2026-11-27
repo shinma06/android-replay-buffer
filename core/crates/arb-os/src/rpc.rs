@@ -87,6 +87,11 @@ pub const fn error_label(rpc_code: i32) -> &'static str {
 #[must_use]
 pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
     match label {
+        "NO_VIDEO" => (
+            "invalid_params",
+            "映像を含むバンドルを指定してください。",
+            false,
+        ),
         "INVALID_PARAMS" => (
             "invalid_params",
             "ツールの引数名、型、値の範囲を確認してください。",

@@ -270,6 +270,12 @@ pub struct CrashAutoSaveStatusView {
 /// Response payload for `system.status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemStatusResponse {
+    /// Persisted preferred serial, including while idle or disconnected.
+    #[serde(default)]
+    pub configured_device_serial: Option<String>,
+    /// Whether the connected capture serial differs from the persisted preference.
+    #[serde(default)]
+    pub serial_mismatch: bool,
     /// Whether capture should resume when an eligible device appears.
     #[serde(default)]
     pub capture_enabled: bool,
@@ -355,9 +361,42 @@ pub struct CaptureStartParams {
     pub heartbeat_ms: Option<u32>,
 }
 
+/// Changed capture settings, each encoded as [old, new].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureConfigChanges {
+    /// Persisted background recording intent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_enabled: Option<(bool, bool)>,
+    /// Persisted preferred device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_serial: Option<(Option<String>, Option<String>)>,
+}
+
+/// Origin of the serial used for an accepted start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SerialSource {
+    /// Caller supplied a serial.
+    Argument,
+    /// Used the stored device preference.
+    Config,
+    /// Device selection is automatic.
+    Auto,
+}
+
 /// Response payload for `capture.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStartResponse {
+    /// Source of the target preference, absent on older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_source: Option<SerialSource>,
+    /// Settings persisted by this start.
+    #[serde(default)]
+    pub config_changed: CaptureConfigChanges,
+    /// Selection status when waiting for an eligible device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<arb_core::device::DeviceSelectionOutcome>,
     /// Confirmed transport state for a waiting caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connected: Option<bool>,
@@ -368,7 +407,7 @@ pub struct CaptureStartResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_state: Option<AudioCaptureState>,
     /// Audio cause, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub audio_cause: Option<AudioCause>,
     /// Target device serial.
     pub serial: String,
@@ -382,6 +421,9 @@ pub struct CaptureStartResponse {
 /// Response payload for `capture.stop`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureStopResponse {
+    /// Settings persisted by this stop.
+    #[serde(default)]
+    pub config_changed: CaptureConfigChanges,
     /// `true` if an active capture session was stopped.
     pub stopped: bool,
     /// Final buffered event counts after stopping.

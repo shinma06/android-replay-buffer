@@ -15,6 +15,8 @@ satisfies:
 
 # SPEC-07 端末選択・音声・ジェスチャー・クラッシュの観測契約
 
+開始受理時に `capture_enabled=true` と明示した `device_serial` を一度に保存する。serial を省略した開始および停止は設定済み serial を保持する。再起動後の自動接続は永続化した組に従う。状態の `configured_device_serial` は設定値、`serial_mismatch` は録画接続中の実 serial と設定済み serial がともに存在して異なる場合に真。
+
 ## Android と端末選択 [実装済み]
 
 ADB の通常接続で映像・ログ・入力を取得し、root・対象アプリの改修・常駐 APK を要求しない。端末にはセッション用コンパニオンと scrcpy-server を転送し `app_process` で起動する。scrcpy は H.264、B フレームなし・1 秒 GOP を要求する。ビーコンの既定周期は 300 ms。静止による同一フレーム保持とストリームの停止・切断を区別する。[端末プロトコル](../../device-agent/PROTOCOL.md)・[ADB 実装](../../core/crates/arb-adb/src/adb.rs)

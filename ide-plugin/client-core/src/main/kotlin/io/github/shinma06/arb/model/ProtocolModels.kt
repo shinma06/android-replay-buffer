@@ -189,6 +189,8 @@ data class SystemStatusResponse(
      * which reads as `false` (not armed).
      */
     val captureEnabled: Boolean = false,
+    val configuredDeviceSerial: String? = null,
+    val serialMismatch: Boolean = false,
 )
 
 data class ShutdownResponse(
@@ -336,6 +338,11 @@ data class CaptureStartParams(
     val waitTimeoutMs: Long? = null,
 )
 
+data class CaptureConfigChanges(
+    val captureEnabled: List<Boolean>? = null,
+    val deviceSerial: List<String?>? = null,
+)
+
 data class CaptureStartResponse(
     val serial: String,
     val started: Boolean,
@@ -344,11 +351,14 @@ data class CaptureStartResponse(
     val waitTimedOut: Boolean? = null,
     val audioState: AudioCaptureState? = null,
     val audioCause: AudioCause? = null,
+    val configChanged: CaptureConfigChanges? = null,
+    val serialSource: String? = null,
 )
 
 data class CaptureStopResponse(
     val stopped: Boolean,
     val capture: CaptureStatusView,
+    val configChanged: CaptureConfigChanges? = null,
 )
 
 // ---------------- Save Jobs ----------------

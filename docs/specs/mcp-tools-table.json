@@ -15,7 +15,7 @@
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "選択した端末で直前の画面・音声・ログの記録を開始します。",
+      "description": "選択した端末で記録を開始し、config の capture_enabled を true に永続更新します。明示した serial は device_serial にも保存します。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -41,7 +41,7 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "録画を停止し、バッファ内の記録を保持します。",
+      "description": "録画を停止し、config の capture_enabled を false に永続更新します。device_serial とバッファ内の記録は保持します。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_capture_stop",
       "outputType": "CaptureStopResponse",
@@ -671,11 +671,21 @@
       "additionalProperties": false
     },
     "CaptureMode": {"type": "string", "enum": ["video_and_logs", "logs_only"]},
+    "CaptureConfigChanges": {
+      "type": "object",
+      "properties": {
+        "capture_enabled": {"type": "array", "items": {"type": "boolean"}, "minItems": 2, "maxItems": 2},
+        "device_serial": {"type": "array", "items": {"type": ["string", "null"]}, "minItems": 2, "maxItems": 2}
+      },
+      "additionalProperties": false
+    },
     "CaptureStartResponse": {
       "type": "object",
       "properties": {
         "connected": {"type": "boolean"},
         "wait_timed_out": {"type": "boolean"},
+        "config_changed": {"$ref": "#/$defs/CaptureConfigChanges"},
+        "serial_source": {"enum": ["argument", "config", "auto"]},
         "audio_state": {"$ref": "#/$defs/AudioCaptureState"},
         "audio_cause": {"anyOf": [{"$ref": "#/$defs/AudioCause"}, {"type": "null"}]},
         "serial": {"type": "string"},
@@ -731,7 +741,7 @@
     },
     "CaptureStopResponse": {
       "type": "object",
-      "properties": {"stopped": {"type": "boolean"}, "capture": {"$ref": "#/$defs/CaptureStatusView"}},
+      "properties": {"config_changed": {"$ref": "#/$defs/CaptureConfigChanges"}, "stopped": {"type": "boolean"}, "capture": {"$ref": "#/$defs/CaptureStatusView"}},
       "required": ["stopped", "capture"],
       "additionalProperties": false
     },
@@ -1447,6 +1457,8 @@
       "type": "object",
       "properties": {
         "capture_enabled": {"type": "boolean"},
+        "configured_device_serial": {"type": ["string", "null"]},
+        "serial_mismatch": {"type": "boolean"},
         "pid": {"type": "integer", "minimum": 0},
         "uptime_ms": {"type": "integer", "minimum": 0},
         "capture": {"$ref": "#/$defs/CaptureStatusView"},
@@ -1676,6 +1688,7 @@
             "CONFLICT",
             "ALREADY_TRASHED",
             "ALREADY_ACTIVE",
+            "NO_VIDEO",
             "DAEMON_UNAVAILABLE",
             "FAILED_RETRYABLE",
             "OPERATION_FAILED",

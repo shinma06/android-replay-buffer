@@ -1350,7 +1350,7 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
     // 4. export.trim with trash_original=true refuses LegacyRo cleanly and succeeds on managed V2.
     let legacy_dir = tmp.path().join("t6i-legacy-ro");
     seed_legacy_ro_bundle(tmp.path(), &legacy_dir);
-    let (legacy_code, legacy_msg) = rpc.call_err(
+    let rejected = rpc.send_raw(
         "export.trim",
         &json!({
             "bundle_id_or_path": legacy_dir,
@@ -1359,10 +1359,12 @@ fn t6i_complete_trimmed_bundle_output_dir_burn_taps_and_non_colliding_share_mp4(
             "trash_original": true
         }),
     );
-    assert_eq!(legacy_code, i64::from(RPC_ERR_CONFLICT));
+    assert_eq!(rejected["error"]["code"], RPC_ERR_CONFLICT);
     assert!(
-        legacy_msg.contains("legacy"),
-        "conflict reason: {legacy_msg}"
+        rejected["error"]["data"]["details"]["cause"]
+            .as_str()
+            .unwrap()
+            .contains("legacy")
     );
 
     let trim_trash = rpc.call(
@@ -1409,10 +1411,16 @@ fn trim_stops_before_commit_when_source_clock_anchors_cannot_be_read() {
     let server = DaemonServer::start(DaemonConfig::new(paths)).unwrap();
     let mut rpc = RpcClient::connect(server.endpoint());
     let dest = tmp.path().join("exports");
-    let (_, message) = rpc.call_err("export.trim", &json!({
+    let rejected = rpc.send_raw("export.trim", &json!({
         "bundle_id_or_path": source, "in_frame_index": 5, "out_frame_index": 15, "dest_dir": dest
     }));
-    assert!(message.contains("parse_device_triple"), "{message}");
+    assert!(
+        rejected["error"]["data"]["details"]["cause"]
+            .as_str()
+            .unwrap()
+            .contains("parse_device_triple"),
+        "{rejected}"
+    );
     assert!(!dest.exists() || fs::read_dir(dest).unwrap().next().is_none());
     server.shutdown();
 }

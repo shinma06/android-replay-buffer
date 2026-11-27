@@ -210,7 +210,7 @@ fn run_adb_screencap(
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenshotOverwrite {
-    /// Fail with [`DaemonError::Conflict`] if the destination file already exists.
+    /// Fail with [`DaemonError::OutputExists`] if the destination file already exists.
     NoReplace,
     /// Atomically replace an existing destination file.
     Replace,
@@ -246,10 +246,7 @@ pub fn write_screenshot_atomic(
     fs::create_dir_all(parent)?;
 
     if overwrite == ScreenshotOverwrite::NoReplace && path_exists(dest_path)? {
-        return Err(DaemonError::Conflict(format!(
-            "screenshot destination `{}` already exists; pass overwrite=true to replace",
-            dest_path.display()
-        )));
+        return Err(DaemonError::OutputExists(dest_path.to_owned()));
     }
 
     let tmp_name = format!(".tmp-{}.png", next_id("shot"));
@@ -290,10 +287,7 @@ fn publish_no_replace(tmp_path: &Path, dest_path: &Path) -> Result<(), DaemonErr
             Ok(())
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            Err(DaemonError::Conflict(format!(
-                "screenshot destination `{}` already exists; pass overwrite=true to replace",
-                dest_path.display()
-            )))
+            Err(DaemonError::OutputExists(dest_path.to_owned()))
         }
         // Some filesystems (e.g. FAT32/exFAT) do not support hard links. Fall back to an
         // exclusive `create_new` reservation of the destination (atomic: it fails if anything,
@@ -307,10 +301,7 @@ fn publish_no_replace(tmp_path: &Path, dest_path: &Path) -> Result<(), DaemonErr
             {
                 Ok(placeholder) => drop(placeholder),
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                    return Err(DaemonError::Conflict(format!(
-                        "screenshot destination `{}` already exists; pass overwrite=true to replace",
-                        dest_path.display()
-                    )));
+                    return Err(DaemonError::OutputExists(dest_path.to_owned()));
                 }
                 Err(err) => return Err(err.into()),
             }
@@ -374,7 +365,7 @@ mod tests {
         let err = write_screenshot_atomic(&dest, &png2, ScreenshotOverwrite::NoReplace)
             .expect_err("must refuse overwrite by default");
         assert!(
-            matches!(err, DaemonError::Conflict(_)),
+            matches!(err, DaemonError::OutputExists(_)),
             "expected Conflict, got {err:?}"
         );
         assert_eq!(

@@ -15,6 +15,8 @@ satisfies:
 
 # SPEC-05 Android Studio の録画操作・通知・Studio ビューア
 
+IDE の明示的な端末選択と同様に、CLI・MCP で serial を明示して開始した場合も以後の録画対象に保存する。待機・再起動後も同じ端末を待つ。
+
 ## コックピットと設定 [実装済み]
 
 Tool Window は録画状態・接続端末・保存アクションと、保存物／ゴミ箱のライブラリを表示する。UI は Compose/Jewel と IDE のアイコンを使う。絵文字を操作ラベルにせず、本番画面に Swing ウィジェット／Swing UI DSL を追加しない（KON-3）。アプリケーションレベルのデーモン接続を共有し、描画やアクションの更新中に同期 RPC を実行しない。[Tool Window](../../ide-plugin/src/main/kotlin/io/github/shinma06/arb/ui/ArbToolWindowContent.kt)・[構造契約](SPEC-01-architecture.md)

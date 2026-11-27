@@ -692,11 +692,8 @@ fn await_condition(mut condition: impl FnMut() -> bool) {
     }
 }
 
-#[test]
-fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
-    use std::process::{Command, Stdio};
-    let tmp = TempDir::new().unwrap();
-    let paths = isolated_paths(&tmp);
+fn compile_fake_adb(tmp: &TempDir) -> PathBuf {
+    use std::process::Command;
     let fake = tmp
         .path()
         .join(format!("fake-adb{}", std::env::consts::EXE_SUFFIX));
@@ -707,9 +704,101 @@ fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
             .arg("-o")
             .arg(&fake)
             .status()
-            .unwrap()
-            .success()
+            .expect("run rustc on fake ADB")
+            .success(),
+        "compile fake ADB"
     );
+    fake
+}
+
+fn spawn_fake_daemon(paths: &ArbPaths, fake: &Path, dir: &Path) -> ChildDaemon {
+    use std::process::{Command, Stdio};
+    ChildDaemon(
+        Command::new(env!("CARGO_BIN_EXE_arbd"))
+            .env("ARB_ADB_PATH", fake)
+            .env("ARB_COMPANION_JAR", fake)
+            .env("FAKE_DEVICE_STATE", dir)
+            .env("ARB_DATA_DIR", &paths.data_dir)
+            .env("ARB_CACHE_DIR", &paths.cache_dir)
+            .env("ARB_RUNTIME_DIR", &paths.runtime_dir)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("start isolated arbd with fake ADB"),
+    )
+}
+
+#[test]
+fn explicit_start_survives_process_restart_and_auto_attaches_to_new_device() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let mut daemon = spawn_fake_daemon(&paths, &fake, tmp.path());
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    rpc.call(
+        "config.update",
+        &json!({"device_serial":"A","capture_mode":"logs_only","capture_enabled":false}),
+    );
+    rpc.call("capture.start", &json!({"serial":"B"}));
+    rpc.call("system.shutdown", &json!({}));
+    drop(rpc);
+    assert!(daemon.0.wait().unwrap().success());
+    fs::write(tmp.path().join("devices"), "A device\nB device\n").unwrap();
+    let _restarted = spawn_fake_daemon(&paths, &fake, tmp.path());
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    await_condition(|| rpc.call("system.status", &json!({}))["capture"]["active"] == true);
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["serial"], "B", "{status}");
+    assert_eq!(status["configured_device_serial"], "B");
+    assert_eq!(status["capture_enabled"], true);
+}
+
+#[test]
+fn capture_intent_rows_match_daemon_responses_and_persisted_config() {
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../docs/specs/device-selection-policy-table.json"
+    ))
+    .unwrap();
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let _daemon = spawn_fake_daemon(&paths, &fake, tmp.path());
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    for row in table["capture_intent_rows"].as_array().unwrap() {
+        rpc.call(
+            "config.update",
+            &json!({"device_serial":row["configured"],"capture_enabled":row["enabled"]}),
+        );
+        let start = rpc.call("capture.start", &json!({"serial":row["argument"]}));
+        assert_eq!(start["config_changed"], row["config_changed"], "{row}");
+        assert_eq!(start["serial_source"], row["serial_source"], "{row}");
+        let cfg = rpc.call("config.get", &json!({}));
+        assert_eq!(cfg["config"]["device_serial"], row["persisted"]);
+        let status = rpc.call("system.status", &json!({}));
+        assert_eq!(
+            status.get("configured_device_serial"),
+            Some(&row["persisted"])
+        );
+        assert_eq!(status["serial_mismatch"], false);
+        assert_eq!(
+            rpc.call("capture.stop", &json!({}))["config_changed"],
+            json!({"capture_enabled":[true,false]})
+        );
+        assert_eq!(
+            rpc.call("capture.stop", &json!({}))["config_changed"],
+            json!({})
+        );
+        assert_eq!(
+            rpc.call("config.get", &json!({}))["config"]["device_serial"],
+            row["persisted"]
+        );
+    }
+}
+
+#[test]
+fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
     let dir = tmp.path();
     let devices = dir.join("devices");
     let ledger = paths.data_dir.join("adb-sessions");
@@ -732,18 +821,7 @@ fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
         ),
     )
     .unwrap();
-    let mut daemon = ChildDaemon(
-        Command::new(env!("CARGO_BIN_EXE_arbd"))
-            .env("ARB_ADB_PATH", &fake)
-            .env("ARB_COMPANION_JAR", &fake)
-            .env("FAKE_DEVICE_STATE", dir)
-            .env("ARB_DATA_DIR", &paths.data_dir)
-            .env("ARB_CACHE_DIR", &paths.cache_dir)
-            .env("ARB_RUNTIME_DIR", &paths.runtime_dir)
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
+    let mut daemon = spawn_fake_daemon(&paths, &fake, dir);
     let endpoint = paths.ipc_endpoint();
     let mut rpc = RpcClient::connect(&endpoint);
     await_condition(|| !stale.exists());

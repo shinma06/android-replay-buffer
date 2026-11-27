@@ -44,6 +44,8 @@ satisfies:
 
 [検索・出力](../../core/crates/arbd/src/inspect_export.rs)・[CLI の入口](../../core/crates/arb-cli/src/main.rs)・[保存尺の定義](SPEC-02-time-selection-bundle.md)
 
+開始・停止は変更した設定を `config_changed` の各キーに [変更前, 変更後] で返す。変更なしは空オブジェクト。開始の `serial_source` は引数・設定・自動選択をそれぞれ `argument`・`config`・`auto` とする。状態と録画対象の意味は [SPEC-07](SPEC-07-device-capture-audio-input.md) に従う。旧デーモンではこれらの追加項目を省略できる。
+
 ### Resources・Prompts・Tasks
 
 | 機能 | 必須の挙動 |
