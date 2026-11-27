@@ -395,7 +395,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": version::ProtocolVersion::V2025_03_26.as_str(),
                 "capabilities": {},
                 "clientInfo": { "name": "test-host", "version": "1.0" }
             }
@@ -403,7 +403,8 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     );
     assert_eq!(init["id"], 1, "init id");
     assert_eq!(
-        init["result"]["protocolVersion"], "2025-03-26",
+        init["result"]["protocolVersion"],
+        version::ProtocolVersion::V2025_03_26.as_str(),
         "protocolVersion"
     );
     assert_eq!(
@@ -802,10 +803,10 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let shot_content = shot_resp["result"]["content"]
         .as_array()
         .expect("shot content");
-    assert_eq!(shot_content.len(), 2, "screenshot returns [image, text]");
-    assert_eq!(shot_content[0]["type"], "image", "screenshot image block");
+    assert_eq!(shot_content.len(), 2, "screenshot returns [text, image]");
+    assert_eq!(shot_content[1]["type"], "image", "screenshot image block");
     assert_eq!(
-        shot_content[0]["mimeType"], "image/png",
+        shot_content[1]["mimeType"], "image/png",
         "screenshot image/png"
     );
     assert!(
@@ -935,5 +936,11 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
     drop(rpc);
     drop(server);
 }
-#[cfg(test)]
 mod stdio_contract;
+#[cfg(test)]
+#[path = "../src/mcp/version.rs"]
+#[allow(
+    dead_code,
+    reason = "the external wire client only needs the protocol version names"
+)]
+mod version;

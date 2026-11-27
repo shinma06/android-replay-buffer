@@ -8,57 +8,59 @@
       "/error_logs/unique_count": "/unique_error_logs",
       "/error_logs/has_more": "/error_logs_truncated",
       "/noise_candidates": "/noise_candidates",
+      "/carried_in": "/carried_in",
       "/screens": "/screens",
       "/crashes": "/crashes"
     }
   },
   "argumentGroups": [
-    {"tools":["arb_query_logs","arb_timeline_overview","arb_inspect_frames","arb_export_trim","arb_export_frame_png"],"names":["bundle_id","bundle_id_or_path"],"aliases":true,"required":true},
+    {"tools":["arb_query_logs","arb_timeline_overview","arb_inspect_frames","arb_export_trim","arb_export_frame_png"],"names":["bundle_id","bundle_id_or_path"],"aliases":true,"required":true,"allowEqual":true},
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["duration_secs","window_secs","duration_sec"],"aliases":true},
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["note","memo"],"aliases":true},
     {"tools":["arb_query_logs"],"names":["cursor","after_seq"]},
+    {"tools":["arb_query_logs"],"names":["level","min_level"]},
     {"tools":["arb_screenshot"],"names":["output_path","output_dir"]}
   ],
   "overlays": [
     {"when":"legacyFullLogRows","tools":{"arb_query_logs":{"inputSchema":{"properties":{"fields":{"default":"full"}}}}}},
     {"when":"legacyScreenshotInline","tools":{"arb_screenshot":{"inputSchema":{"properties":{"include_image":{"default":true}}}}}},
-    {"when":"legacyScreenshotOverwrite","tools":{"arb_screenshot":{"inputSchema":{"properties":{"overwrite":{"type":"boolean","default":false,"description":"同名のスクリーンショットを上書きします。"}}},"annotations":{"destructiveHint":true}}}},
-    {"when":"legacyTrashOriginal","tools":{"arb_export_trim":{"inputSchema":{"properties":{"trash_original":{"type":"boolean","default":false,"description":"書き出し確定後に元バンドルをごみ箱に移します。"}}},"annotations":{"destructiveHint":true}}}},
-    {"when":"legacyAssertAbbreviation","tools":{"arb_query_logs":{"inputSchema":{"properties":{"level":{"description":"Android のログレベル。旧クライアントの A も受け付けます。","pattern":"^([Aa]|[Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"}}}}}}
+    {"when":"legacyScreenshotOverwrite","tools":{"arb_screenshot":{"inputSchema":{"properties":{"overwrite":{"type":"boolean","default":false,"description":"同名 PNG を上書き。"}}},"annotations":{"destructiveHint":true}}}},
+    {"when":"legacyTrashOriginal","tools":{"arb_export_trim":{"inputSchema":{"properties":{"trash_original":{"type":"boolean","default":false,"description":"書き出し確定後に元バンドルを退避。"}}},"annotations":{"destructiveHint":true}}}},
+    {"when":"legacyAssertAbbreviation","tools":{"arb_query_logs":{"inputSchema":{"properties":{"level":{"description":"完全一致（大小無視）。V/D/I/W/E/F、VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT。A は F の別名。","pattern":"^([Aa]|[Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"}}}}}}
   ],
   "tools": [
     {
-      "description": "デーモンと録画状態を取得します。",
+      "description": "デーモンと録画の状態。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_status",
       "outputType": "Status",
       "annotations": {"title": "状態の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "接続中の Android 端末を一覧します。",
+      "description": "接続中の Android 端末の一覧。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_devices",
       "outputType": "DeviceListResponse",
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "記録を開始し、config の capture_enabled を true に保存します。明示した serial は device_serial にも保存します。",
+      "description": "録画を開始。capture_enabled=true と明示した serial（device_serial）を保存。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "audio_enabled": {"description": "端末音声を取得します。省略時は設定値。", "type": "boolean"},
-          "capture_mode": {"description": "録画方式。省略時は設定値。", "enum": ["video_and_logs", "logs_only"], "type": "string"},
+          "audio_enabled": {"description": "端末音声。既定は設定値。", "type": "boolean"},
+          "capture_mode": {"description": "録画方式。既定は設定値。", "enum": ["video_and_logs", "logs_only"], "type": "string"},
           "companion_jar": {"description": "端末エージェントの JAR。", "type": "string"},
-          "heartbeat_ms": {"description": "端末からの生存通知の間隔（ミリ秒）。", "minimum": 50, "type": "integer", "maximum": 4294967295},
-          "input_enabled": {"description": "タップを記録します。", "type": "boolean", "default": true},
-          "logcat_enabled": {"description": "logcat を記録します。", "type": "boolean", "default": true},
-          "max_fps": {"description": "映像の最大フレームレート。", "maximum": 120, "minimum": 1, "type": "integer"},
-          "max_size": {"description": "映像の長辺の上限（ピクセル）。", "maximum": 4096, "minimum": 256, "type": "integer"},
-          "scrcpy_jar": {"description": "scrcpy サーバーの JAR ファイル。", "type": "string"},
-          "serial": {"description": "対象の ADB シリアル。省略時は設定と接続中端末から選択します。", "type": "string"},
-          "video_bit_rate": {"description": "映像の目標ビットレート（bps）。", "minimum": 100000, "type": "integer", "maximum": 4294967295},
-          "wait_connected": {"type": "boolean", "description": "端末との接続完了まで待ちます。", "default": false},
-          "wait_timeout_ms": {"type": "integer", "description": "接続の待ち時間（ミリ秒）。", "minimum": 0, "maximum": 30000, "default": 5000}
+          "heartbeat_ms": {"description": "端末の生存通知間隔（ms）。", "minimum": 50, "type": "integer", "maximum": 4294967295},
+          "input_enabled": {"description": "タップを記録。", "type": "boolean", "default": true},
+          "logcat_enabled": {"description": "logcat を記録。", "type": "boolean", "default": true},
+          "max_fps": {"description": "映像の最大 fps。", "maximum": 120, "minimum": 1, "type": "integer"},
+          "max_size": {"description": "映像の長辺上限（px）。", "maximum": 4096, "minimum": 256, "type": "integer"},
+          "scrcpy_jar": {"description": "scrcpy サーバー JAR。", "type": "string"},
+          "serial": {"description": "ADB シリアル。既定は設定と接続端末から選択。", "type": "string"},
+          "video_bit_rate": {"description": "映像の目標 bps。", "minimum": 100000, "type": "integer", "maximum": 4294967295},
+          "wait_connected": {"type": "boolean", "description": "端末の接続成立を待機。", "default": false},
+          "wait_timeout_ms": {"type": "integer", "description": "接続の待ち時間（ms）。", "minimum": 0, "maximum": 30000, "default": 5000}
         },
         "type": "object"
       },
@@ -68,43 +70,43 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "録画を停止し、config の capture_enabled を false に保存します。device_serial とバッファの記録は残ります。",
+      "description": "録画を停止して capture_enabled=false を保存。device_serial と記録は保持。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_capture_stop",
       "outputType": "CaptureStopResponse",
       "annotations": {"title": "録画停止", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "現在の録画・保存設定を取得します。",
+      "description": "現在の録画・保存設定。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_config_get",
       "outputType": "ConfigResponse",
       "annotations": {"title": "設定の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "指定した設定項目を更新します。",
+      "description": "指定した設定項目を更新。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "audio_capture_mode": {
-            "description": "再生音複製は API 33 以上。出力互換は API 30 以上で、録音中は端末スピーカーが消音されます。",
+            "description": "再生音複製は API 33 以上。出力互換は API 30 以上で録音中は端末を消音。",
             "enum": ["playback_dup", "output_compat"],
             "type": "string"
           },
-          "audio_enabled": {"type": "boolean", "description": "端末音声を取得します。省略時は設定値。"},
-          "capture_mode": {"enum": ["video_and_logs", "logs_only"], "type": "string", "description": "録画方式。省略時は設定値。"},
-          "crash_autosave_cooldown_secs": {"maximum": 3600, "minimum": 1, "type": "integer", "description": "次のクラッシュ自動保存までの最短間隔（秒）。"},
-          "crash_autosave_enabled": {"type": "boolean", "description": "クラッシュ検出時に自動保存します。"},
-          "device_serial": {"type": ["string", "null"], "description": "優先する端末。null で設定を解除します。"},
-          "ide_default_save_action": {"enum": ["save_and_open", "save_only"], "type": "string", "description": "保存後に IDE で開くかを指定します。"},
-          "min_free_disk_bytes": {"minimum": 67108864, "type": "integer", "maximum": 1099511627776, "description": "確保するディスク空き容量（バイト）。"},
-          "output_dir_override": {"type": ["string", "null"], "description": "既定の保存先。null で解除します。"},
-          "ring_budget_bytes": {"minimum": 16777216, "type": "integer", "maximum": 68719476736, "description": "リングバッファの上限（バイト）。"},
+          "audio_enabled": {"type": "boolean", "description": "端末音声。既定は設定値。"},
+          "capture_mode": {"enum": ["video_and_logs", "logs_only"], "type": "string", "description": "録画方式。既定は設定値。"},
+          "crash_autosave_cooldown_secs": {"maximum": 3600, "minimum": 1, "type": "integer", "description": "クラッシュ自動保存の最短間隔（秒）。"},
+          "crash_autosave_enabled": {"type": "boolean", "description": "クラッシュ時に自動保存。"},
+          "device_serial": {"type": ["string", "null"], "description": "優先端末。null で解除。"},
+          "ide_default_save_action": {"enum": ["save_and_open", "save_only"], "type": "string", "description": "保存後に IDE で開くか。"},
+          "min_free_disk_bytes": {"minimum": 67108864, "type": "integer", "maximum": 1099511627776, "description": "確保する空き容量（B）。"},
+          "output_dir_override": {"type": ["string", "null"], "description": "既定の保存先。null で解除。"},
+          "ring_budget_bytes": {"minimum": 16777216, "type": "integer", "maximum": 68719476736, "description": "リング容量の上限（B）。"},
           "save_window_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "保存範囲の秒数。"},
-          "screenshot_dir_override": {"type": ["string", "null"], "description": "スクリーンショットの保存先。null で解除します。"},
-          "video_max_fps": {"maximum": 120, "minimum": 1, "type": "integer", "description": "録画時のフレームレート上限。"},
-          "video_max_size": {"maximum": 4096, "minimum": 256, "type": "integer", "description": "録画する映像の長辺上限（ピクセル）。"},
-          "capture_enabled": {"type": "boolean", "description": "バックグラウンド録画を有効にします。"},
+          "screenshot_dir_override": {"type": ["string", "null"], "description": "PNG 保存先。null で解除。"},
+          "video_max_fps": {"maximum": 120, "minimum": 1, "type": "integer", "description": "録画 fps 上限。"},
+          "video_max_size": {"maximum": 4096, "minimum": 256, "type": "integer", "description": "録画の長辺上限（px）。"},
+          "capture_enabled": {"type": "boolean", "description": "バックグラウンド録画を有効化。"},
           "gc_grace_secs": {"type": "integer", "description": "ごみ箱の猶予期間（秒）。", "minimum": 0}
         },
         "type": "object"
@@ -114,20 +116,20 @@
       "annotations": {"title": "設定の更新", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "直前の記録をバンドルに保存し、完全性の測定値とリソースへのリンクを返します。",
+      "description": "直前の記録を保存し、完全性の測定値とリンクを返します。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "dest_dir": {"description": "保存先の親ディレクトリ（管理域外は GC 対象外）。", "type": "string"},
+          "dest_dir": {"description": "保存先の親（管理域外は GC 対象外）。", "type": "string"},
           "drain_timeout_ms": {
-            "description": "保存境界のデータ到着を待つ ms。",
+            "description": "保存境界の待機 ms。",
             "minimum": 0,
             "type": "integer",
             "maximum": 5000,
             "default": 500
           },
           "note": {"description": "保存結果に添えるメモ。", "type": "string"},
-          "duration_secs": {"description": "直近の秒数。既定は save_window_secs。", "maximum": 600, "minimum": 5, "type": "integer"}
+          "duration_secs": {"description": "直近の秒数。既定 save_window_secs。", "maximum": 600, "minimum": 5, "type": "integer"}
         },
         "type": "object"
       },
@@ -142,11 +144,11 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "include_image": {"description": "応答にスクリーンショットの PNG を含めます。", "type": "boolean", "default": false},
-          "output_dir": {"description": "ファイル名を自動生成する出力ディレクトリ。", "type": "string"},
-          "output_path": {"description": "出力ファイルのパス。", "type": "string"},
-          "serial": {"description": "対象の ADB シリアル。省略時は設定と接続中端末から選択します。", "type": "string"},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host ならローカル時刻も返します。"}
+          "include_image": {"description": "応答に PNG を添付。", "type": "boolean", "default": false},
+          "output_dir": {"description": "自動命名する保存先。", "type": "string"},
+          "output_path": {"description": "出力パス。", "type": "string"},
+          "serial": {"description": "ADB シリアル。既定は設定と接続端末から選択。", "type": "string"},
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "type": "object"
       },
@@ -161,20 +163,20 @@
       }
     },
     {
-      "description": "直前のログをバンドルに保存します。",
+      "description": "直前のログを保存。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "note": {"type": "string", "description": "保存してカタログに表示するメモ。"},
-          "dest_dir": {"type": "string", "description": "保存先の親ディレクトリ（管理域外は GC 対象外）。"},
+          "dest_dir": {"type": "string", "description": "保存先の親（管理域外は GC 対象外）。"},
           "drain_timeout_ms": {
             "minimum": 0,
             "type": "integer",
-            "description": "保存境界のデータ到着を待つ ms。",
+            "description": "保存境界の待機 ms。",
             "maximum": 5000,
             "default": 500
           },
-          "duration_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "直近の秒数。既定は save_window_secs。"}
+          "duration_secs": {"maximum": 600, "minimum": 5, "type": "integer", "description": "直近の秒数。既定 save_window_secs。"}
         },
         "type": "object"
       },
@@ -184,12 +186,12 @@
       "annotations": {"title": "ログの保存", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "バンドルの状態、期間、件数と保存先を一覧します。",
+      "description": "状態・期間・件数・保存先の一覧。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "state": {"description": "カタログの状態フィルター。", "enum": ["active", "trashed", "purging"], "type": "string"},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host ならローカル時刻も返します。"}
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "type": "object"
       },
@@ -201,7 +203,7 @@
       "description": "バンドルをごみ箱に移します。",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {"bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}},
+        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
         "required": ["bundle_id"],
         "type": "object"
       },
@@ -213,7 +215,7 @@
       "description": "ごみ箱からバンドルを復元します。",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {"bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}},
+        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
         "required": ["bundle_id"],
         "type": "object"
       },
@@ -222,12 +224,12 @@
       "annotations": {"title": "バンドルの復元", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "ごみ箱の回収候補と保護理由を確認し、指定時に削除します。管理域外（dest_dir・output_dir_override）の保存先は対象外で、手動削除後は arb_forget_bundle で登録を解除します。",
+      "description": "ごみ箱の回収候補と保護理由を確認し、指定時に削除。管理域外（dest_dir・output_dir_override）は対象外。手動削除後は arb_forget_bundle で登録解除。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "ignore_grace": {"default": false, "type": "boolean", "description": "猶予期間を無視します。"},
-          "dry_run": {"type": "boolean", "description": "ファイルを残したまま回収見込みと保護理由を表示します。", "default": false}
+          "dry_run": {"type": "boolean", "description": "回収見込みと保護理由を表示。削除なし。", "default": false}
         },
         "type": "object"
       },
@@ -240,8 +242,8 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "all_missing": {"description": "保存先が見つからないカタログ行を一括整理します。", "type": "boolean"},
-          "bundle_id": {"description": "対象のバンドル ID。", "type": "string", "pattern": "\\S"}
+          "all_missing": {"description": "実体のないカタログ行を一括整理。", "type": "boolean"},
+          "bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}
         },
         "type": "object",
         "oneOf": [
@@ -254,16 +256,16 @@
       "annotations": {"title": "カタログの整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "画面遷移、クラッシュ、タップ、エラーの集約とノイズ候補タグを取得します。タップは getevent 入力のみ。adb shell input tap などの注入は記録されない場合があります。",
+      "description": "画面遷移・クラッシュ・タップ・集約エラー・ノイズ候補。タップは getevent のみ。adb shell input tap 等の注入は記録されない場合があります。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "bundle_id": {"description": "対象のバンドル ID またはパス。", "type": "string", "pattern": "\\S"},
-          "package": {"description": "対象の Android パッケージ名（完全一致）。", "type": "string"},
-          "tag": {"description": "対象タグの部分一致条件（大文字小文字を区別しません）。", "type": "string"},
-          "exclude_tags": {"description": "除外するタグ名（完全一致、大文字小文字を区別しません）。", "type": "array", "items": {"type":"string"}},
-          "max_error_logs": {"description": "同一優先度・タグ・本文をまとめたエラーの最大表示数。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host ならローカル時刻も返します。"}
+          "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
+          "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
+          "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
+          "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
+          "max_error_logs": {"description": "最新のグループ順に上限まで取得。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "type": "object"
       },
@@ -272,7 +274,7 @@
       "annotations": {"title": "タイムラインの概要", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "条件に一致するログとフレーム番号をページ単位で取得します。",
+      "description": "一致するログとフレーム番号をページ取得。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -288,24 +290,25 @@
             "type": "string",
             "default": "main"
           },
-          "bundle_id": {"description": "対象のバンドル ID またはパス。", "type": "string", "pattern": "\\S"},
-          "end_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の最終フレーム（両端を含む）。"},
-          "end_ns": {"type": "integer", "description": "範囲の終了（ナノ秒）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
+          "end_frame": {"minimum": 0, "type": "integer", "description": "最終フレーム（両端含む）。"},
+          "end_ns": {"type": "integer", "description": "範囲の終了（ns）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
           "keyword": {"description": "ログ本文またはタグを照合するキーワード。", "type": "string"},
           "level": {
             "type": "string",
-            "description": "Android のログレベル。大文字・小文字を区別しません。",
+            "description": "完全一致（大小無視）。V/D/I/W/E/F、VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT。",
             "pattern": "^([Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"
           },
+          "min_level": {"type":"string","enum":["V","D","I","W","E","F"],"description":"指定優先度以上。E は E・F。level と排他。"},
           "limit": {"maximum": 100000, "minimum": 1, "type": "integer", "default": 100, "description": "ページの最大行数。"},
           "package": {"description": "Android パッケージ名（完全一致）。", "type": "string"},
-          "start_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の先頭フレーム（0 始まり）。"},
-          "start_ns": {"type": "integer", "description": "範囲の開始（ナノ秒）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
+          "start_ns": {"type": "integer", "description": "範囲の開始（ns）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
           "tag": {"description": "ログタグの部分一致条件。", "type": "string"},
-          "cursor": {"type": "string", "description": "直前のページが返した next_cursor。", "pattern": "^[0-9]+$"},
-          "whole_word": {"type": "boolean", "description": "単語境界でキーワードを照合します。", "default": false},
-          "fields": {"enum": ["compact", "full"], "default": "compact", "description": "compact は時刻・位置・レベル・タグ・本文のみ。full は全項目。"},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host ならローカル時刻も返します。"}
+          "cursor": {"type": "string", "description": "前ページの next_cursor。", "pattern": "^[0-9]+$"},
+          "whole_word": {"type": "boolean", "description": "キーワード・タグを単語境界で照合。", "default": false},
+          "fields": {"enum": ["compact", "full"], "default": "compact", "description": "compact は時刻・位置・レベル・タグ・本文。full は全項目。"},
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "type": "object"
       },
@@ -314,16 +317,16 @@
       "annotations": {"title": "ログ検索", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "選択フレームの時刻・画面・タップ（getevent 入力のみ）と参照先を返します。",
+      "description": "フレームの時刻・画面・タップ（getevent のみ）と参照先。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "bundle_id": {"description": "対象のバンドル ID またはパス。", "type": "string", "pattern": "\\S"},
+          "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
           "columns": {"maximum": 16, "minimum": 1, "type": "integer", "description": "コンタクトシートの列数。", "default": 4},
-          "display_height": {"description": "タップ座標変換用の表示高（px）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
-          "display_width": {"description": "タップ座標変換用の表示幅（px）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
-          "end_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の最終フレーム（両端を含む）。"},
-          "frame_index": {"minimum": 0, "type": "integer", "description": "0 始まりのフレーム番号。"},
+          "display_height": {"description": "タップ変換用の表示高（px）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
+          "display_width": {"description": "タップ変換用の表示幅（px）。", "minimum": 1, "type": "integer", "maximum": 4294967295},
+          "end_frame": {"minimum": 0, "type": "integer", "description": "最終フレーム（両端含む）。"},
+          "frame_index": {"minimum": 0, "type": "integer", "description": "0 起点のフレーム番号。"},
           "frame_indices": {
             "items": {"minimum": 0, "type": "integer"},
             "maxItems": 16,
@@ -332,14 +335,14 @@
             "description": "表示するフレーム番号の一覧。"
           },
           "include_tap_marker": {"type": "boolean", "description": "タップ位置を描画します。", "default": false},
-          "max_tile_height": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "各タイルの最大高（ピクセル）。", "default": 560},
-          "max_tile_width": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "各タイルの最大幅（ピクセル）。", "default": 280},
+          "max_tile_height": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "タイルの最大高（px）。", "default": 560},
+          "max_tile_width": {"maximum": 1024, "minimum": 16, "type": "integer", "description": "タイルの最大幅（px）。", "default": 280},
           "max_tiles": {"maximum": 16, "minimum": 1, "type": "integer", "description": "最大タイル数。", "default": 16},
-          "mode": {"enum": ["contact_sheet", "single", "tap_crop"], "type": "string", "description": "複数フレーム、単一フレーム、またはタップ周辺の切り抜き。"},
-          "start_frame": {"minimum": 0, "type": "integer", "description": "対象範囲の先頭フレーム（0 始まり）。"},
-          "tap_index": {"description": "概要に含まれるタップの番号（0 始まり）。", "minimum": 0, "type": "integer"},
-          "tap_x": {"minimum": 0, "type": "integer", "description": "タップ横座標（映像ピクセル）。", "maximum": 4294967295},
-          "tap_y": {"minimum": 0, "type": "integer", "description": "タップ縦座標（映像ピクセル）。", "maximum": 4294967295},
+          "mode": {"enum": ["contact_sheet", "single", "tap_crop"], "type": "string", "description": "一覧・単一フレーム・タップ周辺。"},
+          "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
+          "tap_index": {"description": "概要のタップ番号（0 起点）。", "minimum": 0, "type": "integer"},
+          "tap_x": {"minimum": 0, "type": "integer", "description": "タップ横座標（映像 px）。", "maximum": 4294967295},
+          "tap_y": {"minimum": 0, "type": "integer", "description": "タップ縦座標（映像 px）。", "maximum": 4294967295},
           "include_images": {"type": "boolean", "description": "PNG も content に含めます。本文の形は同じです。", "default": false}
         },
         "required": ["mode"],
@@ -352,21 +355,21 @@
       "annotations": {"title": "フレームの確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "フレーム範囲をトリムし、共有 MP4 またはバンドルを書き出します。",
+      "description": "指定範囲を共有 MP4 またはバンドルに書き出します。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "bundle_id": {"description": "対象のバンドル ID またはパス。", "type": "string", "pattern": "\\S"},
+          "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
           "burn_taps": {"description": "映像にタップ・スワイプを焼き込みます。", "type": "boolean", "default": false},
           "dest_dir": {"description": "保存先の親ディレクトリ。", "type": "string"},
           "format": {"description": "共有 MP4 または編集済みバンドル。", "enum": ["share_mp4", "bundle"], "type": "string", "default": "share_mp4"},
-          "in_time_ns": {"type": "integer", "minimum": 0, "description": "バンドル先頭からの開始時刻（ns、含む）。"},
-          "out_time_ns": {"type": "integer", "minimum": 1, "description": "バンドル先頭からの終了時刻（ns、含まない）。"},
-          "in_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す先頭フレーム（両端を含む）。"},
-          "keep_bundle": {"description": "共有 MP4 とともに編集済みバンドルを dest_dir に保存します。", "type": "boolean", "default": false},
-          "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 も含めます。format=bundle での既定は true。", "type": "boolean"},
-          "out_frame_index": {"minimum": 0, "type": "integer", "description": "書き出す最終フレーム（両端を含む）。"},
-          "output_path": {"description": "出力ファイルのパス。", "type": "string"}
+          "in_time_ns": {"type": "integer", "minimum": 0, "description": "先頭からの開始 ns（含む）。"},
+          "out_time_ns": {"type": "integer", "minimum": 1, "description": "先頭からの終了 ns（含まない）。"},
+          "in_frame_index": {"minimum": 0, "type": "integer", "description": "先頭フレーム（両端含む）。"},
+          "keep_bundle": {"description": "共有 MP4 と編集済みバンドルを dest_dir に保存。", "type": "boolean", "default": false},
+          "include_share_mp4": {"description": "編集済みバンドルに共有 MP4 を同梱。format=bundle の既定は true。", "type": "boolean"},
+          "out_frame_index": {"minimum": 0, "type": "integer", "description": "最終フレーム（両端含む）。"},
+          "output_path": {"description": "出力パス。", "type": "string"}
         },
         "type": "object",
         "dependentRequired": {"in_time_ns": ["out_time_ns"], "out_time_ns": ["in_time_ns"]},
@@ -385,14 +388,14 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "指定フレームを出典付き PNG として書き出します。既存ファイルは上書きしません。",
+      "description": "指定フレームを出典付き PNG に保存。既存ファイルは保護。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "bundle_id": {"description": "対象のバンドル ID またはパス。", "type": "string", "pattern": "\\S"},
-          "frame_index": {"minimum": 0, "type": "integer", "description": "0 始まりのフレーム番号。"},
-          "output_path": {"description": "出力ファイルのパス。既存なら失敗します。", "type": "string"},
-          "output_dir": {"description": "ファイル名を自動生成する出力ディレクトリ。", "type": "string"}
+          "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
+          "frame_index": {"minimum": 0, "type": "integer", "description": "0 起点のフレーム番号。"},
+          "output_path": {"description": "出力パス。既存なら失敗します。", "type": "string"},
+          "output_dir": {"description": "自動命名する保存先。", "type": "string"}
         },
         "required": ["frame_index"],
         "type": "object",
@@ -407,21 +410,21 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "duration_secs": {"type": "integer", "description": "保存する秒数。省略時は save_window_secs。", "minimum": 5, "maximum": 600},
+          "duration_secs": {"type": "integer", "description": "保存秒数。既定 save_window_secs。", "minimum": 5, "maximum": 600},
           "logs_only": {"type": "boolean", "description": "ログだけを保存します。", "default": false},
-          "note": {"type": "string", "description": "保存と調査結果に添えるメモ。"},
-          "dest_dir": {"type": "string", "description": "保存先の親ディレクトリ。"},
-          "drain_timeout_ms": {"type":"integer","minimum":0,"maximum":5000,"default":500,"description":"保存境界の待ち時間（ミリ秒）。"},
-          "max_errors": {"type": "integer", "description": "同一優先度・タグ・本文をまとめたエラーの最大表示数。", "minimum": 1, "maximum": 200, "default": 20},
-          "package": {"description": "対象の Android パッケージ名（完全一致）。", "type": "string"},
-          "tag": {"description": "対象タグの部分一致条件（大文字小文字を区別しません）。", "type": "string"},
-          "exclude_tags": {"description": "除外するタグ名（完全一致、大文字小文字を区別しません）。", "type": "array", "items": {"type":"string"}},
-          "include_key_frame_links": {"type": "boolean", "description": "画面遷移の先頭フレームのリンクを含めます。", "default": true},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host ならローカル時刻も返します。"}
+          "note": {"type": "string", "description": "保存・調査のメモ。"},
+          "dest_dir": {"type": "string", "description": "保存先の親（管理域外は GC 対象外）。"},
+          "drain_timeout_ms": {"type":"integer","minimum":0,"maximum":5000,"default":500,"description":"保存境界の待ち時間（ms）。"},
+          "max_errors": {"type": "integer", "description": "最新のグループ順に上限まで取得。", "minimum": 1, "maximum": 200, "default": 20},
+          "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
+          "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
+          "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
+          "include_key_frame_links": {"type": "boolean", "description": "画面遷移の先頭フレームもリンク。", "default": true},
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
         "additionalProperties": false
       },
-      "description": "直近の記録を保存し、証跡の長さ・画面遷移・クラッシュ・エラーを arb_timeline_overview と同じ集約で確認します。",
+      "description": "直近の記録を保存し、記録長・画面遷移・クラッシュ・エラーを概要と同じ集約で返します。",
       "outputType": "Investigation",
       "errorTypes": ["InvestigationError","SaveError"],
       "annotations": {"title": "保存して調査", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
@@ -910,10 +913,10 @@
         "returned_count":{"type":"integer","minimum":0},
         "has_more":{"type":"boolean"},
         "continuation": {
-          "description": "has_more のとき残りのグループを読む呼び出し。",
+          "description": "上限を広げて最新順に再取得。オフセットカーソルではありません。",
           "anyOf": [{"$ref": "#/$defs/ToolCall"}, {"type": "null"}]
         },
-        "raw_query": {"description": "生の E 行を先頭から読む呼び出し。", "$ref": "#/$defs/ToolCall"}
+        "raw_query": {"description": "生の E・F 行を先頭から取得。", "$ref": "#/$defs/ToolCall"}
       },
       "required":["logs","total_matched","unique_count","returned_count","has_more","continuation","raw_query"],
       "additionalProperties": false
@@ -1066,17 +1069,18 @@
             "additionalProperties": false
           }
         },
-        "png_path": {"type": "string"},
-        "png_bytes_len": {"$ref":"#/$defs/UInt"},
-        "tap_crop": {"$ref": "#/$defs/TapCropMeta"}
+        "png_path": {"type": ["string","null"]},
+        "png_bytes_len": {"$ref":"#/$defs/UIntOrNull"},
+        "tap_crop": {"anyOf":[{"$ref":"#/$defs/TapCropMeta"},{"type":"null"}]}
       },
-      "required": ["resource_links", "mode", "bundle_id", "frame_indices_rendered", "width", "height", "screens", "frames"],
+      "required": ["resource_links", "mode", "bundle_id", "frame_indices_rendered", "width", "height", "screens", "frames", "png_path", "png_bytes_len", "tap_crop"],
       "additionalProperties": false
     },
     "InspectFramesMode": {"enum": ["contact_sheet", "single", "tap_crop"]},
     "Investigation": {
       "type": "object",
       "properties": {
+        "carried_in": {"$ref":"#/$defs/CarriedIn"},
         "resource_links": {"$ref":"#/$defs/ResourceLinks"},
         "save": {"$ref": "#/$defs/SaveOutcomeResponse"},
         "summary": {"$ref": "#/$defs/TimelineSummaryResponse"},
@@ -1086,7 +1090,7 @@
         "noise_candidates": {"$ref": "#/$defs/NoiseCandidates"},
         "memo": {"type": ["string", "null"]}
       },
-      "required": ["resource_links", "save", "summary", "screens", "crashes", "error_logs", "noise_candidates", "memo"],
+      "required": ["carried_in", "resource_links", "save", "summary", "screens", "crashes", "error_logs", "noise_candidates", "memo"],
       "additionalProperties": false
     },
     "ListedBundle": {
@@ -1147,7 +1151,7 @@
     },
     "LogCompleteness": {"enum": ["verified_no_overflow", "overflow_detected", "unverified"]},
     "NoiseCandidates": {
-      "description": "繰り返す E のタグ（F・クラッシュは除く）。除外は exclude_tags で明示します。",
+      "description": "反復する E タグの候補。F・クラッシュを除く。除外は exclude_tags。",
       "type": "array",
       "items": {
         "type": "object",
@@ -1326,6 +1330,7 @@
     "SaveScreenshotResponse": {
       "type": "object",
       "properties": {
+        "resource_links": {"$ref":"#/$defs/ResourceLinks"},
         "file_uri": {"type":"string","format":"uri"},
         "path": {"type": "string"},
         "width": {"$ref":"#/$defs/UInt"},
@@ -1335,15 +1340,16 @@
         "captured_at_local": {"type": ["string", "null"]},
         "serial": {"type": "string"}
       },
-      "required": ["path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
+      "required": ["resource_links", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
       "additionalProperties": false
     },
     "SaveTriggerKind": {"enum": ["manual", "crash_auto_save"]},
+    "CarriedIn": {"type":["object","null"],"properties":{"frame_index":{"$ref":"#/$defs/UInt"},"captured_boottime_ns":{"type":"integer"},"display_start_boottime_ns":{"type":"integer"},"evidence":{"const":"coverage"}},"required":["frame_index","captured_boottime_ns","display_start_boottime_ns","evidence"],"additionalProperties":false},
     "ScreenSpan": {
       "type": "object",
       "properties": {
-        "start_ns": {"type": "integer"},
-        "end_ns": {"type": "integer"},
+        "start_ns": {"type": "integer","description":"端末 boottime(ns)。相対値は start_offset_ms。"},
+        "end_ns": {"type": "integer","description":"端末 boottime(ns)。相対値は end_offset_ms。"},
         "start_frame_index": {"$ref":"#/$defs/UIntOrNull"},
         "end_frame_index": {"$ref":"#/$defs/UIntOrNull"},
         "package_name": {"type": "string"},
@@ -1499,6 +1505,7 @@
     "TimelineOverviewResponse": {
       "type": "object",
       "properties": {
+        "carried_in": {"$ref":"#/$defs/CarriedIn"},
         "bundle_id": {"type": "string"},
         "kind": {"$ref": "#/$defs/BundleKind"},
         "legacy_read_only": {"type": "boolean"},
@@ -1512,7 +1519,7 @@
         "fps_estimate": {"type": ["number", "null"]},
         "audio_status": {"$ref": "#/$defs/StreamStatus"},
         "av_offset_ms": {"type": "integer"},
-        "logcat_completeness": {"description": "保存結果と同型。旧デーモンは状態名を返します。", "anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
+        "logcat_completeness": {"description": "保存結果と同型。旧版は状態名。", "anyOf": [{"$ref": "#/$defs/LogcatEvidence"}, {"$ref": "#/$defs/LogCompleteness"}, {"type": "null"}]},
         "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
         "taps": {"type": "array", "items": {"$ref": "#/$defs/OverviewTapItem"}},
         "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
@@ -1530,6 +1537,7 @@
       "required": [
         "bundle_id",
         "kind",
+        "carried_in",
         "legacy_read_only",
         "frame_count",
         "duration_ms",
@@ -1553,7 +1561,7 @@
       "additionalProperties": false
     },
     "TimelineSummaryResponse": {
-      "description": "arbd の timeline.summary をそのまま返します。入れ子の形はその RPC と同じです。",
+      "description": "arbd の timeline.summary 応答。",
       "type": "object",
       "properties": {
         "bundle_id": {"type": "string"},
@@ -1634,6 +1642,7 @@
           "enum": [
             "INVALID_PARAMS",
             "BUNDLE_NOT_FOUND",
+            "DEVICE_NOT_FOUND",
             "CONFLICT",
             "ALREADY_TRASHED",
             "ALREADY_ACTIVE",

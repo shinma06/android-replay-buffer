@@ -933,6 +933,8 @@ pub struct TimelineQueryParams {
     /// Optional log priority filter (`V`, `D`, `I`, `W`, `E`, `F` or their full names; `timeline.query_logs`).
     #[serde(default)]
     pub level: Option<String>,
+    /// Inclusive Android log priority threshold, mutually exclusive with the exact level.
+    pub min_level: Option<String>,
     /// Optional case-insensitive substring filter on `LogRecord::message` or `tag`.
     #[serde(default)]
     pub keyword: Option<String>,
@@ -1572,6 +1574,8 @@ pub struct NoiseCandidate {
 /// One-shot structured bundle overview returned by `timeline.overview` for AI triage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineOverviewResponse {
+    /// Manifest evidence for a frame carried across the start of the saved window.
+    pub carried_in: Option<arb_core::bundle::CarriedInFrame>,
     /// Resolved bundle identifier.
     pub bundle_id: String,
     /// High-level bundle payload category (`full` or `logs_only`).

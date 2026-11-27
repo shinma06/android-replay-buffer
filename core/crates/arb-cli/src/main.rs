@@ -957,8 +957,9 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
                 params["limit"] = json!(limit);
                 i += 2;
             }
-            "--bucket" | "--cursor" | "--keyword" | "--tag" | "--level" | "--package" => {
-                params[&flag[2..]] = json!(require_val(args, i, flag)?);
+            "--bucket" | "--cursor" | "--keyword" | "--tag" | "--level" | "--min-level"
+            | "--package" => {
+                params[flag[2..].replace('-', "_")] = json!(require_val(args, i, flag)?);
                 i += 2;
             }
             _ => return Err(CliError::usage(format!("unknown logs option {flag}"))),
@@ -1940,7 +1941,7 @@ COMMANDS:\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word]\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \

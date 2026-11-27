@@ -40,6 +40,7 @@ impl Failure {
                 ..Self::new(
                     code,
                     match error_code.as_deref() {
+                        Some("DEVICE_NOT_FOUND") => "DEVICE_NOT_FOUND",
                         Some("NO_VIDEO") => "NO_VIDEO",
                         Some("ALREADY_ACTIVE") => "ALREADY_ACTIVE",
                         Some("ALREADY_TRASHED") => "ALREADY_TRASHED",

@@ -97,6 +97,9 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
             body["structuredContent"]["details"], failure["details"],
             "{id}"
         );
+        if let Some(retryable) = expected.get("retryable") {
+            assert_eq!(&body["structuredContent"]["retryable"], retryable, "{id}");
+        }
         let cli = CliError::from_rpc(err);
         let cli_json: Value =
             serde_json::from_str(&crate::format_error(crate::OutputFormat::Json, &cli)).unwrap();

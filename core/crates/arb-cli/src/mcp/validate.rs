@@ -57,7 +57,7 @@ impl Violation {
             details["max"] = max.clone();
         }
         Self::new(
-            format!("{field} の{noun} {got} は許容範囲 {range} の外です。"),
+            format!("{field} の{noun} {got} は {range}の範囲外です。"),
             details,
             format!("{field} は {range} の範囲で指定してください。"),
         )

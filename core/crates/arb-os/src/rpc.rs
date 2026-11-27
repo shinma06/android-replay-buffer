@@ -112,9 +112,14 @@ pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
             "対象の現在の状態と出力先を確認してください。",
             false,
         ),
+        "DEVICE_NOT_FOUND" => (
+            "not_found",
+            "端末を接続し、arb_devices でシリアルと接続状態を確認してください。",
+            true,
+        ),
         "BUNDLE_NOT_FOUND" => (
             "not_found",
-            "対象の ID、パスまたは端末を確認してください。",
+            "対象のバンドル ID またはパスを確認してください。",
             false,
         ),
         "FAILED_RETRYABLE" => (

@@ -65,7 +65,7 @@ impl McpServer {
             }
         }
         result.body = json!({"save":result.body,"summary":summary,"screens":screens,
-            "crashes":overview["crashes"].take(),"error_logs":error_logs,
+            "carried_in":overview["carried_in"].take(),"crashes":overview["crashes"].take(),"error_logs":error_logs,
             "noise_candidates":overview["noise_candidates"].take(),"memo":args.get("note")});
         Ok(())
     }

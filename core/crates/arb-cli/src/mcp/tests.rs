@@ -42,6 +42,36 @@ fn tools_list_frame_fits_the_budget_on_every_version() {
     }
 }
 
+#[test]
+fn only_equal_bundle_aliases_normalize_to_one_target() {
+    for tool in catalog::for_version(ProtocolVersion::default()) {
+        let schema = &tool["inputSchema"];
+        if schema["properties"].get("bundle_id_or_path").is_none() {
+            continue;
+        }
+        let mut args = json!({"bundle_id":"b","bundle_id_or_path":"b"});
+        let name = tool["name"].as_str().unwrap();
+        match name {
+            "arb_inspect_frames" => args["mode"] = json!("single"),
+            "arb_export_frame_png" => {
+                args["frame_index"] = json!(0);
+                args["output_dir"] = json!("out");
+            }
+            _ => (),
+        }
+        let normalized = super::args::normalize(name, schema, args.clone()).unwrap();
+        assert_eq!(normalized["bundle_id"], "b");
+        assert!(!normalized.contains_key("bundle_id_or_path"));
+        args["bundle_id_or_path"] = json!("other");
+        assert_eq!(
+            super::args::normalize(name, schema, args)
+                .unwrap_err()
+                .details,
+            json!({"conflicts":["bundle_id","bundle_id_or_path"]})
+        );
+    }
+}
+
 /// Only the version predicates choose defaults: inline screenshots end with the March release,
 /// and compact log rows begin with structured content.
 #[test]
@@ -104,6 +134,36 @@ fn investigation_parity_table_matches_both_schemas_and_the_projection() {
             input("arb_save_and_inspect"),
             input("arb_timeline_overview"),
         );
+        assert!(
+            save["dest_dir"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("管理域外は GC 対象外")
+        );
+        assert!(
+            overview["max_error_logs"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("最新")
+        );
+        let investigation = tools
+            .iter()
+            .find(|tool| tool["name"] == "arb_save_and_inspect")
+            .unwrap();
+        let groups =
+            &investigation["outputSchema"]["oneOf"][0]["properties"]["error_logs"]["properties"];
+        assert!(
+            groups["continuation"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("オフセットカーソル")
+        );
+        assert!(
+            groups["raw_query"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("E・F")
+        );
         for (save_arg, overview_arg) in pairs {
             let (a, b) = (&save[save_arg], &overview[overview_arg.as_str().unwrap()]);
             if save_arg == "max_errors" {
@@ -140,14 +200,15 @@ fn mcp_protocol_initialize_ping_and_notification_silence() {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": { "protocolVersion": "2024-11-05" }
+                "params": { "protocolVersion": ProtocolVersion::V2024_11_05.as_str() }
             })
             .to_string(),
         )
         .expect("initialize must emit a response");
     assert_eq!(init["id"], 1, "echoed id");
     assert_eq!(
-        init["result"]["protocolVersion"], "2024-11-05",
+        init["result"]["protocolVersion"],
+        ProtocolVersion::V2024_11_05.as_str(),
         "negotiated protocol version"
     );
 
@@ -267,14 +328,18 @@ fn json_rpc_batch_answers_each_request_and_omits_notifications() {
         { "jsonrpc": "2.0", "method": "notifications/initialized" },
         { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
     ]);
-    for version in ["2025-11-25", "2025-06-18", "2025-03-26"] {
+    for version in [
+        ProtocolVersion::V2025_11_25.as_str(),
+        ProtocolVersion::V2025_06_18.as_str(),
+        ProtocolVersion::V2025_03_26.as_str(),
+    ] {
         let init = srv
             .handle_message(&json!({
                 "jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":version}
             }))
             .unwrap();
         assert_eq!(init["result"]["protocolVersion"], version);
-        if version != "2025-03-26" {
+        if version != ProtocolVersion::V2025_03_26.as_str() {
             assert_eq!(
                 srv.handle_line(&batch.to_string()).unwrap()["error"]["code"],
                 -32600

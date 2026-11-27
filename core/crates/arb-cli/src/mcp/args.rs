@@ -14,6 +14,8 @@ pub(super) struct Group {
     names: Vec<String>,
     #[serde(default)]
     aliases: bool,
+    #[serde(default, rename = "allowEqual")]
+    allow_equal: bool,
     #[serde(default)]
     required: bool,
 }
@@ -33,7 +35,11 @@ pub(super) fn describe(name: &str, schema: &mut Value) {
             for alias in &group.names[1..] {
                 let mut field = schema["properties"][canonical].clone();
                 field["deprecated"] = json!(true);
-                field["description"] = json!(format!("{canonical} の別名。"));
+                field["description"] = if group.allow_equal {
+                    json!(format!("{canonical} の別名。併用は同値のみ。"))
+                } else {
+                    json!(format!("{canonical} の別名。"))
+                };
                 schema["properties"][alias] = field;
             }
         }
@@ -45,6 +51,10 @@ pub(super) fn describe(name: &str, schema: &mut Value) {
                     .map(|k| json!({"required":[k]}))
                     .collect(),
             );
+        }
+        // JSON Schema cannot compare two sibling values. Execution checks equality.
+        if group.allow_equal {
+            continue;
         }
         for (i, a) in group.names.iter().enumerate() {
             for b in &group.names[i + 1..] {
@@ -65,7 +75,9 @@ pub(super) fn normalize(
     // Report both submitted names even if another required argument is absent.
     for group in groups(name) {
         let mut present = group.names.iter().filter(|k| args.get(*k).is_some());
-        if let (Some(a), Some(b)) = (present.next(), present.next()) {
+        if let (Some(a), Some(b)) = (present.next(), present.next())
+            && !(group.allow_equal && args[a] == args[b])
+        {
             return Err(Violation::conflicts(&[a, b]));
         }
     }

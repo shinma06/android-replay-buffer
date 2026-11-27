@@ -87,11 +87,15 @@ impl McpServer {
             params.insert("overwrite".to_owned(), overwrite.clone());
         }
         let mut resp = self.call_daemon("save.screenshot", &Value::Object(params))?;
-        if !self.version.legacy_result_fields()
-            && let Some(uri) = resp["path"]
+        let path = Path::new(
+            resp["path"]
                 .as_str()
-                .and_then(|path| url::Url::from_file_path(path).ok())
-        {
+                .ok_or_else(|| Failure::unavailable("スクリーンショットの保存先がありません。"))?,
+        );
+        let uri = url::Url::from_file_path(path)
+            .map_err(|()| Failure::unavailable("スクリーンショットの保存先が不正です。"))?;
+        let link = crate::mcp::resources::ResourceLink::screenshot(path, uri.clone());
+        if !self.version.legacy_result_fields() {
             resp["file_uri"] = json!(uri.as_str());
         }
         let image = if include_image
@@ -107,7 +111,7 @@ impl McpServer {
             "captured_at_unix_ms",
             "captured_at_local",
         );
-        let output = ToolOutput::new(resp);
+        let output = ToolOutput::new(resp).with_links(vec![link]);
         Ok(match image {
             Some(image) => output.with_image(image),
             None => output,

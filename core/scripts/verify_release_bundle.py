@@ -63,6 +63,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
+from mcp_versions import VERSIONS
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 
@@ -973,7 +975,7 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
         cfg_cli = (iso.cli("config", "get").data or {}).get("config", {})
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
-            init = client.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
+            init = client.request("initialize", {"protocolVersion": VERSIONS["V2025_03_26"], "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
             sec.check("initialize: serverInfo.name == android-replay-buffer", init["result"]["serverInfo"]["name"] == "android-replay-buffer", init["result"].get("serverInfo"))
             client.notify("notifications/initialized")
             ping = client.request("ping")
@@ -1003,10 +1005,10 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
         modern = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
             negotiation = modern.request("initialize", {
-                "protocolVersion": "2025-11-25", "capabilities": {},
+                "protocolVersion": VERSIONS["V2025_11_25"], "capabilities": {},
                 "clientInfo": {"name": "verify_release_bundle", "version": "1"},
             })
-            sec.check("2025-11-25 negotiated", negotiation["result"]["protocolVersion"] == "2025-11-25")
+            sec.check("current MCP version negotiated", negotiation["result"]["protocolVersion"] == VERSIONS["V2025_11_25"])
             modern.notify("notifications/initialized")
             frame = modern.call_tool("arb_inspect_frames", {
                 "mode": "single", "bundle_id": str(fixture), "frame_index": 32,
@@ -1022,7 +1024,7 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
                           and png_dimensions(base64.b64decode(contents[0]["blob"])) == (1920, 1080))
         finally:
             stderr = modern.close()
-        sec.check("2025-11-25 MCP server wrote 0 bytes to stderr", len(stderr) == 0)
+        sec.check("current MCP server wrote 0 bytes to stderr", len(stderr) == 0)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1108,7 +1110,7 @@ def section_legacy(report: Report, ctx: dict[str, Any], iso: Isolated, legacy_sr
             sec.check(f"{name}: trash of a legacy bundle never mutates it", True, f"rc={trash.rc}")
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
-            client.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
+            client.request("initialize", {"protocolVersion": VERSIONS["V2025_03_26"], "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
             overview = client.call_tool("arb_timeline_overview", {"bundle_id": str(schema4_dir)})
             sec.check("MCP timeline_overview reads the legacy schema 4 bundle", overview["result"]["isError"] is False and tool_text(overview).get("legacy_read_only") is True, "")
         finally:
@@ -1690,7 +1692,7 @@ def section_upgrade(report: Report, ctx: dict[str, Any], fixtures: Path, args: a
             sec.check("U3: the pre-T-6H 5-column timeline.sqlite bundle opens (inspect)", inspected.rc == 0 and (inspected.data or {}).get("format") == "v2", f"rc={inspected.rc} {inspected.err.strip()[:200]}")
             client = McpClient([new.bin("arb-cli"), "mcp"], new.env)
             try:
-                client.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
+                client.request("initialize", {"protocolVersion": VERSIONS["V2025_03_26"], "capabilities": {}, "clientInfo": {"name": "verify_release_bundle", "version": "1"}})
                 overview = tool_text(client.call_tool("arb_timeline_overview", {"bundle_id": ids["five-col"]}))
                 kinds = [t.get("gesture_kind") for t in overview.get("taps", [])]
                 sec.check("U3: the 5-column bundle's taps read back (gesture_kind defaults to tap)", overview.get("frame_count") == 720 and len(kinds) == 4 and set(kinds) == {"tap"}, kinds)

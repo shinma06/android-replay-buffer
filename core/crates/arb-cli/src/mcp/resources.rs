@@ -76,6 +76,19 @@ pub(super) struct ResourceLink {
     description: String,
 }
 impl ResourceLink {
+    pub(super) fn screenshot(path: &std::path::Path, uri: url::Url) -> Self {
+        Self {
+            uri: uri.into(),
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            mime_type: "image/png",
+            description: "保存したスクリーンショット".into(),
+        }
+    }
+
     pub(super) fn block(&self) -> Value {
         let mut block = json!(self);
         block["type"] = json!("resource_link");

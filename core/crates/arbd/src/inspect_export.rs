@@ -497,6 +497,11 @@ pub fn build_timeline_overview(
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
     Ok(TimelineOverviewResponse {
+        carried_in: summary
+            .streams
+            .video
+            .as_ref()
+            .and_then(|v| v.carried_in.clone()),
         bundle_id,
         kind: summary.bundle_kind,
         legacy_read_only: reader.is_legacy(),
@@ -780,7 +785,7 @@ struct LogCountKey {
     bundle: BundleLogCacheKey,
     bucket: Option<RecordBucket>,
     range: TimeRange,
-    filters: [Option<String>; 4],
+    filters: [Option<String>; 5],
     whole_word: bool,
 }
 
@@ -791,7 +796,13 @@ fn query_logs_with_total(
     limit: usize,
 ) -> Result<FilteredLogPage, DaemonError> {
     static TOTALS: Mutex<VecDeque<(LogCountKey, usize)>> = Mutex::new(VecDeque::new());
-    let filters = [&params.tag, &params.keyword, &params.level, &params.package];
+    let filters = [
+        &params.tag,
+        &params.keyword,
+        &params.level,
+        &params.min_level,
+        &params.package,
+    ];
     let cacheable = filters.iter().any(|v| v.is_some())
         && filters
             .iter()
@@ -918,7 +929,7 @@ fn load_or_build_package_resolver(
 
 struct CompiledLogFilter<'a> {
     package: Option<(&'a str, Arc<LogPackageTimeline>)>,
-    level: Option<String>,
+    levels: Option<&'static [&'static str]>,
     tag_lower: Option<String>,
     keyword_lower: Option<String>,
     whole_word: bool,
@@ -945,9 +956,9 @@ impl CompiledLogFilter<'_> {
         {
             return false;
         }
-        if let Some(ref want_level) = self.level {
+        if let Some(levels) = self.levels {
             let actual = log.level.as_deref().map_or("", normalize_log_level);
-            if actual != want_level {
+            if !levels.contains(&actual) {
                 return false;
             }
         }
@@ -1045,19 +1056,34 @@ enum CountMatches {
     PageOnly,
 }
 
-fn query_level(raw: Option<&str>) -> Result<Option<String>, DaemonError> {
-    Ok(match raw {
-        Some(raw) => {
-            let norm = normalize_log_level(raw);
-            if norm.is_empty() || raw.trim().eq_ignore_ascii_case("A") {
-                return Err(DaemonError::InvalidParams(format!(
-                    "unknown log level `{raw}`; expected V/D/I/W/E/F or VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT"
-                )));
-            }
-            Some(norm.to_owned())
+fn query_levels(
+    params: &TimelineQueryParams,
+) -> Result<Option<&'static [&'static str]>, DaemonError> {
+    const PRIORITIES: [&str; 6] = ["V", "D", "I", "W", "E", "F"];
+    let level = match (params.level.as_deref(), params.min_level.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(DaemonError::InvalidParams(
+                "level と min_level は同時に指定できません。".into(),
+            ));
         }
-        None => None,
-    })
+        (Some(raw), None) => {
+            let norm = normalize_log_level(raw);
+            let index = PRIORITIES.iter().position(|&v| v == norm)
+                .filter(|_| !raw.trim().eq_ignore_ascii_case("A"))
+                .ok_or_else(|| DaemonError::InvalidParams(format!("unknown log level `{raw}`; expected V/D/I/W/E/F or VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT")))?;
+            &PRIORITIES[index..=index]
+        }
+        (None, Some(raw)) => {
+            let index = PRIORITIES.iter().position(|&v| v == raw).ok_or_else(|| {
+                DaemonError::InvalidParams(
+                    "min_level は V/D/I/W/E/F のいずれかで指定してください。".into(),
+                )
+            })?;
+            &PRIORITIES[index..]
+        }
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(level))
 }
 
 fn scan_logs(
@@ -1075,8 +1101,9 @@ fn scan_logs(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let levels = query_levels(params)?;
     let has_text_filter = params.tag.is_some()
-        || params.level.is_some()
+        || levels.is_some()
         || params.keyword.is_some()
         || package_filter.is_some();
 
@@ -1101,8 +1128,6 @@ fn scan_logs(
         });
     }
 
-    let level = query_level(params.level.as_deref())?;
-
     let (package, resolver_cache_hit) = if let Some(target_pkg) = package_filter {
         let (resolver, hit) = load_or_build_package_resolver(reader)?;
         (Some((target_pkg, resolver)), hit)
@@ -1112,7 +1137,7 @@ fn scan_logs(
 
     let filter = CompiledLogFilter {
         package,
-        level,
+        levels,
         tag_lower: params.tag.as_deref().map(str::to_ascii_lowercase),
         whole_word: params.whole_word,
         keyword_lower: params.keyword.as_deref().map(str::to_ascii_lowercase),
@@ -1612,7 +1637,7 @@ fn overview_highlights(
     let filter = CompiledLogFilter {
         package,
         tag_lower: params.tag.as_ref().map(|s| s.to_ascii_lowercase()),
-        level: None,
+        levels: None,
         keyword_lower: None,
         whole_word: false,
     };
@@ -2202,7 +2227,7 @@ mod tests {
                 pid:None,tid:None,uid:None,package_name:None,message:i.to_string(),
             }).collect::<Vec<_>>();
             let coordinates=super::LogCoordinates::new(&frames,&[]);
-            let filter=super::CompiledLogFilter{package:None,level:None,tag_lower:None,keyword_lower:None,whole_word:false};
+            let filter=super::CompiledLogFilter{package:None,levels:None,tag_lower:None,keyword_lower:None,whole_word:false};
             // Repeated system errors consume one group, even when the chosen limit is smaller than the burst.
             let mut burst = vec![logs[0].clone()];
             for seq in 1..=43 {
@@ -2256,7 +2281,7 @@ mod tests {
     fn no_filter() -> super::CompiledLogFilter<'static> {
         super::CompiledLogFilter {
             package: None,
-            level: None,
+            levels: None,
             tag_lower: None,
             keyword_lower: None,
             whole_word: false,

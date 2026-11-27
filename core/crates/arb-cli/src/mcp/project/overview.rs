@@ -39,6 +39,7 @@ pub(in crate::mcp) fn project(overview: &mut Value, version: ProtocolVersion, zo
         {
             obj.insert("logcat_completeness".into(), detail);
         }
+        obj.entry("carried_in").or_insert(Value::Null);
         obj.entry("noise_candidates").or_insert_with(|| json!([]));
     }
     screen_offsets(&mut overview["screens"]);
@@ -67,7 +68,7 @@ pub(in crate::mcp) fn error_groups(
     next.insert("max_error_logs".into(), json!(next_limit));
     let mut raw = Map::new();
     raw.insert("bundle_id".into(), bundle_id.clone());
-    raw.insert("level".into(), json!("E"));
+    raw.insert("min_level".into(), json!("E"));
     raw.insert("bucket".into(), json!("main"));
     for key in FILTERS.into_iter().chain(["time_zone"]) {
         if let Some(value) = args.get(key) {
@@ -118,7 +119,7 @@ mod tests {
     fn overview(unique: u64) -> Value {
         let truncated = unique > 1;
         json!({
-            "error_log_highlights":[{"seq":7,"level":"E","tag":"A","message":"x","timestamp_utc":"2026-11-28T01:23:45.123Z","frame_index_hint":null,"t_ms":null}],
+            "error_log_highlights":[{"seq":7,"min_level":"E","tag":"A","message":"x","timestamp_utc":"2026-11-28T01:23:45.123Z","frame_index_hint":null,"t_ms":null}],
             "total_error_logs":40,"unique_error_logs":unique,"error_logs_truncated":truncated,
             "screens":[{"start_ns":1}],"logcat_completeness_detail":{"status":"complete"}
         })
@@ -141,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             groups["raw_query"],
-            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","level":"E","bucket":"main","package":"com.example","tag":"Auth"}})
+            json!({"tool":"arb_query_logs","arguments":{"bundle_id":"b1","min_level":"E","bucket":"main","package":"com.example","tag":"Auth"}})
         );
         assert_eq!(
             (
@@ -157,7 +158,7 @@ mod tests {
         assert_eq!(groups["continuation"], Value::Null);
         assert_eq!(
             groups["raw_query"]["arguments"],
-            json!({"bundle_id":"b1","level":"E","bucket":"main"})
+            json!({"bundle_id":"b1","min_level":"E","bucket":"main"})
         );
         // The daemon request carries the same filters the follow-up calls repeat.
         assert_eq!(

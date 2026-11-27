@@ -753,6 +753,53 @@ fn explicit_start_survives_process_restart_and_auto_attaches_to_new_device() {
 }
 
 #[test]
+fn capture_wait_times_out_offline_then_connects_after_discovery() {
+    use arb_adb::mock::FaultScenario;
+    use arb_adb::wire::{StreamId, WireMessage};
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let _daemon = spawn_fake_daemon(&paths, &fake, tmp.path());
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    fs::write(tmp.path().join("devices"), "A offline\n").unwrap();
+    let started = Instant::now();
+    let result = rpc.call("capture.start", &json!({"serial":"A","capture_mode":"logs_only","wait_connected":true,"wait_timeout_ms":250}));
+    assert!(started.elapsed() >= Duration::from_millis(250), "{result}");
+    assert_eq!(result["started"], false);
+    assert_eq!(result["connected"], false);
+    assert_eq!(result["wait_timed_out"], true);
+    rpc.call("capture.stop", &json!({}));
+
+    let Some(CaptureEvent::Hello { payload, .. }) =
+        FaultScenario::NormalFhd30.build().next_event().unwrap()
+    else {
+        panic!("expected fixture Hello")
+    };
+    WireMessage::Hello(payload)
+        .to_frame(StreamId::Control, FrameFlags::NONE, 1)
+        .unwrap()
+        .write_to(&mut fs::File::create(tmp.path().join("hello.bin")).unwrap())
+        .unwrap();
+    let endpoint = paths.ipc_endpoint();
+    let waiter = thread::spawn(move || {
+        RpcClient::connect(&endpoint).call(
+            "capture.start",
+            &json!({"capture_mode":"logs_only","wait_connected":true,"wait_timeout_ms":5000}),
+        )
+    });
+    await_condition(|| tmp.path().join("discovered").exists());
+    thread::sleep(Duration::from_millis(60));
+    fs::write(tmp.path().join("devices"), "A device\n").unwrap();
+    let result = waiter.join().unwrap();
+    assert_eq!(result["serial"], "A");
+    assert_eq!(result["serial_source"], "config");
+    assert_eq!(result["started"], true);
+    assert_eq!(result["connected"], true, "{result}");
+    assert_eq!(result["wait_timed_out"], false);
+    rpc.call("capture.stop", &json!({}));
+}
+
+#[test]
 fn capture_intent_rows_match_daemon_responses_and_persisted_config() {
     let table: Value = serde_json::from_str(include_str!(
         "../../../../docs/specs/device-selection-policy-table.json"
