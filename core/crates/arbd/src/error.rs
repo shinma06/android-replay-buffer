@@ -159,8 +159,20 @@ impl DaemonError {
     /// Classifies a failure once for all RPC consumers.
     #[must_use]
     pub fn classify(&self) -> ClassifiedError {
+        let (rpc_code, label, message) = self.public_error_kind();
+        let (details, cause) = self.diagnostics();
+        ClassifiedError {
+            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
+            rpc_code,
+            user_message: self.public_message(message),
+            details,
+            cause,
+        }
+    }
+
+    fn public_error_kind(&self) -> (i32, Option<&'static str>, &'static str) {
         use arb_core::state::{BundleLifecycleState, StateTransitionError};
-        let (rpc_code, label, message) = match self {
+        match self {
             Self::OutputDirUnusable { .. } => (
                 RPC_ERR_INVALID_PARAMS,
                 Some("OUTPUT_DIR_UNUSABLE"),
@@ -255,14 +267,6 @@ impl DaemonError {
                 None,
                 "デーモンが操作を完了できませんでした。",
             ),
-        };
-        let (details, cause) = self.diagnostics();
-        ClassifiedError {
-            code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
-            rpc_code,
-            user_message: self.public_message(message),
-            details,
-            cause,
         }
     }
 

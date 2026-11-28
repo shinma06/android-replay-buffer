@@ -133,7 +133,8 @@ fn project_job(job: &Value) -> Value {
     let count = job["pinned_chunk_count"].as_u64().unwrap_or_else(|| {
         job["pinned_chunk_ids"]
             .as_array()
-            .map_or(0, |ids| ids.len() as u64)
+            .and_then(|ids| u64::try_from(ids.len()).ok())
+            .unwrap_or(0)
     });
     json!({"job_id":job["job_id"],"state":job["state"],"failure_class":job["failure_class"],
         "recommended_action":job["recommended_action"],"last_error":job["last_error"],

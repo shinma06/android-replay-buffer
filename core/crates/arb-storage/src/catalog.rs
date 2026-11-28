@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS save_jobs (
   trigger_kind TEXT NOT NULL DEFAULT 'manual'
 );
 
+CREATE INDEX IF NOT EXISTS failed_jobs_by_time ON save_jobs(updated_at_utc, job_id) WHERE state='failed_retryable';
+
 CREATE TABLE IF NOT EXISTS pending_staging (
   job_id TEXT NOT NULL,
   destination_path TEXT NOT NULL,
@@ -1710,6 +1712,10 @@ impl Catalog {
     }
 
     /// Records the failure and its recovery policy in the same state transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transition, serialization or database error if the change cannot be recorded.
     pub fn mark_failed_classified(
         &self,
         job_id: &str,
@@ -1797,21 +1803,22 @@ impl Catalog {
     ///
     /// Returns [`StorageError::Sqlite`] or [`StorageError::CorruptData`].
     pub fn list_save_jobs(&self) -> Result<Vec<CatalogSaveJob>, StorageError> {
-        self.query_save_jobs(false)
+        self.query_save_jobs("ORDER BY julianday(created_at_utc), job_id")
     }
 
     /// Lists only failures, oldest failure first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or decoding error if a persisted row cannot be read.
     pub fn failed_save_jobs(&self) -> Result<Vec<CatalogSaveJob>, StorageError> {
-        self.query_save_jobs(true)
+        self.query_save_jobs(
+            "WHERE state='failed_retryable' ORDER BY julianday(updated_at_utc), job_id",
+        )
     }
 
-    fn query_save_jobs(&self, failed_only: bool) -> Result<Vec<CatalogSaveJob>, StorageError> {
+    fn query_save_jobs(&self, filter: &'static str) -> Result<Vec<CatalogSaveJob>, StorageError> {
         let conn = self.lock_conn()?;
-        let filter = if failed_only {
-            "WHERE state='failed_retryable' ORDER BY updated_at_utc, job_id"
-        } else {
-            "ORDER BY julianday(created_at_utc), job_id"
-        };
         let mut stmt = conn
             .prepare(
                 &format!("SELECT job_id, state, destination_path, pinned_chunks_json,
@@ -2185,6 +2192,10 @@ impl Catalog {
     }
 
     /// Claims a failure once, only while it is still the failure observed by maintenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the durable claim cannot be recorded.
     pub fn claim_rescue(&self, job_id: &str, updated_at: &str) -> Result<bool, StorageError> {
         self.lock_conn()?.execute(
             "UPDATE save_jobs SET rescue_attempted=1 WHERE job_id=?1 AND updated_at_utc=?2

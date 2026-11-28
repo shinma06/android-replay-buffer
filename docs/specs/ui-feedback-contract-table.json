@@ -610,7 +610,12 @@
           ],
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
@@ -645,7 +650,12 @@
           ],
           "last_error": "ENOSPC: no space left on device",
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": "transient",
+          "recommended_action": "retry",
+          "rescue_eligible_at_utc": "2026-11-25T00:15:05Z",
+          "rescue_attempted": false
         },
         "bundle_id": null,
         "bundle_path": null,
@@ -677,7 +687,12 @@
           ],
           "last_error": "parent fsync failed",
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": "transient",
+          "recommended_action": "retry",
+          "rescue_eligible_at_utc": "2026-11-25T00:15:05Z",
+          "rescue_attempted": false
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
@@ -709,7 +724,12 @@
           ],
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
         },
         "bundle_id": null,
         "bundle_path": null,
@@ -741,7 +761,12 @@
           ],
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
@@ -774,7 +799,12 @@
           ],
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
@@ -809,7 +839,12 @@
           ],
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
-          "updated_at_utc": "2026-11-25T00:00:05Z"
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
         },
         "bundle_id": null,
         "bundle_path": null,
@@ -839,7 +874,11 @@
           "last_error": null,
           "created_at_utc": "2026-11-25T00:00:00Z",
           "updated_at_utc": "2026-11-25T00:00:05Z",
-          "pinned_chunk_count": 0
+          "pinned_chunk_count": 0,
+          "failure_class": null,
+          "recommended_action": null,
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": true
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
@@ -862,6 +901,80 @@
         "error_code": "OUTPUT_DIR_UNUSABLE",
         "jobs_created": 0,
         "pins_created": 0
+      }
+    },
+    {
+      "id": "SV-09",
+      "description": "pin 後に保存先が書き込み不能になった場合は保存先の変更を案内",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "failed_retryable",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": "ENOSPC: no space left on device",
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": "permanent_destination",
+          "recommended_action": "retarget",
+          "rescue_eligible_at_utc": "2026-11-25T00:15:05Z",
+          "rescue_attempted": false
+        },
+        "bundle_id": null,
+        "bundle_path": null,
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": true,
+        "mcp_error_code": "SAVE_NEEDS_RETARGET"
+      }
+    },
+    {
+      "id": "SV-10",
+      "description": "保存に必要な内部データが欠落した場合は破棄を案内",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "failed_retryable",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [
+            "c1",
+            "c2"
+          ],
+          "last_error": "ENOSPC: no space left on device",
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 2,
+          "failure_class": "integrity",
+          "recommended_action": "discard",
+          "rescue_eligible_at_utc": null,
+          "rescue_attempted": false
+        },
+        "bundle_id": null,
+        "bundle_path": null,
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": null
+      },
+      "expected": {
+        "cli_exit_code": 3,
+        "mcp_is_error": true,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "warning",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": true,
+        "mcp_error_code": "SAVE_FAILED"
       }
     }
   ],

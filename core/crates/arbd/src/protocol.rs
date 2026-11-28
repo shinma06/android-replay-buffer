@@ -1248,6 +1248,7 @@ pub struct ExportPngParams {
     /// Explicit destination. An omitted or empty path requests automatic naming.
     pub output_path: Option<PathBuf>,
     /// Optional screenshot directory for automatically named images.
+    #[serde(alias = "dest_dir")]
     pub output_dir: Option<PathBuf>,
 }
 

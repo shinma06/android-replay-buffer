@@ -2025,6 +2025,11 @@ impl CapturePipeline {
             .iter()
             .filter_map(|id| self.ring.descriptor(id))
             .fold(0u64, |sum, c| sum.saturating_add(c.bytes));
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_precision_loss,
+            reason = "configured ring capacity is at most 64 GiB and exactly representable in f64"
+        )]
         let fraction = bytes as f64 / self.ring.policy().max_ring_bytes.max(1) as f64;
         if fraction > self.max_pinned_fraction {
             return Err(DaemonError::PinBudget {
@@ -2092,11 +2097,23 @@ impl CapturePipeline {
         }
         let job = load_failed_retryable_job(catalog, job_id)?;
         let params = read_job_params(&self.data_dir, job_id)?;
-        let new_bundle_dir = new_dest_dir.join(&params.bundle_id);
+        let old_destination = Path::new(&job.job.destination_path);
+        let current_id = old_destination
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&params.bundle_id);
+        let new_bundle_dir = if job.rescue_attempted
+            || (old_destination.parent() != Some(new_dest_dir)
+                && catalog.bundle(current_id)?.is_some())
+        {
+            // Keep the original publication, catalog path and any active leases intact.
+            new_dest_dir.join(next_id("bundle"))
+        } else {
+            new_dest_dir.join(current_id)
+        };
         let plan = self.phase2_plan(&job.job.pinned_chunk_ids)?;
         let journal = self.ring.pin_journal();
         let previous = journal.load(job_id).ok().map(|r| r.destination_path);
-        let old_destination = Path::new(&job.job.destination_path);
         catalog.track_staging(job_id, old_destination)?;
         catalog.clean_tracked_staging(job_id, old_destination);
         let _ = journal.update_destination(job_id, &new_bundle_dir)?;
@@ -2117,12 +2134,6 @@ impl CapturePipeline {
         let id = &job.job.job_id;
         let mut params = read_job_params(&self.data_dir, id)?;
         let original = Path::new(&job.job.destination_path);
-        // A catalog-only failure already has an immutable publication. Finish registering it.
-        if arb_storage::bundle_io::existing_committed_manifest(original, &params.bundle_id)
-            .is_some()
-        {
-            return self.prepare_retry(catalog, id);
-        }
         let message = format!(
             "自動救出: 元の保存先 {}",
             original.parent().unwrap_or(original).display()
@@ -2617,6 +2628,30 @@ fn saved_evidence(
     }
 }
 
+fn begin_materialization(catalog: &Catalog, job_id: &str) -> Result<CatalogSaveJob, DaemonError> {
+    let now_utc = utc_now_iso8601();
+    let job_record = catalog
+        .save_job(job_id)?
+        .ok_or_else(|| DaemonError::NotFound {
+            entity: NotFoundEntity::Job,
+            detail: format!("save job `{job_id}` not found"),
+        })?;
+
+    Ok(match job_record.job.state {
+        SaveJobState::Pinned => {
+            let _ = catalog.mark_draining(job_id, &now_utc)?;
+            catalog.mark_materializing(job_id, &now_utc)?
+        }
+        SaveJobState::Draining => catalog.mark_materializing(job_id, &now_utc)?,
+        SaveJobState::Materializing => job_record,
+        other => {
+            return Err(DaemonError::Conflict(format!(
+                "save job `{job_id}` cannot materialize from state {other:?}"
+            )));
+        }
+    })
+}
+
 /// Executes Phase-2 materialization for `job_id` from its durably pinned Zone-1 chunks,
 /// **without** the capture lock (R3 M2).
 ///
@@ -2636,31 +2671,10 @@ pub fn phase2_materialize(
     catalog: &Catalog,
     job_id: &str,
 ) -> Result<SaveOutcomeResponse, DaemonError> {
-    let now_utc = utc_now_iso8601();
-    let job_record = catalog
-        .save_job(job_id)?
-        .ok_or_else(|| DaemonError::NotFound {
-            entity: NotFoundEntity::Job,
-            detail: format!("save job `{job_id}` not found"),
-        })?;
-
-    let job_record = match job_record.job.state {
-        SaveJobState::Pinned => {
-            let _ = catalog.mark_draining(job_id, &now_utc)?;
-            catalog.mark_materializing(job_id, &now_utc)?
-        }
-        SaveJobState::Draining => catalog.mark_materializing(job_id, &now_utc)?,
-        SaveJobState::Materializing => job_record,
-        other => {
-            return Err(DaemonError::Conflict(format!(
-                "save job `{job_id}` cannot materialize from state {other:?}"
-            )));
-        }
-    };
-
+    let job_record = begin_materialization(catalog, job_id)?;
     // From here on the job is `Materializing`: no `?` may leave it there.
     let dest_path = PathBuf::from(&job_record.job.destination_path);
-    let params = match read_job_params(&plan.data_dir, job_id) {
+    let mut params = match read_job_params(&plan.data_dir, job_id) {
         Ok(params) => params,
         Err(err) => {
             return fail_job(
@@ -2674,6 +2688,11 @@ pub fn phase2_materialize(
             );
         }
     };
+    // The catalog's K5 destination is durable across a crash during retarget.
+    // A published WORM and its separately rescued copy have distinct bundle IDs.
+    if let Some(id) = dest_path.file_name().and_then(|name| name.to_str()) {
+        id.clone_into(&mut params.bundle_id);
+    }
     let materialized = match materialize_from_chunks(plan, job_id, &dest_path, &params) {
         Ok(m) => m,
         Err((stage, err)) => {
@@ -5729,6 +5748,70 @@ mod tests {
         assert_eq!(pins.list_all().unwrap().len(), 0);
     }
 
+    fn assert_rejected_pin_budget(
+        state: &Arc<crate::DaemonState>,
+        record: &arb_storage::catalog::CatalogSaveJob,
+    ) {
+        use serde_json::json;
+        let id = &record.job.job_id;
+        let mut cap = state.lock_capture().unwrap();
+        let bytes = cap.ring_stats().unwrap().1;
+        let mut policy = cap.ring.policy();
+        policy.max_ring_bytes = bytes * 2;
+        cap.set_ring_policy(policy);
+        assert!(cap.check_pin_budget(&record.job.pinned_chunk_ids).is_ok()); // shared pins counted once
+        policy.max_ring_bytes -= 1;
+        cap.set_ring_policy(policy);
+        drop(cap);
+        let error = state
+            .dispatch_guarded("save.logs", json!({"drain_timeout_ms":0}))
+            .unwrap_err()
+            .into_response(1.into())
+            .error
+            .unwrap()
+            .data
+            .unwrap();
+        assert_eq!(error["error_code"], "STORAGE_PRESSURE");
+        assert_eq!(error["details"]["failed_save_jobs"], 1);
+        assert_eq!(error["details"]["max_fraction"], 0.5);
+        assert_eq!(state.catalog.list_save_jobs().unwrap().len(), 1);
+        state
+            .dispatch("save.discard", json!({"job_id":id}))
+            .unwrap();
+        state
+            .lock_capture()
+            .unwrap()
+            .set_ring_policy(RingBudgetPolicy::default());
+    }
+
+    fn assert_rescue_deadline(
+        state: &crate::DaemonState,
+        job: &serde_json::Value,
+        id: &str,
+    ) -> i64 {
+        let eligible = arb_storage::catalog::parse_utc_timestamp_ns(
+            job["rescue_eligible_at_utc"].as_str().unwrap(),
+        )
+        .unwrap()
+            / 1_000_000;
+        let failed =
+            arb_storage::catalog::parse_utc_timestamp_ns(job["updated_at_utc"].as_str().unwrap())
+                .unwrap()
+                / 1_000_000;
+        assert_eq!(eligible - failed, 900_000);
+        let at = i64::try_from(eligible).unwrap();
+        state.rescue_failed_jobs(at - 1).unwrap();
+        assert!(
+            !state
+                .catalog
+                .save_job(id)
+                .unwrap()
+                .unwrap()
+                .rescue_attempted
+        );
+        at
+    }
+
     #[test]
     fn failed_jobs_rescue_at_900_seconds_once_and_respect_pin_capacity() {
         use serde_json::json;
@@ -5755,36 +5838,29 @@ mod tests {
                 )
                 .unwrap()
         };
-        for fail_rescue in [true, false] {
-            state
-                .faults
-                .deny_output_after_pin_once
-                .store(true, Ordering::Release);
+        for (fail_rescue, published, class, action) in [
+            (true, false, "permanent_destination", "retarget"),
+            (false, false, "permanent_destination", "retarget"),
+            (false, true, "transient", "retry"),
+        ] {
+            if published {
+                state
+                    .faults
+                    .fail_complete_job_once
+                    .store(true, Ordering::Release);
+            } else {
+                state
+                    .faults
+                    .deny_output_after_pin_once
+                    .store(true, Ordering::Release);
+            }
             let job = trigger()["job"].clone();
             let id = job["job_id"].as_str().unwrap();
-            assert_eq!(job["failure_class"], "permanent_destination");
-            assert_eq!(job["recommended_action"], "retarget");
-            let eligible = arb_storage::catalog::parse_utc_timestamp_ns(
-                job["rescue_eligible_at_utc"].as_str().unwrap(),
-            )
-            .unwrap()
-                / 1_000_000;
-            let failed = arb_storage::catalog::parse_utc_timestamp_ns(
-                job["updated_at_utc"].as_str().unwrap(),
-            )
-            .unwrap()
-                / 1_000_000;
-            assert_eq!(eligible - failed, 900_000);
-            let at = i64::try_from(eligible).unwrap();
-            state.rescue_failed_jobs(at - 1).unwrap();
-            assert!(
-                !state
-                    .catalog
-                    .save_job(id)
-                    .unwrap()
-                    .unwrap()
-                    .rescue_attempted
-            );
+            assert_eq!(job["failure_class"], class);
+            assert_eq!(job["recommended_action"], action);
+            let original = Path::new(job["destination_path"].as_str().unwrap());
+            let old_manifest = std::fs::read(original.join("manifest.json")).ok();
+            let at = assert_rescue_deadline(state, &job, id);
             if fail_rescue {
                 state
                     .dispatch("config.update", json!({"failed_job_rescue_after_secs":0}))
@@ -5814,39 +5890,12 @@ mod tests {
                     .starts_with(state.catalog.managed_bundles_root())
             );
             if fail_rescue {
-                assert!(!record.job.pinned_chunk_ids.is_empty());
+                assert_ne!(record.job.pinned_chunk_ids, Vec::<String>::new());
                 state.rescue_failed_jobs(at + 900_000).unwrap();
                 assert_eq!(state.catalog.save_job(id).unwrap().unwrap(), record);
-                let mut cap = state.lock_capture().unwrap();
-                let bytes = cap.ring_stats().unwrap().1;
-                let mut policy = cap.ring.policy();
-                policy.max_ring_bytes = bytes * 2;
-                cap.set_ring_policy(policy);
-                assert!(cap.check_pin_budget(&record.job.pinned_chunk_ids).is_ok()); // shared pins counted once
-                policy.max_ring_bytes -= 1;
-                cap.set_ring_policy(policy);
-                drop(cap);
-                let error = state
-                    .dispatch_guarded("save.logs", json!({"drain_timeout_ms":0}))
-                    .unwrap_err()
-                    .into_response(1.into())
-                    .error
-                    .unwrap()
-                    .data
-                    .unwrap();
-                assert_eq!(error["error_code"], "STORAGE_PRESSURE");
-                assert_eq!(error["details"]["failed_save_jobs"], 1);
-                assert_eq!(error["details"]["max_fraction"], 0.5);
-                assert_eq!(state.catalog.list_save_jobs().unwrap().len(), 1);
-                state
-                    .dispatch("save.discard", json!({"job_id":id}))
-                    .unwrap();
-                state
-                    .lock_capture()
-                    .unwrap()
-                    .set_ring_policy(RingBudgetPolicy::default());
+                assert_rejected_pin_budget(state, &record);
             } else {
-                assert!(record.job.pinned_chunk_ids.is_empty());
+                assert_eq!(record.job.pinned_chunk_ids, Vec::<String>::new());
                 assert_eq!(state.lock_capture().unwrap().ring_stats().unwrap().2, 0);
                 let manifest = arb_storage::bundle_io::read_bundle_manifest(Path::new(
                     &record.job.destination_path,
@@ -5854,6 +5903,12 @@ mod tests {
                 .unwrap();
                 assert!(manifest.to_string().contains("元メモ"));
                 assert!(manifest.to_string().contains("自動救出"));
+                if published {
+                    assert_eq!(
+                        std::fs::read(original.join("manifest.json")).unwrap(),
+                        old_manifest.unwrap()
+                    );
+                }
             }
         }
     }

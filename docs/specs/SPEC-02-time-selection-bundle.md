@@ -93,7 +93,7 @@ satisfies:
 4. 同じファイルシステムのステージングに動画・ログ・読み取り専用の `timeline.sqlite` 等を書き、SHA-256 を含む `manifest.json` を確定して原子的に公開する。確定後の内容は WORM（一度書き込んだ内容を変更しない）。編集状態・リース・論理削除は外部の `catalog.sqlite` に保存する。
 5. 正常完了は `completed`。`failed_retryable` は pin を維持し、`save.retry` で再試行、`save.retarget` で出力先を変えて再試行できる。明示破棄は `save.discard`。起動回復は残存 pin とジョブを照合し、所有を確認できた未確定作業領域を回収する。別のディレクトリを名前の類似だけで消してはならない。
 
-失敗原因が保存先なら retarget、一時障害なら retry、内部データの破損なら discard を案内する。失敗から既定 900 秒後に管理域へ一度だけ自動救出する。設定 failed_job_rescue_after_secs が 0 なら無効。救出失敗時と破損時は pin を保持し、ユーザーの操作を待つ。
+失敗原因が保存先なら retarget、一時障害なら retry、内部データの破損なら discard を案内する。失敗から既定 900 秒後に管理域へ一度だけ自動救出する。設定 failed_job_rescue_after_secs が 0 なら無効。救出失敗時と破損時は pin を保持し、ユーザーの操作を待つ。元の保存先に既に WORM を発行済みの場合、管理域の救出先には新しいバンドル ID を割り当てる。元の記録、カタログ行、リースを保ったまま救出メモを残せる。
 
 [状態遷移](../../core/crates/arb-core/src/state.rs)・[リング](../../core/crates/arb-storage/src/ring.rs)・[バンドル公開](../../core/crates/arb-storage/src/bundle_io.rs)・[VER-05](../verifications/VER-05-arb-storage.md)
 

@@ -838,6 +838,13 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     assert!(status.success(), "arb-cli mcp must exit 0 cleanly");
 
     // Also smoke-test `arb-cli share-mp4 --json` subcommand directly.
+    // An explicit standalone MP4 does not use the configured bundle directory.
+    let blocked = tmp.path().join("not-a-directory");
+    fs::write(&blocked, b"file").unwrap();
+    arb_os::rpc::RpcClient::connect_endpoint(&paths.ipc_endpoint())
+        .unwrap()
+        .call("config.update", json!({"output_dir_override":blocked}))
+        .unwrap();
     let cli_mp4 = tmp.path().join("cli-share.mp4");
     let share_out = Command::new(cli_bin)
         .args([
@@ -920,6 +927,14 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
             &mut stdout,
             &json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":version.as_str(),"capabilities":{},"clientInfo":{"name":"arb-test","version":"1"}}}),
         );
+        let schema = send_mcp_request(
+            &mut stdin,
+            &mut stdout,
+            &json!({"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"arb://schemas/arb_jobs"}}),
+        );
+        let jobs_schema: Value =
+            serde_json::from_str(schema["result"]["contents"][0]["text"].as_str().unwrap())
+                .unwrap();
         let mut call = |name: &str, args: Value| {
             let response = send_mcp_request(
                 &mut stdin,
@@ -933,6 +948,9 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
             let result = &response["result"];
             let body: Value =
                 serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            if name == "arb_jobs" {
+                stdio_contract::assert_valid_jobs_response(&jobs_schema, &body);
+            }
             (result["isError"] == true, body)
         };
         for (name, action) in [

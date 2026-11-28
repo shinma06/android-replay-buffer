@@ -673,6 +673,7 @@ enum Staging {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Job {
+    rescue_attempted: bool,
     phase: JobPhase,
     pins: u8,
     boot: u8,
@@ -755,6 +756,7 @@ enum S2Action {
     Phase2CompleteJob,
     Retry,
     Retarget,
+    Rescue,
     Discard,
     TrashBundle,
     RestoreBundle,
@@ -904,6 +906,7 @@ impl Model for S2Model {
             S2Action::Phase2CompleteJob,
             S2Action::Retry,
             S2Action::Retarget,
+            S2Action::Rescue,
             S2Action::Discard,
             S2Action::TrashBundle,
             S2Action::RestoreBundle,
@@ -1008,6 +1011,7 @@ impl Model for S2Model {
                     n.boot_blackout = true;
                 }
                 n.job = Some(Job {
+                    rescue_attempted: false,
                     phase: JobPhase::Pinned,
                     pins,
                     boot: s.boot,
@@ -1085,12 +1089,18 @@ impl Model for S2Model {
                 j.pins = 0;
                 n.job = Some(j);
             }
-            S2Action::Retry | S2Action::Retarget => {
+            S2Action::Retry | S2Action::Retarget | S2Action::Rescue => {
                 let mut j = s.job?;
                 if j.phase != JobPhase::FailedRetryable {
                     return None;
                 }
-                if matches!(a, S2Action::Retarget) {
+                if matches!(a, S2Action::Rescue) {
+                    if j.rescue_attempted {
+                        return None;
+                    }
+                    j.rescue_attempted = true;
+                    j.managed = true;
+                } else if matches!(a, S2Action::Retarget) {
                     j.managed = !j.managed;
                 }
                 j.phase = JobPhase::Committed;
@@ -1295,9 +1305,13 @@ impl Model for S2Model {
                     if !s.job.is_some_and(|j| j.phase == JobPhase::FailedRetryable) {
                         return true;
                     }
-                    [S2Action::Retry, S2Action::Retarget]
+                    [S2Action::Retry, S2Action::Rescue]
                         .into_iter()
                         .all(|first| {
+                            let rescue = matches!(first, S2Action::Rescue);
+                            if rescue && s.job.is_some_and(|j| j.rescue_attempted) {
+                                return m.next_state(s, first).is_none();
+                            }
                             let mut cur = s.clone();
                             cur.disk = Disk::Ok;
                             if !cur.has_writer() {
@@ -1317,8 +1331,10 @@ impl Model for S2Model {
                                     None => return false,
                                 }
                             }
-                            cur.job.is_some_and(|j| j.phase == JobPhase::Completed)
-                                && cur.chunks.iter().flatten().all(|c| !c.pinned)
+                            cur.job.is_some_and(|j| {
+                                j.phase == JobPhase::Completed
+                                    && (!rescue || (j.managed && j.rescue_attempted))
+                            }) && cur.chunks.iter().flatten().all(|c| !c.pinned)
                         })
                 },
             ),

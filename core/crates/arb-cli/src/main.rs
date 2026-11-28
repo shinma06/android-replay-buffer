@@ -786,6 +786,13 @@ fn parse_optional_dir_value(raw: &str) -> Result<Value, CliError> {
     }
 }
 
+fn parse_pin_fraction(val: &str) -> Result<f64, CliError> {
+    val.parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0 && *v <= 1.0)
+        .ok_or_else(|| CliError::usage("--max-pinned-ring-fraction expects a number in (0, 1]"))
+}
+
 fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut patch = serde_json::Map::new();
     let mut i = 0_usize;
@@ -796,28 +803,15 @@ fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
             "--save-window-secs" => {
                 patch.insert("save_window_secs".to_owned(), json!(parse_u32(val, flag)?));
             }
-            "--failed-job-rescue-after-secs" => {
+            "--max-pinned-ring-fraction" => {
                 patch.insert(
-                    "failed_job_rescue_after_secs".into(),
-                    json!(parse_u64(val, flag)?),
+                    "max_pinned_ring_fraction".into(),
+                    json!(parse_pin_fraction(val)?),
                 );
             }
-            "--max-pinned-ring-fraction" => {
-                let fraction = val
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|v| *v > 0.0 && *v <= 1.0)
-                    .ok_or_else(|| {
-                        CliError::usage("--max-pinned-ring-fraction expects a number in (0, 1]")
-                    })?;
-                patch.insert("max_pinned_ring_fraction".into(), json!(fraction));
-            }
-            "--ring-budget-bytes" => {
-                patch.insert("ring_budget_bytes".to_owned(), json!(parse_u64(val, flag)?));
-            }
-            "--min-free-disk-bytes" => {
+            "--ring-budget-bytes" | "--min-free-disk-bytes" | "--failed-job-rescue-after-secs" => {
                 patch.insert(
-                    "min_free_disk_bytes".to_owned(),
+                    flag.trim_start_matches("--").replace('-', "_"),
                     json!(parse_u64(val, flag)?),
                 );
             }

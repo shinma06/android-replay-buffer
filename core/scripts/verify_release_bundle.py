@@ -973,7 +973,7 @@ def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> No
 # --------------------------------------------------------------------------------------------
 
 def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Path, meta: dict[str, Any]) -> None:
-    with report.section("mcp", "MCP 20 ツールと実バンドル") as sec:
+    with report.section("mcp", "MCP 21 ツールと実バンドル") as sec:
         cfg_cli = (iso.cli("config", "get").data or {}).get("config", {})
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:

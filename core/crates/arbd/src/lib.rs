@@ -1843,6 +1843,19 @@ impl DaemonState {
             parsed.output_dir.as_deref(),
             Some(&path),
         )?;
+        if parsed
+            .output_path
+            .as_deref()
+            .is_none_or(|p| p.as_os_str().is_empty())
+            && let Some(dir) = parsed
+                .output_dir
+                .as_deref()
+                .or(config.screenshot_dir_override.as_deref())
+                .or(config.output_dir_override.as_deref())
+            && dir != self.catalog.managed_bundles_root()
+        {
+            save_policy::probe_output_root(dir)?;
+        }
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
         let backend = default_codec_backend();
         let ctx = ExportContext {
@@ -1862,12 +1875,16 @@ impl DaemonState {
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 
-        let dest_parent = self.resolve_output_dir(
-            parsed.dest_dir.as_deref(),
-            user_cfg.output_dir_override.as_deref(),
-            self.catalog.managed_bundles_root(),
-            Some(&path),
-        )?;
+        let dest_parent = if parsed.keep_bundle {
+            self.resolve_output_dir(
+                parsed.dest_dir.as_deref(),
+                user_cfg.output_dir_override.as_deref(),
+                self.catalog.managed_bundles_root(),
+                Some(&path),
+            )?
+        } else {
+            self.catalog.managed_bundles_root().to_owned()
+        };
         let share_mp4_path = if let Some(explicit) = &parsed.output_path {
             self.validate_output_location(explicit, "output_path", Some(&path))?;
             self.reject_data_dir_state_file(explicit, "output_path")?;
@@ -2403,8 +2420,6 @@ fn spawn_auto_attach(attach_state: Arc<DaemonState>) -> std::io::Result<thread::
         .spawn(move || {
             while !attach_state.is_shutting_down() {
                 adb_resources::reap(&attach_state.paths.data_dir.join("adb-sessions"));
-                let _ = attach_state
-                    .rescue_failed_jobs(i64::try_from(current_unix_millis()).unwrap_or(i64::MAX));
                 let _ = attach_state.auto_attach();
                 thread::park_timeout(Duration::from_secs(2));
             }
@@ -2431,7 +2446,16 @@ fn spawn_crash_worker(
 }
 
 fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
-    while let Ok(pending) = rx.recv() {
+    loop {
+        let pending = match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(pending) => pending,
+            Err(mpsc::RecvTimeoutError::Timeout) if !state.is_shutting_down() => {
+                let _ = state
+                    .rescue_failed_jobs(i64::try_from(current_unix_millis()).unwrap_or(i64::MAX));
+                continue;
+            }
+            Err(_) => break,
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             state.finish_pinned_save(
                 pending,
