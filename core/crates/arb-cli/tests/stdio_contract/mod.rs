@@ -895,6 +895,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     assert!(overview["logcat_completeness"].is_object());
     assert_eq!(overview["noise_candidates"], json!([]));
     noise_and_local_time(&mut c, root.path(), &paths);
+    crash_detail_and_package_filter(&mut c, root.path(), &paths);
     c.tool(
         "arb_query_logs",
         json!({"bundle_id":id,"level":"eRrOr","whole_word":true,"keyword":"failed","limit":1}),
@@ -1316,6 +1317,198 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
 }
 
 /// #586-B: `fields` defaults to compact on every version; `full` stays available.
+/// #589 / #584: crash stacks and process events are read from the saved logs, and a `package`
+/// filter annotates every row instead of hiding it, warning when the package is never seen.
+fn crash_detail_and_package_filter(c: &mut Client, work: &Path, paths: &ArbPaths) {
+    let row = |seq: u64, tag: &str, uid: u32, pid: i32, message: &str| {
+        let bt = BASE_BT_NS + 9 * FRAME_STEP_NS + i64::try_from(seq).unwrap() * 1_000_000;
+        LogRecord {
+            seq,
+            boot_id: Some("boot-mcp".into()),
+            header_epoch_ns: None,
+            device_read_boottime_ns: Some(bt),
+            pc_ingest_cont_ns: bt,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-mcp".into(),
+                boottime_ns: bt,
+                half_width_ns: 1_000_000,
+                semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+            },
+            bucket: RecordBucket::Main,
+            level: Some("E".into()),
+            tag: Some(tag.into()),
+            pid: Some(pid),
+            tid: Some(pid),
+            uid: Some(uid),
+            package_name: None,
+            message: message.into(),
+        }
+    };
+    let app_frame = "at com.example.demo.LoginActivity.onCreate(LoginActivity.kt:7)";
+    let extra = vec![
+        row(10, "AndroidRuntime", 10_200, 1234, "FATAL EXCEPTION: main"),
+        row(
+            11,
+            "AndroidRuntime",
+            10_200,
+            1234,
+            "Process: com.example.demo, PID: 1234",
+        ),
+        row(
+            12,
+            "AndroidRuntime",
+            10_200,
+            1234,
+            "java.lang.IllegalStateException: boom",
+        ),
+        row(
+            13,
+            "AndroidRuntime",
+            10_200,
+            1234,
+            "\tat android.os.Looper.loop(Looper.java:1)",
+        ),
+        row(
+            14,
+            "AndroidRuntime",
+            10_200,
+            1234,
+            &format!("\t{app_frame}"),
+        ),
+        row(
+            15,
+            "AndroidRuntime",
+            10_200,
+            1234,
+            "Caused by: java.lang.NullPointerException: root",
+        ),
+        row(
+            20,
+            "ActivityManager",
+            1_000,
+            600,
+            "Force stopping com.example.other appid=10300 user=0: from pid 600",
+        ),
+        row(
+            21,
+            "ActivityManager",
+            1_000,
+            600,
+            "Killing 4321:com.example.other/u0a300 (adj 0): stop com.example.other due to from pid 600",
+        ),
+        row(
+            22,
+            "ActivityManager",
+            10_200,
+            1234,
+            "Process com.example.victim (pid 99) has died: fg TOP",
+        ),
+    ];
+    let bundle = seed_bundle_with_events(
+        work,
+        &paths.data_dir.join("external-crash"),
+        "bundle-crash",
+        extra,
+        vec![super::fixture_tap()],
+    );
+    c.init(ProtocolVersion::V2025_11_25.as_str());
+    let all = c.tool("arb_timeline_overview", json!({"bundle_id":bundle}));
+    let crash = &all["crashes"][0];
+    assert_eq!(crash["package_name"], "com.example.demo");
+    assert_eq!(crash["first_app_frame"], app_frame);
+    assert_eq!(
+        crash["stack_top"],
+        json!(["at android.os.Looper.loop(Looper.java:1)", app_frame])
+    );
+    assert_eq!(
+        crash["caused_by"],
+        "Caused by: java.lang.NullPointerException: root"
+    );
+    assert!(
+        crash.get("matches_package").is_none(),
+        "no annotation without a filter"
+    );
+    let events = all["process_events"].as_array().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "forged app-UID death is ignored: {events:?}"
+    );
+    assert_eq!(events[0]["kind"], "force_stop");
+    assert_eq!(events[0]["package_name"], "com.example.other");
+    assert_eq!(events[0]["pid"], 4321);
+    assert_eq!(events[0]["is_crash"], false);
+    assert!(events[0]["offset_ms"].is_i64(), "placed like log rows");
+    assert_eq!(all["package_filter"], Value::Null);
+    assert_eq!(all["warnings"], json!([]));
+    let linked: Vec<_> = all["error_log_highlights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|h| h["tag"] == "AndroidRuntime")
+        .map(|h| &h["crash_index"])
+        .collect();
+    assert!(
+        !linked.is_empty() && linked.iter().all(|i| **i == json!(0)),
+        "{linked:?}"
+    );
+
+    let lengths = |ov: &Value| {
+        ["crashes", "process_events", "screens", "taps", "app_logs"]
+            .map(|k| ov[k].as_array().unwrap().len())
+    };
+    let own = c.tool(
+        "arb_timeline_overview",
+        json!({"bundle_id":bundle,"package":"com.example.demo"}),
+    );
+    assert_eq!(lengths(&own), lengths(&all), "a filter never drops rows");
+    assert_eq!(own["warnings"], json!([]));
+    assert_eq!(own["crashes"][0]["matches_package"], true);
+    assert_eq!(own["process_events"][0]["matches_package"], false);
+    assert_eq!(own["screens"][0]["matches_package"], true);
+    assert_eq!(own["taps"][0]["foreground_package"], "com.example.demo");
+    let filter = &own["package_filter"];
+    assert_eq!(filter["package"], "com.example.demo");
+    assert_eq!(
+        filter["applied_to"],
+        json!(["error_log_highlights", "noise_candidates"])
+    );
+    assert_eq!(filter["matched_crashes"], 1);
+    assert_eq!(filter["matched_process_events"], 0);
+    assert_eq!(filter["matched_screens"], 1);
+
+    let missing = c.tool(
+        "arb_timeline_overview",
+        json!({"bundle_id":bundle,"package":"no.such.pkg"}),
+    );
+    assert_eq!(
+        lengths(&missing),
+        lengths(&all),
+        "a filter never drops rows"
+    );
+    assert_eq!(missing["error_log_highlights"], json!([]));
+    assert_eq!(missing["warnings"][0]["code"], "package_not_seen");
+    assert_eq!(missing["warnings"][0]["details"]["package"], "no.such.pkg");
+    let sample = &missing["package_filter"]["known_packages_sample"];
+    assert_eq!(
+        missing["warnings"][0]["details"]["known_packages_sample"],
+        *sample
+    );
+    for known in ["com.example.demo", "com.example.other"] {
+        assert!(
+            sample.as_array().unwrap().contains(&json!(known)),
+            "{sample}"
+        );
+    }
+    assert!(
+        missing["crashes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["matches_package"] == false)
+    );
+}
+
 fn log_fields(c: &mut Client, id: &str, version: &str) {
     let page = c.tool("arb_query_logs", json!({"bundle_id":id}));
     assert_eq!(page["fields"], "compact", "{version}");

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use arb_adb::adb::AdbDeviceInfo;
-use arb_core::analytics::{CrashMarker, ScreenSpan};
+use arb_core::analytics::{CrashMarker, CrashStackDetail, ProcessEvent, ScreenSpan};
 use arb_core::bundle::{
     AppLogSummary, BundleKind, DeviceInfo, EpochSpan, LogCompleteness, LogRecord, Provenance,
     StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary,
@@ -1574,6 +1574,23 @@ pub struct OverviewTapItem {
     /// End timestamp in milliseconds relative to the start of the bundle timeline (mirrors `t_ms`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_t_ms: Option<i64>,
+    /// With a `package` filter only: package of the screen span on screen at the tap (`null`
+    /// when no span covers it). Absent without a filter.
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub foreground_package: Option<Option<String>>,
+}
+
+/// Maps a present JSON field (including `null`) to `Some`, so an absent field stays `None`.
+fn present_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 const fn one_occurrence() -> usize {
@@ -1604,6 +1621,83 @@ pub struct ErrorLogHighlight {
     pub tag: Option<String>,
     /// Bounded error message excerpt.
     pub message: String,
+    /// Index into `crashes` when this `AndroidRuntime` row belongs to that crash's
+    /// `FATAL EXCEPTION` block, whose `stack_top` / `first_app_frame` hold the untruncated
+    /// stack. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash_index: Option<usize>,
+}
+
+/// Crash marker with its read-time stack evidence (`stack_top`, `first_app_frame`,
+/// `caused_by`), derived from the saved logcat on every read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewCrash {
+    /// Persisted marker fields, unchanged.
+    #[serde(flatten)]
+    pub marker: CrashMarker,
+    /// Stack lines read from the crashing process's own `AndroidRuntime` block.
+    #[serde(flatten)]
+    pub stack: CrashStackDetail,
+    /// With a `package` filter only: whether `package_name` equals it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matches_package: Option<bool>,
+}
+
+/// Non-crash process termination placed on the bundle timeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewProcessEvent {
+    /// Event fields, with `offset_ms` / `frame_index_hint` placed like log rows.
+    #[serde(flatten)]
+    pub event: ProcessEvent,
+    /// With a `package` filter only: whether `package_name` equals it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matches_package: Option<bool>,
+}
+
+/// Screen span of the overview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewScreen {
+    /// Span fields.
+    #[serde(flatten)]
+    pub span: ScreenSpan,
+    /// With a `package` filter only: whether `package_name` equals it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matches_package: Option<bool>,
+}
+
+/// Per-app log sidecar summary of the overview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewAppLog {
+    /// Sidecar fields.
+    #[serde(flatten)]
+    pub summary: AppLogSummary,
+    /// With a `package` filter only: whether `package_name` equals it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matches_package: Option<bool>,
+}
+
+/// How a `package` filter was applied to one overview, and what it matched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageFilterSummary {
+    /// The requested package, as given.
+    pub package: String,
+    /// Arrays narrowed to the package (`error_log_highlights`, `noise_candidates`).
+    pub applied_to: Vec<String>,
+    /// Arrays returned in full with a per-row `matches_package` (taps: `foreground_package`).
+    pub annotated: Vec<String>,
+    /// Main log rows of any level attributed to the package (PID timeline and log signals).
+    pub matched_logs: usize,
+    /// `E`/`F` rows after every filter (`total_error_logs`).
+    pub matched_error_logs: usize,
+    /// Crashes whose `package_name` equals the package.
+    pub matched_crashes: usize,
+    /// Process events whose `package_name` equals the package.
+    pub matched_process_events: usize,
+    /// Screen spans whose `package_name` equals the package.
+    pub matched_screens: usize,
+    /// Up to 10 packages seen in this bundle, sorted (screens, crashes, process events and
+    /// app logs first, then log rows).
+    pub known_packages_sample: Vec<String>,
 }
 
 /// A tag whose non-fatal errors repeat often enough to be worth excluding explicitly.
@@ -1680,11 +1774,20 @@ pub struct TimelineOverviewResponse {
     /// Honest logcat completeness indicator, if logcat metadata is present.
     pub logcat_completeness: Option<LogCompleteness>,
     /// Contiguous Activity / screen transition spans.
-    pub screens: Vec<ScreenSpan>,
+    pub screens: Vec<OverviewScreen>,
     /// Compact ordered tap records with frame hints.
     pub taps: Vec<OverviewTapItem>,
-    /// Structured crash markers extracted from logcat.
-    pub crashes: Vec<CrashMarker>,
+    /// Structured crash markers extracted from logcat, with read-time stack evidence.
+    pub crashes: Vec<OverviewCrash>,
+    /// Force stops, low-memory kills, ANRs, kills and deaths that are not crashes.
+    #[serde(default)]
+    pub process_events: Vec<OverviewProcessEvent>,
+    /// How the `package` filter was applied (`None` without one).
+    #[serde(default)]
+    pub package_filter: Option<PackageFilterSummary>,
+    /// Overview warnings (for example `package_not_seen`).
+    #[serde(default)]
+    pub warnings: Vec<WarningDetail>,
     /// Recorded timeline discontinuities (gaps, reboots, sleep).
     pub discontinuities: Vec<DiscontinuityEvent>,
     /// Filtered highlight count before applying the limit.
@@ -1709,7 +1812,7 @@ pub struct TimelineOverviewResponse {
     pub unanchored_truncated_count: u64,
     /// Per-app extracted foreground logcat sidecars (`app-logs/<package>.jsonl`).
     #[serde(default)]
-    pub app_logs: Vec<AppLogSummary>,
+    pub app_logs: Vec<OverviewAppLog>,
 }
 
 /// Visual inspection mode for `media.inspect_frames`.

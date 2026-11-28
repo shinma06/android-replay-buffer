@@ -18,7 +18,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08、注入要求の K17・TCB-22 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割の proptest、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない。`package` はエラー集約・ノイズ候補だけを絞り、クラッシュ・プロセス終了・画面・タップ・アプリログは全行に注釈を付け、どこにも現れなければ `package_not_seen` を返す | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割・package 注釈の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -30,6 +30,7 @@
 | 保存先・失敗ジョブの救出 | 02・06 | 出力先の事前検査 → 捕捉ロック下の pin 予算 → catalog の失敗分類・救出済みフラグ → RPC・MCP・IDE の復旧操作 | K5・K16、S2、SV-08、実 IPC・4 版の stdio 試験 |
 | アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
 | 被覆台帳・引き継ぎ・保存の警告 | 02・03・06・07 | ビーコン・フレーム・ログ・ギャップ → `capture.rs` の台帳 → ジョブパラメータ → 選別・MP4 の末尾長 → `display_frames` → RPC・CLI／MCP・IDE。静止・切断・録画開始直後・両端に行がない保存で、`carried_in`・各被覆時間・警告の 1 対 1 を比較 | K14、G3、`capture_evidence_rows`、MCP 実 stdio、`PddContractTablesTest` |
+| クラッシュ詳細・プロセス終了・`package` 注釈 | 02・06・07 | 保存ログ（`AndroidRuntime`・`ActivityManager`・lmkd・events の UID）→ `arb-core::analytics` の読取時導出 → `timeline.overview` の注釈・警告 → `arb_timeline_overview`・`arb_save_and_inspect`。既存 WORM バンドル、偽装 UID、am_crash だけのクラッシュ、存在しないパッケージで、行数・順序・`package_not_seen` を比較 | K18、G9、`crash-detail-table.json`、実 stdio・スキーマ検査、TCB-23 |
 | 映像の選別・MP4 化・バンドル確定 | 02・03・06 | リング回収 → `select_video`（preroll・引き継ぎ）→ `mux_selected_video` → `arb-storage` の確定前検査 → `frames`・manifest → 映像ツール・保存結果。先頭の IDR が失われた保存で、`video.mp4`・`frame_count`・`frames` 行数・MP4 サンプル数・`video_coverage_ms` が一致するか | K15、W3B 再現 A・B、`video_commit_properties.rs` |
 | カタログ・リース・ゴミ箱・再試行 | 01・02・05・06 | catalog／bundle_io → `arbd` → CLI／MCP・IDE。切断・パス置換・閲覧中に実体を保護し、全結果区分を表示するか | K5、S2、G1、RS-4、KON-7、操作結果表 |
 | 操作アイコンの追加・変更 | 05 | `ArbIcons` → Tool Window・Studio・設定・Running Devices・メニュー・通知。同じ操作の全入口と XML 宣言を照合 | アイコン構造テスト |
@@ -66,7 +67,8 @@
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 21 ツールと実書き出し、IDE と仕様書の表示名 |
-| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K15、S1〜S7、G1〜G8、M1〜M2、構造ガードと実機・外部実装への依存 |
+| [クラッシュ詳細・プロセス終了](crash-detail-table.json) | 固定ログ列から `stack_top`・`first_app_frame`・`caused_by` と `process_events`（偽装 UID 10xxx の拒否、force-stop 2 行の統合、クラッシュ直後の has died の抑止）を引く。K18・G9・TCB-23 |
+| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K18、S1〜S7、G1〜G9、M1〜M2、構造ガードと実機・外部実装への依存 |
 
 ## 症状から判定する
 
@@ -126,6 +128,8 @@
 | 既定のログ検索に `alignment` や行ごとの `boot_id` がない | 仕様 | 全 4 版の既定は `fields: compact`。全項目は `fields: full`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 既定の応答に `timestamp_local` がない | 仕様 | ローカル時刻は `time_zone: host` の指定時だけ。既定は UTC のみでホストに依存しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | `arb_export_frame_png` が既存の PNG を置き換えた | バグ | 明示パスの衝突は `-32002`。`output_dir` は一意名。`overwrite` 引数はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 概要に存在しない `package` を渡すと画面・クラッシュ・タップが全件返る | 仕様（#584） | 行は落とさず `matches_package`（タップは `foreground_package`）を付け、`package_filter` に適用範囲と一致件数を返す。どこにも現れなければ `warnings` に `package_not_seen` と `known_packages_sample`。無警告で素通りすればバグ。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| クラッシュにアプリのスタックがない、または force-stop・LMK・ANR が概要に出ない | バグ（#589） | 同じ PID の `AndroidRuntime` ブロックから `stack_top`・`first_app_frame`・`caused_by` を読取時に導く。ブロックがなければ null。system_server・lmkd の記録は `process_events`。アプリ UID の同名ログは採らない。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
 | 概要のエラー件数と代表行数が違う | 仕様 | フィルタ一致の生行総数とグループ数を区別し、代表行に回数・初回／最終オフセットを表示する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 同じ主ログで概要と検索の表示フレームが異なる | バグ | 同一 boot の ns 時刻・同一 VFR 表を使う。UTC の表示精度はミリ秒。 | [SPEC-03](SPEC-03-protocol-media.md) |
 | ログに影響するチャンク破損後も欠落 0・完全と報告 | バグ | 行数不明は null。送信キューのフレーム欠落数もログ行数に換算しない。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |

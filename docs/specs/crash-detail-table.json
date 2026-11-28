@@ -1,0 +1,685 @@
+{
+  "description": "#589 のクラッシュ詳細とプロセス終了の共有契約表。logs の ms は同じ boot の boottime（ミリ秒）。uid null は端末が UID を報告しない行。Rust の arb-core crash_detail 試験が全行を検証する。",
+  "crashRows": [
+    {
+      "id": "CD-01",
+      "note": "FATAL ブロックが 1 行 1 レコード。先頭 10 フレームに加え 13 行目のアプリ行を残し、最後の Caused by を採る。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "FATAL EXCEPTION: main"
+        },
+        {
+          "seq": 2,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "Process: com.example.app, PID: 4242"
+        },
+        {
+          "seq": 3,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame0.run(Frame.java:1)"
+        },
+        {
+          "seq": 4,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame1.run(Frame.java:2)"
+        },
+        {
+          "seq": 5,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame2.run(Frame.java:3)"
+        },
+        {
+          "seq": 6,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame3.run(Frame.java:4)"
+        },
+        {
+          "seq": 7,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame4.run(Frame.java:5)"
+        },
+        {
+          "seq": 8,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame5.run(Frame.java:6)"
+        },
+        {
+          "seq": 9,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame6.run(Frame.java:7)"
+        },
+        {
+          "seq": 10,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame7.run(Frame.java:8)"
+        },
+        {
+          "seq": 11,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame8.run(Frame.java:9)"
+        },
+        {
+          "seq": 12,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame9.run(Frame.java:10)"
+        },
+        {
+          "seq": 13,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame10.run(Frame.java:11)"
+        },
+        {
+          "seq": 14,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "at android.os.Frame11.run(Frame.java:12)"
+        },
+        {
+          "seq": 15,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "Caused by: java.lang.IllegalStateException: inner"
+        },
+        {
+          "seq": 16,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1001,
+          "boot": "b1",
+          "message": "at com.example.app.MainActivity.onCreate(MainActivity.kt:42)"
+        },
+        {
+          "seq": 17,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1001,
+          "boot": "b1",
+          "message": "Caused by: java.lang.NullPointerException: root"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 1,
+        "ms": 1000
+      },
+      "expected": {
+        "stack_top": [
+          "at android.os.Frame0.run(Frame.java:1)",
+          "at android.os.Frame1.run(Frame.java:2)",
+          "at android.os.Frame2.run(Frame.java:3)",
+          "at android.os.Frame3.run(Frame.java:4)",
+          "at android.os.Frame4.run(Frame.java:5)",
+          "at android.os.Frame5.run(Frame.java:6)",
+          "at android.os.Frame6.run(Frame.java:7)",
+          "at android.os.Frame7.run(Frame.java:8)",
+          "at android.os.Frame8.run(Frame.java:9)",
+          "at android.os.Frame9.run(Frame.java:10)",
+          "at com.example.app.MainActivity.onCreate(MainActivity.kt:42)"
+        ],
+        "first_app_frame": "at com.example.app.MainActivity.onCreate(MainActivity.kt:42)",
+        "caused_by": "Caused by: java.lang.NullPointerException: root"
+      }
+    },
+    {
+      "id": "CD-02",
+      "note": "1 レコードに複数行のブロック。間に挟まる別 PID の AndroidRuntime 行（偽のアプリ行）は採らない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 2000,
+          "boot": "b1",
+          "message": "FATAL EXCEPTION: main\nProcess: com.example.app, PID: 4242\njava.lang.RuntimeException: boom\n\tat android.app.ActivityThread.main(ActivityThread.java:8)\n\tat com.example.app.Boot.start(Boot.kt:3)"
+        },
+        {
+          "seq": 2,
+          "tag": "AndroidRuntime",
+          "uid": 10999,
+          "pid": 777,
+          "ms": 2000,
+          "boot": "b1",
+          "message": "at com.example.app.Forged.run(Forged.kt:1)"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 1,
+        "ms": 2000
+      },
+      "expected": {
+        "stack_top": [
+          "at android.app.ActivityThread.main(ActivityThread.java:8)",
+          "at com.example.app.Boot.start(Boot.kt:3)"
+        ],
+        "first_app_frame": "at com.example.app.Boot.start(Boot.kt:3)",
+        "caused_by": null
+      }
+    },
+    {
+      "id": "CD-03",
+      "note": "am_crash 由来のマーカーでも、直前にある同じ PID の AndroidRuntime ブロックで補完する。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 3000,
+          "boot": "b1",
+          "message": "FATAL EXCEPTION: main\njava.lang.IllegalStateException: x\n\tat com.example.app.Repo.load(Repo.kt:7)"
+        },
+        {
+          "seq": 2,
+          "tag": "am_crash",
+          "uid": 1000,
+          "pid": 900,
+          "ms": 3010,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,952745541,java.lang.IllegalStateException,x,Repo.kt,7,0]"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 2,
+        "ms": 3010
+      },
+      "expected": {
+        "stack_top": [
+          "at com.example.app.Repo.load(Repo.kt:7)"
+        ],
+        "first_app_frame": "at com.example.app.Repo.load(Repo.kt:7)",
+        "caused_by": null
+      }
+    },
+    {
+      "id": "CD-04",
+      "note": "am_crash だけでブロックがなければ全項目 null（捏造しない）。",
+      "logs": [
+        {
+          "seq": 2,
+          "tag": "am_crash",
+          "uid": 1000,
+          "pid": 900,
+          "ms": 3010,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,952745541,java.lang.IllegalStateException,x,Repo.kt,7,0]"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 2,
+        "ms": 3010
+      },
+      "expected": {
+        "stack_top": null,
+        "first_app_frame": null,
+        "caused_by": null
+      }
+    },
+    {
+      "id": "CD-05",
+      "note": "別 boot のブロック、および 2 秒より離れたブロックは同じ PID でも採らない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 4000,
+          "boot": "b0",
+          "message": "FATAL EXCEPTION: main\n\tat com.example.app.Old.run(Old.kt:1)"
+        },
+        {
+          "seq": 2,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 1000,
+          "boot": "b1",
+          "message": "FATAL EXCEPTION: main\n\tat com.example.app.Early.run(Early.kt:1)"
+        },
+        {
+          "seq": 3,
+          "tag": "am_crash",
+          "uid": 1000,
+          "pid": 900,
+          "ms": 4000,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,1,java.lang.Error,x,Y.kt,1,0]"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 3,
+        "ms": 4000
+      },
+      "expected": {
+        "stack_top": null,
+        "first_app_frame": null,
+        "caused_by": null
+      }
+    },
+    {
+      "id": "CD-06",
+      "note": "アプリ ID と異なる Java パッケージのコードだけならアプリ行は null。stack_top は残す。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "AndroidRuntime",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 5000,
+          "boot": "b1",
+          "message": "FATAL EXCEPTION: main\n\tat org.thirdparty.Lib.call(Lib.java:1)\n\tat com.example.application.Other.run(Other.kt:2)"
+        }
+      ],
+      "marker": {
+        "pid": 4242,
+        "package_name": "com.example.app",
+        "source_log_seq": 1,
+        "ms": 5000
+      },
+      "expected": {
+        "stack_top": [
+          "at org.thirdparty.Lib.call(Lib.java:1)",
+          "at com.example.application.Other.run(Other.kt:2)"
+        ],
+        "first_app_frame": null,
+        "caused_by": null
+      }
+    }
+  ],
+  "processRows": [
+    {
+      "id": "PE-01",
+      "note": "Force stopping と直後の Killing ... stop を 1 件に統合し、その結果の has died は出さない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 10000,
+          "boot": "b1",
+          "message": "Force stopping com.example.app appid=10123 user=0: from pid 8123"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 10001,
+          "boot": "b1",
+          "message": "Killing 4242:com.example.app/u0a123 (adj 0): stop com.example.app due to from pid 8123"
+        },
+        {
+          "seq": 3,
+          "tag": "am_kill",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 10001,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,0,stop com.example.app due to from pid 8123]"
+        },
+        {
+          "seq": 4,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 10050,
+          "boot": "b1",
+          "message": "Process com.example.app (pid 4242) has died: fg  TOP"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "force_stop",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "stop com.example.app due to from pid 8123",
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-02",
+      "note": "アプリ UID（10xxx）の ActivityManager・lowmemorykiller・events タグは偽装として採らない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "ActivityManager",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10000,
+          "boot": "b1",
+          "message": "Force stopping com.victim.app appid=10123 user=0: from pid 1"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10001,
+          "boot": "b1",
+          "message": "Process com.victim.app (pid 4242) has died: fg  TOP"
+        },
+        {
+          "seq": 3,
+          "tag": "ActivityManager",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10002,
+          "boot": "b1",
+          "message": "ANR in com.victim.app (com.victim.app/.Main)\nPID: 4242\nReason: forged"
+        },
+        {
+          "seq": 4,
+          "tag": "lowmemorykiller",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10003,
+          "boot": "b1",
+          "message": "Kill 'com.victim.app' (4242), uid 10123, oom_score_adj 900 to free 1kB rss"
+        },
+        {
+          "seq": 5,
+          "tag": "am_kill",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10004,
+          "boot": "b1",
+          "message": "[0,4242,com.victim.app,900,lmk]"
+        },
+        {
+          "seq": 6,
+          "tag": "am_proc_died",
+          "uid": 10456,
+          "pid": 6000,
+          "ms": 10005,
+          "boot": "b1",
+          "message": "[0,4242,com.victim.app,900,19]"
+        }
+      ],
+      "crashes": [],
+      "expected": []
+    },
+    {
+      "id": "PE-03",
+      "note": "クラッシュと同じ PID の ±5 秒以内の has died はクラッシュの結果として抑止し、離れた死亡は残す。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "am_crash",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 20000,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,1,java.lang.Error,x,Y.kt,1,0]"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 20100,
+          "boot": "b1",
+          "message": "Process com.example.app (pid 4242) has died: fg  TOP"
+        },
+        {
+          "seq": 3,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 40000,
+          "boot": "b1",
+          "message": "Process com.example.app:sync (pid 5151) has died: cch+5 CEM"
+        }
+      ],
+      "crashes": [
+        {
+          "pid": 4242,
+          "package_name": "com.example.app",
+          "source_log_seq": 1,
+          "ms": 20000
+        }
+      ],
+      "expected": [
+        {
+          "kind": "died",
+          "package_name": "com.example.app",
+          "pid": 5151,
+          "reason": "cch+5 CEM",
+          "source_log_seq": 3,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-04",
+      "note": "複数行の ANR in から PID と Reason を読み、同じ PID の am_anr は重複として 1 件にする。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "am_anr",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 30000,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,952745541,Input dispatching timed out]"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 30005,
+          "boot": "b1",
+          "message": "ANR in com.example.app (com.example.app/.MainActivity)\nPID: 4242\nReason: Input dispatching timed out"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "anr",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "Input dispatching timed out",
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-05",
+      "note": "lmkd（UID 1069）の Kill と LMK 理由の am_kill は lmk_kill、それ以外の am_kill は killed。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "lowmemorykiller",
+          "uid": 1069,
+          "pid": 700,
+          "ms": 50000,
+          "boot": "b1",
+          "message": "Kill 'com.example.app' (4242), uid 10123, oom_score_adj 905 to free 81236kB rss, 0kB swap; reason: low watermark is breached"
+        },
+        {
+          "seq": 2,
+          "tag": "am_kill",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 60000,
+          "boot": "b1",
+          "message": "[0,5353,com.example.cache,999,lmk,10240]"
+        },
+        {
+          "seq": 3,
+          "tag": "am_kill",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 70000,
+          "boot": "b1",
+          "message": "[0,6464,com.example.idle,985,empty #17]"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "lmk_kill",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "low watermark is breached",
+          "source_log_seq": 1,
+          "is_crash": false
+        },
+        {
+          "kind": "lmk_kill",
+          "package_name": "com.example.cache",
+          "pid": 5353,
+          "reason": "lmk",
+          "source_log_seq": 2,
+          "is_crash": false
+        },
+        {
+          "kind": "killed",
+          "package_name": "com.example.idle",
+          "pid": 6464,
+          "reason": "empty #17",
+          "source_log_seq": 3,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-06",
+      "note": "UID 未報告の構造化 events（am_proc_died）は採るが、UID 未報告の ActivityManager テキストは採らない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "am_proc_died",
+          "uid": null,
+          "pid": 1500,
+          "ms": 80000,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,900,19]"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": null,
+          "pid": 1500,
+          "ms": 90000,
+          "boot": "b1",
+          "message": "Process com.example.other (pid 7373) has died: cch CEM"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "died",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": null,
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-07",
+      "note": "実行中プロセスのない force-stop は PID を null のまま 1 件返す。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 95000,
+          "boot": "b1",
+          "message": "Force stopping com.example.app appid=10123 user=0: from pid 8123"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "force_stop",
+          "package_name": "com.example.app",
+          "pid": null,
+          "reason": "from pid 8123",
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
+    }
+  ]
+}

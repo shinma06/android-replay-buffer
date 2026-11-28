@@ -13,6 +13,15 @@ use thiserror::Error;
 use crate::bundle::{FrameRecord, LogRecord, RecordBucket};
 use crate::time::TimeAlignment;
 
+mod crash_detail;
+#[cfg(kani)]
+pub(crate) use crash_detail::plan_stack_top;
+pub use crash_detail::{
+    CRASH_BLOCK_WINDOW_NS, CrashStackDetail, MAX_CRASH_BLOCK_ROWS, MAX_STACK_FRAMES,
+    MAX_STACK_LINE_CHARS, MAX_STACK_TOP_LINES, PROCESS_EVENT_WINDOW_NS, ProcessEvent,
+    ProcessEventKind, crash_stack_rows, enrich_crash_marker, extract_process_events,
+};
+
 /// Maximum PNG payload saved by the daemon or read back through an MCP screenshot link.
 pub const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 

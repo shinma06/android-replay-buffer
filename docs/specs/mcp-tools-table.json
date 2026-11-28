@@ -1,6 +1,6 @@
 {
   "investigationParity": {
-    "description": "arb_save_and_inspect と同じ条件の arb_timeline_overview は同じエラー集約・推薦・画面・クラッシュを返す（#563・#574）。",
+    "description": "arb_save_and_inspect と同じ条件の arb_timeline_overview は同じエラー集約・推薦・画面・クラッシュ・プロセス終了・package 注釈・警告を返す（#563・#574・#584・#589）。",
     "arguments": {"max_errors": "max_error_logs", "package": "package", "tag": "tag", "exclude_tags": "exclude_tags"},
     "fields": {
       "/error_logs/logs": "/error_log_highlights",
@@ -11,7 +11,10 @@
       "/input_capture": "/input_capture",
       "/carried_in": "/carried_in",
       "/screens": "/screens",
-      "/crashes": "/crashes"
+      "/crashes": "/crashes",
+      "/process_events": "/process_events",
+      "/package_filter": "/package_filter",
+      "/warnings": "/warnings"
     }
   },
   "argumentGroups": [
@@ -270,7 +273,7 @@
         "additionalProperties": false,
         "properties": {
           "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
-          "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
+          "package": {"description": "パッケージ名（完全一致）。error_log_highlights／noise_candidates を絞り、crashes・process_events・screens・app_logs は全件に matches_package を付与（0 件なら warnings）。", "type": "string"},
           "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
           "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
           "max_error_logs": {"description": "最新 N グループを時系列順で返す。", "maximum": 200, "minimum": 0, "type": "integer", "default": 50},
@@ -426,7 +429,7 @@
           "dest_dir": {"type": "string", "description": "保存先の親（管理域外は GC 対象外）。"},
           "drain_timeout_ms": {"type":"integer","minimum":0,"maximum":5000,"default":500,"description":"保存境界の待ち時間（ms）。"},
           "max_errors": {"type": "integer", "description": "最新 N グループを時系列順で返す。", "minimum": 1, "maximum": 200, "default": 20},
-          "package": {"description": "パッケージ名（完全一致）。", "type": "string"},
+          "package": {"description": "パッケージ名（完全一致）。error_log_highlights／noise_candidates を絞り、crashes・process_events・screens・app_logs は全件に matches_package を付与（0 件なら warnings）。", "type": "string"},
           "tag": {"description": "タグの部分一致（大小無視）。", "type": "string"},
           "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
           "include_key_frame_links": {"type": "boolean", "description": "画面遷移の先頭フレームもリンク。", "default": true},
@@ -476,7 +479,8 @@
         "relative_path": {"type": "string"},
         "line_count": {"$ref":"#/$defs/UInt"},
         "crash_count": {"$ref":"#/$defs/UInt"},
-        "sha256": {"type": "string"}
+        "sha256": {"type": "string"},
+        "matches_package": {"type": "boolean", "description": "package 指定時だけ。"}
       },
       "required": ["package_name", "relative_path", "line_count", "crash_count", "sha256"],
       "additionalProperties": false
@@ -812,7 +816,11 @@
         "pid": {"type": ["integer", "null"]},
         "exception_class": {"type": "string"},
         "message": {"type": "string"},
-        "source_log_seq": {"$ref":"#/$defs/UInt"}
+        "source_log_seq": {"$ref":"#/$defs/UInt"},
+        "stack_top": {"type": ["array", "null"], "items": {"type": "string"}, "maxItems": 11, "description": "同じ PID の AndroidRuntime FATAL ブロックの先頭 at 行（最大 10）と、より深い最初のアプリ行。ブロックがなければ null。"},
+        "first_app_frame": {"type": ["string", "null"], "description": "package_name に一致する最初の at 行。なければ null。"},
+        "caused_by": {"type": ["string", "null"], "description": "最後の Caused by: 行。"},
+        "matches_package": {"type": "boolean", "description": "package 指定時だけ。"}
       },
       "required": [
         "boottime_ns",
@@ -948,7 +956,8 @@
         "frame_index_hint": {"$ref":"#/$defs/UIntOrNull"},
         "t_ms": {"type": ["integer", "null"]},
         "tag": {"type": ["string", "null"]},
-        "message": {"type": "string"}
+        "message": {"type": "string"},
+        "crash_index": {"$ref": "#/$defs/UInt", "description": "この AndroidRuntime 行が属する crashes の要素番号。"}
       },
       "required": ["seq", "level", "frame_index_hint", "t_ms", "tag", "message"],
       "additionalProperties": false
@@ -1100,11 +1109,14 @@
         "summary": {"$ref": "#/$defs/TimelineSummaryResponse"},
         "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
         "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
+        "process_events": {"$ref": "#/$defs/ProcessEvents"},
+        "package_filter": {"$ref": "#/$defs/PackageFilter"},
+        "warnings": {"$ref": "#/$defs/OverviewWarnings"},
         "error_logs": {"$ref": "#/$defs/ErrorGroups"},
         "noise_candidates": {"$ref": "#/$defs/NoiseCandidates"},
         "memo": {"type": ["string", "null"]}
       },
-      "required": ["input_capture","carried_in", "resource_links", "save", "summary", "screens", "crashes", "error_logs", "noise_candidates", "memo"],
+      "required": ["input_capture","carried_in", "resource_links", "save", "summary", "screens", "crashes", "process_events", "package_filter", "warnings", "error_logs", "noise_candidates", "memo"],
       "additionalProperties": false
     },
     "ListedBundle": {
@@ -1255,7 +1267,8 @@
         "gesture_kind": {"$ref": "#/$defs/GestureKind"},
         "end_x": {"type": "number"},
         "end_y": {"type": "number"},
-        "end_t_ms": {"type": "integer"}
+        "end_t_ms": {"type": "integer"},
+        "foreground_package": {"type": ["string", "null"], "description": "package 指定時だけ。タップ時の前面画面のパッケージ。"}
       },
       "required": ["tap_index", "seq", "frame_index", "t_ms", "x", "y", "kind", "gesture_kind"],
       "additionalProperties": false
@@ -1412,6 +1425,48 @@
     },
     "SaveTriggerKind": {"enum": ["manual", "crash_auto_save"]},
     "CarriedIn": {"type":["object","null"],"properties":{"frame_index":{"$ref":"#/$defs/UInt"},"captured_boottime_ns":{"type":"integer"},"display_start_boottime_ns":{"type":"integer"},"evidence":{"const":"coverage"}},"required":["frame_index","captured_boottime_ns","display_start_boottime_ns","evidence"],"additionalProperties":false},
+    "ProcessEventKind": {"enum": ["force_stop", "lmk_kill", "anr", "died", "killed"]},
+    "ProcessEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {"$ref": "#/$defs/ProcessEventKind"},
+        "package_name": {"type": "string"},
+        "pid": {"type": ["integer", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "boottime_ns": {"type": ["integer", "null"]},
+        "offset_ms": {"type": ["integer", "null"]},
+        "frame_index_hint": {"$ref":"#/$defs/UIntOrNull"},
+        "source_log_seq": {"$ref":"#/$defs/UInt"},
+        "is_crash": {"const": false},
+        "matches_package": {"type": "boolean", "description": "package 指定時だけ。"}
+      },
+      "required": ["kind", "package_name", "pid", "reason", "boottime_ns", "offset_ms", "frame_index_hint", "source_log_seq", "is_crash"],
+      "additionalProperties": false
+    },
+    "ProcessEvents": {"type": "array", "description": "system_server・lmkd が記録したクラッシュ以外のプロセス終了。", "items": {"$ref": "#/$defs/ProcessEvent"}},
+    "PackageFilter": {
+      "description": "package 指定時の適用範囲と一致件数。未指定は null。",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "package": {"type": "string"},
+            "applied_to": {"type": "array", "items": {"enum": ["error_log_highlights", "noise_candidates"]}},
+            "annotated": {"type": "array", "items": {"enum": ["crashes", "process_events", "screens", "taps", "app_logs"]}},
+            "matched_logs": {"$ref":"#/$defs/UInt"},
+            "matched_error_logs": {"$ref":"#/$defs/UInt"},
+            "matched_crashes": {"$ref":"#/$defs/UInt"},
+            "matched_process_events": {"$ref":"#/$defs/UInt"},
+            "matched_screens": {"$ref":"#/$defs/UInt"},
+            "known_packages_sample": {"$ref":"#/$defs/Strings"}
+          },
+          "required": ["package", "applied_to", "annotated", "matched_logs", "matched_error_logs", "matched_crashes", "matched_process_events", "matched_screens", "known_packages_sample"],
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "OverviewWarnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}},
     "ScreenSpan": {
       "type": "object",
       "properties": {
@@ -1423,7 +1478,8 @@
         "activity_name": {"type": "string"},
         "short_name": {"type": "string"},
         "start_offset_ms": {"type": ["integer", "null"]},
-        "end_offset_ms": {"type": ["integer", "null"]}
+        "end_offset_ms": {"type": ["integer", "null"]},
+        "matches_package": {"type": "boolean", "description": "package 指定時だけ。"}
       },
       "required": ["start_ns", "end_ns", "start_frame_index", "end_frame_index", "package_name", "activity_name", "short_name", "start_offset_ms", "end_offset_ms"],
       "additionalProperties": false
@@ -1595,6 +1651,9 @@
         "screens": {"type": "array", "items": {"$ref": "#/$defs/ScreenSpan"}},
         "taps": {"type": "array", "items": {"$ref": "#/$defs/OverviewTapItem"}},
         "crashes": {"type": "array", "items": {"$ref": "#/$defs/CrashMarker"}},
+        "process_events": {"$ref": "#/$defs/ProcessEvents"},
+        "package_filter": {"$ref": "#/$defs/PackageFilter"},
+        "warnings": {"$ref": "#/$defs/OverviewWarnings"},
         "discontinuities": {"type": "array", "items": {"$ref": "#/$defs/DiscontinuityEvent"}},
         "unique_error_logs": {"$ref":"#/$defs/UInt"},
         "total_error_logs": {"$ref":"#/$defs/UInt"},
@@ -1606,7 +1665,7 @@
         "unanchored_truncated_count": {"$ref":"#/$defs/UInt"},
         "app_logs": {"type": "array", "items": {"$ref": "#/$defs/AppLogSummary"}}
       },
-      "required": ["input_capture","injected_inputs",
+      "required": ["input_capture","injected_inputs","process_events","package_filter","warnings",
         "bundle_id",
         "kind",
         "carried_in",

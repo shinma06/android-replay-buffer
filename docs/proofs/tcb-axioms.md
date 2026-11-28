@@ -38,6 +38,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K14 | `k14_carry_in_none_without_coverage`（同じキーの 1 本の被覆区間が `[f_prev, W0]` を含まなければ必ず `None`、含めば必ず `f_prev` を選ぶ）、`k14_carry_in_selects_latest_valid_pre_window_frame`（選ぶのは `W0` より前で位置・時刻とも最も遅いフレームだけで、後続に窓前フレームがない）、`k14_carry_in_rejects_boot_session_or_dims_mismatch`（boot・セッション・寸法のキーが一致する被覆区間なしでは選ばず、最遅フレームが不一致なら古い一致フレームに戻らない）、`k14_coverage_duration_bounded_and_monotone`（`0 ≤ 被覆 ≤ 窓長`、区間の追加で減らない、1 区間は切り取り長に一致、窓全体を覆えば窓長）、`k14_ledger_beacon_extends_only_within_gap`（ビーコンだけでは開かず、途絶前のビーコンだけが区間を延ばし、遅れたビーコンは閉じる） | フレーム 3 枚（時刻は `i16` 全域、受信順で非減少）・被覆区間 2 本・キー 3 種・`W0` と窓端は `i16` 全域、途絶判定の幅は `u8` 全域。本番の `select_carry_in`・`coverage_duration_in_window`・`StreamCoverage` を直接実行する。保存経路の時刻軸の対応、MP4 の書き出し、端末のビーコン・切断の意味は保存の端から端までの試験（`capture_coverage_tests.rs`）と G3 で確認する | `arb-core/src/coverage.rs`、`arb-core/src/kani_proofs/k14_coverage.rs` |
 | K15 | `k15_decodable_start_is_the_first_decodable_frame`（参照のある先頭は 0、それ以外は最初のキーフレームを選び、それより前は孤立フレームだけ。復号できるフレームがなければ `None`）、`k15_saved_track_always_passes_the_commit_check`（書けなかった映像・0 枚は `absent`、先頭を落とせば `partial`、落とさなければ `present`。結果は必ず確定前検査を通る）、`k15_commit_check_matches_the_oracle`（`video.mp4` のない映像宣言、0 枚の宣言、行数の不一致、宣言のない映像ファイル・行をすべて拒否） | キーフレーム列は長さ 0〜4 の任意値、枚数・行数・バイト数は `u8` 全域、状態は 4 種と宣言なし。本番の `decodable_start`・`saved_video_track`・`check_video_commit` を直接実行する。H.264 の実際の復号可否・MP4 化・バンドル確定前の検査は保存の端から端までの試験（`capture_coverage_tests.rs` の W3B 再現 A・B）とストレージ試験で確認する | `arb-core/src/video_commit.rs`、`arb-core/src/kani_proofs/k15_video_commit.rs` |
 | K17 | 任意 UID による偽装拒否、入力の i32 座標境界と K6 の写像 | 1024 × 2048 の表示から 512 × 1024 の映像に写す。任意の座標・UID で 2 本成功、4 つの cover が到達 | arb-core の kani_proofs.rs と injected_input.rs |
+| K18 | `k18_stack_top_keeps_the_first_app_frame_within_the_cap`（クラッシュの `stack_top` は先頭 10 フレームを落とさず、最初のアプリ行 `first_app_frame` を必ず含み、11 行以下。アプリ行がないと報告するのは本当にないときだけ） | フレーム列は長さ 0〜13 の任意の真偽値（アプリ行か否か）。文字列の抽出は表 `crash-detail-table.json` と G9 の proptest で検査する | `core/crates/arb-core/src/kani_proofs/k18_crash_stack.rs`、`core/crates/arb-core/src/analytics/crash_detail.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -84,6 +85,7 @@ S6 は `cargo test --manifest-path core/Cargo.toml -p arbd --test pdd_stateright
 | G6 | wire / scrcpy ストリームの任意分割と `Interrupted`/`TimedOut`/EOF 注入（連続解析と一致、完全レコード接頭辞 + 明示ギャップ） | `core/crates/arb-adb/tests/pdd_g6_stream_fault_props.rs` |
 | G7 | SHM 奇数幅・全 4 形式・stride/padding の Rust/Kotlin パリティ（共通ゴールデン表 48 行）と短いプレーンの拒否 | `core/crates/arb-os/tests/pdd_g7_shm_parity_props.rs`、`ide-plugin/client-core/src/test/kotlin/io/github/shinma06/arb/shm/ShmLayoutParityTest.kt` |
 | G8 | 音声ポリシー（Android 13 の「音声キャプチャ非対応」誤表示の再発防止）。G8-3: `build_server_args` は API 33〜`u32::MAX` で `audio=true audio_source=playback audio_dup=true`。明示選択の互換方式では API 30 以上で `audio_source=output` を渡し、`audio_dup` を省く。各方式の既知の下限未満と無効時は `audio=false`。G8-5: API 33 以上・不明での失敗結果は実行時の原因へ単射に対応し、`scrcpy-server` 標準エラーの末尾が `audio_reason` に入る（純関数と、`codec_id = 0 / 1`・即切断を返す模擬ソケットでの `arbd` 音声リーダー）。G8-6: 致命的な失敗の後は同じ `(serial, boot_id)` が `audio=false` に固定される。G8-7: Kotlin の網羅表（全 `AudioCause` × 状態 × API で「非対応」の表示 ⟺ `api_below_min`）。G8-8: 共有正本表 `docs/specs/audio-policy-table.json`（2 方式、86 行）を Rust と Kotlin の両方が読み、状態・原因・表示区分の一致を検査 | `core/crates/arb-core/src/audio_policy/tests.rs`、`core/crates/arb-adb/tests/pdd_g8_audio_args_props.rs`、`core/crates/arbd/src/live_adb.rs`（`g8_*`）、`core/crates/arbd/src/capture.rs`（`g8_*`）、`ide-plugin/client-core/src/test/kotlin/io/github/shinma06/arb/state/AudioPolicyTableTest.kt` |
+| G9 | #589・#584: 任意のログ列でクラッシュ詳細の抽出が panic せず、`stack_top` の各行は対象 PID・同じ boot・`AndroidRuntime` の行から取り、`first_app_frame` は `stack_top` に含まれる。アプリ UID（10000〜19999）のログはどのシステムタグでもプロセス終了を作らず、各イベントの元行は信頼 UID。`package` の有無で `crashes`・`process_events`・`screens`・`taps`・`app_logs` の件数・順序・内容（注釈を除く）は変わらず、`package_not_seen` はどの行にも現れないときだけ出る | `core/crates/arb-core/tests/crash_detail.rs`、`core/crates/arbd/src/inspect_export/overview_rows.rs` |
 | M1 | ヒープ上の整列 `RingView`：長さ 0,1,7,8,9,15,16,17、末尾境界、1 ライタ + 2 リーダの多世代並行 | `core/crates/arb-os/src/shm.rs`（`m1_*`） |
 | M2 | `arb-core` 全 lib テスト、`arb-media::mp4` の純粋パーサ（`miri_pure_tests`） | `core/crates/arb-core/src/`、`core/crates/arb-media/src/mp4.rs` |
 
@@ -131,6 +133,8 @@ K14 の macOS arm64 実測（2026-11-27、Kani 0.68 / CBMC 6.11）。`cargo kani
 
 K15 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani -p arb-core -Z stubbing --harness k15_` は 3/3 成功（実時間 6.4 秒）。5 個の cover（孤立先頭の破棄、復号できるフレームなし、`partial` の書き出し、全枚破棄による `absent`、ファイルのない宣言の拒否）はすべて SATISFIED、K15 ファイル内の性質表明で UNREACHABLE は 0 件。必須集合は 143 本から 146 本になった（`arb-core` 101 → 104）。
 
+K18 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani -p arb-core -Z stubbing --harness k18_` は 1/1 成功（検証 2.0 秒）。3 個の cover（深いアプリ行の追加、先頭 10 行内のアプリ行、長いスタックでアプリ行なし）はすべて SATISFIED。最初の形（`Vec` に位置を集めて `contains` で照合）は 15 分たっても SAT 段が終わらなかったため、選択を割り当てのない `StackTopPlan`（先頭数・最初のアプリ位置・追加位置）に分け、本番の `enrich_crash_marker` はこの計画どおりに `0..head` と追加位置の行を並べる。
+
 K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10・K11 追加前の比較記録。
 
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
@@ -173,6 +177,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | K15 | `video_commit.rs` `decodable_start`: `position(\|&k\| k)` → `position(\|&k\| !k)` | `k15_decodable_start_is_the_first_decodable_frame` | `the kept head is a keyframe`、`None only when nothing is decodable` |
 | K15 | `saved_video_track`: `!written \|\| kept == 0` → `kept == 0`（ファイルなしで枚数を残す） | `k15_saved_track_always_passes_the_commit_check` | `no frames without a written file` |
 | K15 | `check_video_commit`: `DeclaredWithoutFile` の判定を削除 | `k15_commit_check_matches_the_oracle` | `commit check matches the oracle`。3 変異とも反例を取得し、元のファイルとバイト一致で復元済み |
+| K18 | `crash_detail.rs` `plan_stack_top`: 追加条件 `pos >= head` → `pos > head`（11 行目のアプリ行を落とす） | `k18_stack_top_keeps_the_first_app_frame_within_the_cap` | `first_app_frame is in stack_top`。反例を取得し、元のファイルとバイト一致で復元済み |
 | K6-Axis | `touch_calibration.rs` `Axis::project`: `value.min(last_pixel)` → `value.min(self.pixels)` | `k6_axis_project_range_and_endpoints_span_0_1080` | `0 <= p && p <= pixels - 1`、`max maps to last pixel` |
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
@@ -199,7 +204,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-22）
+## 4. TCB 公理（TCB-01〜TCB-23）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -227,6 +232,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
 | TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 21 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 | TCB-22 | adbd の service requested 行を logd が付けた UID 0・2000 とタグで認証できる | 注入要求の時刻・件数 | API 37 AVD で確認。K17 の UID・座標境界と共有コマンド表 | API 28〜36 と OEM 端末の書式・出力は未検証。対話シェル内・非 ADB 注入は観測範囲外 |
+| TCB-23 | logd が付ける UID と、プロセス終了を書くシステムの書式の意味。`ActivityManager`（system_server、UID 1000）の `Force stopping <pkg> appid=… user=…: <理由>`・`Killing <pid>:<proc>/<uid> (adj N): <理由>`（新しい API は `stop <pkg> due to …`、古い API は `stop <pkg>`）・`Process <proc> (pid N) has died: <状態>`・`ANR in <proc>`（`PID:`・`Reason:` は同じレコードか直後の行）、lmkd（API 29 以降の UID 1069、タグ `lowmemorykiller`）の `Kill '<proc>' (pid), uid …, oom_score_adj …; reason: …`、events の `am_kill`（30023、`[User,PID,Process,OomAdj,Reason]`、API により末尾に数値の Rss）・`am_proc_died`（30011、API 28 は 3 項目、以降は OomAdj・ProcState が続く）・`am_anr`（30008、`[User,pid,Package,Flags,reason]`） | G9、共有表 `crash-detail-table.json` | `core/crates/arb-core/tests/crash_detail.rs` が表の全行（偽装 UID 10xxx の拒否、force-stop 2 行の統合、クラッシュ直後の has died の抑止、UID 未報告の events の採用を含む）を検査 | 合成ログで検証。実機の API 28〜37・OEM での書式差、API 28 のカーネル lowmemorykiller（kmsg のみで logcat に出ない）、UID を報告しない端末でのテキスト行（採用しない）は未検証 |
 
 ### S7 の Studio トリム状態機械
 

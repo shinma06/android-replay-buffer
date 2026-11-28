@@ -44,6 +44,10 @@ pub(in crate::mcp) fn project(overview: &mut Value, version: ProtocolVersion, zo
         obj.entry("injected_inputs").or_insert_with(|| json!([]));
         obj.entry("carried_in").or_insert(Value::Null);
         obj.entry("noise_candidates").or_insert_with(|| json!([]));
+        // Older daemons have no process events, package annotation or overview warnings.
+        obj.entry("process_events").or_insert_with(|| json!([]));
+        obj.entry("package_filter").or_insert(Value::Null);
+        obj.entry("warnings").or_insert_with(|| json!([]));
     }
     screen_offsets(&mut overview["screens"]);
     for row in overview["error_log_highlights"]

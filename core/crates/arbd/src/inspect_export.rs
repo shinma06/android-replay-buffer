@@ -43,6 +43,8 @@ use crate::protocol::{
 };
 use crate::time_util::next_id;
 
+mod overview_rows;
+
 /// Maximum cached WAV files retained under `<cache_dir>/audio-pcm/`.
 /// Cache entries younger than this are never evicted by [`prune_cache_dir`].
 const CACHE_PRUNE_MIN_AGE: Duration = Duration::from_secs(120);
@@ -467,19 +469,12 @@ pub fn build_timeline_overview(
     };
     let fps_estimate = compute_fps_estimate(frame_count, duration_ms);
 
-    let screens = screens_with_offsets(reader.as_ref(), &frames)?;
-    let crashes = reader.crashes()?;
     let discontinuities = reader.discontinuities()?;
 
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let taps = build_overview_taps(&main_taps, &frames, base_boottime_ns);
 
-    let OverviewErrors {
-        highlights: error_log_highlights,
-        total: total_error_logs,
-        unique: unique_error_logs,
-        noise_candidates,
-    } = overview_highlights(reader.as_ref(), &frames, &crashes, params)?;
+    let annotated = annotated_overview(reader.as_ref(), &frames, params, (&main_taps, taps))?;
 
     let audio_status = summary
         .streams
@@ -525,20 +520,134 @@ pub fn build_timeline_overview(
         audio_status,
         av_offset_ms,
         logcat_completeness,
-        screens,
-        taps,
-        crashes,
+        screens: annotated.rows.screens,
+        taps: annotated.rows.taps,
+        crashes: annotated.rows.crashes,
+        process_events: annotated.rows.process_events,
+        package_filter: annotated.package_filter,
+        warnings: annotated.warnings,
         discontinuities,
         logcat_completeness_detail: Some(summary.into()),
-        total_error_logs,
-        unique_error_logs,
-        error_logs_truncated: unique_error_logs > error_log_highlights.len(),
-        error_log_highlights,
-        noise_candidates,
+        total_error_logs: annotated.errors.total,
+        unique_error_logs: annotated.errors.unique,
+        error_logs_truncated: annotated.errors.unique > annotated.errors.highlights.len(),
+        error_log_highlights: annotated.errors.highlights,
+        noise_candidates: annotated.errors.noise_candidates,
         unanchored_count: summary.unanchored_summary.included_count,
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
-        app_logs: summary.app_logs.clone(),
+        app_logs: annotated.rows.app_logs,
     })
+}
+
+/// Error groups plus every row array of the overview, annotated for the `package` filter.
+struct AnnotatedOverview {
+    errors: OverviewErrors,
+    rows: overview_rows::OverviewRows,
+    package_filter: Option<crate::protocol::PackageFilterSummary>,
+    warnings: Vec<crate::protocol::WarningDetail>,
+}
+
+/// Reads the main log once for the error groups, crash stacks, process events and the
+/// `package` annotation, so all of them describe the same rows (#584, #589).
+fn annotated_overview(
+    reader: &dyn BundleReader,
+    frames: &[FrameRecord],
+    params: &crate::protocol::TimelineOverviewParams,
+    (main_taps, taps): (&[TapRecord], Vec<OverviewTapItem>),
+) -> Result<AnnotatedOverview, DaemonError> {
+    let summary = reader.manifest_summary();
+    let screens = screens_with_offsets(reader, frames)?;
+    let raw_crashes = reader.crashes()?;
+    let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    let resolver = params
+        .package
+        .as_deref()
+        .map(|_| load_or_build_package_resolver(reader).map(|(resolver, _)| resolver))
+        .transpose()?;
+    let mut errors = overview_highlights(
+        reader,
+        frames,
+        &main_logs,
+        &raw_crashes,
+        params,
+        resolver.clone(),
+    );
+    overview_rows::link_crash_groups(&mut errors.highlights, &raw_crashes, &main_logs);
+    let coordinates = LogCoordinates::new(frames, &summary.epochs);
+    let process_events = overview_rows::overview_process_events(&main_logs, &raw_crashes, |log| {
+        coordinates.locate(log)
+    });
+    let evidence = match (params.package.as_deref(), resolver.as_deref()) {
+        (Some(package), Some(resolver)) => overview_rows::LogEvidence {
+            matched_logs: main_logs
+                .iter()
+                .filter(|log| resolver.matches_package(log, package))
+                .count(),
+            matched_error_logs: errors.total,
+            log_packages: main_logs
+                .iter()
+                .filter_map(|log| log.package_name.clone())
+                .collect(),
+            tap_foreground: overview_tap_foreground(
+                &screens,
+                frames,
+                &summary.epochs,
+                main_taps,
+                &taps,
+            ),
+        },
+        _ => overview_rows::LogEvidence::default(),
+    };
+    let mut rows = overview_rows::OverviewRows::new(
+        overview_rows::overview_crashes(&raw_crashes, &main_logs),
+        process_events,
+        screens,
+        taps,
+        summary.app_logs.clone(),
+    );
+    let (package_filter, warnings) =
+        overview_rows::annotate_package(params.package.as_deref(), &mut rows, &evidence);
+    Ok(AnnotatedOverview {
+        errors,
+        rows,
+        package_filter,
+        warnings,
+    })
+}
+
+/// `foreground_package` of each overview tap: the screen span on screen at its boottime.
+fn overview_tap_foreground(
+    screens: &[arb_core::analytics::ScreenSpan],
+    frames: &[FrameRecord],
+    epochs: &[arb_core::bundle::EpochSpan],
+    main_taps: &[TapRecord],
+    taps: &[OverviewTapItem],
+) -> Vec<Option<String>> {
+    let boots: std::collections::BTreeSet<&str> = frames
+        .iter()
+        .map(|f| f.boot_id.as_str())
+        .chain(epochs.iter().map(|e| e.boot_id.as_str()))
+        .collect();
+    let span_boots: Vec<Option<&str>> = screens
+        .iter()
+        .map(|span| {
+            span.start_frame_index
+                .and_then(|i| frames.iter().find(|f| f.frame_index == i))
+                .map(|f| f.boot_id.as_str())
+        })
+        .collect();
+    let by_seq: BTreeMap<u64, &TapRecord> = main_taps.iter().map(|t| (t.seq, t)).collect();
+    taps.iter()
+        .map(|item| {
+            let tap = by_seq.get(&item.seq)?;
+            overview_rows::foreground_package(
+                screens,
+                (boots.len() > 1).then_some(span_boots.as_slice()),
+                tap_boottime_ns(tap),
+                tap_boot_id(tap),
+            )
+        })
+        .collect()
 }
 
 fn overview_inputs(
@@ -1633,6 +1742,7 @@ fn build_overview_taps(
                 end_x: tap.end_x,
                 end_y: tap.end_y,
                 end_t_ms,
+                foreground_package: None,
             }
         })
         .collect()
@@ -1763,19 +1873,16 @@ const MAX_NOISE_CANDIDATES: usize = 5;
 fn overview_highlights(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
+    main_logs: &[LogRecord],
     crashes: &[arb_core::analytics::CrashMarker],
     params: &crate::protocol::TimelineOverviewParams,
-) -> Result<OverviewErrors, DaemonError> {
-    let main_logs = reader.query_logs(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    resolver: Option<Arc<LogPackageTimeline>>,
+) -> OverviewErrors {
     let max_errors = params
         .max_error_logs
         .unwrap_or(DEFAULT_OVERVIEW_ERROR_LOGS)
         .min(MAX_OVERVIEW_ERROR_LOGS);
-    let package = params
-        .package
-        .as_deref()
-        .map(|name| load_or_build_package_resolver(reader).map(|(resolver, _)| (name, resolver)))
-        .transpose()?;
+    let package = params.package.as_deref().zip(resolver);
     let filter = CompiledLogFilter {
         package,
         tag_lower: params.tag.as_ref().map(|s| s.to_ascii_lowercase()),
@@ -1787,14 +1894,14 @@ fn overview_highlights(
     };
     let coordinates = LogCoordinates::new(frames, &reader.manifest_summary().epochs);
     let (highlights, total, unique) = build_error_log_highlights(
-        &main_logs,
+        main_logs,
         &coordinates,
         &filter,
         &params.exclude_tags,
         max_errors,
     );
     // Computed from the same rows, before the display cap, and never fed back into them.
-    let protected = fatal_tags(&main_logs, crashes);
+    let protected = fatal_tags(main_logs, crashes);
     let noise_candidates = noise_candidates(
         main_logs.iter().filter_map(|log| {
             error_level(log, &filter, &params.exclude_tags)
@@ -1802,12 +1909,12 @@ fn overview_highlights(
         }),
         &protected,
     );
-    Ok(OverviewErrors {
+    OverviewErrors {
         highlights,
         total,
         unique,
         noise_candidates,
-    })
+    }
 }
 
 /// Normalized `E`/`F` level of a main log row that passes the overview filters.
@@ -1940,6 +2047,7 @@ fn build_error_log_highlights(
             t_ms,
             tag: log.tag.clone(),
             message: truncate_chars(&log.message, MAX_ERROR_LOG_MESSAGE_CHARS),
+            crash_index: None,
         });
     }
     out.reverse();

@@ -103,7 +103,9 @@ impl McpServer {
             }
         }
         result.body = json!({"save":result.body,"summary":summary,"screens":screens,
-            "carried_in":overview["carried_in"].take(),"crashes":overview["crashes"].take(),"error_logs":error_logs,
+            "carried_in":overview["carried_in"].take(),"crashes":overview["crashes"].take(),
+            "process_events":overview["process_events"].take(),"package_filter":overview["package_filter"].take(),
+            "warnings":overview["warnings"].take(),"error_logs":error_logs,
             "noise_candidates":overview["noise_candidates"].take(),"input_capture":overview["input_capture"].take(),"memo":args.get("note")});
         Ok(())
     }
