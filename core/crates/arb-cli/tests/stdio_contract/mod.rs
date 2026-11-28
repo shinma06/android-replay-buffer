@@ -1892,6 +1892,8 @@ fn payload_slimming(c: &mut Client, id: &str, version: &str) {
         "unknown=1",
         "limit=1&limit=2",
         "cursor=abc",
+        "package=%FF",
+        "package=com.example%ZZ",
     ] {
         let r = c.request("resources/read", json!({"uri":format!("{base}?{query}")}));
         assert_eq!(r["error"]["code"], -32602, "{query}: {r}");

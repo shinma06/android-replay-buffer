@@ -38,9 +38,20 @@ fn log_query(query: Option<&str>) -> Result<serde_json::Map<String, Value>, Fail
         ));
         failure
     };
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        let parsed = match key.as_ref() {
-            "min_level" if matches!(value.as_ref(), "V" | "D" | "I" | "W" | "E" | "F") => {
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|p| !p.is_empty())
+    {
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let Some(key) = query_component(raw_key) else {
+            return Err(invalid("query", pair, "パーセントエンコーディング"));
+        };
+        let Some(value) = query_component(raw_value) else {
+            return Err(invalid(&key, raw_value, "パーセントエンコーディング"));
+        };
+        let parsed = match key.as_str() {
+            "min_level" if matches!(value.as_str(), "V" | "D" | "I" | "W" | "E" | "F") => {
                 json!(value)
             }
             "package" if !value.trim().is_empty() => json!(value.trim()),
@@ -62,11 +73,30 @@ fn log_query(query: Option<&str>) -> Result<serde_json::Map<String, Value>, Fail
             }
             _ => return Err(invalid(&key, &value, "未知の変数")),
         };
-        if params.insert(key.clone().into_owned(), parsed).is_some() {
+        if params.insert(key.clone(), parsed).is_some() {
             return Err(invalid(&key, &value, "同じ変数を 2 回指定"));
         }
     }
     Ok(params)
+}
+
+/// One form-encoded query component, decoded strictly like a path segment: `+` is a space,
+/// every `%` is followed by two hex digits and the bytes are UTF-8. `None` otherwise.
+fn query_component(raw: &str) -> Option<String> {
+    let mut bytes = raw.bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    while let Some(b) = bytes.next() {
+        out.push(match b {
+            b'+' => b' ',
+            b'%' => {
+                let mut hex = || bytes.next().and_then(|x| char::from(x).to_digit(16));
+                let (hi, lo) = (hex()?, hex()?);
+                u8::try_from(hi * 16 + lo).ok()?
+            }
+            other => other,
+        });
+    }
+    String::from_utf8(out).ok()
 }
 
 /// The same resource URI with `cursor` set to `next`, the other variables kept in order.
@@ -622,6 +652,12 @@ mod tests {
             ("cursor=", "cursor"),
             ("level=E", "level"),
             ("bucket=all", "bucket"),
+            ("package=%FF", "package"),
+            ("package=com.example%ZZ", "package"),
+            ("package=com.example%2", "package"),
+            ("min_level=%E", "min_level"),
+            ("cursor=4%31%", "cursor"),
+            ("%FFlimit=1", "query"),
         ] {
             let failure = log_query(Some(query)).unwrap_err();
             assert_eq!(failure.rpc_code, -32602, "{query}");
