@@ -826,6 +826,10 @@ impl DaemonState {
         } else {
             Some(self.attach_reserved(&reservation, &parsed, None, Some(&observed))?)
         };
+        // `None`: the deadline passed and this call cancelled its own reservation. The last
+        // discovery may still read `Selected` (the worker saw the device but never started it),
+        // so a timed-out attach is reported as a timeout, never as a started session.
+        let timed_out = outcome.is_none();
         let (selection, generation) = outcome.unwrap_or_else(|| {
             let seen = observed
                 .lock()
@@ -837,12 +841,13 @@ impl DaemonState {
             )
         });
         let waited_out = deadline.is_some()
-            && matches!(
-                selection,
-                DeviceSelectionOutcome::NoOnlineDevices
-                    | DeviceSelectionOutcome::WaitingForPreferredDevice { .. }
-            );
-        if let DeviceSelectionOutcome::Selected { serial } = selection {
+            && (timed_out
+                || matches!(
+                    selection,
+                    DeviceSelectionOutcome::NoOnlineDevices
+                        | DeviceSelectionOutcome::WaitingForPreferredDevice { .. }
+                ));
+        if !timed_out && let DeviceSelectionOutcome::Selected { serial } = selection {
             if let Some(explicit) = explicit.as_deref() {
                 response.config_changed =
                     self.commit_explicit_start(&request, explicit, generation, epoch)?;
@@ -854,8 +859,11 @@ impl DaemonState {
         if let Some(serial) = explicit {
             return Err(DaemonError::StartTargetNotFound {
                 serial: serial.clone(),
+                // Still waiting for this serial at the deadline (it may have been seen online
+                // while the attach never got to start it).
                 selection: match selection {
-                    DeviceSelectionOutcome::NoOnlineDevices => {
+                    DeviceSelectionOutcome::NoOnlineDevices
+                    | DeviceSelectionOutcome::Selected { .. } => {
                         DeviceSelectionOutcome::WaitingForPreferredDevice {
                             preferred_serial: serial,
                             other_online_serials: Vec::new(),
