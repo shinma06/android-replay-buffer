@@ -936,8 +936,9 @@ class ArbBundleFileEditor internal constructor(
 
                 val shareName = res.shareMp4Path
                     ?.let { p -> runCatching { Path.of(p).fileName?.toString() }.getOrNull() }
+                val burnedTaps = res.burnedTapCount?.let { it > 0 } ?: res.burnTapsApplied
                 val shareNote = when {
-                    shareName != null && res.burnTapsApplied -> " · $shareName (タップ焼き込み)"
+                    shareName != null && burnedTaps -> " · $shareName (タップ焼き込み)"
                     shareName != null -> " · $shareName"
                     else -> ""
                 }
@@ -947,7 +948,10 @@ class ArbBundleFileEditor internal constructor(
                 } else {
                     ""
                 }
-                val warningNote = res.warning?.takeIf { it.isNotBlank() }?.let { " · 警告: $it" }.orEmpty()
+                val warningNote = (res.warnings.orEmpty().map { it.message } + listOfNotNull(res.warning))
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString("") { " · 警告: $it" }
                 val summaryText = "書き出し完了: ${res.bundleId} (${res.trimReport.outputFrameCount}f)$shareNote$trashedNote$warningNote"
                 val completion = ExportCompletionInfo(
                     summaryText = summaryText,
@@ -956,7 +960,7 @@ class ArbBundleFileEditor internal constructor(
                     isTrimBundle = true,
                     shareMp4Path = res.shareMp4Path,
                     originalTrashedBundleId = trashedBundleId,
-                    burnTapsApplied = res.burnTapsApplied,
+                    burnTapsApplied = burnedTaps,
                 )
                 publishEdt {
                     if (!disposed) studioController.setExporting(false)

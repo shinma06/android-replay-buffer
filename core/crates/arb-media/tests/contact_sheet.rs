@@ -4,6 +4,7 @@ use arb_media::MediaError;
 use arb_media::contact_sheet::{
     ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions,
     render_contact_sheet_png, render_tap_crop_png, select_contact_sheet_indices,
+    select_contact_sheet_indices_with_anchors,
 };
 
 const CYAN: [u8; 3] = [0, 255, 255];
@@ -78,6 +79,17 @@ fn white_pixels_in(png: &DecodedPng, x0: usize, y0: usize, w: usize, h: usize) -
         }
     }
     n
+}
+
+#[test]
+fn crash_before_last_frame_survives_sampling() {
+    let (kept, dropped) = select_contact_sheet_indices_with_anchors(420, 436, 16, &[435]);
+    assert_eq!(kept.len(), 16);
+    assert!(kept.contains(&435));
+    assert_eq!(dropped.len(), 1);
+    let (kept, dropped) = select_contact_sheet_indices_with_anchors(420, 436, 1, &[435]);
+    assert_eq!(kept, vec![420]);
+    assert_eq!(dropped, (421..=436).collect::<Vec<_>>());
 }
 
 // ---- select_contact_sheet_indices -------------------------------------------------------------

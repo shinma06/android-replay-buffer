@@ -62,6 +62,7 @@
 | [注入要求](injected-command-table.json) | adbd の UID、コマンド解析、未解析件数。K17・TCB-22 |
 | [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化（明示 serial は接続後に確定、CI-01〜09）、再起動後の候補選択（S3・S3b） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
+| [調査・書き出しの警告](ui-feedback-contract-table.json) | `silent_success_rows` を RPC・CLI・MCP・IDE で照合。K19 がコンタクトシートの両端・重要フレーム・除外集合を検証 |
 | [MCP ツール](mcp-tools-table.json) | 公開 21 ツールの別名（全組 `allowEqual`）・排他・入力・出力型・注釈・タスク対応 |
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |

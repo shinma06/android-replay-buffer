@@ -24,7 +24,7 @@ impl McpServer {
             .and_then(Value::as_bool)
             .unwrap_or(true);
 
-        match format {
+        let (mut resp, path_field, mime) = match format {
             "share_mp4" => {
                 let resp = self.call_daemon(
                     "export.share_mp4",
@@ -42,7 +42,7 @@ impl McpServer {
                         "holder_pid": std::process::id(),
                     }),
                 )?;
-                Ok(ToolOutput::new(resp))
+                (resp, "share_mp4_path", "video/mp4")
             }
             "bundle" => {
                 let resp = self.call_daemon(
@@ -61,10 +61,27 @@ impl McpServer {
                         "holder_pid": std::process::id(),
                     }),
                 )?;
-                Ok(ToolOutput::new(resp))
+                (resp, "bundle_path", "inode/directory")
             }
-            other => Err(Failure::invalid(format!("未対応の出力形式: {other}"))),
-        }
+            other => return Err(Failure::invalid(format!("未対応の出力形式: {other}"))),
+        };
+        let path = std::path::Path::new(
+            resp[path_field]
+                .as_str()
+                .ok_or_else(|| Failure::unavailable("書き出し先がありません。"))?,
+        );
+        let uri = url::Url::from_file_path(path)
+            .map_err(|()| Failure::unavailable("書き出し先のパスが不正です。"))?;
+        let link = crate::mcp::resources::ResourceLink::file(path, uri, mime, "書き出し先");
+        resp["output_path"] = resp[path_field].clone();
+        let explicit_destination = args.contains_key("dest_dir")
+            || (format == "share_mp4" && args.contains_key("output_path"));
+        resp["info_codes"] = if explicit_destination {
+            json!([])
+        } else {
+            json!(["default_export_dir"])
+        };
+        Ok(ToolOutput::new(resp).with_links(vec![link]))
     }
 
     pub(in crate::mcp) fn tool_export_frame_png(

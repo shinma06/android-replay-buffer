@@ -199,6 +199,22 @@ pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
     }
 }
 
+/// Recovery text shared by the PNG-producing command and RPC surfaces.
+pub const PNG_EXTENSION_HINT: &str = "PNG 形式のため拡張子は `.png` を指定してください。";
+
+/// Returns structured diagnostics when an explicit PNG filename has the wrong extension.
+pub fn png_extension_error(path: &Path) -> Option<Value> {
+    let ext = path.extension().unwrap_or_default().to_string_lossy();
+    (!ext.eq_ignore_ascii_case("png")).then(|| {
+        let got = if ext.is_empty() {
+            String::new()
+        } else {
+            format!(".{ext}")
+        };
+        json!({"field":"output_path","allowed_extensions":[".png"],"got":got})
+    })
+}
+
 /// Refines the shared recovery hint when the daemon supplies a rejected overview tap index.
 #[must_use]
 pub fn error_guidance_with_details(
@@ -206,6 +222,12 @@ pub fn error_guidance_with_details(
     details: Option<&Value>,
 ) -> (&'static str, std::borrow::Cow<'static, str>, bool) {
     let (kind, hint, retryable) = error_guidance(label);
+    if label == "INVALID_PARAMS"
+        && details
+            .is_some_and(|d| d["field"] == "output_path" && d.get("allowed_extensions").is_some())
+    {
+        return (kind, PNG_EXTENSION_HINT.into(), retryable);
+    }
     let count = details
         .filter(|d| label == "INVALID_PARAMS" && d["field"] == "tap_index")
         .and_then(|d| d["overview_tap_count"].as_u64());

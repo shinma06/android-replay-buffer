@@ -36,7 +36,7 @@ satisfies:
 
 `2025-11-25` の `arb_export_trim` は `trash_original`、`arb_screenshot` は `overwrite` の指定自体を拒否する。以前の 3 版はこれらを受理し破壊性ヒントを立てる。保存秒数の正本は `duration_secs`、バンドル指定は `bundle_id`。`arb_export_trim` の既定形式 `share_mp4` は `export.share_mp4` に渡し、`keep_bundle=false` が既定。`format=bundle` は `export.trim`。呼び出し別名 `arb_export_share_mp4` と `arb_trim_bundle` は列挙数に含めない。CLI の `--in-time-ns`／`--out-time-ns` と MCP の `in_time_ns`／`out_time_ns` は同じ実時間の対で、フレーム指定との優先順位・端点・成果物は [SPEC-03](SPEC-03-protocol-media.md) に従う。[stdio 実装](../../core/crates/arb-cli/src/mcp.rs)
 
-別名組（bundle_id／bundle_id_or_path、duration_secs／window_secs／duration_sec、note／memo）は表の `allowEqual` に従い、指定したキーがすべて同じ値なら 1 つの指定として正本名に統合する。1 つでも値が異なれば、指定した全キーを `details.conflicts` に入れて `INVALID_PARAMS`（-32602）とする（3 キー同時指定も全件比較）。整数は比較前に正規化するので 10 と 10.0 は同値。排他組（cursor／after_seq、level／min_level、output_path／output_dir）は同値でも併用を拒否する。非推奨の別名は `inputSchema` に載せないが実行時は受理し、検証より前に正本名へ統合する。別名の型・範囲の誤りは呼び出し側が使った名前で報告する。バンドル指定は正本名 `bundle_id` を `required` とする。保存 3 ツールは duration_secs、note、dest_dir、drain_timeout_ms を共通に受理する。調査・書き出し 5 ツールは bundle_id を使う。cursor と after_seq、スクリーンショットと PNG 書き出しの output_path と output_dir は各組で片方だけ指定する（PNG 書き出しはどちらか一方が必須で、両方は details.conflicts、どちらもなければ details.one_of_required）。検証失敗の details には衝突引数名、許容範囲と入力値、列挙候補、型または必須キーを入れ、message と hint で修正方法を示す。
+別名組（bundle_id／bundle_id_or_path、duration_secs／window_secs／duration_sec、note／memo）は表の `allowEqual` に従い、指定したキーがすべて同じ値なら 1 つの指定として正本名に統合する。1 つでも値が異なれば、指定した全キーを `details.conflicts` に入れて `INVALID_PARAMS`（-32602）とする（3 キー同時指定も全件比較）。整数は比較前に正規化するので 10 と 10.0 は同値。排他組（cursor／after_seq、level／min_level、start_ns／start_frame、end_ns／end_frame、output_path／output_dir）は同値でも併用を拒否する。非推奨の別名は `inputSchema` に載せないが実行時は受理し、検証より前に正本名へ統合する。別名の型・範囲の誤りは呼び出し側が使った名前で報告する。バンドル指定は正本名 `bundle_id` を `required` とする。保存 3 ツールは duration_secs、note、dest_dir、drain_timeout_ms を共通に受理する。調査・書き出し 5 ツールは bundle_id を使う。cursor と after_seq、スクリーンショットと PNG 書き出しの output_path と output_dir は各組で片方だけ指定する（PNG 書き出しはどちらか一方が必須で、両方は details.conflicts、どちらもなければ details.one_of_required）。検証失敗の details には衝突引数名、許容範囲と入力値、列挙候補、型または必須キーを入れ、message と hint で修正方法を示す。
 
 管理域（データディレクトリ配下の bundles）外への保存（dest_dir、output_dir_override）は unmanaged で arb_gc_bundles の物理削除対象外です。実体を手動で移動・削除し、元の保存先が missing になったら arb_forget_bundle で登録を解除します。
 
@@ -89,3 +89,7 @@ satisfies:
 ## 入力の観測範囲
 
 状態・概要・保存して調査は input_capture を返す。physical.input_events は生入力行、gestures は認識済み操作数。生行数を保存していない既存バンドルは null。tap_records はライブの生行数の互換名。概要の taps は物理入力で、注入要求は injected_inputs に格納する。injected.commands は未知の要求も含み、gestures は tap・swipe・draganddrop の要求数。抽出件数は全件を数え、概要の注入明細は JSON 換算 256 KiB までを収録する。injected_inputs_truncated が true の場合、後続の元ログは arb_query_logs でタグ adbd を指定して確認できる。
+
+## 調査・書き出しの明示指定と警告
+
+`single` は `frame_index` または `frame_indices`、座標を直接渡す `tap_crop` は `frame_index` が必須。ログ検索の開始・終了はそれぞれ ns とフレームの片方を選ぶ。トリムの範囲を省略するには `full_range: true` を指定する（フレーム・時刻範囲との併用は `details.conflicts`）。既定の保存先は `output_path`、file URI の `resource_links`、`info_codes` の `default_export_dir` で確認できる。バンドル形式では `output_path` の入力は共有 MP4 のコピー先で、本体の保存先を選ぶのは `dest_dir`。そのため本体の既定保存先を使った場合は、コピー先を指定しても同じ情報を返す。スクリーンショットとフレーム PNG の明示パスは拡張子 `.png` が必須（大小無視）。引数違反は `INVALID_PARAMS`。間引き・焼き込み 0 件などの追加情報は `warnings` の各 `WarningDetail` に格納する。

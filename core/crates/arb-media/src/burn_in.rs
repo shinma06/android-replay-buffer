@@ -108,6 +108,9 @@ pub struct BurnInReport {
     pub output_frame_count: u64,
     /// Number of output frames onto which at least one tap or swipe overlay was rasterized.
     pub burned_frame_count: u64,
+    /// Distinct mapped gestures drawn into at least one output sample.
+    #[serde(default)]
+    pub burned_tap_count: usize,
     /// `true` when full-range re-encoding ran; `false` when the 0-touch lossless fast path ran.
     pub reencoded: bool,
     /// Name of the [`VideoCodecBackend`] used.
@@ -457,7 +460,7 @@ fn swipe_end_direction(ev: &MappedTouchEvent) -> Option<(f64, f64)> {
 }
 
 fn compute_active_bbox(
-    active: &[&MappedTouchEvent],
+    active: &[(usize, &MappedTouchEvent)],
     video_w: usize,
     video_h: usize,
     unit: f64,
@@ -478,7 +481,7 @@ fn compute_active_bbox(
         max_y = max_y.max(y + margin);
     };
 
-    for ev in active {
+    for (_, ev) in active {
         include(ev.start.0, ev.start.1);
         include(ev.end.0, ev.end.1);
         for &(px, py, _) in &ev.polyline {
@@ -498,10 +501,12 @@ fn rasterize_frame_overlay(
     frame_t_ns: i64,
     video_w: usize,
     video_h: usize,
+    mut on_draw: impl FnMut(usize),
 ) -> Option<OverlayBox> {
-    let active: Vec<&MappedTouchEvent> = events
+    let active: Vec<_> = events
         .iter()
-        .filter(|ev| ev.is_active_at(frame_t_ns))
+        .enumerate()
+        .filter(|(_, ev)| ev.is_active_at(frame_t_ns))
         .collect();
     if active.is_empty() {
         return None;
@@ -512,22 +517,30 @@ fn rasterize_frame_overlay(
     let (x0, y0, x1, y1) = compute_active_bbox(&active, video_w, video_h, unit)?;
     let mut canvas = OverlayBox::new(x0, y0, x1, y1);
 
-    for ev in active {
-        match ev.kind {
+    for (index, ev) in active {
+        let drawn = match ev.kind {
             GestureKind::Swipe => rasterize_swipe(&mut canvas, ev, frame_t_ns, unit),
             _ => rasterize_tap(&mut canvas, ev, frame_t_ns, unit),
+        };
+        if drawn {
+            on_draw(index);
         }
     }
 
     Some(canvas)
 }
 
-fn rasterize_tap(canvas: &mut OverlayBox, ev: &MappedTouchEvent, frame_t_ns: i64, unit: f64) {
+fn rasterize_tap(
+    canvas: &mut OverlayBox,
+    ev: &MappedTouchEvent,
+    frame_t_ns: i64,
+    unit: f64,
+) -> bool {
     let elapsed = i64_to_f64(frame_t_ns.saturating_sub(ev.start_t_ns).max(0));
     let progress = (elapsed / i64_to_f64(TAP_FADE_DURATION_NS)).clamp(0.0, 1.0);
     let fade = f64_to_f32_unit((1.0 - progress).powf(1.3));
     if fade <= 0.01 {
-        return;
+        return false;
     }
 
     let (cx, cy) = ev.start;
@@ -539,9 +552,15 @@ fn rasterize_tap(canvas: &mut OverlayBox, ev: &MappedTouchEvent, frame_t_ns: i64
     canvas.draw_ring(cx, cy, outer_r, 3.2 * unit, [1.0, 0.91, 0.52, 0.94 * fade]);
     canvas.draw_filled_circle(cx, cy, dot_r + 1.8 * unit, [0.05, 0.07, 0.10, 0.62 * fade]);
     canvas.draw_filled_circle(cx, cy, dot_r, [1.0, 1.0, 1.0, 0.96 * fade]);
+    true
 }
 
-fn rasterize_swipe(canvas: &mut OverlayBox, ev: &MappedTouchEvent, frame_t_ns: i64, unit: f64) {
+fn rasterize_swipe(
+    canvas: &mut OverlayBox,
+    ev: &MappedTouchEvent,
+    frame_t_ns: i64,
+    unit: f64,
+) -> bool {
     let fade = if frame_t_ns <= ev.end_t_ns {
         1.0_f32
     } else {
@@ -550,7 +569,7 @@ fn rasterize_swipe(canvas: &mut OverlayBox, ev: &MappedTouchEvent, frame_t_ns: i
         f64_to_f32_unit((1.0 - progress).powf(1.3))
     };
     if fade <= 0.01 {
-        return;
+        return false;
     }
 
     let halo_rgba = [0.05, 0.07, 0.10, 0.55 * fade];
@@ -602,6 +621,7 @@ fn rasterize_swipe(canvas: &mut OverlayBox, ev: &MappedTouchEvent, frame_t_ns: i
     canvas.draw_filled_circle(mx, my, 9.0 * unit, [0.05, 0.07, 0.10, 0.62 * fade]);
     canvas.draw_filled_circle(mx, my, 7.0 * unit, [1.0, 0.85, 0.35, 0.96 * fade]);
     canvas.draw_filled_circle(mx, my, 4.0 * unit, [1.0, 1.0, 1.0, 0.98 * fade]);
+    true
 }
 
 #[inline]
@@ -715,7 +735,7 @@ pub fn composite_touch_overlays_rgb24(
         return false;
     }
     let mapped = map_events(events, rgb.width, rgb.height, display_geometry);
-    let Some(overlay) = rasterize_frame_overlay(&mapped, frame_t_ns, width, height) else {
+    let Some(overlay) = rasterize_frame_overlay(&mapped, frame_t_ns, width, height, |_| {}) else {
         return false;
     };
 
@@ -829,6 +849,7 @@ pub fn burn_in_taps_video(
         return Ok(BurnInReport {
             output_frame_count: trim_report.output_frame_count,
             burned_frame_count: 0,
+            burned_tap_count: 0,
             reencoded: false,
             backend_name: trim_report.backend_name,
             edts_box_count: trim_report.edts_box_count,
@@ -837,6 +858,7 @@ pub fn burn_in_taps_video(
     }
 
     let encode_params = estimate_encode_params(&track);
+    let mut drawn = vec![false; mapped_events.len()];
     let mut burned_frame_count = 0u64;
     let has_overlay = |frame_idx: u64| -> bool {
         frame_ts(frame_idx).is_some_and(|t_ns| mapped_events.iter().any(|ev| ev.is_active_at(t_ns)))
@@ -845,9 +867,13 @@ pub fn burn_in_taps_video(
         let Some(t_ns) = frame_ts(frame_idx) else {
             return;
         };
-        if let Some(overlay) =
-            rasterize_frame_overlay(&mapped_events, t_ns, frame.width(), frame.height())
-        {
+        if let Some(overlay) = rasterize_frame_overlay(
+            &mapped_events,
+            t_ns,
+            frame.width(),
+            frame.height(),
+            |index| drawn[index] = true,
+        ) {
             composite_overlay_onto_yuv(&overlay, frame);
             burned_frame_count += 1;
         }
@@ -884,6 +910,7 @@ pub fn burn_in_taps_video(
     Ok(BurnInReport {
         output_frame_count,
         burned_frame_count,
+        burned_tap_count: drawn.into_iter().filter(|seen| *seen).count(),
         reencoded: true,
         backend_name: backend.name().to_owned(),
         edts_box_count: 0,
@@ -998,6 +1025,7 @@ pub fn burn_in_taps_time_range(
         return Ok(BurnInReport {
             output_frame_count: r.output_frame_count,
             burned_frame_count: 0,
+            burned_tap_count: 0,
             reencoded: false,
             backend_name: r.backend_name,
             edts_box_count: 0,
@@ -1023,6 +1051,7 @@ pub fn burn_in_taps_time_range(
         });
     }
     let time = |i: u64| i64::try_from(starts[usize::try_from(i).unwrap_or(0)]).unwrap_or(i64::MAX);
+    let mut drawn = vec![false; mapped.len()];
     let mut burned = 0;
     let encoded = backend.reencode_overlay_samples(
         &track,
@@ -1033,7 +1062,9 @@ pub fn burn_in_taps_time_range(
         &|i| mapped.iter().any(|e| e.is_active_at(time(i))),
         &mut |i, frame| {
             if let Some(overlay) =
-                rasterize_frame_overlay(&mapped, time(i), frame.width(), frame.height())
+                rasterize_frame_overlay(&mapped, time(i), frame.width(), frame.height(), |index| {
+                    drawn[index] = true;
+                })
             {
                 composite_overlay_onto_yuv(&overlay, frame);
                 burned += 1;
@@ -1056,6 +1087,7 @@ pub fn burn_in_taps_time_range(
     Ok(BurnInReport {
         output_frame_count: u64::try_from(schedule.len()).unwrap_or(u64::MAX),
         burned_frame_count: burned,
+        burned_tap_count: drawn.into_iter().filter(|seen| *seen).count(),
         reencoded: true,
         backend_name: backend.name().into(),
         edts_box_count: 0,
@@ -1287,6 +1319,7 @@ mod tests {
         .expect("0-touch burn-in fast path");
         assert!(!fast_report.reencoded, "0 touches must skip full re-encode");
         assert_eq!(fast_report.burned_frame_count, 0);
+        assert_eq!(fast_report.burned_tap_count, 0);
         assert_eq!(fast_report.output_frame_count, 15);
         assert_eq!(fast_report.edts_box_count, 0);
         assert_eq!(fast_report.elst_box_count, 0);
@@ -1347,6 +1380,7 @@ mod tests {
         )
         .expect("burn-in transcode");
         assert!(report.reencoded, "active touches must trigger burn-in");
+        assert_eq!(report.burned_tap_count, 2);
         assert!(
             report.burned_frame_count >= 10,
             "expected >=10 burned frames"
