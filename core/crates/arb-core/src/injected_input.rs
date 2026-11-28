@@ -220,12 +220,22 @@ pub fn visit_commands(
         return 0;
     }
     let mut bad = 0;
+    let mut original_directory = true;
     lex(command, |words, valid| {
         let mut args = words.iter().map(String::as_str);
-        match args.next().map(|w| w.strip_prefix("./").unwrap_or(w)) {
-            Some("input" | "/system/bin/input" | "system/bin/input") => {}
-            Some("cmd" | "/system/bin/cmd" | "system/bin/cmd") if args.next() == Some("input") => {}
+        let executable = match args.next() {
+            Some("cd") => {
+                original_directory = false;
+                return;
+            }
+            Some("input" | "/system/bin/input") => "input",
+            Some("cmd" | "/system/bin/cmd") => "cmd",
+            Some("./system/bin/input" | "system/bin/input") if original_directory => "input",
+            Some("./system/bin/cmd" | "system/bin/cmd") if original_directory => "cmd",
             _ => return,
+        };
+        if executable == "cmd" && args.next() != Some("input") {
+            return;
         }
         if valid && let Some((display, command)) = parse(&args.collect::<Vec<_>>()) {
             visit(display, command);

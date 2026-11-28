@@ -134,5 +134,26 @@
       }
     ],
     "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:cd /data/local/tmp; ./input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:./cmd input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:cd /data/local/tmp && ./system/bin/input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
   }
 ]

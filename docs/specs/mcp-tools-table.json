@@ -1165,8 +1165,69 @@
         "additionalProperties": false
       }
     },
-    "InputCapture": {"type":"object","properties":{"physical":{"type":"object","properties":{"status":{"enum":["recorded","absent","disabled","unavailable"]},"source":{"const":"getevent"},"input_events":{"$ref":"#/$defs/UIntOrNull"},"gestures":{"$ref":"#/$defs/UInt"}},"required":["status","source","input_events","gestures"],"additionalProperties":false},"injected":{"type":"object","properties":{"status":{"enum":["commands_only","recorded","not_observable"]},"sources":{"type":"array","items":{"enum":["adbd_command","external_injected"]}},"commands":{"$ref":"#/$defs/UInt"},"gestures":{"$ref":"#/$defs/UInt"},"unparsed_commands":{"$ref":"#/$defs/UInt"},"time_certainty":{"enum":[null,"command_received","dispatched","exact"]}},"required":["status","sources","commands","gestures","unparsed_commands","time_certainty"],"additionalProperties":false},"caveats":{"$ref":"#/$defs/Strings"}},"required":["physical","injected","caveats"],"additionalProperties":false},
-    "InjectedInput": {"type":"object","properties":{"source":{"const":"adbd_command"},"injected":{"const":true},"kind":{"enum":["tap","swipe","draganddrop","keyevent","text","motionevent","roll"]},"time_certainty":{"const":"command_received"},"source_log_seq":{"$ref":"#/$defs/UInt"},"latency_bound_ms":{"$ref":"#/$defs/UInt"},"display_id":{"type":["integer","null"]},"boot_id":{"type":["string","null"]},"boottime_ns":{"type":["integer","null"]},"offset_ms":{"type":["integer","null"]},"frame_index_hint":{"$ref":"#/$defs/UIntOrNull"},"x_video":{"type":["number","null"]},"y_video":{"type":["number","null"]},"x_display":{"type":"integer"},"y_display":{"type":"integer"},"end_x_display":{"type":"integer"},"end_y_display":{"type":"integer"},"duration_ms":{"$ref":"#/$defs/UIntOrNull"},"keycodes":{"$ref":"#/$defs/Strings"},"text":{"type":"string"},"action":{"type":"string"},"longpress":{"type":"boolean"},"dx":{"type":"integer"},"dy":{"type":"integer"}},"required":["source","injected","kind","time_certainty","source_log_seq","latency_bound_ms","display_id","boot_id","boottime_ns","offset_ms","frame_index_hint","x_video","y_video"],"additionalProperties":false},
+    "InputCapture": {
+      "type": "object",
+      "properties": {
+        "physical": {
+          "type": "object",
+          "properties": {
+            "status": {"enum": ["recorded", "absent", "disabled", "unavailable"]},
+            "source": {"const": "getevent"},
+            "input_events": {"$ref": "#/$defs/UIntOrNull"},
+            "gestures": {"$ref": "#/$defs/UInt"}
+          },
+          "required": ["status", "source", "input_events", "gestures"],
+          "additionalProperties": false
+        },
+        "injected": {
+          "type": "object",
+          "properties": {
+            "status": {"enum": ["commands_only", "recorded", "not_observable"]},
+            "sources": {"type": "array", "items": {"enum": ["adbd_command", "external_injected"]}},
+            "commands": {"$ref": "#/$defs/UInt"},
+            "gestures": {"$ref": "#/$defs/UInt"},
+            "unparsed_commands": {"$ref": "#/$defs/UInt"},
+            "time_certainty": {"enum": [null, "command_received", "dispatched", "exact"]}
+          },
+          "required": ["status", "sources", "commands", "gestures", "unparsed_commands", "time_certainty"],
+          "additionalProperties": false
+        },
+        "caveats": {"$ref": "#/$defs/Strings"}
+      },
+      "required": ["physical", "injected", "caveats"],
+      "additionalProperties": false
+    },
+    "InjectedInput": {
+      "type": "object",
+      "properties": {
+        "source": {"const": "adbd_command"},
+        "injected": {"const": true},
+        "kind": {"enum": ["tap", "swipe", "draganddrop", "keyevent", "text", "motionevent", "roll"]},
+        "time_certainty": {"const": "command_received"},
+        "source_log_seq": {"$ref": "#/$defs/UInt"},
+        "latency_bound_ms": {"$ref": "#/$defs/UInt"},
+        "display_id": {"type": ["integer", "null"]},
+        "boot_id": {"type": ["string", "null"]},
+        "boottime_ns": {"type": ["integer", "null"]},
+        "offset_ms": {"type": ["integer", "null"]},
+        "frame_index_hint": {"$ref": "#/$defs/UIntOrNull"},
+        "x_video": {"type": ["number", "null"]},
+        "y_video": {"type": ["number", "null"]},
+        "x_display": {"type": "integer"},
+        "y_display": {"type": "integer"},
+        "end_x_display": {"type": "integer"},
+        "end_y_display": {"type": "integer"},
+        "duration_ms": {"$ref": "#/$defs/UIntOrNull"},
+        "keycodes": {"$ref": "#/$defs/Strings"},
+        "text": {"type": "string"},
+        "action": {"type": "string"},
+        "longpress": {"type": "boolean"},
+        "dx": {"type": "integer"},
+        "dy": {"type": "integer"}
+      },
+      "required": ["source", "injected", "kind", "time_certainty", "source_log_seq", "latency_bound_ms", "display_id", "boot_id", "boottime_ns", "offset_ms", "frame_index_hint", "x_video", "y_video"],
+      "additionalProperties": false
+    },
     "OverviewTapItem": {
       "type": "object",
       "properties": {"source":{"const":"getevent"},"injected":{"const":false},
