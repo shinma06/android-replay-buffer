@@ -665,7 +665,7 @@ fn resources_and_prompts(c: &mut Client, id: &str) {
         (
             "investigate_crash",
             json!({"bundle_id":"fixture"}),
-            "arb://bundles/fixture/crashes",
+            "first_app_frame",
         ),
         (
             "triage_recent_bug",
@@ -798,10 +798,10 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     assert!(listed["jobs"].is_array());
     let status = c.tool("arb_status", json!({}));
     assert_eq!(
-        status["status"].get("configured_device_serial"),
+        status["capture"].get("configured_device_serial"),
         Some(&Value::Null)
     );
-    assert_eq!(status["status"]["serial_mismatch"], false);
+    assert_eq!(status["capture"]["serial_mismatch"], false);
     for name in ["arb_devices", "arb_config_get", "arb_list_bundles"] {
         c.tool(name, json!({}));
     }
@@ -818,11 +818,16 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         stopped["config_changed"]["capture_enabled"],
         json!([true, false])
     );
-    for name in ["arb_save", "arb_save_logs"] {
-        let r = c.result(
-            "tools/call",
-            json!({"name":name,"arguments":{"window_secs":5,"note":"調査記録"}}),
-        );
+    for (name, logs_only) in [
+        ("arb_save", false),
+        ("arb_save", true),
+        ("arb_save_logs", true),
+    ] {
+        let mut args = json!({"window_secs":5,"note":"調査記録"});
+        if name == "arb_save" && logs_only {
+            args["logs_only"] = json!(true);
+        }
+        let r = c.result("tools/call", json!({"name":name,"arguments":args}));
         assert_eq!(
             r["content"]
                 .as_array()
@@ -833,7 +838,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             3
         );
         let saved = c.check_tool(name, r);
-        if name == "arb_save_logs" {
+        if logs_only {
             let response = c.result("tools/call", json!({"name":"arb_inspect_frames","arguments":{"bundle_id":saved["bundle_id"],"mode":"single","frame_index":0}}));
             let error = &response["structuredContent"];
             assert_eq!(response["isError"], true);
@@ -893,6 +898,9 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         c.load_schemas();
         let out = root.path().join(format!("shot-{version}-{expected}.png"));
         let mut args = json!({"serial":"contract-device","output_path":out});
+        if inline == Some(true) {
+            args["source"] = json!("screencap");
+        }
         if let Some(flag) = inline {
             args["include_image"] = json!(flag);
         }
@@ -900,6 +908,14 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             "tools/call",
             json!({"name":"arb_screenshot","arguments":args}),
         );
+        let unavailable = c.result(
+            "tools/call",
+            json!({"name":"arb_screenshot","arguments":{"serial":"unrecorded","source":"capture"}}),
+        );
+        let failure: Value =
+            serde_json::from_str(unavailable["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(failure["error_code"], "INVALID_PARAMS");
+        assert!(failure["hint"].as_str().unwrap().contains("screencap"));
         let image = result["content"]
             .as_array()
             .unwrap()
@@ -921,6 +937,9 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
             assert_eq!(block["uri"], link["uri"]);
         }
         let shot = c.check_tool("arb_screenshot", result);
+        assert_eq!(shot["source"], "screencap");
+        assert_eq!(shot["fallback_reason"].is_string(), inline != Some(true));
+        assert_eq!(shot["staleness_ms"], 0);
         assert_eq!(shot["resource_links"], json!([link]));
         assert_eq!(shot["path"], json!(out));
         // Every version returns the same `file_uri` as the link.
@@ -1138,10 +1157,23 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         "ALREADY_TRASHED"
     );
     assert_eq!(duplicate["structuredContent"]["retryable"], false);
-    c.tool(
-        "arb_gc_bundles",
-        json!({"dry_run":true,"ignore_grace":true}),
-    );
+    c.tool("arb_config_update", json!({"gc_grace_secs":0}));
+    for version in ProtocolVersion::ALL {
+        c.init(version.as_str());
+        c.load_schemas();
+        let preview = c.tool("arb_gc_bundles", json!({}));
+        assert_eq!(preview["dry_run"], true);
+        assert!(
+            preview["preview"]["candidate_bundle_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(id))
+        );
+        assert!(preview["hint"].as_str().unwrap().contains("dry_run: false"));
+        assert!(path.is_dir());
+    }
+    c.init(ProtocolVersion::V2025_11_25.as_str());
+    c.load_schemas();
     let restored = c.tool("arb_restore_bundle", target.clone());
     assert_eq!(restored["frame_count"], trashed["frame_count"]);
     let duplicate = c.result(
@@ -1152,7 +1184,32 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         duplicate["structuredContent"]["error_code"],
         "ALREADY_ACTIVE"
     );
-    c.tool("arb_forget_bundle", target);
+    c.tool("arb_forget_bundle", target.clone());
+    c.tool("arb_trash_bundle", target);
+    let cli_gc = |extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_arb-cli"))
+            .arg("--data-dir")
+            .arg(&paths.data_dir)
+            .arg("--runtime-dir")
+            .arg(&paths.runtime_dir)
+            .arg("--cache-dir")
+            .arg(&paths.cache_dir)
+            .args(["--json", "bundles", "gc"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(cli_gc(&[])["dry_run"], true);
+    assert!(path.is_dir());
+    assert!(
+        cli_gc(&["--yes"])["purged_bundle_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(id))
+    );
+    assert!(!path.exists());
     tasks(&mut c);
     assert_eq!(c.covered, c.schemas.keys().cloned().collect());
     drop(c);
@@ -1811,4 +1868,106 @@ fn same_errors_as_overview(
         checked["summary"], summary,
         "summary is the daemon response verbatim"
     );
+}
+
+#[test]
+fn screenshot_uses_the_current_gop_on_every_version() {
+    use arb_adb::mock::{FaultScenarioBuilder, FaultStep};
+    use arb_adb::scrcpy::{VideoPacket, VideoPacketKind, VideoSessionMeta};
+    use arb_adb::wire::HeartbeatPayload;
+    use arb_media::codec::{DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat};
+
+    let root = TempDir::new().unwrap();
+    let paths = ArbPaths {
+        data_dir: root.path().join("d"),
+        runtime_dir: root.path().join("r"),
+        cache_dir: root.path().join("c"),
+    };
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut client = Client::open(&paths);
+    let frames = (0..2)
+        .map(|i| {
+            let mut data = vec![80; 64 * 64 * 3 / 2];
+            for row in 0..8 {
+                let start = row * 64 + i * 8;
+                data[start..start + 8].fill(200);
+            }
+            DecodedFrame {
+                frame_index: u64::try_from(i).unwrap(),
+                width: 64,
+                height: 64,
+                format: PixelFormat::Yuv420p,
+                data,
+            }
+        })
+        .collect::<Vec<_>>();
+    let packets = OpenH264Backend::new()
+        .encode_yuv420p_sequence(&frames, 30, FRAME_STEP_NS, EncodeParams::default())
+        .unwrap();
+    assert!(!packets[1].is_keyframe);
+    let expected =
+        OpenH264Backend::latest_png(packets.iter().map(|p| p.annex_b.as_slice()), (64, 64))
+            .unwrap();
+    let first = OpenH264Backend::latest_png([packets[0].annex_b.as_slice()], (64, 64)).unwrap();
+    assert_ne!(expected, first);
+    for version in ProtocolVersion::ALL {
+        client.init(version.as_str());
+        client.load_schemas();
+        let now = arb_os::clock::sample_host_clock().unwrap();
+        let mut source = FaultScenarioBuilder::new("recorded")
+            .push(FaultStep::Heartbeat {
+                pc_cont_ns: now.continuous_mono_ns,
+                payload: HeartbeatPayload {
+                    boottime_ns: now.continuous_mono_ns,
+                    monotonic_ns: now.continuous_mono_ns,
+                    realtime_ns: now.wall_epoch_ns,
+                    streams: vec![],
+                },
+            })
+            .push(FaultStep::VideoSession {
+                pc_cont_ns: now.continuous_mono_ns,
+                meta: VideoSessionMeta {
+                    header_tag: 0,
+                    width: 64,
+                    height: 64,
+                },
+            });
+        for p in &packets {
+            source = source.push(FaultStep::VideoFrame {
+                pc_cont_ns: now.continuous_mono_ns,
+                packet: VideoPacket {
+                    kind: if p.is_keyframe {
+                        VideoPacketKind::Keyframe
+                    } else {
+                        VideoPacketKind::DeltaFrame
+                    },
+                    pts_us: u64::try_from(p.pts_ns / 1000).unwrap(),
+                    data: p.annex_b.clone(),
+                },
+            });
+        }
+        server.ingest_device_source(&mut source.build()).unwrap();
+        for source in ["auto", "capture"] {
+            let path = root
+                .path()
+                .join(format!("{}-{source}.png", version.as_str()));
+            let shot = client.tool(
+                "arb_screenshot",
+                json!({"source":source,"output_path":path}),
+            );
+            assert_eq!(shot["source"], "capture");
+            assert_eq!(shot["serial"], "recorded");
+            assert_eq!(shot["width"], 64);
+            assert_eq!(shot["height"], 64);
+            assert!(
+                shot["frame_captured_at_utc"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with('Z')
+            );
+            assert!(shot["staleness_ms"].is_u64());
+            assert!(shot.get("fallback_reason").is_none());
+            assert_eq!(fs::read(path).unwrap(), expected);
+        }
+    }
 }

@@ -34,7 +34,12 @@ impl McpServer {
         Ok(ToolOutput::new(resp))
     }
     pub(super) fn gc_bundles(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
-        let resp = self.call_daemon("bundle.gc", &Value::Object(args.clone()))?;
+        let mut params = args.clone();
+        let preview = *params.entry("dry_run").or_insert(Value::Bool(true)) == true;
+        let mut resp = self.call_daemon("bundle.gc", &Value::Object(params))?;
+        if preview {
+            resp["hint"] = json!("候補と解放見込みを確認後、dry_run: false で実行してください。");
+        }
         Ok(ToolOutput::new(resp))
     }
     pub(super) fn forget_bundle(

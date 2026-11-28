@@ -76,8 +76,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DaemonError, NotFoundEntity};
 use crate::protocol::{
-    AudioCaptureState, AudioCause, CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse,
+    AudioCaptureState, AudioCause, BufferState, CaptureStatusView, SaveJobView, SaveMode,
+    SaveOutcomeResponse,
 };
+use crate::screenshot::RecordingGop;
 use crate::time_util::{next_id, utc_now_iso8601};
 
 const NANOS_PER_SEC: i64 = 1_000_000_000;
@@ -681,6 +683,8 @@ pub struct CapturePipeline {
     chunk_contents: BTreeMap<String, ChunkContent>,
     /// Continuous video / logcat coverage evidence of the current device (#564 / #570).
     coverage: CoverageLedger,
+    screenshot: RecordingGop,
+    screenshot_beacon: Option<i64>,
     crash_notifier: Option<Sender<CrashAutoSaveNotice>>,
     crash_windows: Vec<CrashWindow>,
     pub(super) crash_daemon: std::sync::Weak<super::DaemonState>,
@@ -775,6 +779,8 @@ impl CapturePipeline {
             last_discontinuities: Vec::new(),
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
+            screenshot: RecordingGop::default(),
+            screenshot_beacon: None,
             coverage: CoverageLedger::new(arb_adb::adb::DEFAULT_BEACON_TIMEOUT_NS),
             crash_notifier: None,
             crash_windows: Vec::new(),
@@ -1051,6 +1057,8 @@ impl CapturePipeline {
             self.device.is_emulator = false;
         }
         self.drain_watermark_ns = None;
+        self.screenshot = RecordingGop::default();
+        self.screenshot_beacon = None;
         // A new generation never extends the coverage of an older one.
         self.coverage.close_all();
         self.session_generation = self.session_generation.wrapping_add(1);
@@ -1089,6 +1097,33 @@ impl CapturePipeline {
         self.data_dir.join("adb-sessions")
     }
 
+    pub(crate) fn screenshot_gop(
+        &self,
+        serial: Option<&str>,
+        now: i64,
+    ) -> Result<RecordingGop, &'static str> {
+        if !self.is_active() || !self.connected {
+            return Err("capture_inactive");
+        }
+        if self.serial.as_deref() != serial {
+            return Err("serial_mismatch");
+        }
+        if !self.screenshot_beacon.is_some_and(|t| {
+            (0..=arb_adb::adb::DEFAULT_BEACON_TIMEOUT_NS).contains(&now.saturating_sub(t))
+        }) {
+            return Err("beacon_stale");
+        }
+        let interval = self
+            .coverage
+            .video
+            .current_at(now)
+            .ok_or("video_coverage_closed")?;
+        if self.timeline.current_boot_id() != Some(interval.key.boot_id.as_str()) {
+            return Err("video_boot_mismatch");
+        }
+        self.screenshot.snapshot(interval, now)
+    }
+
     /// Returns the generation of the most recently started capture session.
     #[must_use]
     pub const fn session_generation(&self) -> u64 {
@@ -1097,6 +1132,8 @@ impl CapturePipeline {
 
     /// Marks the active capture session as stopped and flushes buffered events to Zone-1 ring.
     pub fn mark_stopped(&mut self) {
+        self.screenshot = RecordingGop::default();
+        self.screenshot_beacon = None;
         self.finish_crash_windows(DrainEvent::Interrupted);
         self.active = false;
         self.connected = false;
@@ -1145,7 +1182,22 @@ impl CapturePipeline {
     /// Returns a snapshot of live capture telemetry for `system.status`.
     #[must_use]
     pub fn status_view(&self) -> CaptureStatusView {
+        let newest = self.buffer_span().map(|(_, hi)| hi);
+        let buffer_state = if self.is_active() {
+            BufferState::Live
+        } else if newest.is_some() {
+            BufferState::RetainedAfterStop
+        } else {
+            BufferState::Empty
+        };
+        let newest_age_secs = newest.and_then(|ts| {
+            let now = sample_host_clock().ok()?.continuous_mono_ns;
+            (self.clock_domain == ClockDomain::HostLive && now >= ts)
+                .then(|| std::time::Duration::from_nanos(now.abs_diff(ts)).as_secs_f64())
+        });
         CaptureStatusView {
+            buffer_state,
+            newest_age_secs,
             active: self.active,
             connected: self.connected,
             serial: self.serial.clone(),
@@ -1191,6 +1243,20 @@ impl CapturePipeline {
     /// the configured ring duration cap.
     #[must_use]
     pub fn buffered_secs(&self) -> u64 {
+        let Some((lo, hi)) = self.buffer_span() else {
+            return 0;
+        };
+        let span_ns = u64::try_from(hi.saturating_sub(lo).max(0)).unwrap_or(0);
+        let max_duration_ns = self.ring.policy().max_ring_duration_ns;
+        let bounded_ns = if max_duration_ns > 0 {
+            span_ns.min(max_duration_ns)
+        } else {
+            span_ns
+        };
+        bounded_ns / 1_000_000_000
+    }
+
+    fn buffer_span(&self) -> Option<(i64, i64)> {
         let session_floor = self.session_first_event_cont_ns;
         let (mut oldest, mut newest) = self.ring.retained_span().unzip();
 
@@ -1206,17 +1272,7 @@ impl CapturePipeline {
             }
         }
 
-        let (Some(lo), Some(hi)) = (oldest, newest) else {
-            return 0;
-        };
-        let span_ns = u64::try_from(hi.saturating_sub(lo).max(0)).unwrap_or(0);
-        let max_duration_ns = self.ring.policy().max_ring_duration_ns;
-        let bounded_ns = if max_duration_ns > 0 {
-            span_ns.min(max_duration_ns)
-        } else {
-            span_ns
-        };
-        bounded_ns / 1_000_000_000
+        oldest.zip(newest)
     }
 
     /// Returns a shared reference to the Zone-1 [`RingStore`].
@@ -1283,6 +1339,8 @@ impl CapturePipeline {
                 self.flush_pending_chunk()?;
                 self.chunk_contents.clear();
                 self.coverage.close_all();
+                self.screenshot = RecordingGop::default();
+                self.screenshot_beacon = None;
                 self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
                 self.live_normalizer = TouchNormalizer::default();
                 self.latest_heartbeat_boottime_ns = None;
@@ -1358,6 +1416,8 @@ impl CapturePipeline {
         match event {
             // A new transport session (or its end): coverage restarts from fresh evidence.
             CaptureEvent::Hello { .. } | CaptureEvent::Shutdown { .. } => {
+                self.screenshot = RecordingGop::default();
+                self.screenshot_beacon = None;
                 self.coverage.close_all();
             }
             CaptureEvent::Heartbeat {
@@ -1405,6 +1465,9 @@ impl CapturePipeline {
                 }
             }
             _ => {}
+        }
+        if !self.coverage.video.is_open() {
+            self.screenshot.clear_frames();
         }
     }
 
@@ -1497,6 +1560,7 @@ impl CapturePipeline {
                 boot_id,
                 payload,
             } => {
+                self.screenshot_beacon = Some(*pc_cont_ns);
                 self.connected = true;
                 // Companion streams (Control, Logcat, Input) share a single ordered FIFO stream;
                 // `StreamHealthEntry::last_pts_ns` records the last emitted event (0 when idle),
@@ -1518,12 +1582,18 @@ impl CapturePipeline {
                 let _ = self.timeline.ingest_pc_sync_probe(probe.clone());
                 self.timeline.bound_live_history();
             }
-            CaptureEvent::VideoSession { meta, .. } => {
+            CaptureEvent::VideoSession { meta, boot_id, .. } => {
+                self.screenshot.begin(boot_id, meta);
                 self.video_width = u16::try_from(meta.width).unwrap_or(1920);
                 self.video_height = u16::try_from(meta.height).unwrap_or(1080);
                 should_flush = true;
             }
-            CaptureEvent::VideoFrame { packet, .. } => {
+            CaptureEvent::VideoFrame {
+                packet,
+                pc_cont_ns,
+                boot_id,
+            } => {
+                self.screenshot.push(boot_id, *pc_cont_ns, packet);
                 if packet.is_config() {
                     self.latest_video_config = Some(packet.data.clone());
                     should_flush = true;
@@ -1607,6 +1677,9 @@ impl CapturePipeline {
                 | DiscontinuityKind::DeviceReboot
         ) {
             return;
+        }
+        if matches!(disc.stream, None | Some(StreamKind::Video)) {
+            self.screenshot.clear_frames();
         }
         match disc.stream {
             None => self.coverage.close_all(),
@@ -2738,7 +2811,7 @@ impl CapturePipeline {
     }
 }
 
-fn embedded_config(annex_b: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn embedded_config(annex_b: &[u8]) -> Option<Vec<u8>> {
     let mut config = Vec::new();
     for nal in arb_media::mp4::split_annexb_nals(annex_b) {
         if nal.first().is_some_and(|b| matches!(b & 31, 7 | 8)) {
@@ -6752,6 +6825,7 @@ mod tests {
 
     #[test]
     fn buffered_secs_preserves_same_device_ring_across_stop_start() {
+        use crate::protocol::BufferState;
         let tmp = TempDir::new().expect("tempdir");
         let mut pipeline = CapturePipeline::open(
             tmp.path(),
@@ -6760,6 +6834,8 @@ mod tests {
         )
         .expect("open pipeline");
         assert_eq!(pipeline.buffered_secs(), 0, "fresh empty ring must be 0s");
+        assert_eq!(pipeline.status_view().buffer_state, BufferState::Empty);
+        assert_eq!(pipeline.status_view().newest_age_secs, None);
 
         let _ = pipeline.begin_session("serial-buf");
         pipeline.set_display_size(1080, 2400);
@@ -6778,7 +6854,12 @@ mod tests {
             "buffered_secs must reflect real ring span (12s), not video_frames/fps (0s)"
         );
 
+        assert_eq!(pipeline.status_view().buffer_state, BufferState::Live);
         pipeline.mark_stopped();
+        assert_eq!(
+            pipeline.status_view().buffer_state,
+            BufferState::RetainedAfterStop
+        );
         let _ = pipeline.begin_session("serial-buf");
         pipeline
             .ingest_event(video_event(100_000_000_000, vec![0, 0, 0, 1, 0x65]))

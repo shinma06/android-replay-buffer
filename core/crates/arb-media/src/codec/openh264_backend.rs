@@ -33,6 +33,42 @@ impl OpenH264Backend {
         Self
     }
 
+    /// Decodes a recording GOP directly from Annex B access units into its last picture.
+    /// The expected dimensions are the current session metadata. A delayed or missing final
+    /// picture cannot be substituted with an earlier one.
+    ///
+    /// # Errors
+    /// Returns a codec error for an incomplete GOP or a picture of a different size.
+    pub fn latest_png<'a>(
+        packets: impl IntoIterator<Item = &'a [u8]>,
+        expected: (u16, u16),
+    ) -> Result<Vec<u8>, MediaError> {
+        let mut decoder = make_decoder(Flush::Flush)?;
+        let mut packets = packets.into_iter().peekable();
+        while let Some(packet) = packets.next() {
+            let picture = decoder
+                .decode(packet)
+                .map_err(|e| MediaError::Codec(e.to_string()))?
+                .ok_or_else(|| MediaError::Codec("missing GOP picture".into()))?;
+            if packets.peek().is_none() {
+                let (w, h) = picture.dimensions();
+                if (w, h) != (usize::from(expected.0), usize::from(expected.1)) {
+                    return Err(MediaError::Codec(
+                        "picture dimensions differ from the video session".into(),
+                    ));
+                }
+                let len = w
+                    .checked_mul(h)
+                    .and_then(|n| n.checked_mul(3))
+                    .ok_or_else(|| MediaError::Codec("RGB image size overflow".into()))?;
+                let mut rgb = vec![0; len];
+                picture.write_rgb8(&mut rgb);
+                return crate::contact_sheet::encode_rgb_png(w, h, &rgb);
+            }
+        }
+        Err(MediaError::Codec("empty GOP".into()))
+    }
+
     /// Encodes a sequence of `Yuv420p` frames into Annex B [`RawH264Packet`]s with deterministic
     /// IDR keyframes every `keyframe_interval` frames.
     ///

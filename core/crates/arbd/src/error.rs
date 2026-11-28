@@ -68,6 +68,9 @@ pub enum DaemonError {
     /// Caller supplied invalid parameters.
     #[error("{0}")]
     InvalidParams(String),
+    /// An explicit capture screenshot cannot be satisfied by live evidence.
+    #[error("録画フレームを取得できません（{0}）。source: \"screencap\" を指定してください。")]
+    CaptureFrameUnavailable(&'static str),
     /// An explicit PNG filename has an incompatible extension.
     #[error("{}", arb_os::rpc::PNG_EXTENSION_HINT)]
     PngExtension(Value),
@@ -194,6 +197,10 @@ impl DaemonError {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive RPC error mapping table"
+    )]
     fn public_error_kind(&self) -> (i32, Option<&'static str>, &'static str) {
         use arb_core::state::{BundleLifecycleState, StateTransitionError};
         match self {
@@ -244,6 +251,7 @@ impl DaemonError {
                 "保存に必要な内部データが見つかりません。",
             ),
             Self::PngExtension(_)
+            | Self::CaptureFrameUnavailable(_)
             | Self::InvalidParams(_)
             | Self::Selection(_)
             | Self::Media(
@@ -343,6 +351,12 @@ impl DaemonError {
                     None,
                 );
             }
+            Self::CaptureFrameUnavailable(reason) => {
+                return (
+                    json!({"reason":reason,"suggested_source":"screencap"}),
+                    None,
+                );
+            }
             Self::NoVideo(id) => return (json!({"bundle_id": id}), None),
             Self::OutputExists(path) => {
                 return (json!({"path": path, "reason": "already_exists"}), None);
@@ -362,6 +376,7 @@ impl DaemonError {
 
     fn public_message(&self, message: &str) -> String {
         match self {
+            Self::CaptureFrameUnavailable(_) => self.to_string(),
             Self::PngExtension(_) => arb_os::rpc::PNG_EXTENSION_HINT.to_owned(),
             // Parameter validation explains the rejected field/type/range to the caller.
             Self::InvalidParams(reason)

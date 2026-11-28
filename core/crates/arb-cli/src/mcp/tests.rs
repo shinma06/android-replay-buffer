@@ -646,6 +646,10 @@ fn previous_daemon_reports_safe_gc_capability_and_actual_capture_state() {
                 "system.status",
                 json!({"capture":{"serial":"fixture","connected":true,"audio_state":"available"}}),
             ),
+            (
+                "system.hello",
+                json!({"protocol_version":arb_os::rpc::EXPECTED_IPC_PROTOCOL_VERSION}),
+            ),
         ] {
             let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
                 .unwrap()
@@ -665,7 +669,9 @@ fn previous_daemon_reports_safe_gc_capability_and_actual_capture_state() {
     let mut mcp = McpServer::new(paths);
     mcp.client = Some(super::RpcClient::connect_endpoint(&endpoint).unwrap());
     assert_eq!(
-        mcp.tool_status().unwrap().body["hello"]["gc_dry_run"],
+        mcp.tool_status(json!({"verbose":true}).as_object().unwrap())
+            .unwrap()
+            .body["hello"]["gc_dry_run"],
         false
     );
     let capture = mcp
@@ -681,7 +687,13 @@ fn previous_daemon_reports_safe_gc_capability_and_actual_capture_state() {
         .find(|t| t["name"] == "arb_capture_start")
         .unwrap();
     super::validate::validate(&schema["outputSchema"], &capture, "capture.start").unwrap();
-    drop(mcp);
+    let error = mcp
+        .dispatch_tool("arb_gc_bundles", &serde_json::Map::new())
+        .unwrap_err();
+    assert_eq!(
+        error.label, "DAEMON_UNAVAILABLE",
+        "old sockets must only receive the capability probe"
+    );
     daemon.join().unwrap();
 }
 

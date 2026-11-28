@@ -143,6 +143,14 @@ impl<K: Clone + PartialEq> StreamCoverage<K> {
         self.closed.retain(|c| c.end_ns >= horizon_ns);
     }
 
+    /// Returns the open interval only while its evidence is fresh on the ingest clock.
+    #[must_use]
+    pub fn current_at(&self, now_ns: i64) -> Option<&CoverageInterval<K>> {
+        self.open.as_ref().filter(|interval| {
+            (0..=self.max_gap_ns).contains(&now_ns.saturating_sub(interval.end_ns))
+        })
+    }
+
     /// Whether an interval is currently open.
     #[must_use]
     pub const fn is_open(&self) -> bool {

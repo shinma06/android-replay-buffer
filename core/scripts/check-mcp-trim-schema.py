@@ -110,6 +110,20 @@ def check_version(cli, flags, fixture, version, rows):
                         "arb://schemas/%2e%2e", "arb://schemas/"):
                 response, _ = request("resources/read", {"uri": uri})
                 assert response["error"]["code"] == -32602, response
+            status_bytes = []
+            for args in ({}, {"verbose": True}):
+                status, _ = call("tools/call", {"name":"arb_status", "arguments":args})
+                assert not status["isError"], status
+                body = json.loads(status["content"][0]["text"])
+                Draft202012Validator(outputs_by_tool["arb_status"], registry=Registry()).validate(body)
+                status_bytes.append(len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()))
+                if args:
+                    assert {"hello", "status", "input_capture"} == set(body)
+                else:
+                    assert body["capture"]["buffer"]["state"] == "empty" and body["attention"] == []
+                    assert "hello" not in body and "status" not in body
+            assert status_bytes[0] < status_bytes[1]
+            print(f"{version} tools/list={size} B, status={status_bytes[0]} B, verbose={status_bytes[1]} B")
             check_silent_success(call, fixture, outputs_by_tool, rows)
             trim = next(t for t in tools if t["name"] == "arb_export_trim")
             inputs = Draft202012Validator(trim["inputSchema"], registry=Registry())

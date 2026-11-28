@@ -828,7 +828,11 @@ fn glyph(ch: char) -> [u8; 7] {
     }
 }
 
-fn encode_rgb_png(width: usize, height: usize, rgb: &[u8]) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn encode_rgb_png(
+    width: usize,
+    height: usize,
+    rgb: &[u8],
+) -> Result<Vec<u8>, MediaError> {
     let w = u32::try_from(width)
         .map_err(|_| MediaError::Png("PNG width exceeds u32::MAX".to_owned()))?;
     let h = u32::try_from(height)

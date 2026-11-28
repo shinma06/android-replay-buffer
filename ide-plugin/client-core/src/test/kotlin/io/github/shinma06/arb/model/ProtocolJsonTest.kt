@@ -8,6 +8,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -140,6 +141,14 @@ class ProtocolJsonTest {
         val parsed = gson.fromJson(aos9Json, CaptureStatusView::class.java)
         assertEquals(3L, parsed.inputEvents)
         assertEquals(0L, parsed.gestureCount)
+        assertNull(parsed.bufferState)
+        assertNull(parsed.newestAgeSecs)
+        val retained = gson.fromJson(
+            """{"active":false,"buffer_state":"retained_after_stop","newest_age_secs":0.25}""",
+            CaptureStatusView::class.java,
+        )
+        assertEquals("retained_after_stop", retained.bufferState)
+        assertEquals(0.25, retained.newestAgeSecs)
         assertEquals(AudioCaptureState.UNAVAILABLE, parsed.audioState)
         assertEquals(AudioCaptureState.UNAVAILABLE, parsed.effectiveAudioState)
         assertTrue(parsed.audioReason!!.contains("API 28"))

@@ -17,6 +17,127 @@ use arb_os::fs::{fsync_dir, fsync_file};
 use crate::error::DaemonError;
 use crate::time_util::next_id;
 
+/// Only the latest independently decodable GOP is retained. Snapshots share immutable bytes
+/// with the reader so software decode and PNG compression run outside the capture lock.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RecordingGop {
+    session: Option<arb_core::coverage::VideoCoverageKey>,
+    config: Arc<[u8]>,
+    units: Vec<Arc<[u8]>>,
+    bytes: usize,
+    first_cont_ns: i64,
+    pub(crate) frame_cont_ns: i64,
+    pub(crate) frame_epoch_ns: Option<i64>,
+}
+
+impl RecordingGop {
+    pub(crate) fn begin(&mut self, boot: &str, meta: &arb_adb::scrcpy::VideoSessionMeta) {
+        *self = Self::default();
+        if let (Ok(width), Ok(height)) = (u16::try_from(meta.width), u16::try_from(meta.height)) {
+            self.session = Some(arb_core::coverage::VideoCoverageKey {
+                boot_id: boot.to_owned(),
+                width,
+                height,
+            });
+        }
+    }
+
+    pub(crate) fn clear_frames(&mut self) {
+        self.units.clear();
+        self.bytes = 0;
+    }
+
+    pub(crate) fn push(&mut self, boot: &str, time: i64, packet: &arb_adb::scrcpy::VideoPacket) {
+        if self.session.as_ref().is_none_or(|s| s.boot_id != boot) {
+            return;
+        }
+        if packet.is_config() {
+            self.clear_frames();
+            self.config = Arc::from(packet.data.as_slice());
+            return;
+        }
+        let mut prepend_config = false;
+        if packet.is_keyframe() {
+            self.clear_frames();
+            self.first_cont_ns = time;
+            if !arb_media::mp4::split_annexb_nals(&packet.data)
+                .iter()
+                .any(|nal| nal.first().is_some_and(|b| b & 31 == 5))
+            {
+                return;
+            }
+            // Some encoders send SPS/PPS in-band at a keyframe; keep that configuration
+            // for subsequent IDRs even when it differs from the session's first config.
+            if let Some(config) = crate::capture::embedded_config(&packet.data) {
+                self.config = config.into();
+            } else {
+                prepend_config = true;
+            }
+        } else if self.units.is_empty() {
+            return;
+        }
+        // Bound capture memory even if an encoder ignores the one-second GOP request.
+        let config = if prepend_config {
+            self.config.as_ref()
+        } else {
+            &[]
+        };
+        self.bytes = self
+            .bytes
+            .saturating_add(config.len())
+            .saturating_add(packet.data.len());
+        if self.bytes > 16 * 1024 * 1024 || self.units.len() >= 240 {
+            self.clear_frames();
+            return;
+        }
+        self.units.push(if config.is_empty() {
+            Arc::from(packet.data.as_slice())
+        } else {
+            Arc::from([config, packet.data.as_slice()].concat())
+        });
+        self.frame_cont_ns = time;
+        // Anchor at receipt. A host wall-clock adjustment during a long static hold must
+        // not change the capture timestamp returned by later requests.
+        self.frame_epoch_ns = arb_os::clock::sample_host_clock()
+            .ok()
+            .and_then(|received| {
+                received
+                    .wall_epoch_ns
+                    .checked_sub(received.continuous_mono_ns.checked_sub(time)?)
+            });
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        interval: &arb_core::coverage::CoverageInterval<arb_core::coverage::VideoCoverageKey>,
+        now: i64,
+    ) -> Result<Self, &'static str> {
+        if self.units.is_empty()
+            || self.session.as_ref() != Some(&interval.key)
+            || self.first_cont_ns < interval.start_ns
+        {
+            return Err("current_session_gop_unavailable");
+        }
+        if now.saturating_sub(self.frame_cont_ns) > 2_000_000_000
+            && interval.end_ns <= self.frame_cont_ns
+        {
+            return Err("frame_stale");
+        }
+        Ok(self.clone())
+    }
+
+    pub(crate) fn decode_png(&self) -> Result<Vec<u8>, arb_media::MediaError> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| arb_media::MediaError::Codec("missing video session".into()))?;
+        arb_media::codec::OpenH264Backend::latest_png(
+            self.units.iter().map(AsRef::as_ref),
+            (session.width, session.height),
+        )
+    }
+}
+
 /// Wall-clock timeout for `adb exec-out screencap -p`.
 const SCREENCAP_TIMEOUT: Duration = Duration::from_secs(15);
 
