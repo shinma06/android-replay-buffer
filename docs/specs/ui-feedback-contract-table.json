@@ -17,6 +17,20 @@
     "failed": "失敗=",
     "reaped_lease_ids": "期限切れLease解放="
   },
+  "silent_success_rows": [
+    {"id": "single", "tool": "arb_inspect_frames", "arguments": {"mode": "single"}, "error": "INVALID_PARAMS", "details": {"field": "frame_index", "one_of_required": ["frame_index", "frame_indices"]}, "warning": "frame_index_defaulted"},
+    {"id": "tap_crop", "tool": "arb_inspect_frames", "arguments": {"mode": "tap_crop", "tap_x": 1, "tap_y": 1}, "error": "INVALID_PARAMS", "details": {"field": "frame_index", "one_of_required": ["frame_index"]}, "warning": "frame_index_defaulted"},
+    {"id": "sample", "tool": "arb_inspect_frames", "arguments": {"mode": "contact_sheet", "start_frame": 0, "end_frame": 4, "max_tiles": 2}, "warning": "contact_sheet_sampled"},
+    {"id": "start", "tool": "arb_query_logs", "arguments": {"start_ns": 0, "start_frame": 0}, "error": "INVALID_PARAMS", "details": {"conflicts": ["start_ns", "start_frame"]}, "warning": "range_intersected"},
+    {"id": "end", "tool": "arb_query_logs", "arguments": {"end_ns": 0, "end_frame": 0}, "error": "INVALID_PARAMS", "details": {"conflicts": ["end_ns", "end_frame"]}, "warning": "range_intersected"},
+    {"id": "implicit_trim", "tool": "arb_export_trim", "arguments": {}, "error": "INVALID_PARAMS", "details": {"one_of_required": ["frame_range", "time_range", "full_range"]}},
+    {"id": "full_range_with_range", "tool": "arb_export_trim", "arguments": {"full_range": true, "in_frame_index": 0, "out_frame_index": 1}, "error": "INVALID_PARAMS", "details": {"conflicts": ["full_range", "in_frame_index", "out_frame_index"]}},
+    {"id": "default_dir", "tool": "arb_export_trim", "arguments": {"full_range": true}, "info": "default_export_dir"},
+    {"id": "arb_export_frame_png", "tool": "arb_export_frame_png", "arguments": {"output_path": "image.webp", "frame_index": 0}, "error": "INVALID_PARAMS", "details": {"field": "output_path", "allowed_extensions": [".png"], "got": ".webp"}},
+    {"id": "arb_screenshot", "tool": "arb_screenshot", "arguments": {"output_path": "image.jpg"}, "error": "INVALID_PARAMS", "details": {"field": "output_path", "allowed_extensions": [".png"], "got": ".jpg"}},
+    {"id": "zero_taps_share_mp4", "tool": "arb_export_trim", "arguments": {"format": "share_mp4", "in_time_ns": 5000001, "out_time_ns": 20000007, "burn_taps": true}, "warning": "no_taps_to_burn"},
+    {"id": "zero_taps_bundle", "tool": "arb_export_trim", "arguments": {"format": "bundle", "in_time_ns": 5000001, "out_time_ns": 20000007, "burn_taps": true}, "warning": "no_taps_to_burn"}
+  ],
   "gc_rows": [
     {
       "id": "GC-01",

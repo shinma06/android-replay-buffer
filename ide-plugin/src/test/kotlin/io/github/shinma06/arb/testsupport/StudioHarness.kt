@@ -26,7 +26,12 @@ class VirtualClock : PlaybackClock {
 }
 
 /** A scripted daemon serving one video bundle with per-method fault injection and an edit-session store. */
-class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 0) {
+class StudioDaemon(
+    tmp: Path,
+    val frameCount: Int = 10,
+    val mainLogCount: Int = 0,
+    private val emptyBurn: Boolean = false,
+) {
     val catalogChanges = AtomicLong()
     val faults = java.util.concurrent.ConcurrentHashMap<String, Fault>()
     @Volatile var loseEditResponse = false
@@ -73,7 +78,12 @@ class StudioDaemon(tmp: Path, val frameCount: Int = 10, val mainLogCount: Int = 
                 } else {
                     ""
                 }
-                """{${share}"bundle_id":"trimmed","bundle_path":"/tmp/trimmed","trim_report":{"in_frame_index":0,"out_frame_index":9,"output_frame_count":10,"head_decoded_frames":0,"reencoded_frames":0,"stream_copied_frames":10,"backend_name":"x","edts_box_count":0,"elst_box_count":0},"unanchored_summary":{"included_count":0,"truncated_count":0},"main_log_count":0,"unanchored_log_count":0,"main_tap_count":0,"unanchored_tap_count":0}"""
+                val warnings = if (emptyBurn && params["burn_taps"]?.asBoolean == true) {
+                    """"burned_tap_count":0,"warnings":[{"code":"no_taps_to_burn","message":"対象の物理操作は 0 件です。"}],"warning":"同期を確認してください。","""
+                } else {
+                    ""
+                }
+                """{${share}${warnings}"bundle_id":"trimmed","bundle_path":"/tmp/trimmed","trim_report":{"in_frame_index":0,"out_frame_index":9,"output_frame_count":10,"head_decoded_frames":0,"reencoded_frames":0,"stream_copied_frames":10,"backend_name":"x","edts_box_count":0,"elst_box_count":0},"unanchored_summary":{"included_count":0,"truncated_count":0},"main_log_count":0,"unanchored_log_count":0,"main_tap_count":0,"unanchored_tap_count":0}"""
             }
             "media.open_viewport" ->
                 """{"viewport_id":"vp","bundle_id":"bundle","shm_path":"$shm","width":2,"height":2,"stride":8,"pixel_format":"rgba8","slot_capacity":64,"frame_count":$frameCount,"keyframe_count":2}"""

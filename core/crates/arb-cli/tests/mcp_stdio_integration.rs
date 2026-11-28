@@ -723,6 +723,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                 "arguments": {
                     "bundle_id": bundle_id,
                     "format": "share_mp4",
+                    "full_range": true,
                     "output_path": mcp_full_mp4
                 }
             }

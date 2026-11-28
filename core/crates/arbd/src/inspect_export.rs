@@ -16,12 +16,12 @@ use arb_core::bundle::{FrameRecord, LogRecord, RecordBucket, StreamStatus, TapRe
 use arb_core::time::TimeAlignment;
 use arb_media::MediaError;
 use arb_media::audio_decode::{decode_audio_m4a_to_wav, inspect_wav_header};
-use arb_media::burn_in::{BurnInDisplayGeometry, BurnInTouchEvent, burn_in_taps_video};
+use arb_media::burn_in::{BurnInTouchEvent, burn_in_taps_video};
 use arb_media::codec::PixelFormat as MediaPixelFormat;
 use arb_media::contact_sheet::{
     ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions,
     render_contact_sheet_png, render_single_frame_png, render_tap_crop_png,
-    select_contact_sheet_indices,
+    select_contact_sheet_indices_with_anchors,
 };
 use arb_media::mp4::Mp4VideoTrack;
 use arb_media::mux_av::mux_share_mp4;
@@ -39,7 +39,7 @@ use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
     ExportTrimParams, InspectFramesMode, MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse,
     MediaInspectFramesParams, MediaInspectFramesResponse, NoiseCandidate, OverviewTapItem,
-    TapCropMeta, TimelineOverviewResponse, TimelineQueryParams,
+    TapCropMeta, TimelineOverviewResponse, TimelineQueryParams, WarningDetail,
 };
 use crate::time_util::next_id;
 
@@ -228,7 +228,7 @@ pub fn export_share_mp4(
         fs::create_dir_all(parent)?;
     }
 
-    let (av_mux_report, trimmed_bundle) = if params.keep_bundle {
+    let (av_mux_report, burned_tap_count, warnings, trimmed_bundle) = if params.keep_bundle {
         let trim = export_trim(
             ctx,
             source_bundle_dir,
@@ -253,10 +253,12 @@ pub fn export_share_mp4(
             .ok_or_else(|| DaemonError::Internal("共有動画の検証結果がありません".into()))?;
         (
             report,
+            trim.burned_tap_count,
+            trim.warnings,
             (Some(trim.bundle_id), Some(trim.bundle_path), trim.warning),
         )
     } else {
-        let report = mux_selected_media(
+        let (report, burned, warnings) = mux_selected_media(
             ctx,
             reader.as_ref(),
             &source_video,
@@ -264,7 +266,7 @@ pub fn export_share_mp4(
             params,
             share_mp4_path,
         )?;
-        (report, (None, None, None))
+        (report, burned, warnings, (None, None, None))
     };
     let (trimmed_bundle_id, trimmed_bundle_path, commit_warning) = trimmed_bundle;
 
@@ -278,6 +280,8 @@ pub fn export_share_mp4(
     );
 
     Ok(ExportShareMp4Response {
+        burned_tap_count,
+        warnings,
         in_time_ns: Some(range.start),
         out_time_ns: Some(range.end),
         share_mp4_path: share_mp4_path.to_path_buf(),
@@ -323,7 +327,7 @@ fn mux_selected_media(
     range: Option<crate::trim_range::TrimRange>,
     params: &ExportShareMp4Params,
     output: &Path,
-) -> Result<arb_media::AvMuxReport, DaemonError> {
+) -> Result<(arb_media::AvMuxReport, usize, Vec<WarningDetail>), DaemonError> {
     let summary = reader.manifest_summary();
     let tmp = ctx.data_dir.join("tmp");
     let job = next_id("share");
@@ -332,6 +336,7 @@ fn mux_selected_media(
     } else {
         Vec::new()
     };
+    let mut burned = 0;
     let video_guard = if range.is_some() || !taps.is_empty() {
         fs::create_dir_all(&tmp)?;
         let guard = TempFileCleanup(tmp.join(format!("{job}.mp4")));
@@ -341,14 +346,7 @@ fn mux_selected_media(
             .map(|r| r.window(&frames))
             .transpose()?;
         let mut events = share_touch_events(taps, window.as_ref(), range);
-        let geometry = BurnInDisplayGeometry {
-            display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
-            display_height: summary
-                .streams
-                .video
-                .as_ref()
-                .and_then(|v| v.display_height),
-        };
+        let geometry = crate::media_engine::burn_geometry(summary.streams.video.as_ref());
         if let Some(r) = range.filter(|r| r.realtime) {
             if events.is_empty() {
                 r.trim_video(source, &guard.0, ctx.backend)?;
@@ -366,14 +364,15 @@ fn mux_selected_media(
                 for event in &mut events {
                     event.rebase_on_clock(&clock);
                 }
-                arb_media::burn_in::burn_in_taps_time_range(
+                burned = arb_media::burn_in::burn_in_taps_time_range(
                     &cut.0,
                     &guard.0,
                     &r.sample_boundaries(&Mp4VideoTrack::open(source)?)?,
                     &events,
                     geometry,
                     ctx.backend,
-                )?;
+                )?
+                .burned_tap_count;
             }
         } else {
             let (first, last) = range.map_or_else(
@@ -384,7 +383,7 @@ fn mux_selected_media(
                 .iter()
                 .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
                 .collect::<Vec<_>>();
-            burn_in_taps_video(
+            burned = burn_in_taps_video(
                 source,
                 &guard.0,
                 first,
@@ -393,7 +392,8 @@ fn mux_selected_media(
                 &events,
                 geometry,
                 ctx.backend,
-            )?;
+            )?
+            .burned_tap_count;
         }
         Some(guard)
     } else {
@@ -418,12 +418,12 @@ fn mux_selected_media(
                 .map_or(0, |a| a.audio_lead_in_offset_ns),
         ),
     };
-    Ok(mux_share_mp4(
-        selected,
-        audio_path.as_deref(),
-        offset,
-        output,
-    )?)
+    let warnings = burn_warnings(reader, params.burn_taps.then_some(burned))?;
+    Ok((
+        mux_share_mp4(selected, audio_path.as_deref(), offset, output)?,
+        burned,
+        warnings,
+    ))
 }
 
 /// Builds a compact one-shot [`TimelineOverviewResponse`] for AI triage.
@@ -663,24 +663,11 @@ fn overview_inputs(
     ),
     DaemonError,
 > {
-    use arb_core::input_capture::{CommandCounts, InputCapture, PhysicalStatus};
-    let summary = reader.manifest_summary();
-    let coordinates = LogCoordinates::new(frames, &summary.epochs);
-    let mut counts = CommandCounts::default();
+    let coordinates = LogCoordinates::new(frames, &reader.manifest_summary().epochs);
     let mut inputs = Vec::new();
-    // Keep room for screens and error highlights in the single IPC frame. Stop retaining
-    // detail at the first overflow, but continue counting every request across every page.
     let mut remaining = 256 * 1024;
-    reader.visit_injected_commands(&mut |page| {
-        let unparsed = u64::try_from(page.unparsed_count).unwrap_or(u64::MAX);
-        counts.unparsed_commands += unparsed;
-        counts.commands += unparsed;
-        for input in page.inputs {
-            counts.commands += 1;
-            counts.gestures += u64::from(input.command.is_gesture());
-            if remaining == 0 {
-                continue;
-            }
+    let capture = bundle_input_capture(reader, taps, |input| {
+        if remaining > 0 {
             let row = coordinates.project_input(input, video, display);
             let bytes =
                 serde_json::to_vec(&row).map_or(usize::MAX, |json| json.len().saturating_add(1));
@@ -690,6 +677,27 @@ fn overview_inputs(
             } else {
                 remaining = 0;
             }
+        }
+    })?;
+    Ok((capture, inputs))
+}
+
+fn bundle_input_capture(
+    reader: &dyn BundleReader,
+    taps: &[TapRecord],
+    mut on_input: impl FnMut(arb_core::injected_input::InjectedInput),
+) -> Result<arb_core::input_capture::InputCapture, DaemonError> {
+    use arb_core::input_capture::{CommandCounts, InputCapture, PhysicalStatus};
+    let summary = reader.manifest_summary();
+    let mut counts = CommandCounts::default();
+    reader.visit_injected_commands(&mut |page| {
+        let unparsed = u64::try_from(page.unparsed_count).unwrap_or(u64::MAX);
+        counts.unparsed_commands += unparsed;
+        counts.commands += unparsed;
+        for input in page.inputs {
+            counts.commands += 1;
+            counts.gestures += u64::from(input.command.is_gesture());
+            on_input(input);
         }
     })?;
     let meta = summary.streams.input.as_ref();
@@ -708,7 +716,7 @@ fn overview_inputs(
     } else {
         PhysicalStatus::Absent
     };
-    let capture = InputCapture::new(
+    Ok(InputCapture::new(
         physical,
         raw,
         u64::try_from(
@@ -718,8 +726,26 @@ fn overview_inputs(
         )
         .unwrap_or(u64::MAX),
         counts,
-    );
-    Ok((capture, inputs))
+    ))
+}
+
+pub(super) fn burn_warnings(
+    reader: &dyn BundleReader,
+    requested_count: Option<usize>,
+) -> Result<Vec<WarningDetail>, DaemonError> {
+    if requested_count != Some(0) {
+        return Ok(Vec::new());
+    }
+    let taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
+    let capture = bundle_input_capture(reader, &taps, |_| {})?;
+    Ok(vec![WarningDetail {
+        code: "no_taps_to_burn".into(),
+        message: "指定範囲に描画できる物理タップ・スワイプがありません。".into(),
+        details: Some(serde_json::Map::from_iter([
+            ("burned_tap_count".into(), 0.into()),
+            ("input_capture".into(), serde_json::to_value(capture)?),
+        ])),
+    }])
 }
 
 fn inspect_video_track(
@@ -758,8 +784,13 @@ pub(super) fn inspect_metadata(
             .or_else(|| display.and_then(|v| v.display_height)),
     );
     let mut taps = build_frame_tap_map(reader.as_ref(), width, height, dims)?;
+    let mut dropped = Vec::new();
     let indices = match params.mode {
-        InspectFramesMode::ContactSheet => contact_indices(params, track.frame_count())?,
+        InspectFramesMode::ContactSheet => {
+            let (indices, omitted) = contact_indices(reader.as_ref(), params, track.frame_count())?;
+            dropped = omitted;
+            indices
+        }
         InspectFramesMode::Single => vec![single_index(params)],
         InspectFramesMode::TapCrop => {
             let (i, x, y) = tap_target(reader.as_ref(), params, width, height, dims)?;
@@ -788,7 +819,8 @@ pub(super) fn inspect_metadata(
         );
     }
     Ok(
-        json!({"bundle_id":id,"mode":params.mode,"width":width,"height":height,"frame_indices_rendered":indices,"frames":frames}),
+        json!({"bundle_id":id,"mode":params.mode,"width":width,"height":height,"frame_indices_rendered":indices,"frames":frames,
+            "dropped_frame_indices":dropped,"warnings":inspection_warnings(params, indices.len(), dropped.len())}),
     )
 }
 
@@ -828,17 +860,23 @@ pub fn inspect_frames(
     let display_dims = (effective_display_w, effective_display_h);
     let mut gop_cache = GopLruCache::new(INSPECT_GOP_CACHE_GOPS, INSPECT_GOP_CACHE_BYTES);
 
+    let mut dropped_frame_indices = Vec::new();
     let (png_bytes, frame_indices_rendered, tap_crop) = match params.mode {
-        InspectFramesMode::ContactSheet => render_inspect_contact_sheet(
-            reader.as_ref(),
-            &track,
-            &mut gop_cache,
-            ctx.backend,
-            params,
-            video_w,
-            video_h,
-            display_dims,
-        )?,
+        InspectFramesMode::ContactSheet => {
+            let (indices, dropped) = contact_indices(reader.as_ref(), params, track.frame_count())?;
+            dropped_frame_indices = dropped;
+            render_inspect_contact_sheet(
+                indices,
+                reader.as_ref(),
+                &track,
+                &mut gop_cache,
+                ctx.backend,
+                params,
+                video_w,
+                video_h,
+                display_dims,
+            )?
+        }
         InspectFramesMode::Single => render_inspect_single(
             reader.as_ref(),
             &track,
@@ -883,6 +921,12 @@ pub fn inspect_frames(
     Ok(MediaInspectFramesResponse {
         mode: params.mode,
         bundle_id,
+        warnings: inspection_warnings(
+            params,
+            frame_indices_rendered.len(),
+            dropped_frame_indices.len(),
+        ),
+        dropped_frame_indices,
         frame_indices_rendered,
         width: png_w,
         height: png_h,
@@ -907,7 +951,18 @@ pub(super) fn query_log_response(
         .into_iter()
         .map(|record| coordinates.query_row(record))
         .collect::<Vec<_>>();
+    let intersected = (params.start_ns.is_some() && params.start_frame.is_some())
+        || (params.end_ns.is_some() && params.end_frame.is_some());
     Ok(crate::protocol::TimelineLogsResponse {
+        warnings: if intersected {
+            vec![WarningDetail {
+                code: "range_intersected".into(),
+                message: "時刻とフレーム番号の共通範囲を検索しました。".into(),
+                details: None,
+            }]
+        } else {
+            Vec::new()
+        },
         unanchored_count: reader.count_logs(Some(RecordBucket::Unanchored), TimeRange::all())?,
         returned_count: logs.len(),
         logs,
@@ -1426,6 +1481,7 @@ type InspectRenderOutput = (Vec<u8>, Vec<u64>, Option<TapCropMeta>);
     reason = "internal helper threading decoded track, cache, backend, and display dimensions"
 )]
 fn render_inspect_contact_sheet(
+    indices: Vec<u64>,
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
     gop_cache: &mut GopLruCache,
@@ -1435,7 +1491,6 @@ fn render_inspect_contact_sheet(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
-    let indices = contact_indices(params, track.frame_count())?;
     let tap_map = if params.include_tap_marker {
         build_frame_tap_map(reader, video_w, video_h, display_dims)?
     } else {
@@ -1554,10 +1609,51 @@ fn render_inspect_tap_crop(
     Ok((crop.png_bytes, vec![idx], Some(meta)))
 }
 
+fn inspection_warnings(
+    params: &MediaInspectFramesParams,
+    rendered: usize,
+    dropped: usize,
+) -> Vec<WarningDetail> {
+    if dropped > 0 {
+        return vec![WarningDetail {
+            code: "contact_sheet_sampled".into(),
+            message: format!("上限に合わせて {dropped} 枚のフレームを省略しました。"),
+            details: Some(serde_json::Map::from_iter([
+                ("requested".into(), (rendered + dropped).into()),
+                ("rendered".into(), rendered.into()),
+                ("max_tiles".into(), contact_tile_limit(params).into()),
+                ("dropped_count".into(), dropped.into()),
+            ])),
+        }];
+    }
+    if params.frame_index.is_none()
+        && match params.mode {
+            InspectFramesMode::Single => params.frame_indices.as_ref().is_none_or(Vec::is_empty),
+            InspectFramesMode::TapCrop => params.tap_index.is_none(),
+            InspectFramesMode::ContactSheet => false,
+        }
+    {
+        return vec![WarningDetail {
+            code: "frame_index_defaulted".into(),
+            message: "対象フレームの指定がないためフレーム 0 を使用しました。".into(),
+            details: None,
+        }];
+    }
+    Vec::new()
+}
+
+fn contact_tile_limit(params: &MediaInspectFramesParams) -> usize {
+    params
+        .max_tiles
+        .unwrap_or(MAX_CONTACT_SHEET_TILES)
+        .clamp(1, MAX_CONTACT_SHEET_TILES)
+}
+
 fn contact_indices(
+    reader: &dyn BundleReader,
     params: &MediaInspectFramesParams,
     frame_count: u64,
-) -> Result<Vec<u64>, DaemonError> {
+) -> Result<(Vec<u64>, Vec<usize>), DaemonError> {
     Ok(if let Some(explicit) = &params.frame_indices {
         if explicit.is_empty() || explicit.len() > MAX_CONTACT_SHEET_TILES {
             return Err(DaemonError::InvalidParams(format!(
@@ -1574,7 +1670,7 @@ fn contact_indices(
                 .into());
             }
         }
-        explicit.clone()
+        (explicit.clone(), Vec::new())
     } else {
         let start = params.start_frame.unwrap_or(0);
         let end = params.end_frame.unwrap_or(frame_count - 1);
@@ -1586,11 +1682,30 @@ fn contact_indices(
             }
             .into());
         }
-        let max_tiles = params
-            .max_tiles
-            .unwrap_or(MAX_CONTACT_SHEET_TILES)
-            .clamp(1, MAX_CONTACT_SHEET_TILES);
-        select_contact_sheet_indices(start, end, max_tiles)
+        let limit = contact_tile_limit(params);
+        // A validated MP4 track stores a sample entry per frame in a Vec.
+        let end = usize::try_from(end)
+            .map_err(|_| DaemonError::InvalidParams("フレーム番号が大きすぎます。".into()))?;
+        let start = usize::try_from(start).expect("validated start <= end");
+        let mut anchors = Vec::new();
+        if end - start >= limit && limit > 2 {
+            anchors.extend(
+                reader
+                    .crashes()?
+                    .iter()
+                    .filter_map(|c| c.frame_index_hint)
+                    .chain(reader.screens()?.iter().filter_map(|s| s.start_frame_index))
+                    .filter_map(|i| usize::try_from(i).ok()),
+            );
+        }
+        let (kept, dropped) =
+            select_contact_sheet_indices_with_anchors(start, end, limit, &anchors);
+        (
+            kept.into_iter()
+                .map(|i| u64::try_from(i).expect("index fits track"))
+                .collect(),
+            dropped,
+        )
     })
 }
 

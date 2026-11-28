@@ -1063,6 +1063,9 @@ pub struct TimelineSummaryResponse {
 /// Response payload for `timeline.query_logs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimelineLogsResponse {
+    /// Nonfatal details about the requested operation.
+    #[serde(default)]
+    pub warnings: Vec<WarningDetail>,
     /// Number of quarantined log rows across the bundle.
     #[serde(default)]
     pub unanchored_count: usize,
@@ -1211,6 +1214,12 @@ pub struct ExportTrimParams {
 /// Response payload for `export.trim`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportTrimResponse {
+    /// Nonfatal details about the requested operation.
+    #[serde(default)]
+    pub warnings: Vec<WarningDetail>,
+    /// Distinct physical gestures rasterized in the exported video.
+    #[serde(default)]
+    pub burned_tap_count: usize,
     /// Inclusive start on the bundle media clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_time_ns: Option<u64>,
@@ -1482,6 +1491,12 @@ pub struct ExportShareMp4Params {
 /// Response payload for `export.share_mp4`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportShareMp4Response {
+    /// Nonfatal details about the requested operation.
+    #[serde(default)]
+    pub warnings: Vec<WarningDetail>,
+    /// Distinct physical gestures rasterized in the exported video.
+    #[serde(default)]
+    pub burned_tap_count: usize,
     /// Inclusive start on the bundle media clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_time_ns: Option<u64>,
@@ -1896,6 +1911,12 @@ pub struct TapCropMeta {
 /// Response payload for `media.inspect_frames`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaInspectFramesResponse {
+    /// Nonfatal details about the requested operation.
+    #[serde(default)]
+    pub warnings: Vec<WarningDetail>,
+    /// Requested range indices omitted from a sampled contact sheet.
+    #[serde(default)]
+    pub dropped_frame_indices: Vec<usize>,
     /// Inspection mode that was rendered.
     pub mode: InspectFramesMode,
     /// Resolved bundle identifier.

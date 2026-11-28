@@ -13,11 +13,14 @@ import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStartResponse
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.DeviceListResponse
+import io.github.shinma06.arb.model.ExportShareMp4Response
+import io.github.shinma06.arb.model.ExportTrimResponse
 import io.github.shinma06.arb.model.ProtocolJson
 import io.github.shinma06.arb.model.RecoverySummaryView
 import io.github.shinma06.arb.model.SaveJobState
 import io.github.shinma06.arb.model.SaveOutcomeResponse
 import io.github.shinma06.arb.model.SystemStatusResponse
+import io.github.shinma06.arb.model.TimelineLogsResponse
 import org.junit.jupiter.api.Test
 import java.io.File
 import kotlin.test.assertEquals
@@ -45,6 +48,31 @@ class PddContractTablesTest {
     }
 
     private fun JsonObject.str(key: String): String? = get(key)?.takeUnless { it.isJsonNull }?.asString
+
+    @Test
+    fun silentSuccessWarningsSurviveTypedRpcDecoding() {
+        val rows = table("ui-feedback-contract-table.json").rows("silent_success_rows", 6)
+        for (row in rows.filter { it.has("warning") }) {
+            val code = row["warning"].asString
+            val json = """{"warnings":[{"code":"$code","message":"通知","details":{"burned_tap_count":0}}],"burned_tap_count":0}"""
+            val warnings = when (row["tool"].asString) {
+                "arb_query_logs" -> ProtocolJson.gson.fromJson(json, TimelineLogsResponse::class.java).warnings
+                "arb_export_trim" -> when (row["arguments"].asJsonObject["format"].asString) {
+                    "bundle" -> ProtocolJson.gson.fromJson(json, ExportTrimResponse::class.java).run {
+                        assertEquals(0, burnedTapCount)
+                        warnings
+                    }
+                    else -> ProtocolJson.gson.fromJson(json, ExportShareMp4Response::class.java).run {
+                        assertEquals(0, burnedTapCount)
+                        warnings
+                    }
+                }
+                else -> continue
+            }
+            assertEquals(code, warnings?.single()?.code)
+            assertEquals(0, warnings?.single()?.details?.get("burned_tap_count")?.asInt)
+        }
+    }
 
     private fun idleStatus(): SystemStatusResponse = SystemStatusResponse(
         pid = 1L,

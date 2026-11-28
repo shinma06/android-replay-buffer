@@ -125,3 +125,27 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         );
     }
 }
+
+#[test]
+fn silent_success_rows_validate_cli_png_paths_before_rpc() {
+    for row in rows("silent_success_rows")
+        .iter()
+        .filter(|row| row["details"].get("allowed_extensions").is_some())
+    {
+        let path = row["arguments"]["output_path"].as_str().unwrap().to_owned();
+        let mut args = if row["tool"] == "arb_screenshot" {
+            vec!["screenshot", "--out"]
+        } else {
+            vec!["export-png", "fixture", "--frame", "0", "--out"]
+        }
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        args.push(path);
+        let err = crate::parse_args(&args).unwrap_err();
+        assert_eq!(err.details.as_ref(), Some(&row["details"]));
+        assert_eq!(err.error_code.as_deref(), row["error"].as_str());
+        *args.last_mut().unwrap() = "frame.PNG".into();
+        assert!(crate::parse_args(&args).is_ok());
+    }
+}

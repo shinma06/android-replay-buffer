@@ -34,7 +34,35 @@ def check_refs(node, root):
             check_refs(child, root)
 
 
-def check_version(cli, flags, fixture, version):
+def check_silent_success(call, fixture, outputs, rows):
+    for row in rows:
+        name = row["tool"]
+        args = dict(row["arguments"])
+        if name != "arb_screenshot":
+            args["bundle_id"] = str(fixture)
+        response, _ = call("tools/call", {"name": name, "arguments": args})
+        body = json.loads(response["content"][0]["text"])
+        Draft202012Validator(outputs[name], registry=Registry()).validate(body)
+        assert response["isError"] == ("error" in row), (row["id"], body)
+        if "error" in row:
+            assert (body["error_code"], body["details"]) == (row["error"], row["details"]), body
+            assert body["hint"], body
+        elif "warning" in row:
+            warning, = body["warnings"]
+            assert warning["code"] == row["warning"] and warning["message"], body
+            if warning["code"] == "contact_sheet_sampled":
+                assert body["dropped_frame_indices"] == [1, 2, 3]
+                assert warning["details"] == dict(requested=5, rendered=2, max_tiles=2, dropped_count=3)
+            else:
+                assert body["burned_tap_count"] == warning["details"]["burned_tap_count"] == 0
+                assert "physical" in warning["details"]["input_capture"]
+        if "info" in row or ("format" in args and "error" not in row):
+            path = Path(body["output_path"])
+            assert path.exists() and row.get("info", "default_export_dir") in body["info_codes"]
+            assert body["resource_links"][0]["uri"].rstrip("/") == path.as_uri().rstrip("/")
+
+
+def check_version(cli, flags, fixture, version, rows):
     with subprocess.Popen(
         [cli, *flags, "mcp"], text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE
     ) as proc:
@@ -82,6 +110,7 @@ def check_version(cli, flags, fixture, version):
                         "arb://schemas/%2e%2e", "arb://schemas/"):
                 response, _ = request("resources/read", {"uri": uri})
                 assert response["error"]["code"] == -32602, response
+            check_silent_success(call, fixture, outputs_by_tool, rows)
             trim = next(t for t in tools if t["name"] == "arb_export_trim")
             inputs = Draft202012Validator(trim["inputSchema"], registry=Registry())
             outputs = Draft202012Validator(outputs_by_tool[trim["name"]], registry=Registry())
@@ -97,9 +126,17 @@ def check_version(cli, flags, fixture, version):
                 outputs.validate(body)
                 for key in ("in_time_ns", "out_time_ns"):
                     assert body[key] == args[key]
+            copied_share = fixture.parent / f"copy-{version}.mp4"
+            result, _ = call("tools/call", {"name": trim["name"], "arguments": {
+                "bundle_id": str(fixture), "format": "bundle", "output_path": str(copied_share),
+                "in_frame_index": 0, "out_frame_index": 0}})
+            body = json.loads(result["content"][0]["text"])
+            outputs.validate(body)
+            assert copied_share.is_file() and Path(body["output_path"]).is_dir()
+            assert "default_export_dir" in body["info_codes"]
             assert not inputs.is_valid({"bundle_id": str(fixture), "in_time_ns": 1})
             print(f"{version}: 21 tools, 21 inputSchema + 21 outputSchema (arb://schemas), "
-                  f"2 real exports, tools/list {size} bytes")
+                  f"silent-success rows and real exports, tools/list {size} bytes")
         finally:
             proc.stdin.close()
 
@@ -117,6 +154,7 @@ def main():
     warning.validate(sample)
     warning.validate({**sample, "details": {"count": 0}})
     assert not warning.is_valid({**sample, "details": []})
+    rows = json.loads((root / "docs/specs/ui-feedback-contract-table.json").read_text())["silent_success_rows"]
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         # The read-only parity fixture deliberately lacks an epoch origin. Give the
@@ -138,7 +176,7 @@ def main():
                     time.sleep(0.05)
                 assert len(VERSIONS) == 4
                 for version in sorted(VERSIONS.values()):
-                    check_version(cli, flags, fixture, version)
+                    check_version(cli, flags, fixture, version, rows)
             finally:
                 daemon.stdin.close()
 
