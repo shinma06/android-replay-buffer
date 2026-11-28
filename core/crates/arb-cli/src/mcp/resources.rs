@@ -87,6 +87,27 @@ fn next_logs_uri(base: &str, params: &serde_json::Map<String, Value>, next: &str
     format!("{base}?{}", query.finish())
 }
 
+/// The logs resource document: exactly the `arb_query_logs` page projection (same rows, count,
+/// cursor and 48 KB split), plus `next_uri`, which is not counted in the byte budget so the
+/// resource and the tool never page differently.
+pub(super) fn logs_resource_body(
+    page: Value,
+    base: &str,
+    variables: &serde_json::Map<String, Value>,
+) -> Value {
+    let mut body = super::project::logs::project(
+        page,
+        super::project::logs::Fields::Compact,
+        super::project::time::Zone::UTC,
+    );
+    let next = body["next_cursor"]
+        .as_str()
+        .filter(|_| body["has_more"] == true)
+        .map(|next| next_logs_uri(base, variables, next));
+    body["next_uri"] = json!(next);
+    body
+}
+
 /// Each listed tool's complete `outputSchema` for the negotiated version, read on demand.
 const SCHEMA_TEMPLATE: &str = "arb://schemas/{tool}";
 const SCHEMA_PREFIX: &str = "arb://schemas/";
@@ -432,19 +453,7 @@ impl McpServer {
         let page = self
             .call_daemon("bundle.query_logs", &Value::Object(params))
             .map_err(|e| resource_error(e, uri))?;
-        // `next_uri` is the URI with a 20-digit cursor; keep it inside the same 48 KB body.
-        let reserve = r#","next_uri":"""#.len() + uri.len() * 3 + "&cursor=".len() + 20;
-        let mut body = super::project::logs::project_within(
-            page,
-            super::project::logs::Fields::Compact,
-            super::project::time::Zone::UTC,
-            super::project::logs::MAX_BODY_BYTES - reserve.min(4096),
-        );
-        let next = body["next_cursor"]
-            .as_str()
-            .filter(|_| body["has_more"] == true)
-            .map(|next| next_logs_uri(uri.split('?').next().unwrap_or(uri), &variables, next));
-        body["next_uri"] = json!(next);
+        let body = logs_resource_body(page, uri.split('?').next().unwrap_or(uri), &variables);
         Ok(json!({"contents":[{"uri":uri,"mimeType":"application/json","text":body.to_string()}]}))
     }
 

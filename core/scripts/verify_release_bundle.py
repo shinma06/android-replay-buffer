@@ -261,6 +261,20 @@ def png_dimensions(data: bytes) -> tuple[int, int] | None:
     return struct.unpack(">II", data[16:24])
 
 
+def jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from the first baseline/progressive SOF segment of a JPEG."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker, length = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+        if marker in (0xC0, 0xC1, 0xC2) and i + 9 <= len(data):
+            height, width = struct.unpack(">HH", data[i + 5:i + 9])
+            return width, height
+        i += 2 + length
+    return None
+
+
 def retired_label_hits(text: str) -> list[str]:
     return [p.pattern for p in RETIRED_LABEL_PATTERNS if p.search(text)]
 
@@ -994,10 +1008,18 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
             taps = overview.get("taps", [])
             sec.check("timeline_overview lists the 3 Taps and 1 Swipe with frame indices", [(t.get("gesture_kind"), t.get("frame_index")) for t in taps] == [(g["kind"], g["parent_frame"]) for g in meta["gestures"]], [(t.get("gesture_kind"), t.get("frame_index")) for t in taps])
             sec.check("timeline_overview exposes app_logs", any(a.get("package_name") == "com.example.gate" for a in overview.get("app_logs", [])))
-            sheet = client.call_tool("arb_inspect_frames", {"bundle_id": str(fixture), "mode": "contact_sheet", "include_images": True, "max_tiles": 6})
+            sheet_args = {"bundle_id": str(fixture), "mode": "contact_sheet", "include_images": True, "max_tiles": 6}
+            sheet = client.call_tool("arb_inspect_frames", sheet_args)
             images = [c for c in sheet["result"]["content"] if c.get("type") == "image"]
-            dims = png_dimensions(base64.b64decode(images[0]["data"])) if images else None
-            sec.check("inspect_frames contact_sheet returns an image/png", bool(images) and images[0].get("mimeType") == "image/png" and dims is not None and dims[0] >= 300 and dims[1] >= 100, dims)
+            jpeg_bytes = base64.b64decode(images[0]["data"]) if images else b""
+            dims = jpeg_dimensions(jpeg_bytes)
+            sec.check("inspect_frames contact_sheet returns an image/jpeg tile by default (longer edge <= 1024)", bool(images) and images[0].get("mimeType") == "image/jpeg" and dims is not None and max(dims) <= 1024 and dims[0] >= 100 and dims[1] >= 50, dims)
+            sheet = client.call_tool("arb_inspect_frames", {**sheet_args, "image_format": "png"})
+            images = [c for c in sheet["result"]["content"] if c.get("type") == "image"]
+            png_bytes = base64.b64decode(images[0]["data"]) if images else b""
+            dims = png_dimensions(png_bytes)
+            sec.check("inspect_frames contact_sheet returns an image/png with image_format: png", bool(images) and images[0].get("mimeType") == "image/png" and dims is not None and dims[0] >= 300 and dims[1] >= 100, dims)
+            sec.check("inspect_frames JPEG tile is smaller than the PNG", 0 < len(jpeg_bytes) < len(png_bytes), f"jpeg={len(jpeg_bytes)} png={len(png_bytes)}")
             listed = tool_text(client.call_tool("arb_list_bundles", {}))
             sec.check("arb_list_bundles isError=false", isinstance(listed.get("bundles"), list))
         finally:
