@@ -1510,7 +1510,7 @@
     },
     "TimelineOverviewResponse": {
       "type": "object",
-      "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},"injected_inputs":{"type":"array","items":{"$ref":"#/$defs/InjectedInput"}},
+      "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},"injected_inputs_truncated":{"type":"boolean"},"injected_inputs":{"type":"array","items":{"$ref":"#/$defs/InjectedInput"}},
         "carried_in": {"$ref":"#/$defs/CarriedIn"},
         "bundle_id": {"type": "string"},
         "kind": {"$ref": "#/$defs/BundleKind"},

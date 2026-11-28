@@ -84,4 +84,4 @@ satisfies:
 
 ## 入力の観測範囲
 
-状態・概要・保存して調査は input_capture を返す。physical.input_events は生入力行、gestures は認識済み操作数。生行数を保存していない既存バンドルは null。tap_records はライブの生行数の互換名。概要の taps は物理入力で、注入要求は injected_inputs に格納する。injected.commands は未知の要求も含み、gestures は tap・swipe・draganddrop の要求数。
+状態・概要・保存して調査は input_capture を返す。physical.input_events は生入力行、gestures は認識済み操作数。生行数を保存していない既存バンドルは null。tap_records はライブの生行数の互換名。概要の taps は物理入力で、注入要求は injected_inputs に格納する。injected.commands は未知の要求も含み、gestures は tap・swipe・draganddrop の要求数。 抽出件数は全件を数え、概要の注入明細は JSON 換算 256 KiB までを収録する。injected_inputs_truncated が true の場合、後続の元ログは arb_query_logs でタグ adbd を指定して確認できる。

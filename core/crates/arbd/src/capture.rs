@@ -303,7 +303,7 @@ pub struct CrashAutoSaveNotice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SaveJobMaterializeParams {
     #[serde(default)]
-    input_disabled: bool,
+    input_channel: Option<PhysicalStatus>,
     bundle_id: String,
     #[serde(default)]
     note: Option<String>,
@@ -1407,9 +1407,9 @@ impl CapturePipeline {
                     && self.physical_channel != PhysicalStatus::Disabled =>
             {
                 self.physical_channel = match payload.state {
-                    StreamLifecycleState::Error | StreamLifecycleState::Stopped => {
-                        PhysicalStatus::Unavailable
-                    }
+                    StreamLifecycleState::Error
+                    | StreamLifecycleState::Stopped
+                    | StreamLifecycleState::Restarting => PhysicalStatus::Unavailable,
                     _ => PhysicalStatus::Absent,
                 };
             }
@@ -1978,7 +1978,7 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
-            input_disabled: self.physical_channel == PhysicalStatus::Disabled,
+            input_channel: Some(self.physical_channel),
             note,
             bundle_id,
             mode,
@@ -3800,8 +3800,10 @@ impl ReplayCollector {
             log_completeness,
             log_overflow_events: self.log_overflow_events,
             dropped_count,
-            raw_input_events: (params.mode != SaveMode::LogsOnly && !params.input_disabled)
-                .then_some(self.raw_input_events),
+            input_channel: params.input_channel,
+            raw_input_events: (params.mode != SaveMode::LogsOnly
+                && params.input_channel != Some(PhysicalStatus::Disabled))
+            .then_some(self.raw_input_events),
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -4042,6 +4044,7 @@ struct StreamSummaryCounts {
     log_overflow_events: u64,
     dropped_count: Option<u64>,
     raw_input_events: Option<u64>,
+    input_channel: Option<PhysicalStatus>,
     taps_count: usize,
     tail_may_be_incomplete: bool,
     av_lead_in_offset_ns: i64,
@@ -4120,7 +4123,11 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             status: if counts.raw_input_events.is_none() && counts.taps_count == 0 {
                 StreamStatus::Excluded
             } else if counts.taps_count == 0 && counts.raw_input_events == Some(0) {
-                StreamStatus::Absent
+                if counts.input_channel == Some(PhysicalStatus::Unavailable) {
+                    StreamStatus::Partial
+                } else {
+                    StreamStatus::Absent
+                }
             } else {
                 StreamStatus::Present
             },
@@ -6302,7 +6309,7 @@ mod tests {
         display_height: Option<u32>,
     ) -> SaveJobMaterializeParams {
         SaveJobMaterializeParams {
-            input_disabled: false,
+            input_channel: None,
             note: None,
             bundle_id: "01JT6HGESTURE00000000000001".to_owned(),
             mode: SaveMode::Full,

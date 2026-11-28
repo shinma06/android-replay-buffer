@@ -1025,7 +1025,7 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     overrange.x = Some(364_077.0);
     overrange.y = Some(204_793.0);
     taps.push(overrange);
-    let draft = V2BundleDraft {
+    let mut draft = V2BundleDraft {
         memo: None,
         bundle_kind: BundleKind::Full,
         bundle_id: "01JT6ASCALETEST00000000001".to_owned(),
@@ -1110,6 +1110,15 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
         taps,
         clock_anchors: Vec::new(),
     };
+    for seq in 10..110 {
+        let mut row = draft.logs[0].clone();
+        row.seq = seq;
+        row.message = format!(
+            "adbd service requested 'shell:input text {}'",
+            "a".repeat(3000)
+        );
+        draft.logs.push(row);
+    }
     V2BundleWriter::write(&bundle_dir, "job-t6a-scale", &draft).expect("write bundle");
 
     let opened = rpc.call(
@@ -1138,6 +1147,9 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     assert_eq!(ranges[1]["end_frame_index"], 29);
 
     let overview = rpc.call("timeline.overview", &json!({ "bundle_id": bid }));
+    assert_eq!(overview["injected_inputs_truncated"], true);
+    assert_eq!(overview["input_capture"]["injected"]["commands"], 101);
+    assert!(overview["injected_inputs"].as_array().unwrap().len() < 101);
     let injection = &overview["injected_inputs"][0];
     assert_eq!(
         injection["frame_index_hint"], 19,

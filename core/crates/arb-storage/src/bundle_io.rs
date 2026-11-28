@@ -401,24 +401,22 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
     ///
     /// # Errors
     /// Returns storage errors encountered reading the source logs.
-    fn injected_commands(
+    fn visit_injected_commands(
         &self,
-    ) -> Result<arb_core::injected_input::InjectedCommandExtraction, StorageError> {
-        use arb_core::injected_input::{InjectedCommandExtraction, extract_injected_commands};
+        visit: &mut dyn FnMut(arb_core::injected_input::InjectedCommandExtraction),
+    ) -> Result<(), StorageError> {
+        use arb_core::injected_input::extract_injected_commands;
         let api = self.manifest_summary().device.as_ref().map(|d| d.api_level);
-        let mut all = InjectedCommandExtraction::default();
         let mut cursor = None;
         loop {
             let rows = self.query_logs_after(None, TimeRange::all(), cursor, Some(1024))?;
-            let page = extract_injected_commands(&rows, api);
-            all.inputs.extend(page.inputs);
-            all.unparsed_count += page.unparsed_count;
+            visit(extract_injected_commands(&rows, api));
             if rows.len() < 1024 {
                 break;
             }
             cursor = rows.last().map(|r| r.seq);
         }
-        Ok(all)
+        Ok(())
     }
 
     /// Queries input / tap rows filtered by optional `bucket`, [`TimeRange`], and optional row `limit`.

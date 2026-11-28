@@ -1620,6 +1620,8 @@ pub struct TimelineOverviewResponse {
     pub input_capture: arb_core::input_capture::InputCapture,
     /// Input requests derived from authenticated adbd logs.
     pub injected_inputs: Vec<OverviewInjectedInput>,
+    /// More parsed commands exist than fit in the overview detail budget.
+    pub injected_inputs_truncated: bool,
     /// Manifest evidence for a frame carried across the start of the saved window.
     pub carried_in: Option<arb_core::bundle::CarriedInFrame>,
     /// Resolved bundle identifier.
