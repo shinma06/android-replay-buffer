@@ -60,6 +60,8 @@ ADB の通常接続で映像・ログ・入力を取得し、root・対象アプ
 - 端末でのログ読取時刻とログヘッダの時刻を区別する。logcat 統計から欠落を裏付けられないときの完全性は `unverified`。ドロップを検知した場合や境界ドレインのタイムアウトは保存結果・マニフェストの証拠を参照する。[ワイヤ](../../core/crates/arb-adb/src/wire.rs)・[保存の証跡](SPEC-02-time-selection-bundle.md)
 - `am_crash` 自動保存の入力はバイナリのシステムイベントかつ UID 1000 を要求する。アプリの同名テキストログでは起動しない。設定した自動保存クールダウンの既定は 15 秒。保存ジョブと pin は永続化する。[クラッシュ検出と保存](../../core/crates/arbd/src/capture.rs)
 - [既知制約 / TCB-16] クラッシュ ID の重複抑止はデーモン再起動をまたいで永続化されない。同じイベントが再配信されれば二重保存が起こり得る。S5 の再起動後の一意性は設計前提である。[TCB 台帳](../proofs/tcb-axioms.md)
+- クラッシュのスタック（`stack_top`・`first_app_frame`・`caused_by`）は、クラッシュした PID 自身が書いた `AndroidRuntime` の `FATAL EXCEPTION` ブロック（同じ boot・前後 64 行・±2 秒）からだけ読取時に導く。別 PID の行やアプリ ID と一致しない Java パッケージの行をアプリ行として作らない。[抽出](../../core/crates/arb-core/src/analytics/crash_detail.rs)
+- クラッシュ以外のプロセス終了は、logd が付けた UID でシステムの記録だけを採る。`ActivityManager` のテキストは UID 0 か 1000、`lowmemorykiller`／`lmkd` はそれに加えて lmkd の UID 1069、events の `am_kill`・`am_proc_died`・`am_anr` は UID 0・1000 または未報告。アプリ UID（10xxx）の同名ログは採らない。`Force stopping <pkg>` と後続 16 行以内の `Killing … stop <pkg>`（`am_kill` を含む）は 1 件の `force_stop` に統合し最初の PID を採る。統合した kill と同じ PID・boot の ±5 秒以内の後続の kill 報告（16 行より後の `am_kill` など）も同じ kill として数えない。同じ種類・PID の重複報告（`am_kill` と `Killing`、`am_anr` と `ANR in` など）は ±5 秒で 1 件にする。クラッシュまたは kill（force-stop に統合した全プロセスの kill を含む）と同じ PID・boot の ±5 秒以内の `died` はその結果として出さない。ANR はプロセスを終了させないので、この抑止の原因に数えない。LMK の理由（単語としての `lmk`・`lmkd`・`lowmemorykiller`・low memory。`.`／`/` を含むパッケージ名やコンポーネント名の中の部分一致は数えない）の kill は `lmk_kill`、それ以外は `killed`。書式の API 差は TCB-23。[共有表](crash-detail-table.json)
 - `am_*`／`wm_*` などのライフサイクルイベントから前面アプリと画面遷移帯を構築する。アプリが付けた同名テキストを無条件に信頼してはならない。前面／クラッシュ等に対応づけられるログはパッケージ別に抽出する。実ファイルは `app-logs/<安全な名前>.log`。大小文字を無視する FS でも衝突を解消し、Windows 予約名を回避する。古い VER・型コメントの `.jsonl` 表記から拡張子を推定せず、マニフェストの相対パスを使う。[帰属・ファイル名決定](../../core/crates/arb-core/src/analytics.rs)・[保存処理](../../core/crates/arb-storage/src/bundle_io.rs)
 
 ## 仕様 vs バグ
@@ -71,6 +73,8 @@ ADB の通常接続で映像・ログ・入力を取得し、root・対象アプ
 | 互換方式を明示選択 | 端末消音を案内して取得 | 勝手に互換方式に切り替えて消音する |
 | 指定端末だけ抜いた | 他端末へ切り替えず待つ | 別端末の証跡を同じ記録に混ぜる |
 | アプリが任意に `am_crash` を出力 | 通常ログとして扱う | テキストだけで自動保存する |
+| アプリ UID が `ActivityManager` の has died・Force stopping、`am_kill` を出力 | `process_events` に入れない | 他アプリの終了やクラッシュ外終了を偽装できる |
+| `am_crash` だけでアプリ側の `AndroidRuntime` ブロックがない | `stack_top`・`first_app_frame`・`caused_by` は null | 例外名からスタックを作る |
 | 軸範囲を超えたタッチを記録・閲覧 | 既知寸法では端に描く | タップを落とす、古い保存物を上書きする |
 | Framework 注入だけを行った | タップなしでも観測制約内 | 合成のタップを物理観測として加算する |
 

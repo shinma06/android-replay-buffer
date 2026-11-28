@@ -16,6 +16,8 @@ mod k11_audio_policy;
 mod k14_coverage;
 // K15 (W3B): orphan-head video trim and the WORM video commit invariant.
 mod k15_video_commit;
+// K18 (#589): crash stack_top keeps the first app frame within its cap.
+mod k18_crash_stack;
 
 use crate::gesture::{TouchPoint, classify_stroke, decimate, map_touch_to_frame, touch_slop};
 use crate::selection::{
