@@ -898,7 +898,7 @@ fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
 }
 
 #[test]
-fn post_roll_pins_each_closed_chunk_until_ring_pressure_closes_the_window() {
+fn post_roll_pins_each_closed_chunk_until_the_pin_budget_closes_the_window() {
     let tmp = TempDir::new().unwrap();
     let paths = isolated_paths(&tmp);
     let policy = RingBudgetPolicy {
@@ -953,6 +953,12 @@ fn post_roll_pins_each_closed_chunk_until_ring_pressure_closes_the_window() {
         .query_logs(None, arb_storage::bundle_io::TimeRange::all(), None)
         .unwrap();
     assert!(logs.iter().any(|l| l.message.starts_with("post-1 ")));
+    // The tail stops at the pin budget so live recording keeps rotating unpinned chunks.
+    let status = client.call("system.status", &json!({}));
+    assert_eq!(
+        status["capture"]["storage_pressure_stopped"], false,
+        "{status}"
+    );
     drop(client);
     server.shutdown();
 }

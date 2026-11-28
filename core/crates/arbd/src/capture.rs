@@ -1970,17 +1970,17 @@ impl CapturePipeline {
             }
             let mut ids = w.pending.pinned_chunk_ids.clone();
             ids.push(id.to_owned());
-            let result = self
-                .check_pin_budget(Some(w.pending.job_id()), &ids)
-                .and_then(|()| {
-                    self.ring.pin_chunks(
-                        w.pending.job_id(),
-                        &w.pending.dest_bundle_dir,
-                        ids.clone(),
-                        &w.pending.params.trigger_utc,
-                    )?;
-                    Ok(())
-                });
+            // Unlike the save window, the tail counts this job's own pins so a lone post-roll
+            // cannot pin past the budget and halt live capture.
+            let result = self.check_pin_budget(None, &ids).and_then(|()| {
+                self.ring.pin_chunks(
+                    w.pending.job_id(),
+                    &w.pending.dest_bundle_dir,
+                    ids.clone(),
+                    &w.pending.params.trigger_utc,
+                )?;
+                Ok(())
+            });
             let w = &mut self.crash_windows[i];
             if result.is_ok() {
                 w.pending.pinned_chunk_ids = ids;
