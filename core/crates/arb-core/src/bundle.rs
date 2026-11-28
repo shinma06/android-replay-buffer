@@ -138,6 +138,20 @@ pub enum RequestedWindow {
     },
 }
 
+impl RequestedWindow {
+    /// Milliseconds of post-crash evidence recorded in the published manifest.
+    #[must_use]
+    pub const fn actual_post_roll_ms(&self) -> u64 {
+        match self {
+            Self::RealElapsedSec {
+                actual_post_roll_ms,
+                ..
+            } => *actual_post_roll_ms,
+            Self::TrimFrameRange { .. } => 0,
+        }
+    }
+}
+
 /// Device `boot_id` span present in the bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EpochSpan {

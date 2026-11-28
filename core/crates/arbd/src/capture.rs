@@ -464,6 +464,21 @@ struct CrashWindow {
     until_utc: String,
     watermark: i64,
     observed_end: i64,
+    protected_end: i64,
+    pin_failed: bool,
+}
+
+impl CrashWindow {
+    fn deadline(&self) -> i64 {
+        self.pending
+            .params
+            .post_roll_deadline_boottime_ns
+            .unwrap_or(self.watermark)
+    }
+
+    fn should_close(&self, now: Instant) -> bool {
+        self.pin_failed || self.watermark >= self.deadline() || now >= self.timeout
+    }
 }
 
 struct SaveIntent {
@@ -1724,7 +1739,21 @@ impl CapturePipeline {
         )
     }
 
-    pub(super) fn start_crash_window(&mut self, pending: PendingSave, now: Instant, now_ms: u64) {
+    pub(super) fn start_crash_window(
+        &mut self,
+        catalog: &Catalog,
+        mut pending: PendingSave,
+        now: Instant,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        catalog.create_pinned_job_with_trigger(
+            pending.job_id(),
+            &pending.dest_bundle_dir,
+            &pending.pinned_chunk_ids,
+            &pending.params.trigger_utc,
+            SaveTriggerKind::CrashAutoSave,
+        )?;
+        pending.guard.armed = false;
         let post_ms = pending.params.post_roll_ms;
         self.crash_windows.push(CrashWindow {
             timeout: now + Duration::from_millis(post_ms + pending.params.policy.drain_timeout_ms),
@@ -1733,8 +1762,11 @@ impl CapturePipeline {
             ),
             watermark: pending.params.window.end_boottime_ns(),
             observed_end: pending.params.window.end_boottime_ns(),
+            protected_end: pending.params.window.end_boottime_ns(),
+            pin_failed: false,
             pending,
         });
+        Ok(())
     }
 
     pub(super) fn post_roll_until_utc(&self) -> Option<String> {
@@ -1762,21 +1794,21 @@ impl CapturePipeline {
             || !self.is_connected()
             || state.is_shutting_down();
         let now = Instant::now();
+        if !stop && !self.crash_windows.iter().any(|w| w.should_close(now)) {
+            return;
+        }
+        // Flush while all subscribing windows still own their pins, including the last partial batch.
+        let _ = self.flush_pending_chunk();
         let mut i = 0;
         while i < self.crash_windows.len() {
-            let w = &self.crash_windows[i];
-            let deadline = w
-                .pending
-                .params
-                .post_roll_deadline_boottime_ns
-                .unwrap_or(w.watermark);
-            let reached = w.watermark >= deadline;
-            if !stop && !reached && now < w.timeout {
+            if !stop && !self.crash_windows[i].should_close(now) {
                 i += 1;
                 continue;
             }
             let mut w = self.crash_windows.remove(i);
-            let end = w.observed_end.min(deadline);
+            let deadline = w.deadline();
+            let reached = !w.pin_failed && !stop && w.watermark >= deadline;
+            let end = w.protected_end.min(deadline);
             if let WindowSpec::RealElapsed {
                 end_boottime_ns,
                 ingest_end_cont_ns,
@@ -1788,12 +1820,22 @@ impl CapturePipeline {
                 *end_boottime_ns = end;
             }
             w.pending.params.post_roll_truncated = !reached;
-            let tail = if reached {
+            let tail = if reached && self.drain_watermark_ns.is_some_and(|t| t >= deadline) {
                 TailCompleteness::Complete
             } else {
                 TailCompleteness::MayBeIncomplete
             };
-            let result = self.phase1_commit(&state.catalog, w.pending, tail);
+            let id = w.pending.job_id().to_owned();
+            let result = self
+                .phase1_commit(&state.catalog, w.pending, tail)
+                .or_else(|error| {
+                    state.catalog.mark_failed_retryable(
+                        &id,
+                        &error.to_string(),
+                        &utc_now_iso8601(),
+                    )?;
+                    Err(error)
+                });
             state.queue_committed_crash(result);
         }
     }
@@ -1802,7 +1844,7 @@ impl CapturePipeline {
         if self.crash_windows.is_empty() {
             return;
         }
-        let Some(boot) = event_boot_id(event) else {
+        let Some(boot) = event_boot_id(event).or_else(|| self.timeline.current_boot_id()) else {
             return;
         };
         let mapped_pts = |pts, semantics, pc| {
@@ -1918,6 +1960,37 @@ impl CapturePipeline {
         self.drain_watermark_ns
     }
 
+    /// Attach each closed tail chunk before another ring write can evict it. A failed
+    /// extension seals that job at its last protected batch, independently of other jobs.
+    fn pin_crash_tail_chunk(&mut self, id: &str) {
+        for i in 0..self.crash_windows.len() {
+            let w = &self.crash_windows[i];
+            if w.pin_failed {
+                continue;
+            }
+            let mut ids = w.pending.pinned_chunk_ids.clone();
+            ids.push(id.to_owned());
+            let result = self
+                .check_pin_budget(Some(w.pending.job_id()), &ids)
+                .and_then(|()| {
+                    self.ring.pin_chunks(
+                        w.pending.job_id(),
+                        &w.pending.dest_bundle_dir,
+                        ids.clone(),
+                        &w.pending.params.trigger_utc,
+                    )?;
+                    Ok(())
+                });
+            let w = &mut self.crash_windows[i];
+            if result.is_ok() {
+                w.pending.pinned_chunk_ids = ids;
+                w.protected_end = w.observed_end;
+            } else {
+                w.pin_failed = true;
+            }
+        }
+    }
+
     /// Flushes any buffered events into an immutable closed Zone-1 ring chunk.
     ///
     /// # Errors
@@ -1928,6 +2001,16 @@ impl CapturePipeline {
     /// (`StorageError::StoragePressureStop` or `StorageError::RingFullPinned`) is handled
     /// gracefully by recording [`DiscontinuityKind::StoragePressureStop`] and halting capture.
     pub fn flush_pending_chunk(&mut self) -> Result<(), DaemonError> {
+        let result = self.write_pending_chunk();
+        if result.is_err() || self.storage_pressure_stopped {
+            for w in &mut self.crash_windows {
+                w.pin_failed = true;
+            }
+        }
+        result
+    }
+
+    fn write_pending_chunk(&mut self) -> Result<(), DaemonError> {
         if self.pending_events.is_empty() {
             return Ok(());
         }
@@ -1976,6 +2059,7 @@ impl CapturePipeline {
                 for id in evicted {
                     self.chunk_contents.remove(&id);
                 }
+                self.pin_crash_tail_chunk(&chunk_id);
                 self.chunk_contents.insert(chunk_id, content);
                 self.drain_ring_discontinuities();
                 Ok(())
@@ -2253,18 +2337,13 @@ impl CapturePipeline {
     ///
     /// # Errors
     ///
-    /// Returns storage/catalog errors; the pins of `pending` are released on any error (S3).
+    /// On error manual pins roll back. An admitted post-roll job keeps its protected window for retry.
     pub fn phase1_commit(
         &mut self,
         catalog: &Catalog,
         mut pending: PendingSave,
         tail: TailCompleteness,
     ) -> Result<(CatalogSaveJob, Phase2Plan), DaemonError> {
-        // A crash job's initial params and pin are a durable recovery point. Even a failed
-        // catalog write during finalization must leave them available to startup recovery.
-        if pending.params.post_roll_ms > 0 {
-            pending.guard.armed = false;
-        }
         let mut chunk_ids = pending.pinned_chunk_ids.clone();
         let mut flush_failed = false;
         if pending.generation == self.session_generation {
@@ -2276,13 +2355,15 @@ impl CapturePipeline {
                     pending.params.extra_discontinuities.push(gap);
                 }
             }
-            for id in self.select_window_chunks(
-                &pending.params.window,
-                &pending.params.policy,
-                pending.params.mode,
-            ) {
-                if !chunk_ids.contains(&id) {
-                    chunk_ids.push(id);
+            if pending.params.post_roll_ms == 0 {
+                for id in self.select_window_chunks(
+                    &pending.params.window,
+                    &pending.params.policy,
+                    pending.params.mode,
+                ) {
+                    if !chunk_ids.contains(&id) {
+                        chunk_ids.push(id);
+                    }
                 }
             }
             // The drain may have delivered the beacon that confirms coverage up to `T`.
@@ -2290,18 +2371,7 @@ impl CapturePipeline {
         }
         let job_id = pending.guard.job_id.clone();
         if chunk_ids.len() != pending.pinned_chunk_ids.len() {
-            match self.check_pin_budget(Some(&job_id), &chunk_ids) {
-                Err(DaemonError::PinBudget { .. }) if pending.params.post_roll_ms > 0 => {
-                    pending.params = read_job_params(&self.data_dir, &job_id)?;
-                    chunk_ids.clone_from(&pending.pinned_chunk_ids);
-                    flush_failed = true;
-                }
-                other => {
-                    other?;
-                }
-            }
-        }
-        if chunk_ids.len() != pending.pinned_chunk_ids.len() {
+            self.check_pin_budget(Some(&job_id), &chunk_ids)?;
             self.ring.pin_chunks(
                 &job_id,
                 &pending.dest_bundle_dir,
@@ -2314,17 +2384,23 @@ impl CapturePipeline {
             || flush_failed
             || tail.may_be_incomplete()
             || self.session_generation != pending.generation;
-        pending.params.post_roll_truncated |=
-            pending.params.post_roll_ms > 0 && pending.params.tail_may_be_incomplete;
-        write_job_params(&self.data_dir, &job_id, &pending.params)?;
-
-        let created = catalog.create_pinned_job_with_trigger(
-            &job_id,
-            &pending.dest_bundle_dir,
-            &chunk_ids,
-            &pending.params.trigger_utc,
-            pending.trigger_kind,
-        )?;
+        let created = if pending.params.post_roll_ms > 0 {
+            pending.params.post_roll_truncated |= flush_failed || pending.initial_flush_failed;
+            // The journal already owns any new chunks. Until the params rename succeeds,
+            // retry uses the durable shorter window even when the catalog has more pins.
+            let job = catalog.extend_crash_job_pins(&job_id, &chunk_ids)?;
+            write_job_params(&self.data_dir, &job_id, &pending.params)?;
+            job
+        } else {
+            write_job_params(&self.data_dir, &job_id, &pending.params)?;
+            catalog.create_pinned_job_with_trigger(
+                &job_id,
+                &pending.dest_bundle_dir,
+                &chunk_ids,
+                &pending.params.trigger_utc,
+                pending.trigger_kind,
+            )?
+        };
         let plan = self.phase2_plan(&created.job.pinned_chunk_ids)?;
         pending.guard.armed = false;
         Ok((created, plan))
@@ -2507,7 +2583,7 @@ impl CapturePipeline {
     ///
     /// Returns [`DaemonError`] if the job is missing or already terminal.
     pub fn discard_save_job(
-        &self,
+        &mut self,
         catalog: &Catalog,
         job_id: &str,
     ) -> Result<SaveJobView, DaemonError> {
@@ -2516,7 +2592,19 @@ impl CapturePipeline {
         catalog.clean_tracked_staging(job_id, Path::new(&discarded.job.destination_path));
         let _ = self.ring.unpin_job(job_id);
         let _ = remove_job_params(&self.data_dir, job_id);
-        Ok(save_job_to_view(&discarded, self.rescue_after_secs))
+        let view = save_job_to_view(&discarded, self.rescue_after_secs);
+        if let Some(index) = self
+            .crash_windows
+            .iter()
+            .position(|w| w.pending.job_id() == job_id)
+        {
+            self.crash_windows.remove(index);
+            if let Some(state) = self.crash_daemon.upgrade() {
+                super::record_crash_outcome(&state, Ok((view.clone(), None)));
+                state.crash_window_changed.notify_one();
+            }
+        }
+        Ok(view)
     }
 
     /// `T_trigger` (R3 S1): the latest ingest time (or, for a live session, the host clock now)
@@ -2719,6 +2807,7 @@ fn load_failed_retryable_job(
 /// Result of a successful materialization (bundle published on disk).
 struct Materialized {
     bundle_id: String,
+    actual_post_roll_ms: u64,
     summary: Option<crate::protocol::CatalogSummary>,
     evidence: crate::protocol::SaveEvidence,
     unanchored_summary: UnanchoredSummary,
@@ -2846,7 +2935,10 @@ fn window_coverage_ms(
 }
 
 /// Union of the saved boot's active stream intervals on the K14 ingest axis.
-fn actual_post_roll_ms(params: &SaveJobMaterializeParams) -> u64 {
+fn actual_post_roll_ms(
+    params: &SaveJobMaterializeParams,
+    first_saved_video_ns: Option<i64>,
+) -> u64 {
     use arb_core::coverage::CoverageInterval;
     let (Some(start), Some(snapshot)) = (params.post_roll_trigger_cont_ns, &params.coverage) else {
         return 0;
@@ -2858,13 +2950,13 @@ fn actual_post_roll_ms(params: &SaveJobMaterializeParams) -> u64 {
         .filter(|c| c.key == boot)
         .map(|c| (c.start_ns, c.end_ns))
         .collect();
-    if params.mode == SaveMode::Full {
+    if let Some(first_video_ns) = first_saved_video_ns {
         intervals.extend(
             snapshot
                 .video
                 .iter()
                 .filter(|c| c.key.boot_id == boot)
-                .map(|c| (c.start_ns, c.end_ns)),
+                .map(|c| (c.start_ns.max(first_video_ns), c.end_ns)),
         );
     }
     intervals.sort_unstable();
@@ -3128,7 +3220,7 @@ pub fn phase2_materialize(
             Ok(SaveOutcomeResponse {
                 evidence: materialized.evidence,
                 post_roll_ms: params.post_roll_ms,
-                actual_post_roll_ms: actual_post_roll_ms(&params),
+                actual_post_roll_ms: materialized.actual_post_roll_ms,
                 post_roll_truncated: params.post_roll_truncated,
                 requested_duration_secs: Some(params.duration_sec),
                 job: save_job_to_view(&completed, plan.rescue_after_secs),
@@ -3151,7 +3243,7 @@ pub fn phase2_materialize(
             plan.rescue_after_secs,
             Some(&params),
             materialized.warning,
-        ).map(|mut outcome| { outcome.evidence = materialized.evidence; outcome }),
+        ).map(|mut outcome| { outcome.evidence = materialized.evidence; outcome.actual_post_roll_ms = materialized.actual_post_roll_ms; outcome }),
     }
 }
 
@@ -3171,7 +3263,7 @@ fn fail_job(
             ..Default::default()
         },
         post_roll_ms: params.map_or(0, |p| p.post_roll_ms),
-        actual_post_roll_ms: params.map_or(0, actual_post_roll_ms),
+        actual_post_roll_ms: 0,
         post_roll_truncated: params.is_some_and(|p| p.post_roll_truncated),
         requested_duration_secs: params.map(|p| p.duration_sec),
         job: save_job_to_view(&failed, rescue_after_secs),
@@ -3196,6 +3288,7 @@ fn materialize_from_chunks(
         return Ok(Materialized {
             evidence,
             summary,
+            actual_post_roll_ms: manifest.requested_window.actual_post_roll_ms(),
             bundle_id: manifest.bundle_id,
             unanchored_summary: manifest.unanchored_summary,
             warning: None,
@@ -3275,6 +3368,7 @@ fn materialize_from_chunks(
     let (evidence, summary) = saved_evidence(dest_bundle_dir, params);
     Ok(Materialized {
         bundle_id,
+        actual_post_roll_ms: draft.requested_window.actual_post_roll_ms(),
         summary,
         evidence,
         unanchored_summary,
@@ -4232,7 +4326,10 @@ impl ReplayCollector {
             device: params.device.clone(),
             requested_window: RequestedWindow::RealElapsedSec {
                 post_roll_ms: params.post_roll_ms,
-                actual_post_roll_ms: actual_post_roll_ms(params),
+                actual_post_roll_ms: actual_post_roll_ms(
+                    params,
+                    media.frames.first().map(|f| f.pc_ingest_cont_ns),
+                ),
                 post_roll_truncated: params.post_roll_truncated,
                 duration_sec: params.duration_sec.max(1),
                 trigger_pc_wall_utc: params.trigger_utc.clone(),
@@ -6378,6 +6475,23 @@ mod tests {
         pending.guard.armed = false;
         drop(pending);
         drop(cap);
+        // A second process exit after startup reconciliation, before queue delivery.
+        {
+            let catalog = arb_storage::catalog::Catalog::open(
+                tmp.path().join("catalog.sqlite"),
+                tmp.path().join("bundles"),
+            )
+            .unwrap();
+            let pins = arb_storage::ring::PinJournal::open(tmp.path()).unwrap();
+            super::recover_provisional_jobs(tmp.path(), &catalog, &pins).unwrap();
+            let (recovery, _) = catalog
+                .recover_on_startup_with_pins(&super::utc_now_iso8601(), &pins)
+                .unwrap();
+            assert_eq!(
+                recovery.recovered_job_ids.as_slice(),
+                std::slice::from_ref(&id)
+            );
+        }
         let config = crate::DaemonConfig::new(paths);
         let server = crate::DaemonServer::start(config.clone()).unwrap();
         let status = server.state.crash_autosave_status.lock().unwrap();

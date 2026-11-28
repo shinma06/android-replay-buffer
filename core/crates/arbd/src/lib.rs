@@ -2349,7 +2349,7 @@ impl DaemonServer {
         let endpoint = config.paths.ipc_endpoint();
         let listener = LocalIpcListener::bind(&endpoint)?;
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let recovered_crashes = recovered_crash_jobs(&catalog, &recovery)?;
+        let recovered_crashes = recovered_crash_jobs(&catalog)?;
         let initial_crash_status = CrashAutoSaveStatusView {
             in_flight: !recovered_crashes.is_empty(),
             enabled: user_config.crash_autosave_enabled,
@@ -2671,17 +2671,11 @@ fn spawn_auto_attach(attach_state: Arc<DaemonState>) -> std::io::Result<thread::
         })
 }
 
-fn recovered_crash_jobs(
-    catalog: &Catalog,
-    recovery: &RecoveryReport,
-) -> Result<Vec<String>, DaemonError> {
+fn recovered_crash_jobs(catalog: &Catalog) -> Result<Vec<String>, DaemonError> {
     Ok(catalog
         .list_save_jobs()?
         .into_iter()
-        .filter(|job| {
-            job.trigger_kind == SaveTriggerKind::CrashAutoSave
-                && recovery.recovered_job_ids.contains(&job.job.job_id)
-        })
+        .filter(CatalogSaveJob::awaits_crash_replay)
         .map(|job| job.job.job_id)
         .collect())
 }
@@ -2701,7 +2695,7 @@ fn spawn_crash_worker(
                         .lock_capture()
                         .and_then(|cap| cap.prepare_retry(&crash_state.catalog, &id))
                         .and_then(|plan| phase2_materialize(&plan, &crash_state.catalog, &id));
-                    record_crash_outcome(&crash_state, result);
+                    record_crash_outcome(&crash_state, result.map(|o| (o.job, o.bundle_id)));
                 }
                 run_crash_autosave_worker(&crash_state, &crash_rx);
             });
@@ -2761,21 +2755,24 @@ fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<CrashWork>) {
                 "crash auto-save worker panicked".into(),
             ))
         });
-        record_crash_outcome(state, result);
+        record_crash_outcome(state, result.map(|o| (o.job, o.bundle_id)));
     }
 }
 
-fn record_crash_outcome(state: &DaemonState, result: Result<SaveOutcomeResponse, DaemonError>) {
+fn record_crash_outcome(
+    state: &DaemonState,
+    result: Result<(protocol::SaveJobView, Option<String>), DaemonError>,
+) {
     let mut status = state
         .crash_autosave_status
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
     match result {
-        Ok(outcome) => {
-            status.last_job_id = Some(outcome.job.job_id);
-            status.last_bundle_id = outcome.bundle_id;
-            status.last_error = outcome.job.last_error;
+        Ok((job, bundle_id)) => {
+            status.last_job_id = Some(job.job_id);
+            status.last_bundle_id = bundle_id;
+            status.last_error = job.last_error;
         }
         Err(e) => status.last_error = Some(e.to_string()),
     }
@@ -2898,7 +2895,7 @@ fn schedule_crash_save(
         save_target,
     )?;
     if cfg.crash_autosave_post_roll_ms > 0 {
-        cap.start_crash_window(pending, detected_at.0, detected_at.1);
+        cap.start_crash_window(&state.catalog, pending, detected_at.0, detected_at.1)?;
         state.crash_window_changed.notify_one();
         return Ok(());
     }

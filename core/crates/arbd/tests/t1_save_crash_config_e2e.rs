@@ -799,7 +799,12 @@ fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
     // The next frame at 12 s is closer than the visible frame at 11 s.
     let trigger = 11 * SEC_NS + 800_000_000;
     let mut legacy_hint = None;
-    for (delay, disconnect) in [(0, false), (3000, false), (3000, true)] {
+    for (delay, disconnect, video_ahead) in [
+        (0, false, false),
+        (3000, false, false),
+        (3000, true, false),
+        (3000, false, true),
+    ] {
         let tmp = TempDir::new().unwrap();
         let paths = isolated_paths(&tmp);
         let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
@@ -814,9 +819,11 @@ fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
         for event in small_encoded_h264_events(BOOT, 10 * SEC_NS, 10 * SEC_NS) {
             if let CaptureEvent::VideoFrame { pc_cont_ns, .. } = &event {
                 let t = *pc_cont_ns;
-                events.push(heartbeat_event(BOOT, t, t));
                 if t == 12 * SEC_NS {
-                    events.insert(events.len() - 1, crash.clone());
+                    events.push(crash.clone());
+                }
+                if !video_ahead || t < 15 * SEC_NS {
+                    events.push(heartbeat_event(BOOT, t, t));
                 }
                 if disconnect && t == 13 * SEC_NS {
                     events.push(CaptureEvent::Discontinuity(
@@ -848,7 +855,7 @@ fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
         assert_eq!(window["post_roll_truncated"], disconnect);
         assert_eq!(
             manifest["streams"]["video"]["tail_may_be_incomplete"],
-            disconnect
+            disconnect || video_ahead
         );
         let reader = arb_storage::bundle_io::open_bundle(&path).unwrap();
         let frames = reader.frames().unwrap();
@@ -888,6 +895,271 @@ fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
             server.shutdown();
         }
     }
+}
+
+#[test]
+fn post_roll_pins_each_closed_chunk_until_ring_pressure_closes_the_window() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: 32 * 1024,
+        ..RingBudgetPolicy::default()
+    };
+    let server =
+        DaemonServer::start(DaemonConfig::new(paths.clone()).with_ring_policy(policy)).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let boot = "boot-rotation";
+    let start = 100 * SEC_NS;
+    let mut events = hello_and_heartbeat_events(boot, start, start);
+    events.push(binary_am_crash_event(
+        boot,
+        start,
+        start,
+        42,
+        "example",
+        "Exception",
+        "rotation",
+    ));
+    let payload = "a".repeat(3900);
+    for i in 1..=40 {
+        let t = start + i * 100_000_000;
+        events.push(text_log_event(
+            boot,
+            t,
+            t,
+            42,
+            "example",
+            &format!("post-{i} {payload}"),
+        ));
+        events.push(heartbeat_event(boot, t, t));
+    }
+    server
+        .ingest_device_source_with_mode(
+            &mut VecEventSource::new("emu", events),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    let bundle = wait_for_crash_bundle(&mut client);
+    let path = paths.data_dir.join("bundles").join(bundle);
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
+    let window = &manifest["requested_window"];
+    assert_eq!(window["post_roll_truncated"], true, "{window}");
+    assert_eq!(manifest["streams"]["video"]["tail_may_be_incomplete"], true);
+    let actual = window["actual_post_roll_ms"].as_u64().unwrap();
+    assert!((100..4000).contains(&actual), "{window}");
+    let logs = arb_storage::bundle_io::open_bundle(&path)
+        .unwrap()
+        .query_logs(None, arb_storage::bundle_io::TimeRange::all(), None)
+        .unwrap();
+    assert!(logs.iter().any(|l| l.message.starts_with("post-1 ")));
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn quiet_crash_window_closes_on_timeout_or_explicit_capture_stop() {
+    for stop in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let paths = isolated_paths(&tmp);
+        let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+        let mut client = RpcClient::connect(server.endpoint());
+        let delay = if stop { 10_000 } else { 100 };
+        client.call(
+            "config.update",
+            &json!({"crash_autosave_post_roll_ms":delay}),
+        );
+        let mut events = hello_and_heartbeat_events("quiet", SEC_NS, SEC_NS);
+        events.push(binary_am_crash_event(
+            "quiet",
+            SEC_NS,
+            SEC_NS,
+            42,
+            "example",
+            "Exception",
+            "quiet",
+        ));
+        server
+            .ingest_device_source_with_mode(
+                &mut VecEventSource::new("emu", events),
+                arb_core::config::CaptureMode::LogsOnly,
+            )
+            .unwrap();
+        if stop {
+            client.call("capture.stop", &json!({}));
+        }
+        let bundle = wait_for_crash_bundle(&mut client);
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(
+                paths
+                    .data_dir
+                    .join("bundles")
+                    .join(bundle)
+                    .join("manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["requested_window"]["post_roll_ms"], delay);
+        assert_eq!(manifest["requested_window"]["actual_post_roll_ms"], 0);
+        assert_eq!(manifest["requested_window"]["post_roll_truncated"], true);
+        assert_eq!(manifest["streams"]["video"]["tail_may_be_incomplete"], true);
+        drop(client);
+        server.shutdown();
+    }
+}
+
+#[test]
+fn overlapping_crash_post_rolls_keep_independent_deadlines() {
+    let tmp = TempDir::new().unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    client.call(
+        "config.update",
+        &json!({"crash_autosave_cooldown_secs":1,"crash_autosave_post_roll_ms":3000}),
+    );
+    let boot = "boot-overlap";
+    let mut events = hello_and_heartbeat_events(boot, SEC_NS, SEC_NS);
+    for second in 2..=5 {
+        let t = second * SEC_NS;
+        events.push(hello_and_heartbeat_events(boot, t, t).pop().unwrap());
+        if second <= 3 {
+            events.push(binary_am_crash_event(
+                boot,
+                t,
+                t,
+                42,
+                "example",
+                "Exception",
+                "overlap",
+            ));
+        }
+    }
+    events.push(CaptureEvent::Shutdown {
+        pc_cont_ns: 5 * SEC_NS,
+        payload: arb_adb::wire::ShutdownPayload {
+            boottime_ns: 5 * SEC_NS,
+            code: arb_adb::wire::ShutdownCode::Normal,
+            reason: "stop".into(),
+        },
+    });
+    server
+        .ingest_device_source_with_mode(
+            &mut VecEventSource::new("emu", events),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    wait_for_crash_bundle(&mut client);
+    let result = client.call("save.list_jobs", &json!({}));
+    let mut windows: Vec<_> = result["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|job| {
+            let manifest: Value = serde_json::from_slice(
+                &fs::read(
+                    Path::new(job["destination_path"].as_str().unwrap()).join("manifest.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let window = &manifest["requested_window"];
+            (
+                window["post_roll_truncated"].as_bool().unwrap(),
+                window["actual_post_roll_ms"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    windows.sort_unstable();
+    assert_eq!(windows, [(false, 3000), (true, 2000)]);
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn discarding_a_waiting_crash_cancels_the_deadline_and_its_pins() {
+    let tmp = TempDir::new().unwrap();
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let mut events = hello_and_heartbeat_events("boot", SEC_NS, SEC_NS);
+    events.push(binary_am_crash_event(
+        "boot",
+        SEC_NS,
+        SEC_NS,
+        42,
+        "example",
+        "Exception",
+        "discard",
+    ));
+    server
+        .ingest_device_source_with_mode(
+            &mut VecEventSource::new("emu", events),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    let jobs = client.call("save.list_jobs", &json!({}));
+    let id = jobs["jobs"][0]["job_id"].as_str().unwrap();
+    assert_eq!(
+        client.call("save.discard", &json!({"job_id":id}))["state"],
+        "discarded"
+    );
+    server
+        .ingest_device_source(&mut VecEventSource::new("emu", Vec::new()))
+        .unwrap();
+    let status = client.call("system.status", &json!({}));
+    assert_eq!(status["crash_autosave"]["in_flight"], false);
+    assert_eq!(status["ring_pinned_chunk_count"], 0);
+    assert!(status["crash_autosave"]["post_roll_until_utc"].is_null());
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn failed_post_roll_params_refresh_exposes_a_retryable_job_without_restart() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let mut events = hello_and_heartbeat_events("boot", SEC_NS, SEC_NS);
+    events.push(binary_am_crash_event(
+        "boot",
+        SEC_NS,
+        SEC_NS,
+        42,
+        "example",
+        "Exception",
+        "fault",
+    ));
+    server
+        .ingest_device_source_with_mode(
+            &mut VecEventSource::new("emu", events),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    let jobs = client.call("save.list_jobs", &json!({}));
+    let job = &jobs["jobs"][0];
+    assert_eq!(job["state"], "pinned");
+    let id = job["job_id"].as_str().unwrap();
+    let obstacle = paths
+        .data_dir
+        .join("save_job_params")
+        .join(format!(".{id}.params.json.tmp"));
+    fs::create_dir(&obstacle).unwrap();
+    // A new generation closes the old window synchronously under the capture lock.
+    server
+        .ingest_device_source(&mut VecEventSource::new("emu", Vec::new()))
+        .unwrap();
+    assert_eq!(
+        client.call("save.list_jobs", &json!({}))["jobs"][0]["state"],
+        "failed_retryable"
+    );
+    fs::remove_dir(obstacle).unwrap();
+    let saved = client.call("save.retry", &json!({"job_id":id}));
+    assert_eq!(saved["job"]["state"], "completed");
+    assert_eq!(saved["actual_post_roll_ms"], 0);
+    assert_eq!(saved["post_roll_truncated"], true);
+    drop(client);
+    server.shutdown();
 }
 
 #[test]

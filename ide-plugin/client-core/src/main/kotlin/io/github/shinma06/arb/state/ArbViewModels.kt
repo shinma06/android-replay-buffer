@@ -302,7 +302,8 @@ object CaptureBarReducer {
             selectedSerial = resolvedSerial,
             autoSelectedSerial = nextAutoSelectedSerial,
             deviceSelection = selection,
-            postRollUntilUtc = status.crashAutosave.postRollUntilUtc,
+            // Gson can leave this nested object null in older daemon responses.
+            postRollUntilUtc = status.crashAutosave?.postRollUntilUtc,
             capture = status.capture,
             config = config,
             saveDurationSec = config.saveWindowSecs.toLong(),

@@ -217,6 +217,8 @@ pub struct LeaseRecord {
     pub last_heartbeat_utc: String,
 }
 
+const STARTUP_INTERRUPTED: &str = "interrupted before completion; recovered on startup";
+
 /// Persisted save job row wrapping [`arb_core::state::SaveJob`] with timestamps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSaveJob {
@@ -232,6 +234,17 @@ pub struct CatalogSaveJob {
     pub created_at_utc: String,
     /// ISO-8601 UTC last-update timestamp.
     pub updated_at_utc: String,
+}
+
+impl CatalogSaveJob {
+    /// True until the recovery worker claims this interrupted crash job, even across a
+    /// second exit between the recovery transaction and worker startup.
+    #[must_use]
+    pub fn awaits_crash_replay(&self) -> bool {
+        self.trigger_kind == SaveTriggerKind::CrashAutoSave
+            && self.job.state == SaveJobState::FailedRetryable
+            && self.job.last_error.as_deref() == Some(STARTUP_INTERRUPTED)
+    }
 }
 
 /// Recovery information for status and admission checks, without loading chunk ID arrays.
@@ -1595,6 +1608,33 @@ impl Catalog {
         Ok((recovery, pins))
     }
 
+    /// Persist the tail pins of an admitted crash job before publishing its extended params.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job is no longer pinned or the update cannot be persisted.
+    pub fn extend_crash_job_pins(
+        &self,
+        job_id: &str,
+        chunks: &[String],
+    ) -> Result<CatalogSaveJob, StorageError> {
+        let encoded = serde_json::to_string(chunks)
+            .map_err(|e| StorageError::json("serialize_crash_pins", e))?;
+        let conn = self.lock_conn()?;
+        let changed = conn.execute("UPDATE save_jobs SET pinned_chunks_json = ?1 WHERE job_id = ?2 AND state = 'pinned' AND trigger_kind = 'crash_auto_save'", params![encoded, job_id])
+            .map_err(|e| StorageError::sqlite("extend_crash_job_pins", e))?;
+        if changed != 1 {
+            return Err(StorageError::InvalidArgument {
+                name: "job_id",
+                reason: "expected a pinned crash job".into(),
+            });
+        }
+        fetch_save_job(&conn, job_id)?.ok_or_else(|| StorageError::NotFound {
+            entity: NotFoundEntity::Job,
+            id: job_id.into(),
+        })
+    }
+
     /// Creates a new save job in `Pinned` state with its Phase-1 pinned chunk IDs.
     ///
     /// # Errors
@@ -2040,7 +2080,7 @@ impl Catalog {
 
         for mut record in fetch_interrupted_save_jobs(&tx)? {
             record.job.apply(SaveJobEvent::FailRetryable {
-                error_message: "interrupted before completion; recovered on startup".to_owned(),
+                error_message: STARTUP_INTERRUPTED.to_owned(),
             })?;
             let chunks_json = serde_json::to_string(&record.job.pinned_chunk_ids)
                 .map_err(|source| StorageError::json("serialize_recovered_pins", source))?;
