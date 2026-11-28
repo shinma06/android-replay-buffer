@@ -390,7 +390,7 @@ pub(super) fn screenshot_blob(path: &std::path::Path, digest: &str) -> Option<St
 }
 
 fn resource_error(e: Failure, uri: &str) -> Failure {
-    if e.rpc_code == -32001 {
+    if e.label == "BUNDLE_NOT_FOUND" {
         Failure::new(
             -32002,
             "RESOURCE_NOT_FOUND",

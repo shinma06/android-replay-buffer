@@ -355,7 +355,8 @@ fn format_error(output: OutputFormat, err: &CliError) -> String {
             let mut data =
                 json!({"code":err.rpc_code,"exit_code":err.exit_code,"message":err.message});
             if let Some(label) = &err.error_code {
-                let (kind, hint, retryable) = arb_os::rpc::error_guidance(label);
+                let (kind, hint, retryable) =
+                    arb_os::rpc::error_guidance_with_details(label, err.details.as_ref());
                 data["rpc_code"] = json!(err.rpc_code);
                 data["error_code"] = json!(label);
                 data["kind"] = json!(kind);

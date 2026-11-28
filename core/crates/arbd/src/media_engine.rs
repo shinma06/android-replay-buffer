@@ -31,7 +31,7 @@ use arb_storage::bundle_io::{
 use arb_storage::catalog::{Catalog, CatalogFormatVersion, LeaseHolderKind, NewBundleEntry};
 
 use crate::capture::FaultInjection;
-use crate::error::DaemonError;
+use crate::error::{DaemonError, NotFoundEntity};
 use crate::protocol::{
     EpochFrameRange, ExportPngResponse, ExportTrimParams, ExportTrimResponse, FilmstripEntryMeta,
     MAX_VIEWPORTS, MediaFilmstripParams, MediaFilmstripResponse, MediaFrameRequestParams,
@@ -458,7 +458,10 @@ impl MediaEngine {
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
-            .ok_or_else(|| DaemonError::NotFound(format!("viewport {id} not found")))
+            .ok_or_else(|| DaemonError::NotFound {
+                entity: NotFoundEntity::Viewport,
+                detail: format!("viewport {id} not found"),
+            })
     }
 
     /// Closes an open viewport and cleans up its SHM backing file.

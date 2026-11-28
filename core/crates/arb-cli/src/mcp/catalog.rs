@@ -66,6 +66,15 @@ pub(super) static TABLE: LazyLock<Table> = LazyLock::new(|| {
     .expect("valid MCP tool table")
 });
 
+/// Accept only labels advertised by the public error schema, including daemon subtypes.
+pub(super) fn known_error_label(label: &str) -> Option<&'static str> {
+    TABLE.defs["ErrorFields"]["properties"]["error_code"]["enum"]
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|&known| known == label)
+}
+
 pub(super) fn for_version(version: ProtocolVersion) -> &'static [Value] {
     use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
     static NOVEMBER: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(V2025_11_25));

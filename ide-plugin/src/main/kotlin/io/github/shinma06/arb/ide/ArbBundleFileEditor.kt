@@ -58,7 +58,11 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
 internal fun Throwable.isMissingBundle(): Boolean {
-    if (this is ArbdRpcException) return code == -32001
+    if (this is ArbdRpcException) {
+        // Unlabeled older daemons only expose the numeric code on bundle open.
+        val label = details?.errorCode
+        return code == -32001 && (label == null || label == "BUNDLE_NOT_FOUND")
+    }
     val msg = message.orEmpty()
     return msg.contains("canonicalize_bundle", ignoreCase = true) ||
         msg.contains("not found", ignoreCase = true) ||

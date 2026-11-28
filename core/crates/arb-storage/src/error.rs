@@ -118,14 +118,18 @@ pub enum StorageError {
         reason: String,
     },
 
-    /// Requested record or chunk does not exist.
+    /// Requested catalog record does not exist.
     #[error("{entity} `{id}` not found")]
     NotFound {
-        /// Logical entity kind (for example, `bundle`, `lease`, `save_job`, `chunk`).
-        entity: &'static str,
+        /// Kind of missing record.
+        entity: arb_core::state::NotFoundEntity,
         /// Missing identifier.
         id: String,
     },
+
+    /// Required save data is missing from the ring or its journal.
+    #[error("{0}")]
+    MissingSaveData(String),
 
     /// Caller supplied an invalid identifier, path, or range parameter.
     #[error("invalid argument `{name}`: {reason}")]

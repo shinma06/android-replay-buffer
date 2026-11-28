@@ -67,16 +67,48 @@ fn build_minimal_valid_png(width: u32, height: u32) -> Vec<u8> {
     png
 }
 
-fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
-    seed_bundle_with_logs(work_dir, dest_dir, bundle_id, Vec::new())
+fn fixture_tap() -> TapRecord {
+    TapRecord {
+        seq: 1,
+        boot_id: Some("boot-mcp".to_owned()),
+        event_mono_ns: Some(BASE_BT_NS + 6 * FRAME_STEP_NS),
+        pc_ingest_cont_ns: BASE_BT_NS + 6 * FRAME_STEP_NS,
+        alignment: TimeAlignment::Anchored {
+            boot_id: "boot-mcp".to_owned(),
+            boottime_ns: BASE_BT_NS + 6 * FRAME_STEP_NS,
+            half_width_ns: 500_000,
+            semantics: TimestampSemantics::InputEventTime,
+        },
+        bucket: RecordBucket::Main,
+        action: "TAP".to_owned(),
+        x: Some(32.0),
+        y: Some(32.0),
+        pointer_id: Some(0),
+        gesture_kind: GestureKind::Tap,
+        end_x: None,
+        end_y: None,
+        end_t_offset_ns: Some(20_000_000),
+        path: Vec::new(),
+    }
 }
 
-/// The seeded bundle plus `extra` main-timeline log rows.
-fn seed_bundle_with_logs(
+fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
+    seed_bundle_with_events(
+        work_dir,
+        dest_dir,
+        bundle_id,
+        Vec::new(),
+        vec![fixture_tap()],
+    )
+}
+
+/// Seeds an inspection bundle with the specified taps and extra main-timeline log rows.
+fn seed_bundle_with_events(
     work_dir: &Path,
     dest_dir: &Path,
     bundle_id: &str,
     extra: Vec<LogRecord>,
+    taps: Vec<TapRecord>,
 ) -> PathBuf {
     let video_src = work_dir.join(format!("{bundle_id}-v.mp4"));
     let frames_raw: Vec<DecodedFrame> = (0..18_u64)
@@ -206,29 +238,6 @@ fn seed_bundle_with_logs(
         },
     ];
     logs.extend(extra);
-
-    let taps = vec![TapRecord {
-        seq: 1,
-        boot_id: Some("boot-mcp".to_owned()),
-        event_mono_ns: Some(BASE_BT_NS + 6 * FRAME_STEP_NS),
-        pc_ingest_cont_ns: BASE_BT_NS + 6 * FRAME_STEP_NS,
-        alignment: TimeAlignment::Anchored {
-            boot_id: "boot-mcp".to_owned(),
-            boottime_ns: BASE_BT_NS + 6 * FRAME_STEP_NS,
-            half_width_ns: 500_000,
-            semantics: TimestampSemantics::InputEventTime,
-        },
-        bucket: RecordBucket::Main,
-        action: "TAP".to_owned(),
-        x: Some(32.0),
-        y: Some(32.0),
-        pointer_id: Some(0),
-        gesture_kind: GestureKind::Tap,
-        end_x: None,
-        end_y: None,
-        end_t_offset_ns: Some(20_000_000),
-        path: Vec::new(),
-    }];
 
     let draft = V2BundleDraft {
         memo: None,

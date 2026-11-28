@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.ide
 
+import com.google.gson.JsonPrimitive
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.MediaOpenViewportResponse
@@ -84,7 +85,7 @@ internal class StudioViewportSession(
         val result = try {
             call(generation.rpc, generation.viewport.viewportId)
         } catch (e: Exception) {
-            if (e is IOException || (e is ArbdRpcException && e.code == VIEWPORT_NOT_FOUND)) {
+            if (e is IOException || (e is ArbdRpcException && e.isExpiredViewport(generation.viewport.viewportId))) {
                 // Socket EOF also reclaims a viewport whose reply was lost.
                 current = null
                 runCatching { generation.rpc.close() }
@@ -115,7 +116,13 @@ internal class StudioViewportSession(
         runCatching { generation.reader.close() }
     }
 
-    private companion object {
-        const val VIEWPORT_NOT_FOUND = -32001
+    private fun ArbdRpcException.isExpiredViewport(id: String): Boolean {
+        if (code != -32001) return false
+        return when (details?.errorCode) {
+            null, "VIEWPORT_NOT_FOUND" -> true
+            // Older daemons mislabeled a missing viewport as a bundle; its diagnostic identifies the lookup.
+            "BUNDLE_NOT_FOUND" -> details?.details?.get("cause") == JsonPrimitive("viewport $id not found")
+            else -> false
+        }
     }
 }

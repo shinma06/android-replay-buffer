@@ -104,6 +104,16 @@ fn error_rows_match_cli_exit_code_and_transport_split() {
         let cli_json: Value =
             serde_json::from_str(&crate::format_error(crate::OutputFormat::Json, &cli)).unwrap();
         assert_eq!(cli_json["error"]["details"], failure["details"], "{id}");
+        if failure["kind"] == "rpc_error" {
+            assert_eq!(
+                cli_json["error"]["error_code"], expected["mcp_error_code"],
+                "{id}"
+            );
+            assert_eq!(
+                cli_json["error"]["hint"], body["structuredContent"]["hint"],
+                "{id}"
+            );
+        }
         assert_eq!(
             body["structuredContent"]["error_code"], expected["mcp_error_code"],
             "{id}: MCP error"

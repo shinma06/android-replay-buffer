@@ -16,6 +16,7 @@ import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.CaptureMode
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.RecoverySummaryView
+import io.github.shinma06.arb.model.RpcErrorDetails
 import io.github.shinma06.arb.model.SystemStatusResponse
 import io.github.shinma06.arb.playback.AudioSink
 import io.github.shinma06.arb.playback.PcmFormat
@@ -255,7 +256,9 @@ class ArbT7cStudioVfrAndLifecycleTest {
                 val original = first.open("bundle")
                 val unaffected = second.open("bundle")
                 val (reopened, mapped) = first.request { _, id ->
-                    if (id == original.viewportId) throw io.github.shinma06.arb.model.ArbdRpcException(-32001, "expired")
+                    if (id == original.viewportId) {
+                        throw ArbdRpcException(-32001, "expired", details = RpcErrorDetails(errorCode = "VIEWPORT_NOT_FOUND"))
+                    }
                     id
                 }
                 assertEquals("100-3", reopened)
@@ -283,10 +286,18 @@ class ArbT7cStudioVfrAndLifecycleTest {
                 assertFailsWith<ArbdRpcException> {
                     first.request { _, id ->
                         reopenedId = id
-                        throw ArbdRpcException(-32602, "decode failed")
+                        throw ArbdRpcException(-32001, "failed", details = RpcErrorDetails(errorCode = "SAVE_FAILED"))
                     }
                 }
                 assertEquals(reopenedId, first.request { _, id -> id }.response)
+                val legacy = first.request { _, id ->
+                    if (id == reopenedId) {
+                        val context = JsonObject().apply { addProperty("cause", "viewport $id not found") }
+                        throw ArbdRpcException(-32001, "expired", details = RpcErrorDetails(errorCode = "BUNDLE_NOT_FOUND", details = context))
+                    }
+                    id
+                }
+                assertNotNull(legacy.replacementId)
             }
         }
         assertTrue(sockets.all { it.closed.get() })

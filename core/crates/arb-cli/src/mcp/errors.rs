@@ -39,16 +39,10 @@ impl Failure {
                 detail: details.map(|details| json!({"details": details})),
                 ..Self::new(
                     code,
-                    match error_code.as_deref() {
-                        Some("DEVICE_NOT_FOUND") => "DEVICE_NOT_FOUND",
-                        Some("NO_VIDEO") => "NO_VIDEO",
-                        Some("ALREADY_ACTIVE") => "ALREADY_ACTIVE",
-                        Some("ALREADY_TRASHED") => "ALREADY_TRASHED",
-                        Some("CONFLICT") => "CONFLICT",
-                        Some("INVALID_PARAMS") => "INVALID_PARAMS",
-                        Some("BUNDLE_NOT_FOUND") => "BUNDLE_NOT_FOUND",
-                        _ => arb_os::rpc::error_label(code),
-                    },
+                    error_code
+                        .as_deref()
+                        .and_then(super::catalog::known_error_label)
+                        .unwrap_or_else(|| arb_os::rpc::error_label(code)),
                     message,
                 )
             },
@@ -102,9 +96,10 @@ impl Failure {
 
     pub(crate) fn result(&self, version: ProtocolVersion) -> Value {
         let mut body = self.detail.clone().unwrap_or_else(|| json!({}));
-        let (kind, hint, retryable) = arb_os::rpc::error_guidance(self.label);
+        let (kind, hint, retryable) =
+            arb_os::rpc::error_guidance_with_details(self.label, body.get("details"));
         body["kind"] = json!(kind);
-        body["hint"] = json!(self.hint.as_deref().unwrap_or(hint));
+        body["hint"] = json!(self.hint.as_deref().unwrap_or(&hint));
         body["retryable"] = json!(retryable);
         body["error_code"] = json!(self.label);
         body["rpc_code"] = json!(self.rpc_code);

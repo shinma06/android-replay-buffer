@@ -53,7 +53,7 @@ def check_version(cli, flags, fixture, version):
                                            "clientInfo": {"name": "schema-check", "version": "1"}})
             assert hello["protocolVersion"] == version
             result, size = call("tools/list", {})
-            assert size < 90_000, size
+            assert size < 87_000, size
             tools = result["tools"]
             assert len(tools) == 20 and "nextCursor" not in result
             for tool in tools:
@@ -89,6 +89,12 @@ def main():
     args = parser.parse_args()
     cli = args.bin_dir.resolve() / "arb-cli"
     source = next((root / "fixtures/legacy-schema4/replay-trim-parity").glob("replay-*"))
+    table = json.loads((root / "docs/specs/mcp-tools-table.json").read_text(encoding="utf-8"))
+    warning = Draft202012Validator(table["$defs"]["WarningDetail"])
+    sample = {"code": "test", "message": "例"}
+    warning.validate(sample)
+    warning.validate({**sample, "details": {"count": 0}})
+    assert not warning.is_valid({**sample, "details": []})
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         # The read-only parity fixture deliberately lacks an epoch origin. Give the

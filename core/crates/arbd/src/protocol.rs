@@ -664,13 +664,16 @@ pub struct SaveEvidence {
     pub info_codes: Option<Vec<String>>,
 }
 
-/// One save warning: a stable machine code and its Japanese display message.
+/// Structured warning shared by tool responses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarningDetail {
     /// Stable machine-readable code (`warning_codes` entry).
     pub code: String,
     /// Display text (`warnings` entry).
     pub message: String,
+    /// Optional machine-readable context for the warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Map<String, Value>>,
 }
 
 impl SaveEvidence {

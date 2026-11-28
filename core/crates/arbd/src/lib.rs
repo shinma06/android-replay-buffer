@@ -65,7 +65,7 @@ use crate::capture::{
     TailCompleteness, phase2_materialize, save_job_to_view,
 };
 use crate::error::{
-    DaemonError, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE, RPC_ERR_RESPONSE_TOO_LARGE,
+    DaemonError, NotFoundEntity, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE, RPC_ERR_RESPONSE_TOO_LARGE,
 };
 use crate::live_adb::{LiveCaptureHandle, select_live_target, start_selected_capture};
 use crate::media_engine::{ExportContext, MediaEngine, build_timeline_summary};
@@ -485,9 +485,10 @@ impl DaemonState {
             if self.catalog.bundle_disk_state(&entry.path)
                 == arb_storage::catalog::BundleDiskState::Missing
             {
-                return Err(DaemonError::NotFound(format!(
-                    "bundle `{bundle_id_or_path}` is missing"
-                )));
+                return Err(DaemonError::NotFound {
+                    entity: NotFoundEntity::Bundle,
+                    detail: format!("bundle `{bundle_id_or_path}` is missing"),
+                });
             }
             return Ok((entry.path.clone(), Some(entry)));
         }
@@ -498,9 +499,10 @@ impl DaemonState {
                     "bundle path `{bundle_id_or_path}` must be absolute; arbd does not resolve paths against its own working directory"
                 )));
             }
-            return Err(DaemonError::NotFound(format!(
-                "bundle `{bundle_id_or_path}` not found in catalog"
-            )));
+            return Err(DaemonError::NotFound {
+                entity: NotFoundEntity::Bundle,
+                detail: format!("bundle `{bundle_id_or_path}` not found in catalog"),
+            });
         }
         if path.is_dir() {
             // Check if already cataloged under this path.
@@ -514,9 +516,10 @@ impl DaemonState {
             }
             return Ok((path, None));
         }
-        Err(DaemonError::NotFound(format!(
-            "bundle `{bundle_id_or_path}` not found in catalog or filesystem"
-        )))
+        Err(DaemonError::NotFound {
+            entity: NotFoundEntity::Bundle,
+            detail: format!("bundle `{bundle_id_or_path}` not found in catalog or filesystem"),
+        })
     }
 
     fn handle_system_hello(&self) -> Result<Value, DaemonError> {
