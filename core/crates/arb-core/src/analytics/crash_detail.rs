@@ -462,7 +462,8 @@ fn same_boot(a: Option<&str>, b: Option<&str>) -> bool {
 ///
 /// Only rows from authenticated system loggers are read ([`trusted_source`]). Reports of one
 /// termination are merged: `Force stopping <pkg>` absorbs the `Killing ... stop <pkg>` rows that
-/// follow it (taking the first PID and the kill's reason), and a repeated report of the same kind
+/// follow it (taking the first PID and the kill's reason), and any later report of an absorbed
+/// kill (same PID and boot within [`PROCESS_EVENT_WINDOW_NS`]), and a repeated report of the same kind
 /// and PID within [`PROCESS_EVENT_WINDOW_NS`] (for example `am_kill` and `Killing`) is kept once.
 /// A `died` event within [`PROCESS_EVENT_WINDOW_NS`] of a crash or kill (including every kill
 /// merged into a force stop) of the same PID is its consequence and is dropped; an ANR is not a
@@ -472,7 +473,10 @@ pub fn extract_process_events(logs: &[LogRecord], crashes: &[CrashMarker]) -> Ve
     let mut out: Vec<Pending> = Vec::new();
     // Every kill of a known PID, including those merged into a force stop or a duplicate, so the
     // deaths they cause are recognized even when the kill is not reported on its own.
-    let mut kills: Vec<(i32, Option<i64>, Option<String>)> = Vec::new();
+    let mut kills: Vec<Cause> = Vec::new();
+    // Kills merged into a force stop: a later report of the same kill (for example `am_kill`
+    // just past the follow window) is that kill again, not a separate termination.
+    let mut absorbed: Vec<Cause> = Vec::new();
     for (idx, log) in logs.iter().enumerate() {
         let Some(source) = trusted_source(log) else {
             continue;
@@ -492,6 +496,15 @@ pub fn extract_process_events(logs: &[LogRecord], crashes: &[CrashMarker]) -> Ve
         ) && let Some(pid) = report.pid
         {
             kills.push((pid, boottime_ns, boot.clone()));
+            if report.kind != ProcessEventKind::ForceStop
+                && absorbed.iter().any(|(p, bt, b)| {
+                    *p == pid
+                        && same_boot(b.as_deref(), boot.as_deref())
+                        && within(*bt, boottime_ns, PROCESS_EVENT_WINDOW_NS)
+                })
+            {
+                continue;
+            }
         }
         if let Some(pkg) = report.stop_of.as_deref()
             && let Some(stop) = out.iter_mut().rev().find(|p| {
@@ -502,6 +515,9 @@ pub fn extract_process_events(logs: &[LogRecord], crashes: &[CrashMarker]) -> Ve
                     && within(p.event.boottime_ns, boottime_ns, PROCESS_EVENT_WINDOW_NS)
             })
         {
+            if let Some(pid) = report.pid {
+                absorbed.push((pid, boottime_ns, boot.clone()));
+            }
             if stop.event.pid.is_none() {
                 stop.event.pid = report.pid;
                 if report.reason.is_some() {
@@ -539,6 +555,20 @@ pub fn extract_process_events(logs: &[LogRecord], crashes: &[CrashMarker]) -> Ve
             row: idx,
         });
     }
+    without_consequential_deaths(out, logs, crashes, kills)
+}
+
+/// A termination cause: PID, boottime and boot of a crash or kill.
+type Cause = (i32, Option<i64>, Option<String>);
+
+/// Drops each `died` event explained by a crash or kill of the same PID and boot within
+/// [`PROCESS_EVENT_WINDOW_NS`], and orders the rest by boottime, then source row.
+fn without_consequential_deaths(
+    out: Vec<Pending>,
+    logs: &[LogRecord],
+    crashes: &[CrashMarker],
+    kills: Vec<Cause>,
+) -> Vec<ProcessEvent> {
     let crash_boot = |c: &CrashMarker| {
         logs.iter()
             .find(|l| l.seq == c.source_log_seq)
@@ -546,7 +576,7 @@ pub fn extract_process_events(logs: &[LogRecord], crashes: &[CrashMarker]) -> Ve
             .map(str::to_owned)
     };
     // An ANR does not end the process, so only crashes and kills explain a death.
-    let causes: Vec<(i32, Option<i64>, Option<String>)> = crashes
+    let causes: Vec<Cause> = crashes
         .iter()
         .filter_map(|c| Some((c.pid?, c.boottime_ns, crash_boot(c))))
         .chain(kills)

@@ -785,6 +785,185 @@
           "is_crash": false
         }
       ]
+    },
+    {
+      "id": "PE-10",
+      "note": "force-stop に統合した kill と同じ終了の am_kill が統合範囲（16 行）の直後にあっても、統合済みの kill の重複として 1 件にする。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 120000,
+          "boot": "b1",
+          "message": "Force stopping com.example.app appid=10123 user=0: from pid 8123"
+        },
+        {
+          "seq": 2,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120000,
+          "boot": "b1",
+          "message": "Skipped 0 frames!"
+        },
+        {
+          "seq": 3,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120001,
+          "boot": "b1",
+          "message": "Skipped 1 frames!"
+        },
+        {
+          "seq": 4,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120002,
+          "boot": "b1",
+          "message": "Skipped 2 frames!"
+        },
+        {
+          "seq": 5,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120003,
+          "boot": "b1",
+          "message": "Skipped 3 frames!"
+        },
+        {
+          "seq": 6,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120004,
+          "boot": "b1",
+          "message": "Skipped 4 frames!"
+        },
+        {
+          "seq": 7,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120005,
+          "boot": "b1",
+          "message": "Skipped 5 frames!"
+        },
+        {
+          "seq": 8,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120006,
+          "boot": "b1",
+          "message": "Skipped 6 frames!"
+        },
+        {
+          "seq": 9,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120007,
+          "boot": "b1",
+          "message": "Skipped 7 frames!"
+        },
+        {
+          "seq": 10,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120008,
+          "boot": "b1",
+          "message": "Skipped 8 frames!"
+        },
+        {
+          "seq": 11,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120009,
+          "boot": "b1",
+          "message": "Skipped 9 frames!"
+        },
+        {
+          "seq": 12,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120010,
+          "boot": "b1",
+          "message": "Skipped 10 frames!"
+        },
+        {
+          "seq": 13,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120011,
+          "boot": "b1",
+          "message": "Skipped 11 frames!"
+        },
+        {
+          "seq": 14,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120012,
+          "boot": "b1",
+          "message": "Skipped 12 frames!"
+        },
+        {
+          "seq": 15,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120013,
+          "boot": "b1",
+          "message": "Skipped 13 frames!"
+        },
+        {
+          "seq": 16,
+          "tag": "Choreographer",
+          "uid": 10123,
+          "pid": 4242,
+          "ms": 120014,
+          "boot": "b1",
+          "message": "Skipped 14 frames!"
+        },
+        {
+          "seq": 17,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 120016,
+          "boot": "b1",
+          "message": "Killing 4242:com.example.app/u0a123 (adj 0): stop com.example.app due to from pid 8123"
+        },
+        {
+          "seq": 18,
+          "tag": "am_kill",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 120017,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,0,stop com.example.app due to from pid 8123]"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "force_stop",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "stop com.example.app due to from pid 8123",
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
     }
   ]
 }
