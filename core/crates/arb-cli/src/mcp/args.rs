@@ -113,6 +113,21 @@ pub(super) fn normalize(
     validate::normalize_integers(schema, &mut args);
     validate::validate(schema, &args, "arguments")
         .map_err(|error| argument_error(name, &args, error))?;
+    if name == "arb_export_trim" && args["full_range"] == true {
+        let present: Vec<&str> = [
+            "full_range",
+            "in_frame_index",
+            "out_frame_index",
+            "in_time_ns",
+            "out_time_ns",
+        ]
+        .into_iter()
+        .filter(|k| args.get(*k).is_some())
+        .collect();
+        if present.len() > 1 {
+            return Err(Violation::conflicts(&present));
+        }
+    }
     let Value::Object(args) = args else {
         unreachable!("tool inputs are object schemas")
     };
