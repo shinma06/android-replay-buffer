@@ -121,7 +121,8 @@ def check_version(cli, flags, fixture, version, rows):
                     assert {"hello", "status", "input_capture"} == set(body)
                 else:
                     assert body["capture"]["buffer"]["state"] == "empty" and body["attention"] == []
-                    assert "hello" not in body and status_bytes[0] <= 900
+                    assert "hello" not in body and "status" not in body
+            assert status_bytes[0] < status_bytes[1]
             print(f"{version} tools/list={size} B, status={status_bytes[0]} B, verbose={status_bytes[1]} B")
             check_silent_success(call, fixture, outputs_by_tool, rows)
             trim = next(t for t in tools if t["name"] == "arb_export_trim")

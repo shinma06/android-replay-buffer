@@ -1118,6 +1118,32 @@ fn screenshot_requires_a_current_session_gop_and_fresh_beacon() {
         cap.screenshot_gop(Some("A"), 4 * SEC).is_err(),
         "rotation awaits a new IDR"
     );
+    // A late video reader from another device boot cannot borrow this boot's beacon.
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: 4 * SEC,
+        boot_id: "other-boot".into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 64,
+            height: 64,
+        },
+    })
+    .unwrap();
+    let (config, picture, _) = encoded_gop(1, 80).remove(0);
+    cap.ingest_event(CaptureEvent::VideoFrame {
+        pc_cont_ns: 4 * SEC,
+        boot_id: "other-boot".into(),
+        packet: VideoPacket {
+            kind: VideoPacketKind::Keyframe,
+            pts_us: 4_000_000,
+            data: [config, picture].concat(),
+        },
+    })
+    .unwrap();
+    assert!(
+        cap.screenshot_gop(Some("A"), 4 * SEC).is_err(),
+        "different boot"
+    );
     cap.mark_stopped();
     assert!(cap.screenshot_gop(Some("A"), 4 * SEC).is_err());
 }

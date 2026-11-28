@@ -1067,6 +1067,9 @@ impl CapturePipeline {
             .video
             .current_at(now)
             .ok_or("video_coverage_closed")?;
+        if self.timeline.current_boot_id() != Some(interval.key.boot_id.as_str()) {
+            return Err("video_boot_mismatch");
+        }
         self.screenshot.snapshot(interval, now)
     }
 
