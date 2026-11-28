@@ -460,11 +460,13 @@ fn same_boot(a: Option<&str>, b: Option<&str>) -> bool {
 
 /// Extracts force stops, low-memory kills, ANRs, other kills and deaths from `logs`.
 ///
-/// Only rows from authenticated system loggers are read ([`trusted_source`]). Reports of one
+/// Only rows from authenticated system loggers are read: `ActivityManager` text from UID 0 or
+/// 1000, `lowmemorykiller` / `lmkd` also from the lmkd UID, and the `am_kill` / `am_proc_died` /
+/// `am_anr` events from UID 0, 1000 or an unreported UID; app UIDs never. Reports of one
 /// termination are merged: `Force stopping <pkg>` absorbs the `Killing ... stop <pkg>` rows that
-/// follow it (taking the first PID and the kill's reason), and any later report of an absorbed
-/// kill (same PID and boot within [`PROCESS_EVENT_WINDOW_NS`]), and a repeated report of the same kind
-/// and PID within [`PROCESS_EVENT_WINDOW_NS`] (for example `am_kill` and `Killing`) is kept once.
+/// follow it (taking the first PID and the kill's reason) and any later report of an absorbed
+/// kill (same PID and boot within [`PROCESS_EVENT_WINDOW_NS`]); a repeated report of the same
+/// kind and PID within that window (for example `am_kill` and `Killing`) is kept once.
 /// A `died` event within [`PROCESS_EVENT_WINDOW_NS`] of a crash or kill (including every kill
 /// merged into a force stop) of the same PID is its consequence and is dropped; an ANR is not a
 /// cause, since it does not end the process. Ordered by boottime, then source row. Pure and total.
