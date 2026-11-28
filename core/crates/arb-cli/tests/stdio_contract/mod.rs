@@ -1,6 +1,6 @@
 //! All-tool contract test against an isolated arbd with synthetic capture and ADB discovery.
 use super::{
-    BASE_BT_NS, FRAME_STEP_NS, build_minimal_valid_png, seed_bundle, seed_bundle_with_logs,
+    BASE_BT_NS, FRAME_STEP_NS, build_minimal_valid_png, seed_bundle, seed_bundle_with_events,
 };
 use arb_adb::mock::{
     CaptureEvent, CaptureSourceError, DeviceEventSource, FaultScenario, MockDeviceSource,
@@ -163,6 +163,139 @@ impl Drop for Client {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn daemon_distinguishes_missing_resources_and_an_empty_video_track() {
+    let root = TempDir::new().unwrap();
+    let paths = ArbPaths {
+        data_dir: root.path().join("d"),
+        runtime_dir: root.path().join("r"),
+        cache_dir: root.path().join("c"),
+    };
+    let _server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut client = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
+    let bundle = seed_bundle(root.path(), root.path(), "zero-sample-track");
+    // Emulate an existing bundle with an empty MP4 sample table using only this test's files.
+    let path = bundle.join("video.mp4");
+    let mut bytes = fs::read(&path).unwrap();
+    let stsz = bytes.windows(4).position(|tag| tag == b"stsz").unwrap();
+    bytes[stsz + 12..stsz + 16].copy_from_slice(&0_u32.to_be_bytes());
+    fs::write(path, bytes).unwrap();
+    for (method, args, label, rpc_code) in [
+        (
+            "media.inspect_frames",
+            json!({"bundle_id":bundle,"mode":"single","metadata_only":true}),
+            "NO_VIDEO",
+            -32602,
+        ),
+        (
+            "media.inspect_frames",
+            json!({"bundle_id":bundle,"mode":"single","metadata_only":false}),
+            "NO_VIDEO",
+            -32602,
+        ),
+        (
+            "save.retry",
+            json!({"job_id":"absent-job"}),
+            "JOB_NOT_FOUND",
+            -32001,
+        ),
+        (
+            "save.discard",
+            json!({"job_id":"absent-job"}),
+            "JOB_NOT_FOUND",
+            -32001,
+        ),
+        (
+            "bundle.lease_renew",
+            json!({"lease_id":"absent-lease"}),
+            "LEASE_NOT_FOUND",
+            -32001,
+        ),
+        (
+            "media.seek_frame",
+            json!({"viewport_id":"absent-viewport","frame_index":0}),
+            "VIEWPORT_NOT_FOUND",
+            -32001,
+        ),
+    ] {
+        let error = client.call(method, args).unwrap_err();
+        let arb_os::rpc::RpcClientError::Rpc {
+            code, error_code, ..
+        } = error
+        else {
+            panic!("{method}: {error}")
+        };
+        assert_eq!(error_code.as_deref(), Some(label), "{method}");
+        assert_eq!(code, rpc_code, "{method}");
+    }
+}
+
+#[test]
+fn tap_crop_reports_the_overview_range_on_every_version() {
+    let root = TempDir::new().unwrap();
+    let paths = ArbPaths {
+        data_dir: root.path().join("d"),
+        runtime_dir: root.path().join("r"),
+        cache_dir: root.path().join("c"),
+    };
+    let _server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let empty = seed_bundle_with_events(root.path(), root.path(), "empty-taps", vec![], vec![]);
+    let one = seed_bundle(root.path(), root.path(), "one-tap");
+    let mut c = Client::open(&paths);
+    for version in [
+        ProtocolVersion::V2024_11_05,
+        ProtocolVersion::V2025_03_26,
+        ProtocolVersion::V2025_06_18,
+        ProtocolVersion::V2025_11_25,
+    ] {
+        c.init(version.as_str());
+        for (target, count) in [
+            (json!(empty), Some(0_usize)),
+            (json!(one), Some(1)),
+            (json!("absent-bundle"), None),
+        ] {
+            let got = count.unwrap_or(0);
+            let response = c.result(
+                "tools/call",
+                json!({"name":"arb_inspect_frames","arguments":{
+                    "bundle_id":target, "mode":"tap_crop", "tap_index":got
+                }}),
+            );
+            assert_eq!(response["isError"], true);
+            let error: Value =
+                serde_json::from_str(response["content"][0]["text"].as_str().unwrap()).unwrap();
+            if version.supports_structured_content() {
+                assert_eq!(response["structuredContent"], error);
+            }
+            if let Some(count) = count {
+                assert_eq!(
+                    error["error_code"], "INVALID_PARAMS",
+                    "{version:?}: {error}"
+                );
+                assert_eq!(error["rpc_code"], -32602);
+                assert_eq!(
+                    error["details"],
+                    json!({"field":"tap_index","got":got,
+                    "overview_tap_count":count, "allowed_max": count.checked_sub(1),
+                    "cause":format!("tap_index {got} out of range (bundle has {count} overview taps)")})
+                );
+                let hint = error["hint"].as_str().unwrap();
+                if count == 0 {
+                    assert_eq!(
+                        hint,
+                        "このバンドルの overview taps は 0 件です。tap_index を外すか tap_x / tap_y（映像 px）を指定してください。"
+                    );
+                } else {
+                    assert!(hint.contains("0..=0"), "{hint}");
+                }
+            } else {
+                assert_eq!(error["error_code"], "BUNDLE_NOT_FOUND");
+                assert_eq!(error["rpc_code"], -32001);
+            }
+        }
     }
 }
 
@@ -1028,11 +1161,12 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
     extra.push(row(40, "F", "audiohal", "fatal underrun"));
     extra.push(row(41, "E", "MyApp", "request failed"));
     extra.push(row(42, "E", "MyApp", "retry failed"));
-    let bundle = seed_bundle_with_logs(
+    let bundle = seed_bundle_with_events(
         work,
         &paths.data_dir.join("external-noise"),
         "bundle-noise",
         extra,
+        vec![super::fixture_tap()],
     );
     c.init(ProtocolVersion::V2025_11_25.as_str());
     let target = json!({"bundle_id":bundle,"time_zone":"host"});

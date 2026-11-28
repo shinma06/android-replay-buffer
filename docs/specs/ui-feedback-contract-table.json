@@ -938,7 +938,7 @@
         "ide_daemon_connected": true,
         "ide_stale_daemon_banner": false,
         "ide_action_error_notified": true,
-        "mcp_error_code": "BUNDLE_NOT_FOUND"
+        "mcp_error_code": "NOT_FOUND"
       }
     },
     {
@@ -1117,6 +1117,42 @@
         "mcp_error_code": "ALREADY_ACTIVE",
         "retryable": false
       }
+    },
+    {
+      "id": "ER-T1",
+      "description": "バンドル未検出",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"BUNDLE_NOT_FOUND"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"BUNDLE_NOT_FOUND","retryable":false}
+    },
+    {
+      "id": "ER-T2",
+      "description": "保存ジョブ未検出",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"JOB_NOT_FOUND"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"JOB_NOT_FOUND","retryable":false}
+    },
+    {
+      "id": "ER-T3",
+      "description": "リース未検出",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"LEASE_NOT_FOUND"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"LEASE_NOT_FOUND","retryable":false}
+    },
+    {
+      "id": "ER-T4",
+      "description": "ビューポート未検出",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"VIEWPORT_NOT_FOUND"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"VIEWPORT_NOT_FOUND","retryable":false}
+    },
+    {
+      "id": "ER-T5",
+      "description": "端末用 JAR が欠落",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"INSTALLATION_INCOMPLETE"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"INSTALLATION_INCOMPLETE","retryable":false}
+    },
+    {
+      "id": "ER-T6",
+      "description": "保存に必要な内部データが欠落",
+      "failure": {"kind":"rpc_error","code":-32001,"error_code":"SAVE_FAILED"},
+      "expected": {"cli_exit_code":4,"is_transport":false,"ide_daemon_connected":true,"ide_stale_daemon_banner":false,"ide_action_error_notified":true,"mcp_error_code":"SAVE_FAILED","retryable":false}
     },
     {
       "id": "ER-D1",

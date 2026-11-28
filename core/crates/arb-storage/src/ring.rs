@@ -413,7 +413,7 @@ impl PinJournal {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] if no journal exists for `job_id`,
+    /// Returns [`StorageError::MissingSaveData`] if no journal exists for `job_id`,
     /// [`StorageError::InvalidArgument`] if `new_destination` is empty, or I/O errors.
     pub fn update_destination(
         &self,
@@ -459,17 +459,16 @@ impl PinJournal {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] if the journal file does not exist,
+    /// Returns [`StorageError::MissingSaveData`] if the journal file does not exist,
     /// or [`StorageError::Io`] / [`StorageError::Json`] if unreadable or malformed.
     pub fn load(&self, job_id: &str) -> Result<PinJournalRecord, StorageError> {
         let path = self.journal_path(job_id)?;
         let bytes = match fs::read(&path) {
             Ok(data) => data,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Err(StorageError::NotFound {
-                    entity: "pin_journal",
-                    id: job_id.to_owned(),
-                });
+                return Err(StorageError::MissingSaveData(format!(
+                    "pin journal `{job_id}` not found"
+                )));
             }
             Err(source) => return Err(StorageError::io("read_pin_journal", &path, source)),
         };
@@ -877,7 +876,7 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] if any referenced chunk ID is missing from
+    /// Returns [`StorageError::MissingSaveData`] if any referenced chunk ID is missing from
     /// the ring store, or [`StorageError::InvalidArgument`] / I/O errors.
     pub fn pin_chunks(
         &self,
@@ -894,10 +893,9 @@ impl<D: DiskSpaceProvider> RingStore<D> {
         }
         for id in &chunk_ids {
             if !self.chunks.contains_key(id) {
-                return Err(StorageError::NotFound {
-                    entity: "chunk",
-                    id: id.clone(),
-                });
+                return Err(StorageError::MissingSaveData(format!(
+                    "chunk `{id}` not found"
+                )));
             }
         }
         let record = PinJournalRecord {
@@ -938,15 +936,12 @@ impl<D: DiskSpaceProvider> RingStore<D> {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] if `chunk_id` is absent, or [`StorageError::Io`]
+    /// Returns [`StorageError::MissingSaveData`] if `chunk_id` is absent, or [`StorageError::Io`]
     /// if reading the chunk file fails.
     pub fn read_chunk(&self, chunk_id: &str) -> Result<Vec<u8>, StorageError> {
-        let desc = self
-            .descriptor(chunk_id)
-            .ok_or_else(|| StorageError::NotFound {
-                entity: "chunk",
-                id: chunk_id.to_owned(),
-            })?;
+        let desc = self.descriptor(chunk_id).ok_or_else(|| {
+            StorageError::MissingSaveData(format!("chunk `{chunk_id}` not found"))
+        })?;
         desc.read_verified(&self.ring_dir)
     }
 

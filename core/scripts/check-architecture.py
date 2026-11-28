@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Layer-4 PDD Rust structural guards (RS-1..RS-5).
+"""Layer-4 PDD Rust structural guards (RS-1..RS-6).
 
 Pure stdlib + `cargo metadata`. Scans non-test production Rust only: `#[cfg(test)]` /
 `#[cfg(kani)]` items and `*tests.rs` files are stripped before matching.
@@ -152,6 +152,10 @@ def main() -> int:
         elif not rel.startswith(OS_CFG_ALLOWED_PREFIXES):
             for n, line in grep(src, OS_CFG):
                 fail("RS-2", f"{rel}:{n}: OS cfg outside arb-os / codec / native tray: {line}")
+        code = LITERAL.sub(lambda m: "\n" * m.group().count("\n"), src)
+        for match in re.finditer(r"\bDaemonError\s*::\s*NotFound\s*\(", code):
+            line_number = code.count("\n", 0, match.start()) + 1
+            fail("RS-6", f"{rel}:{line_number}: classify missing entities with a typed NotFound")
         if rel not in RENAME_ALLOWED:
             for n, line in grep(src, re.compile(r"\bfs::rename\s*\(")):
                 fail("RS-4", f"{rel}:{n}: use arb_os::fs::{{replace_file,rename_no_replace}}: {line}")
@@ -203,7 +207,7 @@ def main() -> int:
             print(f"check-architecture: {f}", file=sys.stderr)
         print(f"check-architecture: FAILED ({len(failures)} violation(s))", file=sys.stderr)
         return 1
-    print(f"check-architecture: OK (RS-1..RS-5; {len(rpc_dispatched)} RPC methods in parity)")
+    print(f"check-architecture: OK (RS-1..RS-6; {len(rpc_dispatched)} RPC methods in parity)")
     return 0
 
 

@@ -265,20 +265,26 @@ impl LiveSink {
 ///
 /// # Errors
 ///
-/// Returns [`DaemonError::Adb`] if `adb` cannot be located or no online device
-/// matches, [`DaemonError::NotFound`] if `arb-companion.dex.jar` cannot be found, or an
+/// Returns [`DaemonError::Adb`] if `adb` cannot be located, [`DaemonError::DeviceNotFound`] if no
+/// online device matches, [`DaemonError::InstallationIncomplete`] if a required JAR is missing, or an
 /// internal error if the pipeline lock is poisoned.
 pub fn start_live_adb_capture(
     params: &CaptureStartParams,
     pipeline: &Arc<Mutex<CapturePipeline>>,
 ) -> Result<(String, LiveCaptureHandle), DaemonError> {
     let adb = AdbClient::discover()?;
-    let DeviceSelectionOutcome::Selected { serial } =
-        select_live_target(&adb, params.serial.as_deref())?
-    else {
-        return Err(DaemonError::NotFound("no eligible device".into()));
-    };
+    let serial = required_live_target(&adb, params.serial.as_deref())?;
     start_selected_capture(params, pipeline, adb, serial)
+}
+
+fn required_live_target(
+    adb: &AdbClient<impl arb_adb::adb::AdbCommandRunner>,
+    preferred: Option<&str>,
+) -> Result<String, DaemonError> {
+    match select_live_target(adb, preferred)? {
+        DeviceSelectionOutcome::Selected { serial } => Ok(serial),
+        _ => Err(DaemonError::DeviceNotFound(preferred.map(str::to_owned))),
+    }
 }
 
 pub(crate) fn start_selected_capture(
@@ -297,12 +303,11 @@ pub(crate) fn start_selected_capture(
     let scrcpy_jar = if capture_mode == CaptureMode::LogsOnly {
         None
     } else {
-        resolve_agent_jar(
+        Some(resolve_agent_jar(
             params.scrcpy_jar.as_deref(),
             "ARB_SCRCPY_JAR",
             "replay-scrcpy-audio.dex.jar",
-        )
-        .ok()
+        )?)
     };
 
     let is_video_mode = capture_mode == CaptureMode::VideoAndLogs;
@@ -397,7 +402,7 @@ fn resolve_agent_jar(
         if path.is_file() {
             return Ok(path.to_path_buf());
         }
-        return Err(DaemonError::NotFound(format!(
+        return Err(DaemonError::InstallationIncomplete(format!(
             "agent jar not found at `{}`",
             path.display()
         )));
@@ -441,7 +446,7 @@ fn resolve_agent_jar(
         }
     }
 
-    Err(DaemonError::NotFound(format!(
+    Err(DaemonError::InstallationIncomplete(format!(
         "device-agent artifact `{file_name}` not found (build with ./device-agent/build.sh --with-scrcpy-audio)"
     )))
 }
@@ -1338,7 +1343,7 @@ fn launch_scrcpy_streams(
     scrcpy_stderr: &Arc<Mutex<String>>,
 ) -> Result<(Vec<JoinHandle<()>>, Vec<TcpStream>), DaemonError> {
     let Some(remote_scrcpy) = guard.resources.deployed.scrcpy_jar.clone() else {
-        return Err(DaemonError::NotFound(
+        return Err(DaemonError::InstallationIncomplete(
             "replay-scrcpy-audio.dex.jar was not deployed".to_owned(),
         ));
     };
@@ -2317,6 +2322,27 @@ mod tests {
     }
 
     #[test]
+    fn missing_agent_jars_require_reinstallation() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["arb-companion.dex.jar", "replay-scrcpy-audio.dex.jar"] {
+            let missing = root.path().join(name);
+            let error = super::resolve_agent_jar(Some(&missing), "unused", name)
+                .unwrap_err()
+                .into_response(1.into())
+                .error
+                .unwrap();
+            let data = error.data.unwrap();
+            assert_eq!(error.code, -32001);
+            assert_eq!(data["error_code"], "INSTALLATION_INCOMPLETE");
+            assert_eq!(data["retryable"], false);
+            assert_eq!(
+                data["hint"],
+                "ARB のインストール構成が不完全です。再インストールしてください。"
+            );
+        }
+    }
+
+    #[test]
     fn live_target_filters_adb_output_before_applying_the_preference() {
         use arb_adb::adb::{AdbClient, AdbCommandOutput, AdbCommandRunner};
         use arb_core::device::DeviceSelectionOutcome;
@@ -2345,6 +2371,11 @@ mod tests {
             crate::screenshot::resolve_screenshot_serial(&adb, None).unwrap(),
             "phone"
         );
+        let absent = super::required_live_target(&adb, Some("other"))
+            .unwrap_err()
+            .classify();
+        assert_eq!(absent.code, "DEVICE_NOT_FOUND");
+        assert_eq!(absent.details["serial"], "other");
         assert!(matches!(super::select_live_target(&adb, None).unwrap(),
             DeviceSelectionOutcome::Selected { serial } if serial == "phone"));
         assert!(

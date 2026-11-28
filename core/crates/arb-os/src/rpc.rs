@@ -76,7 +76,7 @@ pub enum AutoStartMode {
 pub const fn error_label(rpc_code: i32) -> &'static str {
     match rpc_code {
         -32602 => "INVALID_PARAMS",
-        -32001 => "BUNDLE_NOT_FOUND",
+        -32001 => "NOT_FOUND",
         -32002 => "CONFLICT",
         -32601 => "DAEMON_UNAVAILABLE",
         _ => "OPERATION_FAILED",
@@ -117,6 +117,36 @@ pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
             "端末を接続し、arb_devices でシリアルと接続状態を確認してください。",
             true,
         ),
+        "NOT_FOUND" => (
+            "not_found",
+            "指定した対象の識別子を確認してください。",
+            false,
+        ),
+        "JOB_NOT_FOUND" => (
+            "not_found",
+            "保存ジョブの一覧でジョブ ID を確認してください。",
+            false,
+        ),
+        "LEASE_NOT_FOUND" => (
+            "not_found",
+            "バンドルを開き直してリースを取得してください。",
+            false,
+        ),
+        "VIEWPORT_NOT_FOUND" => (
+            "not_found",
+            "映像を開き直してビューポートを取得してください。",
+            false,
+        ),
+        "INSTALLATION_INCOMPLETE" => (
+            "installation_incomplete",
+            "ARB のインストール構成が不完全です。再インストールしてください。",
+            false,
+        ),
+        "SAVE_FAILED" => (
+            "save_failed",
+            "保存ジョブの状態と不足しているデータを確認してください。",
+            false,
+        ),
         "BUNDLE_NOT_FOUND" => (
             "not_found",
             "対象のバンドル ID またはパスを確認してください。",
@@ -143,6 +173,24 @@ pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
             false,
         ),
     }
+}
+
+/// Refines the shared recovery hint when the daemon supplies a rejected overview tap index.
+#[must_use]
+pub fn error_guidance_with_details(
+    label: &str,
+    details: Option<&Value>,
+) -> (&'static str, std::borrow::Cow<'static, str>, bool) {
+    let (kind, hint, retryable) = error_guidance(label);
+    let count = details
+        .filter(|d| label == "INVALID_PARAMS" && d["field"] == "tap_index")
+        .and_then(|d| d["overview_tap_count"].as_u64());
+    let hint = match count {
+        Some(0) => "このバンドルの overview taps は 0 件です。tap_index を外すか tap_x / tap_y（映像 px）を指定してください。".into(),
+        Some(n) => format!("tap_index は 0..={} の範囲で指定してください。座標で指定する場合は tap_index を外し、tap_x / tap_y（映像 px）を指定してください。", n - 1).into(),
+        None => hint.into(),
+    };
+    (kind, hint, retryable)
 }
 
 /// Errors returned by [`RpcClient`].

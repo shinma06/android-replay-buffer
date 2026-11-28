@@ -3,6 +3,34 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// User-addressable resources whose lookup can fail.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every resource must have an explicit RPC classification"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotFoundEntity {
+    /// Recorded bundle.
+    Bundle,
+    /// Save job in the catalog.
+    Job,
+    /// Reader or export lease.
+    Lease,
+    /// Open media viewport.
+    Viewport,
+}
+
+impl std::fmt::Display for NotFoundEntity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Bundle => "bundle",
+            Self::Job => "save job",
+            Self::Lease => "lease",
+            Self::Viewport => "viewport",
+        })
+    }
+}
+
 /// Default live ring buffer size budget (`1.5 GiB`).
 pub const DEFAULT_MAX_RING_BYTES: u64 = 1_536 * 1024 * 1024;
 

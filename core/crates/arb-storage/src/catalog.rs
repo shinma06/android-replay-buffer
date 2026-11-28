@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arb_core::state::NotFoundEntity;
 use arb_core::state::{BundleLifecycleState, SaveJob, SaveJobEvent, SaveJobState, SaveTriggerKind};
 use arb_os::fs::is_pid_alive;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -728,7 +729,7 @@ impl Catalog {
         .map_err(|source| StorageError::sqlite("register_bundle_idempotent", source))?;
         let existing =
             fetch_bundle(&conn, &entry.bundle_id)?.ok_or_else(|| StorageError::NotFound {
-                entity: "bundle",
+                entity: NotFoundEntity::Bundle,
                 id: entry.bundle_id.clone(),
             })?;
         if existing.path != entry.path {
@@ -801,7 +802,7 @@ impl Catalog {
     ) -> Result<BundleEntry, StorageError> {
         let conn = self.lock_conn()?;
         let mut entry = fetch_bundle(&conn, bundle_id)?.ok_or_else(|| StorageError::NotFound {
-            entity: "bundle",
+            entity: NotFoundEntity::Bundle,
             id: bundle_id.to_owned(),
         })?;
         let next = entry.state.trash()?;
@@ -825,7 +826,7 @@ impl Catalog {
     pub fn restore_bundle(&self, bundle_id: &str) -> Result<BundleEntry, StorageError> {
         let conn = self.lock_conn()?;
         let mut entry = fetch_bundle(&conn, bundle_id)?.ok_or_else(|| StorageError::NotFound {
-            entity: "bundle",
+            entity: NotFoundEntity::Bundle,
             id: bundle_id.to_owned(),
         })?;
         let next = entry.state.restore()?;
@@ -856,7 +857,7 @@ impl Catalog {
     ) -> Result<String, StorageError> {
         let conn = self.lock_conn()?;
         let entry = fetch_bundle(&conn, bundle_id)?.ok_or_else(|| StorageError::NotFound {
-            entity: "bundle",
+            entity: NotFoundEntity::Bundle,
             id: bundle_id.to_owned(),
         })?;
         if entry.state == BundleLifecycleState::Purging {
@@ -901,7 +902,7 @@ impl Catalog {
             .map_err(|source| StorageError::sqlite("renew_lease", source))?;
         if updated == 0 {
             return Err(StorageError::NotFound {
-                entity: "lease",
+                entity: NotFoundEntity::Lease,
                 id: lease_id.to_owned(),
             });
         }
@@ -1143,7 +1144,7 @@ impl Catalog {
         let bundle = self
             .bundle(bundle_id)?
             .ok_or_else(|| StorageError::NotFound {
-                entity: "bundle",
+                entity: NotFoundEntity::Bundle,
                 id: bundle_id.to_owned(),
             })?;
         self.apply_forget_candidate(&bundle, ForgetScope::SingleTarget, &mut report)?;
@@ -2069,7 +2070,7 @@ impl Catalog {
         let conn = self.lock_conn()?;
         if fetch_bundle(&conn, &session.bundle_id)?.is_none() {
             return Err(StorageError::NotFound {
-                entity: "bundle",
+                entity: NotFoundEntity::Bundle,
                 id: session.bundle_id.clone(),
             });
         }
@@ -2145,7 +2146,7 @@ impl Catalog {
     ) -> Result<CatalogSaveJob, StorageError> {
         let conn = self.lock_conn()?;
         let mut record = fetch_save_job(&conn, job_id)?.ok_or_else(|| StorageError::NotFound {
-            entity: "save_job",
+            entity: NotFoundEntity::Job,
             id: job_id.to_owned(),
         })?;
         record.job.apply(event)?;

@@ -71,7 +71,7 @@ use arb_storage::ring::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::error::DaemonError;
+use crate::error::{DaemonError, NotFoundEntity};
 use crate::protocol::{
     AudioCaptureState, AudioCause, CaptureStatusView, SaveJobView, SaveMode, SaveOutcomeResponse,
 };
@@ -2276,7 +2276,10 @@ fn load_failed_retryable_job(
 ) -> Result<CatalogSaveJob, DaemonError> {
     let job = catalog
         .save_job(job_id)?
-        .ok_or_else(|| DaemonError::NotFound(format!("save job `{job_id}` not found")))?;
+        .ok_or_else(|| DaemonError::NotFound {
+            entity: NotFoundEntity::Job,
+            detail: format!("save job `{job_id}` not found"),
+        })?;
     if job.job.state != SaveJobState::FailedRetryable {
         return Err(DaemonError::Conflict(format!(
             "save job `{job_id}` is {:?}; only failed_retryable jobs can be retried or retargeted",
@@ -2378,6 +2381,7 @@ fn evidence_warnings(flags: WarningFlags) -> Vec<crate::protocol::WarningDetail>
     .map(|(_, code, message)| crate::protocol::WarningDetail {
         code: code.to_owned(),
         message: message.to_owned(),
+        details: None,
     })
     .collect()
 }
@@ -2544,6 +2548,7 @@ fn saved_evidence(
             evidence.set_warnings(vec![crate::protocol::WarningDetail {
                 code: "evidence_unavailable".into(),
                 message: format!("保存済み記録の集計に失敗しました: {e}"),
+                details: None,
             }]);
             (evidence, None)
         }
@@ -2572,7 +2577,10 @@ pub fn phase2_materialize(
     let now_utc = utc_now_iso8601();
     let job_record = catalog
         .save_job(job_id)?
-        .ok_or_else(|| DaemonError::NotFound(format!("save job `{job_id}` not found")))?;
+        .ok_or_else(|| DaemonError::NotFound {
+            entity: NotFoundEntity::Job,
+            detail: format!("save job `{job_id}` not found"),
+        })?;
 
     let job_record = match job_record.job.state {
         SaveJobState::Pinned => {
@@ -2592,6 +2600,11 @@ pub fn phase2_materialize(
     let dest_path = PathBuf::from(&job_record.job.destination_path);
     let params = match read_job_params(&plan.data_dir, job_id) {
         Ok(params) => params,
+        Err(err @ DaemonError::SaveFailed(_)) => {
+            // Leave pins and a discardable job for recovery while reporting the permanent failure.
+            catalog.mark_failed_retryable(job_id, &err.to_string(), &now_utc)?;
+            return Err(err);
+        }
         Err(err) => return fail_job(catalog, job_id, &err.to_string(), None, None),
     };
     let materialized = match materialize_from_chunks(plan, job_id, &dest_path, &params) {
@@ -4510,10 +4523,11 @@ fn write_job_params(
 
 fn read_job_params(data_dir: &Path, job_id: &str) -> Result<SaveJobMaterializeParams, DaemonError> {
     let path = job_params_path(data_dir, job_id);
-    let bytes = fs::read(&path).map_err(|_| {
-        DaemonError::NotFound(format!(
+    let bytes = fs::read(&path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => DaemonError::SaveFailed(format!(
             "materialization parameters missing for save job `{job_id}`"
-        ))
+        )),
+        _ => err.into(),
     })?;
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -5501,6 +5515,43 @@ mod tests {
         assert_eq!((frame.width, frame.height), (64, 64));
         let audio = arb_media::audio::Mp4AudioTrack::open(saved.join("audio.m4a")).unwrap();
         assert_eq!((audio.sample_rate_hz(), audio.channels()), (44_100, 1));
+    }
+
+    #[test]
+    fn missing_materialization_inputs_report_permanent_failure_and_preserve_pins() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("bundles");
+        let catalog = arb_storage::catalog::Catalog::open(tmp.path().join("cat"), &out).unwrap();
+        let mut cap = open_test_pipeline(&tmp);
+        cap.begin_session("A");
+        cap.ingest_event(heartbeat_at(100)).unwrap();
+        let (job, plan) = cap
+            .phase1_pin_save(
+                &catalog,
+                10,
+                &out,
+                SelectionPolicy::default(),
+                super::TailCompleteness::Complete,
+            )
+            .unwrap();
+        let id = &job.job.job_id;
+        super::remove_job_params(tmp.path(), id).unwrap();
+        let errors = [
+            super::phase2_materialize(&plan, &catalog, id).unwrap_err(),
+            cap.prepare_retarget(&catalog, id, &out).unwrap_err(),
+            cap.ring.read_chunk("missing-chunk").unwrap_err().into(),
+            plan.pin_journal.load("missing-journal").unwrap_err().into(),
+        ];
+        for error in errors {
+            let data = error.into_response(1.into()).error.unwrap().data.unwrap();
+            assert_eq!(data["error_code"], "SAVE_FAILED");
+            assert_eq!(data["retryable"], false);
+        }
+        assert!(plan.pin_journal.load(id).is_ok());
+        assert_eq!(
+            catalog.save_job(id).unwrap().unwrap().job.state,
+            arb_core::state::SaveJobState::FailedRetryable
+        );
     }
 
     #[test]

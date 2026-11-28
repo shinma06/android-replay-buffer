@@ -4,6 +4,7 @@ use arb_adb::adb::AdbError;
 use arb_adb::mock::CaptureSourceError;
 use arb_adb::wire::WireError;
 use arb_core::selection::SelectionError;
+pub use arb_core::state::NotFoundEntity;
 use arb_media::MediaError;
 use arb_os::OsError;
 use arb_storage::StorageError;
@@ -73,12 +74,31 @@ pub enum DaemonError {
     /// Atomic publication refused to replace an existing file.
     #[error("output file already exists: {0}")]
     OutputExists(std::path::PathBuf),
-    /// Screenshot target is absent or offline.
+    /// Capture target is absent or offline.
     #[error("対象の ADB 端末が接続されていません。")]
     DeviceNotFound(Option<String>),
     /// Requested entity was not found.
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("{detail}")]
+    NotFound {
+        /// Kind of resource requested by the caller.
+        entity: NotFoundEntity,
+        /// Diagnostic for the missing resource.
+        detail: String,
+    },
+    /// The requested index is outside the overview tap list.
+    #[error("tap_index {got} out of range (bundle has {overview_tap_count} overview taps)")]
+    TapIndexOutOfRange {
+        /// Rejected index.
+        got: usize,
+        /// Number of taps available in the overview.
+        overview_tap_count: usize,
+    },
+    /// A required packaged artifact is missing.
+    #[error("{0}")]
+    InstallationIncomplete(String),
+    /// Required materialization data is missing.
+    #[error("{0}")]
+    SaveFailed(String),
     /// Requested operation conflicts with current daemon state.
     #[error("conflict: {0}")]
     Conflict(String),
@@ -105,45 +125,60 @@ pub struct ClassifiedError {
     pub cause: Option<String>,
 }
 
+fn not_found_feedback(entity: NotFoundEntity) -> (&'static str, &'static str) {
+    match entity {
+        NotFoundEntity::Bundle => ("BUNDLE_NOT_FOUND", "指定されたバンドルが見つかりません。"),
+        NotFoundEntity::Job => ("JOB_NOT_FOUND", "指定された保存ジョブが見つかりません。"),
+        NotFoundEntity::Lease => ("LEASE_NOT_FOUND", "指定されたリースが見つかりません。"),
+        NotFoundEntity::Viewport => (
+            "VIEWPORT_NOT_FOUND",
+            "指定されたビューポートが見つかりません。",
+        ),
+    }
+}
+
 impl DaemonError {
     /// Classifies a failure once for all RPC consumers.
     #[must_use]
     pub fn classify(&self) -> ClassifiedError {
         use arb_core::state::{BundleLifecycleState, StateTransitionError};
-        let mut details = json!({});
-        let mut diagnostic = true;
         let (rpc_code, label, message) = match self {
-            Self::DeviceNotFound(serial) => {
-                details = json!({"serial":serial});
-                diagnostic = false;
-                (
-                    RPC_ERR_NOT_FOUND,
-                    Some("DEVICE_NOT_FOUND"),
-                    "対象の ADB 端末が接続されていません。",
-                )
-            }
-            Self::NoVideo(id) => {
-                details = json!({"bundle_id": id});
-                diagnostic = false;
-                (
-                    RPC_ERR_INVALID_PARAMS,
-                    Some("NO_VIDEO"),
-                    "このバンドルには映像トラックがありません。",
-                )
-            }
-            Self::OutputExists(path) => {
-                details = json!({"path":path, "reason":"already_exists"});
-                diagnostic = false;
-                (RPC_ERR_CONFLICT, None, "保存先に同名のファイルがあります。")
-            }
+            Self::DeviceNotFound(_) => (
+                RPC_ERR_NOT_FOUND,
+                Some("DEVICE_NOT_FOUND"),
+                "対象の ADB 端末が接続されていません。",
+            ),
+            Self::NoVideo(_) => (
+                RPC_ERR_INVALID_PARAMS,
+                Some("NO_VIDEO"),
+                "このバンドルには映像トラックがありません。",
+            ),
+            Self::OutputExists(_) => (RPC_ERR_CONFLICT, None, "保存先に同名のファイルがあります。"),
             Self::MethodNotFound(_) => (
                 RPC_ERR_METHOD_NOT_FOUND,
                 None,
                 "このデーモンは指定された操作に対応していません。",
             ),
-            Self::Storage(StorageError::NotFound { .. }) | Self::NotFound(_) => {
-                (RPC_ERR_NOT_FOUND, None, "指定された対象が見つかりません。")
+            Self::Storage(StorageError::NotFound { entity, .. })
+            | Self::NotFound { entity, .. } => {
+                let (label, message) = not_found_feedback(*entity);
+                (RPC_ERR_NOT_FOUND, Some(label), message)
             }
+            Self::TapIndexOutOfRange { .. } => (
+                RPC_ERR_INVALID_PARAMS,
+                None,
+                "指定されたタップ番号が範囲外です。",
+            ),
+            Self::InstallationIncomplete(_) => (
+                RPC_ERR_NOT_FOUND,
+                Some("INSTALLATION_INCOMPLETE"),
+                "端末での記録に必要な JAR が見つかりません。",
+            ),
+            Self::SaveFailed(_) | Self::Storage(StorageError::MissingSaveData(_)) => (
+                RPC_ERR_NOT_FOUND,
+                Some("SAVE_FAILED"),
+                "保存に必要な内部データが見つかりません。",
+            ),
             Self::InvalidParams(_)
             | Self::Selection(_)
             | Self::Media(
@@ -193,15 +228,34 @@ impl DaemonError {
                 "デーモンが操作を完了できませんでした。",
             ),
         };
+        let (details, cause) = self.diagnostics();
         ClassifiedError {
             code: label.unwrap_or_else(|| arb_os::rpc::error_label(rpc_code)),
             rpc_code,
             user_message: self.public_message(message),
             details,
-            cause: diagnostic
-                .then(|| self.public_cause())
-                .filter(|s| !s.is_empty()),
+            cause,
         }
+    }
+
+    fn diagnostics(&self) -> (Value, Option<String>) {
+        let details = match self {
+            Self::DeviceNotFound(serial) => return (json!({"serial": serial}), None),
+            Self::NoVideo(id) => return (json!({"bundle_id": id}), None),
+            Self::OutputExists(path) => {
+                return (json!({"path": path, "reason": "already_exists"}), None);
+            }
+            Self::TapIndexOutOfRange {
+                got,
+                overview_tap_count,
+            } => json!({
+                "field": "tap_index", "got": got, "overview_tap_count": overview_tap_count,
+                "allowed_max": overview_tap_count.checked_sub(1)
+            }),
+            _ => json!({}),
+        };
+        let cause = self.public_cause();
+        (details, (!cause.is_empty()).then_some(cause))
     }
 
     fn public_message(&self, message: &str) -> String {
@@ -261,7 +315,8 @@ impl DaemonError {
         if let Some(cause) = cause {
             details["cause"] = Value::String(cause);
         }
-        let (kind, hint, retryable) = arb_os::rpc::error_guidance(code);
+        let (kind, hint, retryable) =
+            arb_os::rpc::error_guidance_with_details(code, Some(&details));
         let mut response = crate::protocol::RpcResponse::err(id, rpc_code, user_message);
         if let Some(error) = &mut response.error {
             error.data = Some(
@@ -306,7 +361,29 @@ mod tests {
             serde_json::from_str::<bool>("?").unwrap_err().into(),
             io().into(),
             DaemonError::InvalidParams(reason.into()),
-            DaemonError::NotFound("bundle fixture".into()),
+            DaemonError::NotFound {
+                entity: NotFoundEntity::Bundle,
+                detail: reason.into(),
+            },
+            DaemonError::NotFound {
+                entity: NotFoundEntity::Job,
+                detail: reason.into(),
+            },
+            DaemonError::NotFound {
+                entity: NotFoundEntity::Lease,
+                detail: reason.into(),
+            },
+            DaemonError::NotFound {
+                entity: NotFoundEntity::Viewport,
+                detail: reason.into(),
+            },
+            DaemonError::TapIndexOutOfRange {
+                got: 3,
+                overview_tap_count: 2,
+            },
+            DaemonError::InstallationIncomplete(reason.into()),
+            DaemonError::SaveFailed(reason.into()),
+            StorageError::MissingSaveData(reason.into()).into(),
             DaemonError::Conflict(reason.into()),
             DaemonError::MethodNotFound(reason.into()),
             DaemonError::Internal(reason.into()),
@@ -314,7 +391,7 @@ mod tests {
             DaemonError::DeviceNotFound(Some("serial".into())),
             DaemonError::OutputExists("fixture.png".into()),
             StorageError::NotFound {
-                entity: "bundle",
+                entity: arb_core::state::NotFoundEntity::Bundle,
                 id: "fixture".into(),
             }
             .into(),

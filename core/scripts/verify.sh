@@ -26,7 +26,7 @@ cargo test --manifest-path "${CORE_DIR}/Cargo.toml" --workspace
 echo "==> [4/7] license check (GPL/AGPL-free guard)"
 python3 "${CORE_DIR}/scripts/check-licenses.py" --manifest-path "${CORE_DIR}/Cargo.toml"
 
-echo "==> [5/7] architecture structural guards (RS-1..RS-5)"
+echo "==> [5/7] architecture structural guards (RS-1..RS-6)"
 python3 "${CORE_DIR}/scripts/check-architecture.py"
 
 echo "==> [6/7] sara check --strict"

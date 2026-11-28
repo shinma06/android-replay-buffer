@@ -31,14 +31,14 @@ fn tool_registry_matches_known_tools_with_valid_schemas() {
     }
 }
 
-/// One `tools/list` frame stays below 90,000 bytes on every negotiated version (target 87,000).
+/// One `tools/list` frame stays below 87,000 bytes on every negotiated version.
 #[test]
 fn tools_list_frame_fits_the_budget_on_every_version() {
     use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
     for version in [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25] {
         let frame = super::rpc_ok(&json!(2), &json!({"tools":catalog::for_version(version)}));
         let bytes = frame.to_string().len() + 1;
-        assert!(bytes <= 87_000, "{version:?}: {bytes} bytes");
+        assert!(bytes < 87_000, "{version:?}: {bytes} bytes");
     }
 }
 
@@ -605,7 +605,7 @@ fn save_content_keeps_or_derives_warning_details_one_to_one() {
         "warning_codes": ["log_shortfall", "window_shortfall"],
         "warnings": ["ログが要求した保存時間に達していません", "要求した保存時間に達していない記録があります"],
         "warning_details": [
-            {"code": "log_shortfall", "message": "ログが要求した保存時間に達していません"},
+            {"code": "log_shortfall", "message": "ログが要求した保存時間に達していません", "details": {"log_coverage_ms": 500}},
             {"code": "window_shortfall", "message": "要求した保存時間に達していない記録があります"}
         ]
     });

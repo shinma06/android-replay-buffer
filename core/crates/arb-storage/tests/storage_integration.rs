@@ -1452,7 +1452,7 @@ fn storage_error_exposes_published_bundle_path_on_committed_parent_sync_failure(
         "CommittedParentSyncFailed must surface the published WORM bundle path"
     );
     let other = StorageError::NotFound {
-        entity: "bundle",
+        entity: arb_core::state::NotFoundEntity::Bundle,
         id: "missing".to_owned(),
     };
     assert!(

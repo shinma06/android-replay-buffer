@@ -528,6 +528,7 @@ data class SaveOutcomeResponse(
 data class WarningDetail(
     val code: String,
     val message: String,
+    val details: JsonObject? = null,
 )
 
 data class LogcatEvidence(

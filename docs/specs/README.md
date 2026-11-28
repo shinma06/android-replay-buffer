@@ -18,7 +18,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答（90,000 バイト未満）で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜5、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補の proptest、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答（87,000 バイト未満）で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -36,7 +36,7 @@
 | 書き出し形式・共有ファイル名 | 02・03・05・06 | Studio のエディタ／CLI／MCP → `export.trim` または `export.share_mp4` → 公開・登録。元の WORM、共有動画の場所、追加カタログ行数を確認。フレーム PNG は `save.screenshot` と保存先を共有し、既存ファイルを保護する | S2・S4、K13、G3、実 stdio スキーマ検査 |
 | Android API 下限・音声方式 | 03・05・07 | 方針表 → arb-core → arb-adb／scrcpy 引数 → arbd の実状態 → Studio／CLI／MCP。API 32・33、取得失敗、明示互換時の消音を比較 | K11、G8、S3、KON-6、端末スモーク |
 | 軸校正・ジェスチャー・焼き込み | 02・03・05・07 | device-agent → touch_calibration → bundle_io → 概要／クロップ・Studio・共有動画。旧記録の読取、軸端、静止フレーム内の操作を照合 | K6・K7・K13、G3、ストレージ読取・メディア統合試験 |
-| RPC・MCP の引数・エラー・表示名 | 01・03・04・05・06 | ディスパッチ → CLI／MCP 契約表・4 版 → Kotlin IPC・表示。新旧版と未知引数、失敗後の接続、表示テキストを照合 | RS-5、KON-5〜7、共有表、実 stdio、ArbBrandingGuardTest |
+| RPC・MCP の引数・エラー・表示名 | 01・03・04・05・06 | ディスパッチ → CLI／MCP 契約表・4 版 → Kotlin IPC・表示。新旧版と未知引数、未検出の対象別分類、タップ範囲外の件数・上限・案内、失敗後の接続を照合 | RS-5・RS-6、KON-5〜7、共有表、実 stdio、ArbBrandingGuardTest |
 | MCP の応答形・既定値・時刻表記 | 03・06 | `mcp-tools-table.json` → `catalog.rs`・`version.rs` → `mcp/project` → 4 版の `tools/list` と実応答。デーモンの追加項目は IDE・CLI の既存 DTO を壊さないか、概要と保存して調査のエラー集約・推薦が一致するか、`tools/list` の大きさを照合 | 実 stdio（4 版）、スキーマ検査、投影の単体・proptest、`tools_list_frame_fits_the_budget_on_every_version` |
 
 <a id="evidence"></a>
