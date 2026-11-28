@@ -21,6 +21,7 @@ on:
       - 'core/crates/arb-media/src/mux_av.rs'
       - 'core/crates/arb-media/src/timeline.rs'
       - 'core/crates/arb-media/src/playback.rs'
+      - 'core/crates/arb-media/src/jpeg.rs'
       - 'core/crates/arb-adb/src/wire.rs'
       - 'core/crates/arbd/src/touch_calibration.rs'
       - 'core/crates/arb-core/src/**'
@@ -47,7 +48,7 @@ jobs:
           - crate: arb-adb
             group: K9-wire
           - crate: arb-media
-            group: K9-mp4
+            group: K9-mp4-K23
           - crate: arbd
             group: K6-axis
     name: kani (${{ matrix.crate }} ${{ matrix.group }})

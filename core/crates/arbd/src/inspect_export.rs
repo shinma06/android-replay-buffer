@@ -37,9 +37,10 @@ use crate::media_engine::{
 };
 use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
-    ExportTrimParams, InspectFramesMode, MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse,
-    MediaInspectFramesParams, MediaInspectFramesResponse, NoiseCandidate, OverviewTapItem,
-    TapCropMeta, TimelineOverviewResponse, TimelineQueryParams, WarningDetail,
+    ExportTrimParams, InspectFramesMode, InspectImageFormat, InspectJpegTile,
+    MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse, MediaInspectFramesParams,
+    MediaInspectFramesResponse, NoiseCandidate, OverviewTapItem, TapCropMeta,
+    TimelineOverviewResponse, TimelineQueryParams, WarningDetail,
 };
 use crate::time_util::next_id;
 
@@ -942,6 +943,10 @@ pub fn inspect_frames(
         Some(&png_path),
     );
 
+    let jpeg = match params.image_format {
+        InspectImageFormat::Png => None,
+        InspectImageFormat::Jpeg => Some(jpeg_tile(&png_bytes)?),
+    };
     let png_base64 = if png_bytes.len() <= MAX_INLINE_PNG_BYTES {
         Some(base64_encode(&png_bytes))
     } else {
@@ -964,6 +969,24 @@ pub fn inspect_frames(
         png_path,
         png_base64,
         tap_crop,
+        jpeg,
+    })
+}
+
+/// The lightweight JPEG copy of a rendered PNG (#586-G): quality 80, longer edge at most
+/// 1024 px with the same aspect ratio (K23).
+fn jpeg_tile(png: &[u8]) -> Result<InspectJpegTile, DaemonError> {
+    let tile = arb_media::png_to_jpeg_tile(
+        png,
+        arb_media::DEFAULT_JPEG_MAX_EDGE,
+        arb_media::DEFAULT_JPEG_QUALITY,
+    )?;
+    Ok(InspectJpegTile {
+        width: tile.width,
+        height: tile.height,
+        quality: arb_media::DEFAULT_JPEG_QUALITY,
+        bytes_len: tile.bytes.len(),
+        base64: base64_encode(&tile.bytes),
     })
 }
 

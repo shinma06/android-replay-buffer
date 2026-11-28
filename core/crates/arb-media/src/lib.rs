@@ -11,6 +11,8 @@
 //!   frame selector (`arb_inspect_frames`).
 //! - [`codec`]: Trait-abstracted [`codec::VideoCodecBackend`] with universal [`codec::OpenH264Backend`]
 //!   (`BSD-2-Clause`) and macOS hardware `codec::VideoToolboxBackend` (direct C FFI, zero crates).
+//! - [`jpeg`]: In-house baseline JPEG encoder and aspect-preserving tile sizing (K23) for
+//!   lightweight `arb_inspect_frames` images.
 //! - [`trim`]: Frame-accurate integer `frame_index` trim and PNG frame export with `tEXt` metadata.
 //! - [`playback`]: External [`playback::FilmstripCache`], bounded [`playback::GopLruCache`],
 //!   latest-wins [`playback::ScrubController`], and [`playback::PresentationClock`].
@@ -23,6 +25,7 @@ pub mod burn_in;
 pub mod codec;
 pub mod contact_sheet;
 pub mod error;
+pub mod jpeg;
 pub mod mp4;
 pub mod mux_av;
 pub use output::copy_new;
@@ -51,6 +54,10 @@ pub use crate::contact_sheet::{
     select_contact_sheet_indices, tap_crop_rect,
 };
 pub use crate::error::MediaError;
+pub use crate::jpeg::{
+    DEFAULT_JPEG_MAX_EDGE, DEFAULT_JPEG_QUALITY, JpegTile, encode_jpeg_rgb, fit_within,
+    png_to_jpeg_tile, resize_rgb_area,
+};
 pub use crate::mux_av::{AvMuxReport, mux_share_mp4};
 
 #[cfg(test)]

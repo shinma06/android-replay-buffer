@@ -56,7 +56,17 @@ const COMPACT_REQUIRED: [&str; 7] = [
 /// Projects a `bundle.query_logs` page into at most [`MAX_BODY_BYTES`]. Rows and their order are
 /// unchanged; rows beyond the budget are left to the next page.
 pub(in crate::mcp) fn project(page: Value, fields: Fields, zone: Zone) -> Value {
-    fit_byte_budget(shape(page, fields, zone), MAX_BODY_BYTES)
+    project_within(page, fields, zone, MAX_BODY_BYTES)
+}
+
+/// [`project`] with a smaller body budget, for a caller that adds its own fields afterwards.
+pub(in crate::mcp) fn project_within(
+    page: Value,
+    fields: Fields,
+    zone: Zone,
+    budget: usize,
+) -> Value {
+    fit_byte_budget(shape(page, fields, zone), budget)
 }
 
 fn shape(mut page: Value, fields: Fields, zone: Zone) -> Value {

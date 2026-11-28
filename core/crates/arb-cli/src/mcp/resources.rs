@@ -11,9 +11,81 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("manifest", "保存時のマニフェスト"),
     ("screens", "画面遷移"),
     ("crashes", "クラッシュ"),
-    ("logs", "ログの先頭100件"),
+    (
+        LOGS_TEMPLATE,
+        "ログ（arb_query_logs と同じ compact 行・既定 100 件・48 KB まで）",
+    ),
     ("frame/{frame_index}", "指定フレームの PNG"),
 ];
+
+/// RFC 6570 form-style query expansion: with no variables it is the plain `logs` URI (#586-D).
+const LOGS_TEMPLATE: &str = "logs{?min_level,package,cursor,limit}";
+/// Rows per logs resource page when `limit` is omitted (the `arb_query_logs` default).
+const LOGS_DEFAULT_LIMIT: u64 = 100;
+
+/// Validated `arb://bundles/{id}/logs` query variables as `bundle.query_logs` parameters.
+///
+/// Every variable may appear once: `min_level` (`V`/`D`/`I`/`W`/`E`/`F`), `package` (non-blank),
+/// `cursor` (a previous `next_cursor`) and `limit` (`1..=500`). Anything else is `-32602`.
+fn log_query(query: Option<&str>) -> Result<serde_json::Map<String, Value>, Failure> {
+    use super::project::logs::MAX_PAGE_ROWS;
+    let mut params = serde_json::Map::new();
+    let invalid = |field: &str, got: &str, cause: &str| {
+        let mut failure = Failure::invalid(format!("logs リソースの {field} が不正です: {cause}"));
+        failure.detail = Some(json!({"details": {"field": field, "got": got}}));
+        failure.hint = Some(format!(
+            "arb://bundles/{{bundle_id}}/{LOGS_TEMPLATE} の形で、min_level は V/D/I/W/E/F、limit は 1〜{MAX_PAGE_ROWS}、cursor は前回の next_cursor を指定してください。"
+        ));
+        failure
+    };
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        let parsed = match key.as_ref() {
+            "min_level" if matches!(value.as_ref(), "V" | "D" | "I" | "W" | "E" | "F") => {
+                json!(value)
+            }
+            "package" if !value.trim().is_empty() => json!(value.trim()),
+            "cursor" if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+                json!(value)
+            }
+            "limit" => match value.parse::<u64>() {
+                Ok(n) if (1..=MAX_PAGE_ROWS).contains(&n) => json!(n),
+                _ => {
+                    return Err(invalid(
+                        "limit",
+                        &value,
+                        &format!("1〜{MAX_PAGE_ROWS} の整数"),
+                    ));
+                }
+            },
+            "min_level" | "package" | "cursor" => {
+                return Err(invalid(&key, &value, "値の形式"));
+            }
+            _ => return Err(invalid(&key, &value, "未知の変数")),
+        };
+        if params.insert(key.clone().into_owned(), parsed).is_some() {
+            return Err(invalid(&key, &value, "同じ変数を 2 回指定"));
+        }
+    }
+    Ok(params)
+}
+
+/// The same resource URI with `cursor` set to `next`, the other variables kept in order.
+fn next_logs_uri(base: &str, params: &serde_json::Map<String, Value>, next: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for key in ["min_level", "package", "limit"] {
+        match params.get(key) {
+            Some(Value::String(v)) => {
+                query.append_pair(key, v);
+            }
+            Some(v @ Value::Number(_)) => {
+                query.append_pair(key, &v.to_string());
+            }
+            _ => {}
+        }
+    }
+    query.append_pair("cursor", next);
+    format!("{base}?{}", query.finish())
+}
 
 /// Each listed tool's complete `outputSchema` for the negotiated version, read on demand.
 const SCHEMA_TEMPLATE: &str = "arb://schemas/{tool}";
@@ -272,6 +344,7 @@ impl McpServer {
                 let path = r["uri"]
                     .as_str()
                     .and_then(|s| s.strip_prefix("arb://bundles/{bundle_id}/"))
+                    .map(|s| if s == "logs" { LOGS_TEMPLATE } else { s })
                     .filter(|s| TEMPLATES.iter().any(|(key, _)| key == s))
                     .ok_or("未知の URI テンプレートです")?;
                 arg == "bundle_id" || (arg == "frame_index" && path.starts_with("frame/"))
@@ -347,6 +420,34 @@ impl McpServer {
         Ok(json!({"contents":[{"uri":uri,"mimeType":SCHEMA_MIME,"text":schema.to_string()}]}))
     }
 
+    /// `arb://bundles/{id}/logs{?min_level,package,cursor,limit}`: the `arb_query_logs` page for
+    /// the same variables (main timeline, compact rows, 100 rows and 48 KB by default). A page
+    /// with more rows names the next one in `next_uri`.
+    fn read_logs(&mut self, uri: &str, id: &str, query: Option<&str>) -> Result<Value, Failure> {
+        let variables = log_query(query)?;
+        let mut params = variables.clone();
+        params.insert("bundle_id_or_path".into(), json!(id));
+        params.entry("limit").or_insert(json!(LOGS_DEFAULT_LIMIT));
+        params.insert("bucket".into(), json!("main"));
+        let page = self
+            .call_daemon("bundle.query_logs", &Value::Object(params))
+            .map_err(|e| resource_error(e, uri))?;
+        // `next_uri` is the URI with a 20-digit cursor; keep it inside the same 48 KB body.
+        let reserve = r#","next_uri":"""#.len() + uri.len() * 3 + "&cursor=".len() + 20;
+        let mut body = super::project::logs::project_within(
+            page,
+            super::project::logs::Fields::Compact,
+            super::project::time::Zone::UTC,
+            super::project::logs::MAX_BODY_BYTES - reserve.min(4096),
+        );
+        let next = body["next_cursor"]
+            .as_str()
+            .filter(|_| body["has_more"] == true)
+            .map(|next| next_logs_uri(uri.split('?').next().unwrap_or(uri), &variables, next));
+        body["next_uri"] = json!(next);
+        Ok(json!({"contents":[{"uri":uri,"mimeType":"application/json","text":body.to_string()}]}))
+    }
+
     fn read_resource(&mut self, uri: &str) -> Result<Value, Failure> {
         if let Some(name) = uri.strip_prefix(SCHEMA_PREFIX) {
             return self.read_schema(uri, name);
@@ -381,17 +482,23 @@ impl McpServer {
                     .strip_prefix("arb://bundles/")
                     .and_then(|s| s.split_once('/'))
                     .ok_or("不正なリソース URI です")?;
+                let (kind, query) = match kind.split_once('?') {
+                    Some((kind, query)) => (kind, Some(query)),
+                    None => (kind, None),
+                };
+                if query.is_some() && kind != "logs" {
+                    return Err(Failure::invalid(format!(
+                        "クエリを指定できるのは logs リソースだけです: {uri}"
+                    )));
+                }
                 let id = decode_segment(id)?;
                 let id = self.external_bundles.get(&id).cloned().unwrap_or(id);
-                let mut target = json!({"bundle_id_or_path":id});
+                let target = json!({"bundle_id_or_path":id});
                 let method = match kind {
                     "manifest" => "bundle.manifest",
                     "screens" => "timeline.screens",
                     "crashes" => "timeline.crashes",
-                    "logs" => {
-                        target["limit"] = json!(100);
-                        "bundle.query_logs"
-                    }
+                    "logs" => return self.read_logs(uri, &id, query),
                     _ => {
                         let digits = kind
                             .strip_prefix("frame/")
@@ -461,5 +568,60 @@ fn resource_error(e: Failure, uri: &str) -> Failure {
         )
     } else {
         e
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LOGS_TEMPLATE, log_query, next_logs_uri};
+    use serde_json::json;
+
+    #[test]
+    fn logs_query_variables_become_query_logs_parameters() {
+        assert_eq!(log_query(None).unwrap(), serde_json::Map::new());
+        assert_eq!(log_query(Some("")).unwrap(), serde_json::Map::new());
+        let params = log_query(Some(
+            "min_level=E&package=+com.example.app+&cursor=41&limit=500",
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::Value::Object(params.clone()),
+            json!({"min_level":"E","package":"com.example.app","cursor":"41","limit":500})
+        );
+        assert_eq!(
+            next_logs_uri("arb://bundles/b1/logs", &params, "99"),
+            "arb://bundles/b1/logs?min_level=E&package=com.example.app&limit=500&cursor=99"
+        );
+        // Percent-encoded package names decode like any form value.
+        assert_eq!(
+            log_query(Some("package=com.example%2Eapp")).unwrap()["package"],
+            "com.example.app"
+        );
+    }
+
+    #[test]
+    fn invalid_logs_query_variables_are_rejected_with_the_field() {
+        for (query, field) in [
+            ("limit=0", "limit"),
+            ("limit=501", "limit"),
+            ("limit=ten", "limit"),
+            ("limit=1&limit=2", "limit"),
+            ("min_level=e", "min_level"),
+            ("min_level=ERROR", "min_level"),
+            ("package=%20", "package"),
+            ("cursor=abc", "cursor"),
+            ("cursor=", "cursor"),
+            ("level=E", "level"),
+            ("bucket=all", "bucket"),
+        ] {
+            let failure = log_query(Some(query)).unwrap_err();
+            assert_eq!(failure.rpc_code, -32602, "{query}");
+            assert_eq!(
+                failure.detail.unwrap()["details"]["field"],
+                field,
+                "{query}"
+            );
+            assert!(failure.hint.unwrap().contains(LOGS_TEMPLATE), "{query}");
+        }
     }
 }

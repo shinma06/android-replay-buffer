@@ -3,7 +3,7 @@ use crate::mcp::{
     args::require_bundle_target,
     image_block,
     project::{self, logs::Fields, time::Zone},
-    resources, take_png,
+    resources, take_png, typed_image_block,
 };
 use serde_json::{Map, Value, json};
 impl McpServer {
@@ -47,7 +47,9 @@ impl McpServer {
         )))
     }
 
-    /// Metadata comes first and is never replaced; `include_images` only adds the rendered PNG.
+    /// Metadata comes first and is never replaced; `include_images` only adds the rendered image:
+    /// a JPEG tile by default (quality 80, longer edge at most 1024 px) or the lossless PNG with
+    /// `image_format: "png"` (#586-G). The cached PNG and `png_path` are the same either way.
     pub(in crate::mcp) fn tool_inspect_frames(
         &mut self,
         args: &Map<String, Value>,
@@ -56,6 +58,10 @@ impl McpServer {
         let mut params = args.clone();
         params.insert("bundle_id".to_owned(), json!(bundle_id));
         let inline = params.remove("include_images") == Some(Value::Bool(true));
+        let format = match params.remove("image_format") {
+            Some(Value::String(f)) if f == "png" => ImageFormat::Png,
+            _ => ImageFormat::Jpeg,
+        };
         params.insert("metadata_only".into(), json!(true));
         let meta = self.call_daemon("media.inspect_frames", &Value::Object(params.clone()))?;
         if !meta["frames"].is_array() {
@@ -75,10 +81,30 @@ impl McpServer {
         let mut body = project::inspect::frames(meta);
         let image = if inline {
             params.insert("metadata_only".into(), json!(false));
+            if format == ImageFormat::Jpeg {
+                params.insert("image_format".into(), json!("jpeg"));
+            }
             let mut rendered = self.call_daemon("media.inspect_frames", &Value::Object(params))?;
-            let png = take_png(&mut rendered)?;
             project::inspect::attach_render(&mut body, &rendered);
-            Some(image_block(&png))
+            Some(match (format, rendered["jpeg"].take()) {
+                (ImageFormat::Jpeg, tile @ Value::Object(_)) if tile["base64"].is_string() => {
+                    project::inspect::attach_image(&mut body, "jpeg", &tile);
+                    typed_image_block(tile["base64"].as_str().unwrap_or_default(), "image/jpeg")
+                }
+                (requested, _) => {
+                    let png = take_png(&mut rendered)?;
+                    let size = json!({
+                        "bytes_len": rendered["png_bytes_len"],
+                        "width": rendered["width"],
+                        "height": rendered["height"],
+                    });
+                    project::inspect::attach_image(&mut body, "png", &size);
+                    if requested == ImageFormat::Jpeg {
+                        project::inspect::warn_jpeg_unavailable(&mut body);
+                    }
+                    image_block(&png)
+                }
+            })
         } else {
             None
         };
@@ -88,4 +114,11 @@ impl McpServer {
             None => output,
         })
     }
+}
+
+/// The inline image encoding `arb_inspect_frames` was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageFormat {
+    Jpeg,
+    Png,
 }

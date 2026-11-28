@@ -8,10 +8,12 @@
 //!   with length-bounded NDJSON framing,
 //! - [`parent_watch`]: parent-bound lifecycle (exit when the parent closes our stdin pipe),
 //! - [`shm`]: triple-buffered shared-memory frame ring for high-FPS video delivery,
-//! - [`paths`]: standard OS data, cache, and runtime directory resolution.
+//! - [`paths`]: standard OS data, cache, and runtime directory resolution,
+//! - [`display`]: the display text of a host path (Windows extended-length prefix removed).
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 pub mod clock;
+pub mod display;
 pub mod error;
 pub mod fs;
 pub mod ipc;
@@ -22,6 +24,7 @@ pub mod rpc;
 pub mod shm;
 pub mod signal;
 
+pub use crate::display::{display_path, display_path_str};
 pub use crate::error::OsError;
 
 /// Returns the crate identifier alongside the underlying domain schema version.

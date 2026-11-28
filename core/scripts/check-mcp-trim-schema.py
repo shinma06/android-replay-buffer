@@ -149,10 +149,49 @@ def check_version(cli, flags, fixture, version, rows):
             assert copied_share.is_file() and Path(body["output_path"]).is_dir()
             assert "default_export_dir" in body["info_codes"]
             assert not inputs.is_valid({"bundle_id": str(fixture), "in_time_ns": 1})
+            check_payloads(call, request, fixture, outputs_by_tool, version)
             print(f"{version}: 21 tools, 21 inputSchema + 21 outputSchema (arb://schemas), "
                   f"silent-success rows and real exports, tools/list {size} bytes")
         finally:
             proc.stdin.close()
+
+
+def check_payloads(call, request, fixture, outputs, version):
+    """#586-D/E/G on the real stdio: the logs resource and its query template, list paging, and
+    inline JPEG tiles versus the lossless PNG. Prints the measured body sizes."""
+    compact = lambda value: len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+    listed, _ = call("tools/call", {"name": "arb_list_bundles", "arguments": {"limit": 1}})
+    body = json.loads(listed["content"][0]["text"])
+    Draft202012Validator(outputs["arb_list_bundles"], registry=Registry()).validate(body)
+    assert {"bundles", "total_count", "has_more", "next_cursor"} <= set(body), body
+    assert all("created_utc" not in row for row in body["bundles"])
+    images = {}
+    for image_format in ("jpeg", "png"):
+        args = {"bundle_id": str(fixture), "mode": "single", "frame_index": 0,
+                "include_images": True, "image_format": image_format}
+        result, _ = call("tools/call", {"name": "arb_inspect_frames", "arguments": args})
+        assert result["isError"] is False, result
+        body = json.loads(result["content"][0]["text"])
+        Draft202012Validator(outputs["arb_inspect_frames"], registry=Registry()).validate(body)
+        block = next(b for b in result["content"] if b["type"] == "image")
+        assert block["mimeType"] == f"image/{image_format}" and body["image_format"] == image_format
+        assert max(body["image_width"], body["image_height"]) <= 1024
+        images[image_format] = len(block["data"])
+    resource = next(iter(json.loads(call("resources/read", {"uri": "arb://bundles"})[0]["contents"][0]["text"])["bundles"]), None)
+    logs_bytes = None
+    if resource is not None:
+        uri = f"arb://bundles/{resource['bundle_id']}/logs"
+        text = call("resources/read", {"uri": uri})[0]["contents"][0]["text"]
+        page = json.loads(text)
+        assert page["fields"] == "compact" and len(text.encode()) <= 49_152
+        logs_bytes = len(text.encode())
+        limited = json.loads(call("resources/read", {"uri": f"{uri}?limit=1"})[0]["contents"][0]["text"])
+        assert len(limited["logs"]) <= 1
+        for query in ("limit=0", "limit=501", "min_level=x", "foo=1"):
+            response, _ = request("resources/read", {"uri": f"{uri}?{query}"})
+            assert response["error"]["code"] == -32602, response
+    print(f"{version} inspect single image base64: jpeg={images['jpeg']} B, png={images['png']} B; "
+          f"logs resource={logs_bytes} B; list_bundles(limit=1)={compact(body)} B")
 
 
 def main():

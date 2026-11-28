@@ -604,7 +604,8 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
         "overview error highlight"
     );
 
-    // 8. `tools/call` -> `arb_inspect_frames` (`contact_sheet` -> MCP native `image/png`!)
+    // 8. `tools/call` -> `arb_inspect_frames` (`contact_sheet` -> lossless `image/png` on request;
+    //    the default inline image is a JPEG tile, #586-G)
     let sheet_resp = send_mcp_request(
         &mut stdin,
         &mut stdout,
@@ -616,7 +617,7 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
                 "name": "arb_inspect_frames",
                 "arguments": {
                     "bundle_id": bundle_id,
-                    "mode": "contact_sheet", "include_images":true,
+                    "mode": "contact_sheet", "include_images":true, "image_format":"png",
                     "max_tiles": 4,
                     "include_tap_marker": true
                 }

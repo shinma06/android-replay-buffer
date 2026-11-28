@@ -15,6 +15,7 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 | SQLite（`rusqlite` / `libsqlite3-sys` の bundled ビルド） | rusqlite 0.35 | SQLite 本体はパブリックドメイン、`rusqlite` は MIT | 保存バンドル・カタログのメタデータ。 |
 | `serde_path_to_error` | 0.1.x | MIT OR Apache-2.0 | RPC 引数のデコードエラーにフィールド名を付与。 |
 | regex-lite | 0.1.x | MIT OR Apache-2.0 | MCP 入力スキーマの文字列パターン検証。 |
+| `png` | 0.17.x | MIT OR Apache-2.0 | フレーム PNG の符号化と、JPEG タイル作成時の PNG の読み込み。 |
 | Gson | 2.14.0 | Apache-2.0 | IDE プラグイン（`client-core`）の JSON 処理。 |
 | Error Prone Annotations（Gson の推移的依存） | 2.48.0 | Apache-2.0 | IDE プラグイン ZIP の `lib/` に同梱される注釈のみのライブラリ。 |
 
@@ -27,7 +28,10 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 | Konsist（`com.lemonappdev:konsist`） | 0.17.3 | Apache-2.0 | `ide-plugin` の `testImplementation`。アーキテクチャ規則 KON-1..5。 |
 | Stateright | 0.31 | MIT | `arbd` の `dev-dependencies`。状態モデル S1–S3。 |
 | proptest / tempfile | 1.x / 3.x | MIT OR Apache-2.0 | Rust の `dev-dependencies`。プロパティテスト G1–G7。 |
+| `jpeg-decoder` | 0.3.2 | MIT OR Apache-2.0 | `arb-media` の `dev-dependencies`。自前 JPEG エンコーダの出力を独立した実装で復号し、寸法と画質（PSNR）を確かめる。 |
 | Kani / Miri | Kani 0.68.0 / nightly | MIT OR Apache-2.0 | CI ツール（`.github/workflows/pdd-kani.yml`）。依存としては組み込みません。 |
+
+`arb_inspect_frames` の JPEG タイル（#586-G）は `arb-media/src/jpeg.rs` の自前実装（本体と同じ `MIT OR Apache-2.0`）です。ITU-T T.81 の規格表（附属書 K の量子化表・ハフマン表）と浮動小数点の DCT だけで構成し、第三者のコードを含みません。候補だった `jpeg-encoder` クレートは 0.6 以降 `(MIT OR Apache-2.0) AND IJG` を宣言し、DCT 部分が IJG（libjpeg）由来であるため採用していません。
 
 OpenH264 について: Cisco 配布のバイナリに付く特許ライセンス（AVC/H.264 特許プール費用の Cisco 負担）は、Cisco が配布したバイナリにのみ適用されます。ARB はソースからビルドして静的リンクするため、H.264 に関する特許上の扱いは利用者・配布者が各自確認してください。
 
@@ -61,9 +65,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Rust 依存クレート
 
-`core/Cargo.lock` に固定した Rust 依存（ワークスペースの本体クレートを含む 353 パッケージ）は、いずれも MIT、Apache-2.0、BSD-2-Clause、BSD-3-Clause、Zlib、Unicode-3.0、Unlicense、0BSD などの許容ライセンスです。ライセンスは `cargo metadata` から取得し、`core/scripts/check-licenses.py`（`core/scripts/verify.sh` の第 4 ゲート、CI の `test` / `os-parity`）で SPDX 式を評価しています。
+`core/Cargo.lock` に固定した Rust 依存（ワークスペースの本体クレートを含む 362 パッケージ）は、いずれも MIT、Apache-2.0、BSD-2-Clause、BSD-3-Clause、Zlib、Unicode-3.0、Unlicense、0BSD などの許容ライセンスです。ライセンスは `cargo metadata` から取得し、`core/scripts/check-licenses.py`（`core/scripts/verify.sh` の第 4 ゲート、CI の `test` / `os-parity`）で SPDX 式を評価しています。
 
-- 検査結果: `license-check: OK (353 packages checked, 0 GPL/AGPL violations)`
+- 検査結果: `license-check: OK (362 packages checked, 0 GPL/AGPL violations)`
 - 複数のライセンスを選べる依存は、許容ライセンスの選択肢で利用します。たとえば `r-efi 6.0.0` は `MIT OR Apache-2.0 OR LGPL-2.1-or-later` の式で、MIT を選択しています。LGPL の選択肢は使っていません。
 - 検査は GPL / AGPL / LGPL をいずれも拒否し、許容ライセンスで満たせない依存があると失敗します。
 

@@ -17,6 +17,7 @@ sha2 = "0.10"
 thiserror = "2"
 
 [dev-dependencies]
+jpeg-decoder = { version = "0.3", default-features = false }
 proptest = "1"
 tempfile = "3"
 

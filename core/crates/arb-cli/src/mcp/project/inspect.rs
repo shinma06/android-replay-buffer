@@ -35,7 +35,18 @@ pub(in crate::mcp) fn frames(mut meta: Value) -> Value {
             tap.entry("y_display").or_insert(Value::Null);
         }
     }
-    fill_null(&mut meta, &["png_path", "png_bytes_len", "tap_crop"]);
+    fill_null(
+        &mut meta,
+        &[
+            "png_path",
+            "png_bytes_len",
+            "image_format",
+            "image_bytes_len",
+            "image_width",
+            "image_height",
+            "tap_crop",
+        ],
+    );
     meta["screens"] = Value::Array(screens);
     screen_offsets(&mut meta["screens"]);
     meta
@@ -47,6 +58,30 @@ pub(in crate::mcp) fn attach_render(body: &mut Value, rendered: &Value) {
         if let Some(value) = rendered.get(key).filter(|v| !v.is_null()) {
             body[key] = value.clone();
         }
+    }
+}
+
+/// Records the attached image: its format, encoded size and pixel size.
+pub(in crate::mcp) fn attach_image(body: &mut Value, format: &str, size: &Value) {
+    body["image_format"] = json!(format);
+    for (key, from) in [
+        ("image_bytes_len", "bytes_len"),
+        ("image_width", "width"),
+        ("image_height", "height"),
+    ] {
+        body[key] = size.get(from).cloned().unwrap_or(Value::Null);
+    }
+}
+
+/// An arbd without JPEG tiles returned only the PNG; say so instead of switching silently.
+pub(in crate::mcp) fn warn_jpeg_unavailable(body: &mut Value) {
+    let warning = json!({
+        "code": "jpeg_unavailable",
+        "message": "接続中の arbd は JPEG タイルに未対応のため PNG を返しました。arbd を更新してください。",
+    });
+    match body.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(warnings) => warnings.push(warning),
+        None => body["warnings"] = json!([warning]),
     }
 }
 
@@ -103,5 +138,38 @@ mod tests {
         ] {
             assert_eq!(body[key], before[key], "{key}");
         }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::{attach_image, frames, warn_jpeg_unavailable};
+    use serde_json::json;
+
+    #[test]
+    fn image_facts_are_null_until_an_image_is_attached() {
+        let mut body = frames(json!({"bundle_id":"b","frames":[],"warnings":[]}));
+        for key in [
+            "image_format",
+            "image_bytes_len",
+            "image_width",
+            "image_height",
+        ] {
+            assert_eq!(body[key], json!(null), "{key}");
+        }
+        attach_image(
+            &mut body,
+            "jpeg",
+            &json!({"bytes_len":10,"width":461,"height":1024,"base64":"x"}),
+        );
+        assert_eq!(body["image_format"], "jpeg");
+        assert_eq!(body["image_bytes_len"], 10);
+        assert_eq!(
+            (body["image_width"].clone(), body["image_height"].clone()),
+            (json!(461), json!(1024))
+        );
+        assert!(body.get("base64").is_none());
+        warn_jpeg_unavailable(&mut body);
+        assert_eq!(body["warnings"][0]["code"], "jpeg_unavailable");
     }
 }
