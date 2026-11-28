@@ -1686,14 +1686,7 @@ impl<'a> LogCoordinates<'a> {
             .zip(video)
             .filter(|_| input.display_id.unwrap_or(0) == 0)
             .and_then(|(((x, y), (dw, dh)), (w, h))| {
-                arb_core::gesture::map_touch_to_frame(
-                    f64::from(x),
-                    f64::from(y),
-                    Some(dw),
-                    Some(dh),
-                    w,
-                    h,
-                )
+                arb_core::gesture::map_touch_to_frame(x, y, Some(dw), Some(dh), w, h)
             });
         let (x_video, y_video) = point.unzip();
         crate::protocol::OverviewInjectedInput {

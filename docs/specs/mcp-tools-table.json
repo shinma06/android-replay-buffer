@@ -1213,17 +1213,17 @@
         "frame_index_hint": {"$ref": "#/$defs/UIntOrNull"},
         "x_video": {"type": ["number", "null"]},
         "y_video": {"type": ["number", "null"]},
-        "x_display": {"type": "integer"},
-        "y_display": {"type": "integer"},
-        "end_x_display": {"type": "integer"},
-        "end_y_display": {"type": "integer"},
+        "x_display": {"type": "number"},
+        "y_display": {"type": "number"},
+        "end_x_display": {"type": "number"},
+        "end_y_display": {"type": "number"},
         "duration_ms": {"$ref": "#/$defs/UIntOrNull"},
         "keycodes": {"$ref": "#/$defs/Strings"},
         "text": {"type": "string"},
         "action": {"type": "string"},
         "longpress": {"type": "boolean"},
-        "dx": {"type": "integer"},
-        "dy": {"type": "integer"}
+        "dx": {"type": "number"},
+        "dy": {"type": "number"}
       },
       "required": ["source", "injected", "kind", "time_certainty", "source_log_seq", "latency_bound_ms", "display_id", "boot_id", "boottime_ns", "offset_ms", "frame_index_hint", "x_video", "y_video"],
       "additionalProperties": false

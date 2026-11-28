@@ -2,6 +2,7 @@
 use crate::bundle::{LogRecord, RecordBucket};
 use crate::time::TimeAlignment;
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 
 /// Origin of an observed input.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -30,6 +31,8 @@ pub enum InjectedTimeCertainty {
 }
 
 /// Parsed arguments. Only coordinate-bearing variants carry display pixels.
+///
+/// Coordinates keep Android's `Float.parseFloat` domain; integral arguments stay integers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[non_exhaustive]
@@ -37,9 +40,9 @@ pub enum InputCommand {
     /// Single touch.
     Tap {
         /// Horizontal display pixel.
-        x_display: i32,
+        x_display: Number,
         /// Vertical display pixel.
-        y_display: i32,
+        y_display: Number,
     },
     /// Swipe between two display points.
     Swipe(Stroke),
@@ -62,16 +65,16 @@ pub enum InputCommand {
         /// Motion action name.
         action: String,
         /// Horizontal display pixel.
-        x_display: i32,
+        x_display: Number,
         /// Vertical display pixel.
-        y_display: i32,
+        y_display: Number,
     },
     /// Relative trackball motion.
     Roll {
         /// Horizontal displacement.
-        dx: i32,
+        dx: Number,
         /// Vertical displacement.
-        dy: i32,
+        dy: Number,
     },
 }
 
@@ -79,13 +82,13 @@ pub enum InputCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stroke {
     /// Start X.
-    pub x_display: i32,
+    pub x_display: Number,
     /// Start Y.
-    pub y_display: i32,
+    pub y_display: Number,
     /// End X.
-    pub end_x_display: i32,
+    pub end_x_display: Number,
     /// End Y.
-    pub end_y_display: i32,
+    pub end_y_display: Number,
     /// Explicit duration, if supplied.
     pub duration_ms: Option<u32>,
 }
@@ -100,8 +103,8 @@ impl InputCommand {
     }
 
     /// Starting position in display pixels (roll is relative).
-    pub const fn position(&self) -> Option<(i32, i32)> {
-        match self {
+    pub fn position(&self) -> Option<(f64, f64)> {
+        let (x, y) = match self {
             Self::Tap {
                 x_display,
                 y_display,
@@ -110,10 +113,11 @@ impl InputCommand {
                 x_display,
                 y_display,
                 ..
-            } => Some((*x_display, *y_display)),
-            Self::Swipe(s) | Self::Draganddrop(s) => Some((s.x_display, s.y_display)),
-            _ => None,
-        }
+            } => (x_display, y_display),
+            Self::Swipe(s) | Self::Draganddrop(s) => (&s.x_display, &s.y_display),
+            _ => return None,
+        };
+        x.as_f64().zip(y.as_f64())
     }
 }
 
@@ -221,6 +225,7 @@ pub fn visit_commands(
     }
     let mut bad = 0;
     let mut original_directory = true;
+    let mut original_path = true;
     lex(command, |words, valid| {
         let mut args = words.iter().map(String::as_str);
         let executable = match args.next() {
@@ -228,11 +233,21 @@ pub fn visit_commands(
                 original_directory = false;
                 return;
             }
-            Some("input" | "/system/bin/input") => "input",
-            Some("cmd" | "/system/bin/cmd") => "cmd",
+            Some("/system/bin/input") => "input",
+            Some("/system/bin/cmd") => "cmd",
+            Some("input") if original_path => "input",
+            Some("cmd") if original_path => "cmd",
             Some("./system/bin/input" | "system/bin/input") if original_directory => "input",
             Some("./system/bin/cmd" | "system/bin/cmd") if original_directory => "cmd",
-            _ => return,
+            first => {
+                // A changed PATH may resolve bare names to a local executable.
+                if words.iter().any(|w| w.starts_with("PATH="))
+                    || (first == Some("unset") && words.iter().any(|w| w == "PATH"))
+                {
+                    original_path = false;
+                }
+                return;
+            }
         };
         if executable == "cmd" && args.next() != Some("input") {
             return;
@@ -335,8 +350,8 @@ fn parse(mut args: &[&str]) -> Option<(Option<i32>, InputCommand)> {
     }
     let command = match args {
         ["tap", x, y] => InputCommand::Tap {
-            x_display: x.parse().ok()?,
-            y_display: y.parse().ok()?,
+            x_display: coordinate(x)?,
+            y_display: coordinate(y)?,
         },
         [
             op @ ("swipe" | "draganddrop"),
@@ -352,10 +367,10 @@ fn parse(mut args: &[&str]) -> Option<(Option<i32>, InputCommand)> {
                 _ => return None,
             };
             let stroke = Stroke {
-                x_display: x.parse().ok()?,
-                y_display: y.parse().ok()?,
-                end_x_display: end_x.parse().ok()?,
-                end_y_display: end_y.parse().ok()?,
+                x_display: coordinate(x)?,
+                y_display: coordinate(y)?,
+                end_x_display: coordinate(end_x)?,
+                end_y_display: coordinate(end_y)?,
                 duration_ms,
             };
             if *op == "swipe" {
@@ -390,15 +405,24 @@ fn parse(mut args: &[&str]) -> Option<(Option<i32>, InputCommand)> {
         {
             InputCommand::Motionevent {
                 action: a.to_ascii_uppercase(),
-                x_display: x.parse().ok()?,
-                y_display: y.parse().ok()?,
+                x_display: coordinate(x)?,
+                y_display: coordinate(y)?,
             }
         }
         ["roll", x, y] => InputCommand::Roll {
-            dx: x.parse().ok()?,
-            dy: y.parse().ok()?,
+            dx: coordinate(x)?,
+            dy: coordinate(y)?,
         },
         _ => return None,
     };
     Some((display, command))
+}
+
+// Android reads coordinates with Float.parseFloat; reject what it would turn into NaN or infinity.
+fn coordinate(arg: &str) -> Option<Number> {
+    if let Ok(n) = arg.parse::<i64>() {
+        return Some(n.into());
+    }
+    arg.parse::<f32>().ok().filter(|v| v.is_finite())?;
+    Number::from_f64(arg.parse().ok()?)
 }

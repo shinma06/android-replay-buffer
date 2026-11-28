@@ -98,8 +98,14 @@
     "tag": "adbd",
     "uid": 2000,
     "message": "adbd service requested 'shell,v2,raw:input tap 2147483648 1; input bad'",
-    "expected": [],
-    "unparsed_count": 2
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 2147483648,
+        "y_display": 1
+      }
+    ],
+    "unparsed_count": 1
   },
   {
     "tag": "adbd",
@@ -153,6 +159,85 @@
     "tag": "adbd",
     "uid": 2000,
     "message": "adbd service requested 'shell:cd /data/local/tmp && ./system/bin/input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input tap 300.5 600.25; input swipe 1.5 2 3 4.25 100; input motionevent DOWN 0.5 1; input roll 0.5 -1.5'",
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 300.5,
+        "y_display": 600.25
+      },
+      {
+        "kind": "swipe",
+        "x_display": 1.5,
+        "y_display": 2,
+        "end_x_display": 3,
+        "end_y_display": 4.25,
+        "duration_ms": 100
+      },
+      {
+        "kind": "motionevent",
+        "action": "DOWN",
+        "x_display": 0.5,
+        "y_display": 1
+      },
+      {
+        "kind": "roll",
+        "dx": 0.5,
+        "dy": -1.5
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:input tap 99999999999999999999 1; input tap nan 1; input tap inf 2; input tap 1e39 3'",
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 1e+20,
+        "y_display": 1
+      }
+    ],
+    "unparsed_count": 3
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:PATH=/data/local/tmp; input tap 1 2; cmd input tap 5 6; /system/bin/input tap 3 4'",
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 3,
+        "y_display": 4
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:export PATH=/data/local/tmp:/system/bin && input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:unset PATH; input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 0,
+    "message": "adbd service requested 'shell:PATH=/data/local/tmp input tap 1 2; input text PATH=x'",
     "expected": [],
     "unparsed_count": 0
   }
