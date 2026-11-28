@@ -356,6 +356,10 @@ data class CaptureStartResponse(
     val audioCause: AudioCause? = null,
     val configChanged: CaptureConfigChanges? = null,
     val serialSource: String? = null,
+    /** `true` when the same device was already recording and the session was kept (CI-08). */
+    val alreadyActive: Boolean? = null,
+    /** Machine-readable notices such as `waiting_for_device` (CI-03 / CI-04). */
+    val warnings: List<WarningDetail>? = null,
 )
 
 data class CaptureStopResponse(

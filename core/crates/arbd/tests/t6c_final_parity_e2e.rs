@@ -738,7 +738,10 @@ fn explicit_start_survives_process_restart_and_auto_attaches_to_new_device() {
         "config.update",
         &json!({"device_serial":"A","capture_mode":"logs_only","capture_enabled":false}),
     );
-    rpc.call("capture.start", &json!({"serial":"B"}));
+    // #583: only a device that was actually selected becomes the persisted pin.
+    fs::write(tmp.path().join("devices"), "B device\n").unwrap();
+    let start = rpc.call("capture.start", &json!({"serial":"B"}));
+    assert_eq!(start["started"], true, "{start}");
     rpc.call("system.shutdown", &json!({}));
     drop(rpc);
     assert!(daemon.0.wait().unwrap().success());
@@ -763,12 +766,18 @@ fn capture_wait_times_out_offline_then_connects_after_discovery() {
     let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
     fs::write(tmp.path().join("devices"), "A offline\n").unwrap();
     let started = Instant::now();
-    let result = rpc.call("capture.start", &json!({"serial":"A","capture_mode":"logs_only","wait_connected":true,"wait_timeout_ms":250}));
+    let result = rpc.send_raw("capture.start", &json!({"serial":"A","capture_mode":"logs_only","wait_connected":true,"wait_timeout_ms":250}));
     assert!(started.elapsed() >= Duration::from_millis(250), "{result}");
-    assert_eq!(result["started"], false);
-    assert_eq!(result["connected"], false);
-    assert_eq!(result["wait_timed_out"], true);
-    rpc.call("capture.stop", &json!({}));
+    // #583: an explicit serial that never became `device` is an error and persists nothing.
+    let data = &result["error"]["data"];
+    assert_eq!(data["error_code"], "DEVICE_NOT_FOUND", "{result}");
+    assert_eq!(data["details"]["wait_timed_out"], true, "{result}");
+    assert_eq!(data["details"]["config_changed"], json!({}));
+    let cfg = rpc.call("config.get", &json!({}))["config"].clone();
+    assert_eq!(cfg["device_serial"], Value::Null);
+    assert_eq!(cfg["capture_enabled"], false);
+    // Reserving an offline device ahead of time is `config.update { device_serial }`.
+    rpc.call("config.update", &json!({"device_serial":"A"}));
 
     let Some(CaptureEvent::Hello { payload, .. }) =
         FaultScenario::NormalFhd30.build().next_event().unwrap()
@@ -792,6 +801,10 @@ fn capture_wait_times_out_offline_then_connects_after_discovery() {
     let result = waiter.join().unwrap();
     assert_eq!(result["serial"], "A");
     assert_eq!(result["serial_source"], "config");
+    assert_eq!(
+        result["config_changed"],
+        json!({"capture_enabled":[false,true]})
+    );
     assert_eq!(result["started"], true);
     assert_eq!(result["connected"], true, "{result}");
     assert_eq!(result["wait_timed_out"], false);
@@ -809,25 +822,102 @@ fn capture_intent_rows_match_daemon_responses_and_persisted_config() {
     let fake = compile_fake_adb(&tmp);
     let _daemon = spawn_fake_daemon(&paths, &fake, tmp.path());
     let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
-    for row in table["capture_intent_rows"].as_array().unwrap() {
+    let devices = tmp.path().join("devices");
+    let rows = table["capture_intent_rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 9);
+    for row in rows {
+        let id = &row["id"];
+        let online: Vec<&str> = row["online"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        let listing: String = online.iter().flat_map(|s| [s, " device\n"]).collect();
+        fs::write(&devices, listing).unwrap();
         rpc.call(
             "config.update",
-            &json!({"device_serial":row["configured"],"capture_enabled":row["enabled"]}),
+            &json!({"device_serial":row["configured"],"capture_enabled":false,"capture_mode":"logs_only"}),
         );
-        let start = rpc.call("capture.start", &json!({"serial":row["argument"]}));
-        assert_eq!(start["config_changed"], row["config_changed"], "{row}");
-        assert_eq!(start["serial_source"], row["serial_source"], "{row}");
-        let cfg = rpc.call("config.get", &json!({}));
-        assert_eq!(cfg["config"]["device_serial"], row["persisted"]);
+        if let Some(active) = row["active"].as_str() {
+            let setup = rpc.call("capture.start", &json!({"serial":active}));
+            assert_eq!(setup["started"], true, "{id}: {setup}");
+        } else {
+            rpc.call("config.update", &json!({"capture_enabled":row["enabled"]}));
+        }
+        let cfg = rpc.call("config.get", &json!({}))["config"].clone();
+        assert_eq!(cfg["capture_enabled"], row["enabled"], "{id}: precondition");
+        assert_eq!(
+            cfg["device_serial"], row["configured"],
+            "{id}: precondition"
+        );
+        let before = rpc.call("system.status", &json!({}))["capture"].clone();
+        let mut params = json!({"serial":row["argument"]});
+        if row["wait_connected"] == true {
+            params["wait_connected"] = json!(true);
+            params["wait_timeout_ms"] = json!(500);
+        }
+        let start = rpc.send_raw("capture.start", &params);
+        match row["outcome"].as_str().unwrap() {
+            outcome @ ("device_not_found" | "conflict") => {
+                let data = &start["error"]["data"];
+                assert_eq!(data["error_code"], row["error_code"], "{id}: {start}");
+                assert_eq!(data["details"]["config_changed"], json!({}), "{id}");
+                for (key, value) in row["error_details"].as_object().unwrap() {
+                    assert_eq!(&data["details"][key], value, "{id}: details.{key}");
+                }
+                let hint = data["hint"].as_str().unwrap();
+                let needle = if outcome == "conflict" {
+                    "arb_capture_stop"
+                } else {
+                    "arb_devices"
+                };
+                assert!(hint.contains(needle), "{id}: {hint}");
+                let after = rpc.call("system.status", &json!({}))["capture"].clone();
+                assert_eq!(after["active"], before["active"], "{id}: session kept");
+                assert_eq!(after["serial"], before["serial"], "{id}: session kept");
+            }
+            outcome => {
+                let start = start["result"].clone();
+                assert!(start.is_object(), "{id}: {start}");
+                assert_eq!(start["config_changed"], row["config_changed"], "{id}");
+                assert_eq!(start["serial_source"], row["serial_source"], "{id}");
+                assert_eq!(
+                    start["started"],
+                    json!(outcome != "waiting"),
+                    "{id}: {start}"
+                );
+                assert_eq!(
+                    start.get("already_active").cloned().unwrap_or(json!(false)),
+                    json!(outcome == "already_active"),
+                    "{id}"
+                );
+                let codes: Vec<Value> = start
+                    .get("warnings")
+                    .and_then(Value::as_array)
+                    .map_or_else(Vec::new, |w| w.iter().map(|w| w["code"].clone()).collect());
+                assert_eq!(json!(codes), row["warning_codes"], "{id}");
+            }
+        }
+        let cfg = rpc.call("config.get", &json!({}))["config"].clone();
+        assert_eq!(cfg["device_serial"], row["persisted"], "{id}");
+        assert_eq!(cfg["capture_enabled"], row["persisted_enabled"], "{id}");
         let status = rpc.call("system.status", &json!({}));
         assert_eq!(
             status.get("configured_device_serial"),
-            Some(&row["persisted"])
+            Some(&row["persisted"]),
+            "{id}"
         );
-        assert_eq!(status["serial_mismatch"], false);
+        assert_eq!(status["serial_mismatch"], false, "{id}");
+        let stop_changes = if row["persisted_enabled"] == true {
+            json!({"capture_enabled":[true,false]})
+        } else {
+            json!({})
+        };
         assert_eq!(
             rpc.call("capture.stop", &json!({}))["config_changed"],
-            json!({"capture_enabled":[true,false]})
+            stop_changes,
+            "{id}"
         );
         assert_eq!(
             rpc.call("capture.stop", &json!({}))["config_changed"],
@@ -838,6 +928,132 @@ fn capture_intent_rows_match_daemon_responses_and_persisted_config() {
             row["persisted"]
         );
     }
+}
+
+/// #583 end to end: a typo serial while recording, then while stopped, then a real device.
+#[test]
+fn issue_583_unknown_serial_never_persists_and_never_blocks_recording() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let _daemon = spawn_fake_daemon(&paths, &fake, tmp.path());
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    fs::write(tmp.path().join("devices"), "A device\n").unwrap();
+    rpc.call("config.update", &json!({"capture_mode":"logs_only"}));
+    let config = |rpc: &mut RpcClient| rpc.call("config.get", &json!({}))["config"].clone();
+
+    // (1) Recording on A (auto-selected), then an unknown serial B: CONFLICT, A keeps recording.
+    let first = rpc.call("capture.start", &json!({}));
+    assert_eq!(first["serial"], "A", "{first}");
+    let saved = config(&mut rpc);
+    let conflict = rpc.send_raw("capture.start", &json!({"serial":"1.2.3.4:5555"}));
+    let data = &conflict["error"]["data"];
+    assert_eq!(data["error_code"], "CONFLICT", "{conflict}");
+    assert_eq!(data["details"]["active_serial"], "A");
+    assert_eq!(data["details"]["requested_serial"], "1.2.3.4:5555");
+    assert!(data["hint"].as_str().unwrap().contains("arb_capture_stop"));
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["active"], true);
+    assert_eq!(status["capture"]["serial"], "A");
+    assert_eq!(
+        config(&mut rpc),
+        saved,
+        "CONFLICT leaves config.json untouched"
+    );
+    // The same serial (or none) is an idempotent success that keeps the session.
+    let again = rpc.call("capture.start", &json!({}));
+    assert_eq!(again["already_active"], true, "{again}");
+    assert_eq!(again["started"], true);
+    rpc.call("capture.stop", &json!({}));
+
+    // (2) Stopped, unknown serial: DEVICE_NOT_FOUND, nothing persisted, A still starts.
+    let before = config(&mut rpc);
+    assert_eq!(before["device_serial"], Value::Null);
+    let missing = rpc.send_raw("capture.start", &json!({"serial":"1.2.3.4:5555"}));
+    let data = &missing["error"]["data"];
+    assert_eq!(data["error_code"], "DEVICE_NOT_FOUND", "{missing}");
+    assert_eq!(data["retryable"], true);
+    assert_eq!(data["details"]["serial"], "1.2.3.4:5555");
+    assert_eq!(
+        data["details"]["selection"]["other_online_serials"],
+        json!(["A"])
+    );
+    assert!(data["hint"].as_str().unwrap().contains("[A]"), "{missing}");
+    assert_eq!(
+        config(&mut rpc),
+        before,
+        "DEVICE_NOT_FOUND leaves config.json untouched"
+    );
+    let resumed = rpc.call("capture.start", &json!({}));
+    assert_eq!(resumed["started"], true, "{resumed}");
+    assert_eq!(resumed["serial"], "A");
+    assert_eq!(resumed["serial_source"], "auto");
+    rpc.call("capture.stop", &json!({}));
+
+    // (3) Explicit A that is online: persisted only after the capture started.
+    let pinned = rpc.call("capture.start", &json!({"serial":"A"}));
+    assert_eq!(pinned["started"], true, "{pinned}");
+    assert_eq!(
+        pinned["config_changed"],
+        json!({"capture_enabled":[false,true],"device_serial":[null,"A"]})
+    );
+    let after = config(&mut rpc);
+    assert_eq!(after["device_serial"], "A");
+    assert_eq!(after["capture_enabled"], true);
+    // The confirmed pin survives an unplug/replug: auto-attach returns to A, never to B.
+    fs::write(tmp.path().join("devices"), "B device\n").unwrap();
+    rpc.call("capture.stop", &json!({}));
+    rpc.call("config.update", &json!({"capture_enabled":true}));
+    thread::sleep(Duration::from_millis(2500));
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture"]["active"],
+        false,
+        "DS-07: never switches to the other online device"
+    );
+    fs::write(tmp.path().join("devices"), "A device\nB device\n").unwrap();
+    await_condition(|| rpc.call("system.status", &json!({}))["capture"]["active"] == true);
+    assert_eq!(
+        rpc.call("system.status", &json!({}))["capture"]["serial"],
+        "A"
+    );
+    rpc.call("capture.stop", &json!({}));
+}
+
+/// A start racing an auto-attach discovery queues behind it instead of cancelling it.
+#[test]
+fn capture_start_waits_for_auto_attach_reservation_instead_of_cancelling_it() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let dir = tmp.path();
+    fs::write(dir.join("devices"), "A device\n").unwrap();
+    let _daemon = spawn_fake_daemon(&paths, &fake, dir);
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    rpc.call(
+        "config.update",
+        &json!({"capture_mode":"logs_only","device_serial":"A"}),
+    );
+    // Block the next `adb devices`, then arm so that auto-attach reserves and enters discovery.
+    fs::write(dir.join("block"), []).unwrap();
+    rpc.call("config.update", &json!({"capture_enabled":true}));
+    await_condition(|| dir.join("discovery-entered").exists());
+    let endpoint = paths.ipc_endpoint();
+    let start = thread::spawn(move || {
+        RpcClient::connect(&endpoint).send_raw("capture.start", &json!({"serial":"A"}))
+    });
+    thread::sleep(Duration::from_millis(300));
+    fs::remove_file(dir.join("block")).unwrap();
+    let result = start.join().unwrap();
+    let result = &result["result"];
+    // Auto-attach finished its own attach on A; the explicit start then saw it as the same
+    // session and succeeded idempotently, pinning A.
+    assert_eq!(result["started"], true, "{result}");
+    assert_eq!(result["serial"], "A");
+    assert_eq!(result["already_active"], true, "{result}");
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["serial"], "A");
+    assert_eq!(status["capture_enabled"], true);
+    rpc.call("capture.stop", &json!({}));
 }
 
 #[test]

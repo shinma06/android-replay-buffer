@@ -422,6 +422,12 @@ pub struct CaptureStartResponse {
     /// Effective continuous capture mode (`video_and_logs` or `logs_only`).
     #[serde(default)]
     pub capture_mode: CaptureMode,
+    /// `true` when this start found the same session already recording and left it running.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_active: bool,
+    /// Machine-readable notices, e.g. `waiting_for_device` while an armed start waits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WarningDetail>,
 }
 
 /// Response payload for `capture.stop`.

@@ -77,6 +77,27 @@ pub enum DaemonError {
     /// Capture target is absent or offline.
     #[error("対象の ADB 端末が接続されていません。")]
     DeviceNotFound(Option<String>),
+    /// An explicit `capture.start` target was not selectable before its deadline (#583).
+    /// Nothing was persisted: the tentative serial never reached `config.json`.
+    #[error("対象の ADB 端末が接続されていません。")]
+    StartTargetNotFound {
+        /// Serial the caller asked for.
+        serial: String,
+        /// Selection observed at the deadline.
+        selection: arb_core::device::DeviceSelectionOutcome,
+        /// Whether a requested `wait_connected` deadline expired.
+        wait_timed_out: bool,
+    },
+    /// `capture.start` would replace or race an existing session or device reservation.
+    #[error("conflict: {reason}")]
+    CaptureConflict {
+        /// Stable reason (`different_active_serial` or `attach_in_progress`).
+        reason: &'static str,
+        /// Serial of the session that keeps recording, if any.
+        active_serial: Option<String>,
+        /// Serial the caller asked for, if any.
+        requested_serial: Option<String>,
+    },
     /// Requested entity was not found.
     #[error("{detail}")]
     NotFound {
@@ -143,7 +164,7 @@ impl DaemonError {
     pub fn classify(&self) -> ClassifiedError {
         use arb_core::state::{BundleLifecycleState, StateTransitionError};
         let (rpc_code, label, message) = match self {
-            Self::DeviceNotFound(_) => (
+            Self::DeviceNotFound(_) | Self::StartTargetNotFound { .. } => (
                 RPC_ERR_NOT_FOUND,
                 Some("DEVICE_NOT_FOUND"),
                 "対象の ADB 端末が接続されていません。",
@@ -205,7 +226,9 @@ impl DaemonError {
                 Some("ALREADY_ACTIVE"),
                 "このバンドルは既に復元されています。",
             ),
-            Self::Storage(StorageError::StateTransition(_)) | Self::Conflict(_) => (
+            Self::Storage(StorageError::StateTransition(_))
+            | Self::Conflict(_)
+            | Self::CaptureConflict { .. } => (
                 RPC_ERR_CONFLICT,
                 None,
                 "現在の状態ではこの操作を実行できません。",
@@ -241,6 +264,32 @@ impl DaemonError {
     fn diagnostics(&self) -> (Value, Option<String>) {
         let details = match self {
             Self::DeviceNotFound(serial) => return (json!({"serial": serial}), None),
+            Self::StartTargetNotFound {
+                serial,
+                selection,
+                wait_timed_out,
+            } => {
+                let mut selection = json!(selection);
+                if selection.get("other_online_serials").is_none() {
+                    selection["other_online_serials"] = json!([]);
+                }
+                return (
+                    json!({"serial": serial, "selection": selection, "config_changed": {},
+                        "wait_timed_out": wait_timed_out}),
+                    None,
+                );
+            }
+            Self::CaptureConflict {
+                reason,
+                active_serial,
+                requested_serial,
+            } => {
+                return (
+                    json!({"reason": reason, "active_serial": active_serial,
+                        "requested_serial": requested_serial, "config_changed": {}}),
+                    None,
+                );
+            }
             Self::NoVideo(id) => return (json!({"bundle_id": id}), None),
             Self::OutputExists(path) => {
                 return (json!({"path": path, "reason": "already_exists"}), None);

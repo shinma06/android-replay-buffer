@@ -15,7 +15,7 @@ satisfies:
 
 # SPEC-07 端末選択・音声・ジェスチャー・クラッシュの観測契約
 
-開始受理時に `capture_enabled=true` と明示した `device_serial` を一度に保存する。serial を省略した開始および停止は設定済み serial を保持する。再起動後の自動接続は永続化した組に従う。状態の `configured_device_serial` は設定値、`serial_mismatch` は録画接続中の実 serial と設定済み serial がともに存在して異なる場合に真。
+明示した serial は接続前の一時ターゲットで、`config.json`・取得要求・稼働中の世代を変えない。その端末が `device` 状態で選ばれ取得を開始できた時点で、`capture_enabled=true` と `device_serial` を 1 回の原子的書き込みで確定する。期限（`wait_connected=false` は即時、true は `wait_timeout_ms`）までに選べなければ `DEVICE_NOT_FOUND`（`details` に `serial`、`selection`、空の `config_changed`、`wait_timed_out`）を返し、設定は変えない。オフラインの端末を事前に録画対象として予約するには `config.update` の `device_serial`（MCP は `arb_config_update`）を使う。録画中は同じ serial（または省略）なら既存の取得を止めない冪等な成功（`already_active: true`）、別の serial は `CONFLICT`（`details` に `active_serial`・`requested_serial`）で既存の取得と設定を変えない。自動接続の探索や別の開始が接続予約を持つ間、開始は予約の解放を待って順番に判定し、黙って上書き・取消しない（5 秒または接続待ちの期限を過ぎれば再試行可能な `CONFLICT`）。serial を省略した開始は従来どおり録画の意図を先に保存し、端末を待つ間は `warnings` に `waiting_for_device` を返す。serial を省略した開始および停止は設定済み serial を保持する。再起動後の自動接続は永続化した組に従う。状態の `configured_device_serial` は設定値、`serial_mismatch` は録画接続中の実 serial と設定済み serial がともに存在して異なる場合に真。
 
 ## Android と端末選択 [実装済み]
 

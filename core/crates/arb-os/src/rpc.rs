@@ -188,9 +188,40 @@ pub fn error_guidance_with_details(
     let hint = match count {
         Some(0) => "このバンドルの overview taps は 0 件です。tap_index を外すか tap_x / tap_y（映像 px）を指定してください。".into(),
         Some(n) => format!("tap_index は 0..={} の範囲で指定してください。座標で指定する場合は tap_index を外し、tap_x / tap_y（映像 px）を指定してください。", n - 1).into(),
-        None => hint.into(),
+        None => capture_start_hint(label, details).map_or_else(|| hint.into(), Into::into),
     };
+    let retryable = retryable
+        || details.is_some_and(|d| label == "CONFLICT" && d["reason"] == "attach_in_progress");
     (kind, hint, retryable)
+}
+
+/// Recovery hints for a rejected `capture.start` (#583): an explicit serial that never came
+/// online, a different serial while recording, or a start racing a device reservation.
+fn capture_start_hint(label: &str, details: Option<&Value>) -> Option<String> {
+    let details = details?;
+    match label {
+        "DEVICE_NOT_FOUND" => {
+            let others = details
+                .pointer("/selection/other_online_serials")?
+                .as_array()?;
+            let others: Vec<&str> = others.iter().filter_map(Value::as_str).collect();
+            let online = if others.is_empty() {
+                "ほかにオンラインの端末はありません。".to_owned()
+            } else {
+                format!("他にオンラインの端末: [{}]。", others.join(", "))
+            };
+            Some(format!(
+                "`arb_devices` でオンライン端末を確認してください。{online}設定は変更していません。オフラインの端末を予約するには `arb_config_update` の device_serial を使います。"
+            ))
+        }
+        "CONFLICT" if details["reason"] == "different_active_serial" => {
+            Some("端末を切り替えるには `arb_capture_stop` の後に開始してください。".to_owned())
+        }
+        "CONFLICT" if details["reason"] == "attach_in_progress" => {
+            Some("端末への接続処理が進行中です。完了を待ってから再試行してください。".to_owned())
+        }
+        _ => None,
+    }
 }
 
 /// Errors returned by [`RpcClient`].

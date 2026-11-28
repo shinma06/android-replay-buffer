@@ -8,7 +8,7 @@
 
 | 領域 | 正本（書き手・判定元） | 混同を防ぐ境界 | 守る条件 | 現行の検査・証明の境界 |
 | --- | --- | --- | --- | --- |
-| 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
+| 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3・S3b、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
 | 被覆台帳 | `arbd` の `CapturePipeline` が `arb-core::coverage` の台帳を所有し、保存ジョブのパラメータに区間を永続化 | フレーム・ログ行の出現幅／ストリームが動いていた被覆、静止／切断 | 映像はフレームで開始し、ビーコンが途絶前に続く間だけ静止として延長。ギャップ・切断・停止・boot 変化・映像セッション再生成・世代交代で閉じ、古い世代は延長しない。引き継ぎは 1 本の被覆区間が窓前の最終フレームから `W0` までを含むときだけ。撮影時刻は書き換えず `video.carried_in` に記録 | K14、G3、保存の端から端までの試験（`capture_coverage_tests.rs`）、共有表 `capture_evidence_rows` |
 | 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない | K1〜K3、G4、Miri M2 |
 | 映像のコミット | `arbd` の `mux_selected_video` が書き出すフレーム列、`arb-core::video_commit` の判定、`arb-storage` の確定前検査 | 窓内で選んだフレーム／`video.mp4` に書いたフレーム、先頭が欠けた `partial`／映像なしの `absent` | IDR がリングから失われた先頭の P フレームは最初の IDR まで破棄し、残りを `partial` で書く。復号できる IDR がなければ `absent`・0 枚・`frames` 0 行・`video.mp4` なし。`video.mp4` のない映像宣言、`frames` 行数と `frame_count` の不一致は確定させない | K15、保存の端から端までの試験（`capture_coverage_tests.rs` の W3B 再現 A・B）、`video_commit_properties.rs`、ストレージの確定前検査 |
@@ -26,7 +26,7 @@
 
 | 変更の入口 | 同時に読む SPEC | 他層へ辿る順序と回帰の観測点 | 対応する証明・試験 |
 | --- | --- | --- | --- |
-| 録画開始・停止、リング上限、親終了 | 01・02・05・07 | device-agent → `live_adb.rs`・`capture.rs` → ring／catalog → CLI・MCP・IDE 状態。再接続・保存中に端末や pin を失わないか | K4・K5、S1〜S3・S5、G2・G5 |
+| 録画開始・停止、リング上限、親終了 | 01・02・05・06・07 | device-agent → `live_adb.rs`・`capture.rs` → ring／catalog → CLI・MCP・IDE 状態。再接続・保存中に端末や pin を失わないか。明示 serial の開始は失敗時に設定・取得要求・世代を変えず、接続予約を黙って上書きしないか | K4・K5、S1〜S3・S3b・S5、G2・G5、共有表 `capture_intent_rows` |
 | アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
 | 被覆台帳・引き継ぎ・保存の警告 | 02・03・06・07 | ビーコン・フレーム・ログ・ギャップ → `capture.rs` の台帳 → ジョブパラメータ → 選別・MP4 の末尾長 → `display_frames` → RPC・CLI／MCP・IDE。静止・切断・録画開始直後・両端に行がない保存で、`carried_in`・各被覆時間・警告の 1 対 1 を比較 | K14、G3、`capture_evidence_rows`、MCP 実 stdio、`PddContractTablesTest` |
 | 映像の選別・MP4 化・バンドル確定 | 02・03・06 | リング回収 → `select_video`（preroll・引き継ぎ）→ `mux_selected_video` → `arb-storage` の確定前検査 → `frames`・manifest → 映像ツール・保存結果。先頭の IDR が失われた保存で、`video.mp4`・`frame_count`・`frames` 行数・MP4 サンプル数・`video_coverage_ms` が一致するか | K15、W3B 再現 A・B、`video_commit_properties.rs` |
@@ -58,7 +58,7 @@
 | 正本・台帳 | 照合するデータ |
 | --- | --- |
 | [音声方針](audio-policy-table.json) | API・方式・端末側の結果から起動引数、状態、原因、表示分類を引く |
-| [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化、再起動後の候補選択（S3） |
+| [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化（明示 serial は接続後に確定、CI-01〜09）、再起動後の候補選択（S3・S3b） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
 | [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの別名（全組 `allowEqual`）・排他・入力・出力型・注釈・タスク対応 |
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
@@ -107,6 +107,8 @@
 | GC プレビューで消去または期限切れリースの変更が生じた | バグ | dry_run は読み取り専用。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 非同期タスクをキャンセルしたのに受理済みの保存物が残った | 仕様 | 既に発行済みの副作用を巻き戻す契約はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 2 台同時接続で録画先を自動選択しない | 仕様 | 未選択なら選択待ち。選択済みの端末がなければその端末を待つ。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
+| 未接続・typo の serial で開始した後、引数なしの開始や自動接続が存在しない端末を待ち続ける | バグ（#583） | 明示 serial は接続・取得開始後にだけ確定する。失敗は `DEVICE_NOT_FOUND` で設定を変えない。オフライン端末の予約は `config.update` の `device_serial`。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
+| 録画中に別の serial で開始すると `CONFLICT`、同じ serial なら `already_active` | 仕様 | 既存の録画と設定を守る。切り替えは停止してから開始する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | API 33 実機の音声開始失敗に「音声非対応」と出た | バグ | 対応 API での失敗は実行時の原因を表示する。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
 | output_compat で端末スピーカーが消音 | 仕様 | 消音を伴う明示オプトイン方式。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
 | adb shell input tap が映像に反応してもタップ件数は 0 | 観測制約 | Framework 注入はカーネルの getevent に現れる保証がない。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |
