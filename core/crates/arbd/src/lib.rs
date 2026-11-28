@@ -83,7 +83,7 @@ use crate::protocol::{
     MediaFrameRequestParams, MediaInspectFramesParams, MediaOpenViewportParams, QueryBucket,
     RecoverySummaryView, RpcRequest, RpcResponse, SaveJobIdParams, SaveListJobsResponse,
     SaveLogsParams, SaveMode, SaveOutcomeResponse, SaveRetargetParams, SaveScreenshotParams,
-    SaveScreenshotResponse, SaveTriggerParams, SerialSource, SystemHelloResponse,
+    SaveScreenshotResponse, SaveTriggerParams, ScreenshotSource, SerialSource, SystemHelloResponse,
     SystemStatusResponse, TimelineCrashesResponse, TimelineDiscontinuitiesResponse,
     TimelineOverviewParams, TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
 };
@@ -542,6 +542,7 @@ impl DaemonState {
             log_exclude_tags: true,
             log_offset_range: true,
             gc_dry_run: true,
+            screenshot_source: true,
             standalone_share_trim: true,
             realtime_trim: true,
             schema_version: BUNDLE_SCHEMA_VERSION,
@@ -1510,9 +1511,50 @@ impl DaemonState {
                 .map_err(|err| DaemonError::InvalidParams(err.to_string()))?;
         }
 
-        let (serial, png_bytes) = self
-            .screenshot_provider
-            .capture_png(requested_serial.as_deref())?;
+        let mut frame_captured_at_utc = None;
+        let mut staleness_ms = 0;
+        let mut fallback_reason = None;
+        let recording = if parsed.source == ScreenshotSource::Screencap {
+            None
+        } else {
+            let cap = self.lock_capture()?;
+            let candidate = arb_os::clock::sample_host_clock()
+                .map_err(|_| "clock_unavailable")
+                .and_then(|now| {
+                    cap.screenshot_gop(requested_serial.as_deref(), now.continuous_mono_ns)
+                        .map(|gop| (gop, now))
+                });
+            drop(cap);
+            match candidate.and_then(|(gop, now)| {
+                let age = now.continuous_mono_ns.saturating_sub(gop.frame_cont_ns);
+                let utc = gop.frame_epoch_ns.ok_or("clock_unavailable")?;
+                let png = gop.decode_png().map_err(|_| "frame_decode_failed")?;
+                Ok((png, age, utc))
+            }) {
+                Ok((png, age, wall)) => {
+                    staleness_ms = age.unsigned_abs() / 1_000_000;
+                    frame_captured_at_utc = Some(time_util::format_epoch_ns_iso8601(wall));
+                    Some(png)
+                }
+                Err(reason) if parsed.source == ScreenshotSource::Capture => {
+                    return Err(DaemonError::CaptureFrameUnavailable(reason));
+                }
+                Err(reason) => {
+                    fallback_reason = Some(reason.to_owned());
+                    None
+                }
+            }
+        };
+        let (source, serial, png_bytes) = if let Some(png) = recording {
+            let serial = requested_serial
+                .ok_or(DaemonError::CaptureFrameUnavailable("serial_unavailable"))?;
+            (ScreenshotSource::Capture, serial, png)
+        } else {
+            let (serial, png) = self
+                .screenshot_provider
+                .capture_png(requested_serial.as_deref())?;
+            (ScreenshotSource::Screencap, serial, png)
+        };
         let captured_at_unix_ms = current_unix_millis();
         let overwrite = if parsed.output_path.is_some() && parsed.overwrite {
             ScreenshotOverwrite::Replace
@@ -1523,6 +1565,10 @@ impl DaemonState {
         let sha256 = sha256_hex(&png_bytes);
 
         Ok(serde_json::to_value(SaveScreenshotResponse {
+            source: Some(source),
+            staleness_ms,
+            frame_captured_at_utc,
+            fallback_reason,
             path: dest_path,
             width,
             height,

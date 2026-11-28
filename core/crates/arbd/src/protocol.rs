@@ -132,6 +132,9 @@ pub struct SystemHelloResponse {
     /// The connected daemon safely supports preview-only garbage collection.
     #[serde(default)]
     pub gc_dry_run: bool,
+    /// Whether save.screenshot enforces an explicit recording source.
+    #[serde(default)]
+    pub screenshot_source: bool,
     /// Control-plane IPC protocol version.
     pub protocol_version: u32,
     /// Bundle manifest schema version (`2`).
@@ -162,9 +165,29 @@ pub struct SystemHelloResponse {
 /// [`arb_core::audio_policy`] (PDD G8) and reported in [`CaptureStatusView`].
 pub use arb_core::audio_policy::{AudioCaptureState, AudioCause};
 
+/// Whether the ring is recording, idle with retained evidence, or empty.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BufferState {
+    /// The current capture session is active.
+    Live,
+    /// A stopped capture still has retained events.
+    RetainedAfterStop,
+    /// No events remain for this device and boot.
+    #[default]
+    Empty,
+}
+
 /// Live capture telemetry inside [`SystemStatusResponse`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureStatusView {
+    /// Recording state of the retained buffer.
+    #[serde(default)]
+    pub buffer_state: BufferState,
+    /// Seconds since the newest retained event on the host continuous clock.
+    #[serde(default)]
+    pub newest_age_secs: Option<f64>,
     /// Whether capture is currently active.
     pub active: bool,
     /// Whether transport is currently connected.
@@ -290,7 +313,7 @@ pub struct CrashAutoSaveStatusView {
 }
 
 /// Response payload for `system.status`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemStatusResponse {
     /// Persisted preferred serial, including while idle or disconnected.
     #[serde(default)]
@@ -455,7 +478,7 @@ pub struct CaptureStartResponse {
 }
 
 /// Response payload for `capture.stop`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureStopResponse {
     /// Settings persisted by this stop.
     #[serde(default)]
@@ -517,9 +540,26 @@ pub struct SaveLogsParams {
     pub selection_policy: Option<SelectionPolicy>,
 }
 
+/// Requested live image source.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ScreenshotSource {
+    /// Prefer fresh recording evidence, falling back to ADB.
+    #[default]
+    Auto,
+    /// Require a frame from the active recording.
+    Capture,
+    /// Request a new Android screencap.
+    Screencap,
+}
+
 /// Request parameters for `save.screenshot`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SaveScreenshotParams {
+    /// Source selection defaults to automatic.
+    #[serde(default)]
+    pub source: ScreenshotSource,
     /// Optional ADB serial (defaults to active capture serial or sole online ADB device).
     pub serial: Option<String>,
     /// Optional explicit absolute PNG destination file path (mutually exclusive with `output_dir`).
@@ -536,6 +576,18 @@ pub struct SaveScreenshotParams {
 /// Response payload for `save.screenshot`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveScreenshotResponse {
+    /// Source that produced the image (absent on older daemons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ScreenshotSource>,
+    /// Host receipt UTC of the recording frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_captured_at_utc: Option<String>,
+    /// Age of the recording frame when selected (zero for on-demand screencap).
+    #[serde(default)]
+    pub staleness_ms: u64,
+    /// Why automatic selection used ADB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
     /// Written PNG file path.
     pub path: PathBuf,
     /// Validated PNG width in pixels.

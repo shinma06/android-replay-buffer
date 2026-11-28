@@ -222,6 +222,13 @@ pub fn error_guidance_with_details(
     details: Option<&Value>,
 ) -> (&'static str, std::borrow::Cow<'static, str>, bool) {
     let (kind, hint, retryable) = error_guidance(label);
+    if label == "INVALID_PARAMS" && details.is_some_and(|d| d["suggested_source"] == "screencap") {
+        return (
+            kind,
+            "source: \"screencap\" で端末画面を取得できます。".into(),
+            retryable,
+        );
+    }
     if label == "INVALID_PARAMS"
         && details
             .is_some_and(|d| d["field"] == "output_path" && d.get("allowed_extensions").is_some())
@@ -615,16 +622,8 @@ impl RpcClient {
         Ok(hello)
     }
 
-    /// Invokes a JSON-RPC 2.0 method and returns its decoded `result` JSON [`Value`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
-    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
-        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
-            && !params["min_level"].is_null()
-            && self.verify_hello()?["log_min_level"] != true
-        {
+    fn verify_log_query_options(&mut self, params: &Value) -> Result<(), RpcClientError> {
+        if !params["min_level"].is_null() && self.verify_hello()?["log_min_level"] != true {
             return Err(RpcClientError::Rpc {
                 details: None,
                 error_code: None,
@@ -634,8 +633,7 @@ impl RpcClient {
         }
         // Older daemons ignore unknown query fields and would return the excluded tags. An
         // empty list excludes nothing, which they already do.
-        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
-            && !params["exclude_tags"].is_null()
+        if !params["exclude_tags"].is_null()
             && params["exclude_tags"]
                 .as_array()
                 .is_none_or(|tags| !tags.is_empty())
@@ -649,8 +647,7 @@ impl RpcClient {
             });
         }
         // Older daemons ignore unknown range fields and would return every row.
-        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
-            && (!params["start_offset_ms"].is_null() || !params["end_offset_ms"].is_null())
+        if (!params["start_offset_ms"].is_null() || !params["end_offset_ms"].is_null())
             && self.verify_hello()?["log_offset_range"] != true
         {
             return Err(RpcClientError::Rpc {
@@ -658,6 +655,32 @@ impl RpcClient {
                 error_code: None,
                 code: -32601,
                 message: "バンドル先頭からの ms で範囲を指定するには arbd の更新が必要です".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Invokes a JSON-RPC 2.0 method and returns its decoded `result` JSON [`Value`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+        if matches!(method, "bundle.query_logs" | "timeline.query_logs") {
+            self.verify_log_query_options(&params)?;
+        }
+        // An old daemon silently ignores source and would return a different image.
+        if method == "save.screenshot"
+            && params["source"] == "capture"
+            && self.verify_hello()?["screenshot_source"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                details: None,
+                error_code: None,
+                code: -32601,
+                message:
+                    "録画フレームには arbd の更新が必要です。source: \"screencap\" を指定できます。"
+                        .into(),
             });
         }
         // Older daemons ignore unknown GC parameters. Verify this socket before any preview.
@@ -706,6 +729,20 @@ impl RpcClient {
         } else {
             self.long_timeout
         };
+        // Before source selection, save.screenshot always used ADB. Preserve that
+        // provenance for both CLI and MCP when connected to one of those daemons.
+        if method == "save.screenshot" {
+            let auto = params["source"].is_null() || params["source"] == "auto";
+            let mut response = self.call_with_timeout(method, params, timeout)?;
+            if response.get("source").is_none() && response.is_object() {
+                response["source"] = json!("screencap");
+                response["staleness_ms"] = json!(0);
+                if auto {
+                    response["fallback_reason"] = json!("legacy_daemon");
+                }
+            }
+            return Ok(response);
+        }
         self.call_with_timeout(method, params, timeout)
     }
 

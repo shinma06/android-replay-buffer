@@ -126,8 +126,8 @@ pub(super) fn bundle_link(id: &Value, kind: &str) -> ResourceLink {
 
 fn prompts() -> Value {
     json!([
-        {"name":"investigate_crash","description":"保存済みバンドルのクラッシュを調査","arguments":[{"name":"bundle_id","description":"調査するバンドル ID","required":false}]},
-        {"name":"triage_recent_bug","description":"直近の不具合を保存して調査","arguments":[{"name":"duration_secs","description":"保存秒数","required":false},{"name":"keyword","description":"ログの検索語","required":false}]},
+        {"name":"investigate_crash","description":"保存済みバンドルのクラッシュを調査","arguments":[{"name":"package","description":"対象パッケージ","required":false},{"name":"bundle_id","description":"調査するバンドル ID","required":false}]},
+        {"name":"triage_recent_bug","description":"直近の不具合を保存して調査","arguments":[{"name":"package","description":"対象パッケージ","required":false},{"name":"duration_secs","description":"保存秒数","required":false},{"name":"keyword","description":"ログの検索語","required":false}]},
         {"name":"safe_cleanup_review","description":"ごみ箱の整理候補を確認","arguments":[{"name":"ignore_grace","description":"猶予期間内も候補に含めるか","required":false}]}
     ])
 }
@@ -162,14 +162,21 @@ fn prompt_get(p: &Value) -> Result<Value, Failure> {
             } else {
                 ""
             };
-            let logs = json!({"bundle_id":id,"level":"ERROR","whole_word":true});
+            let mut overview = json!({"bundle_id":id,"max_error_logs":20});
+            if let Some(package) = args["package"].as_str() {
+                overview["package"] = json!(package);
+            }
+            let frame = json!({"bundle_id":id,"mode":"single","frame_index":45});
+            let logs = json!({"bundle_id":id,"start_frame":15,"end_frame":45,"min_level":"W","fields":"compact"});
             format!(
-                "{prefix}resources/read で arb://bundles/{}/crashes を確認します。\narb_query_logs({logs}) で前後のログを調べ、screens と該当フレームを照合します。",
-                encode_segment(id)
+                "{prefix}1. arb_timeline_overview({overview}) を呼びます。\n2. crashes[0] の stack_top・first_app_frame・caused_by と process_events を確認します。\n3. frame_index_hint を使って画像を開きます。例（hint=45） arb_inspect_frames({frame})。\n4. arb_query_logs({logs}) で直前を確認します。開始は max(0, hint−30)、終了は hint。hint がない場合は screens のフレームを選んでください。"
             )
         }
         "triage_recent_bug" => {
-            let mut save = json!({});
+            let mut save = json!({"duration_secs":60});
+            if let Some(package) = args["package"].as_str() {
+                save["package"] = json!(package);
+            }
             if let Some(secs) = args["duration_secs"].as_str() {
                 let secs = secs
                     .parse::<u64>()
@@ -178,12 +185,12 @@ fn prompt_get(p: &Value) -> Result<Value, Failure> {
                     .ok_or("duration_secs は 5～600 の整数で指定してください")?;
                 save["duration_secs"] = json!(secs);
             }
-            let mut logs = json!({"bundle_id":"<保存結果のbundle_id>","whole_word":true});
+            let mut logs = json!({"bundle_id":"<保存ID>","start_frame":15,"end_frame":45,"min_level":"W","fields":"compact"});
             if let Some(word) = args["keyword"].as_str() {
                 logs["keyword"] = json!(word);
             }
             format!(
-                "arb_save_and_inspect({save}) で保存し、window_shortfall と warning_codes を確認します。\narb_query_logs({logs}) で対象行を探し、該当フレームを取得します。"
+                "1. arb_status({{}}) で録画状態と input_capture を確認します。\n2. arb_save_and_inspect({save}) で保存し、save の warning_codes を読みます。\n3. crashes・process_events・screens・taps・injected_inputs から注目フレームを選び、例えば 45 なら arb_inspect_frames({{\"bundle_id\":\"<保存ID>\",\"mode\":\"single\",\"frame_index\":45}}) と arb_query_logs({logs}) で画面とログを照合します。"
             )
         }
         _ => {
@@ -194,10 +201,15 @@ fn prompt_get(p: &Value) -> Result<Value, Failure> {
                 .map_err(|_| {
                     Failure::invalid("ignore_grace は true または false で指定してください")
                 })?;
-            let preview = json!({"dry_run":true,"ignore_grace":ignore});
-            let execute = json!({"dry_run":false,"ignore_grace":ignore});
+            let preview = if ignore {
+                json!({"ignore_grace":true})
+            } else {
+                json!({})
+            };
+            let mut execute = preview.clone();
+            execute["dry_run"] = json!(false);
             format!(
-                "arb_gc_bundles({preview}) で対象・保護理由・回収量を確認します。\n対象を提示して明示確認を得た後に arb_gc_bundles({execute}) を実行します。"
+                "1. arb_gc_bundles({preview}) でプレビューします（既定 dry_run: true）。\n2. 候補・保護理由・解放見込みを確認します。\n3. 対象を確認できたら arb_gc_bundles({execute}) を実行します。失敗ジョブが残るときは arb_jobs({{\"action\":\"list\"}}) で確認します。"
             )
         }
     };

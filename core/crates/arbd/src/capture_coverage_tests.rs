@@ -1084,3 +1084,66 @@ proptest::proptest! {
         );
     }
 }
+
+#[test]
+fn screenshot_requires_a_current_session_gop_and_fresh_beacon() {
+    let tmp = TempDir::new().unwrap();
+    let mut cap = pipeline(&tmp);
+    frames(&mut cap, SEC, 3, 40);
+    assert!(cap.screenshot_gop(Some("A"), 2 * SEC).is_err(), "no beacon");
+    beacons(&mut cap, SEC + 100_000_000, 4 * SEC);
+    let shot = cap.screenshot_gop(Some("A"), 4 * SEC).unwrap();
+    assert_eq!(shot.frame_cont_ns, SEC + 80_000_000);
+    let png = shot.decode_png().unwrap();
+    assert_eq!(
+        arb_core::analytics::validate_png_bytes(&png).unwrap(),
+        (64, 64)
+    );
+    assert!(cap.screenshot_gop(Some("B"), 4 * SEC).is_err());
+    assert!(cap.screenshot_gop(Some("A"), 6 * SEC).is_err());
+    cap.ingest_event(video_gap(4 * SEC)).unwrap();
+    assert!(cap.screenshot_gop(Some("A"), 4 * SEC).is_err());
+    frames(&mut cap, 4 * SEC, 1, 80);
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: 4 * SEC,
+        boot_id: BOOT.into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 128,
+            height: 64,
+        },
+    })
+    .unwrap();
+    assert!(
+        cap.screenshot_gop(Some("A"), 4 * SEC).is_err(),
+        "rotation awaits a new IDR"
+    );
+    // A late video reader from another device boot cannot borrow this boot's beacon.
+    cap.ingest_event(CaptureEvent::VideoSession {
+        pc_cont_ns: 4 * SEC,
+        boot_id: "other-boot".into(),
+        meta: arb_adb::scrcpy::VideoSessionMeta {
+            header_tag: 0,
+            width: 64,
+            height: 64,
+        },
+    })
+    .unwrap();
+    let (config, picture, _) = encoded_gop(1, 80).remove(0);
+    cap.ingest_event(CaptureEvent::VideoFrame {
+        pc_cont_ns: 4 * SEC,
+        boot_id: "other-boot".into(),
+        packet: VideoPacket {
+            kind: VideoPacketKind::Keyframe,
+            pts_us: 4_000_000,
+            data: [config, picture].concat(),
+        },
+    })
+    .unwrap();
+    assert!(
+        cap.screenshot_gop(Some("A"), 4 * SEC).is_err(),
+        "different boot"
+    );
+    cap.mark_stopped();
+    assert!(cap.screenshot_gop(Some("A"), 4 * SEC).is_err());
+}

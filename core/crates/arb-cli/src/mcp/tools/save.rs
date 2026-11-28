@@ -6,6 +6,13 @@ use crate::mcp::{
     resources,
 };
 use serde_json::{Map, Value, json};
+pub(super) fn save_method(args: &Map<String, Value>) -> &'static str {
+    if args.get("logs_only") == Some(&Value::Bool(true)) {
+        "save.logs"
+    } else {
+        "save.trigger"
+    }
+}
 impl McpServer {
     pub(super) fn tool_jobs(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
         let action = args["action"]
@@ -57,11 +64,7 @@ impl McpServer {
         &mut self,
         args: &Map<String, Value>,
     ) -> Result<ToolOutput, Failure> {
-        let method = if args.get("logs_only") == Some(&Value::Bool(true)) {
-            "save.logs"
-        } else {
-            "save.trigger"
-        };
+        let method = save_method(args);
         let mut result = self.tool_save(method, args)?;
         self.activity.notify(&self.session, "保存完了・証跡を確認");
         if let Err(mut error) = self.inspect_saved(args, &mut result) {
@@ -104,9 +107,15 @@ impl McpServer {
         }
         result.body = json!({"save":result.body,"summary":summary,"screens":screens,
             "carried_in":overview["carried_in"].take(),"crashes":overview["crashes"].take(),
+
             "process_events":overview["process_events"].take(),"package_filter":overview["package_filter"].take(),
             "warnings":overview["warnings"].take(),"error_logs":error_logs,
             "noise_candidates":overview["noise_candidates"].take(),"input_capture":overview["input_capture"].take(),"memo":args.get("note")});
+        for key in ["taps", "injected_inputs", "injected_inputs_truncated"] {
+            if let Some(value) = overview.get_mut(key) {
+                result.body[key] = value.take();
+            }
+        }
         Ok(())
     }
 }

@@ -40,7 +40,7 @@ const JSONRPC_INVALID_REQUEST: i32 = -32_600;
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32_601;
 const JSONRPC_INVALID_PARAMS: i32 = -32_602;
 
-const SERVER_INSTRUCTIONS: &str = "不具合の記録には arb_save_and_inspect を使います。arb_query_logs は既定 fields: \"compact\"（全項目は \"full\"）で、limit（最大 500）と cursor でページ送りし、whole_word で単語を絞れます。arb_screenshot は既定で画像を含まず file_uri と resource_links を返します（インライン画像は include_image: true）。画像は必要な resource_link のみ resources/read で取得してください。各ツールの outputSchema は arb://schemas/{tool} で読めます。整理の前には arb_gc_bundles の dry_run: true で候補を確認してください。";
+const SERVER_INSTRUCTIONS: &str = "直近の不具合は arb_save_and_inspect、保存済みなら arb_timeline_overview から開始。crashes[0] と process_events の frame_index_hint を arb_inspect_frames の single に渡し、arb_query_logs の start_frame・end_frame で前後を確認します。input_capture は観測範囲、taps は物理入力、injected_inputs は adbd の注入要求（対話シェル・別の注入元は観測外、実行成功は未確認）です。arb_screenshot は既定 include_image: false、必要時は include_image: true または resource_links・file_uri を開きます。フレームは arb://bundles/{id}/frame/{n} で閲覧できます。整理は arb_gc_bundles({}) で候補を確認後、dry_run: false で実行。失敗ジョブは arb_jobs の list で確認します。各出力スキーマは arb://schemas/{tool}。";
 
 /// Runs the blocking stdio MCP JSON-RPC 2.0 loop until stdin reaches EOF.
 ///

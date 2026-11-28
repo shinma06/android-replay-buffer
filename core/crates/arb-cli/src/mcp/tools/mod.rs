@@ -13,7 +13,7 @@ impl McpServer {
         args: &Map<String, Value>,
     ) -> Result<ToolOutput, Failure> {
         match name {
-            "arb_status" => self.tool_status(),
+            "arb_status" => self.tool_status(args),
             "arb_jobs" => self.tool_jobs(args),
             "arb_devices" => {
                 let resp = self.call_daemon("device.list", &json!({}))?;
@@ -31,7 +31,7 @@ impl McpServer {
             }
             "arb_config_update" => self.tool_config_update(args),
             "arb_save_and_inspect" => self.save_and_inspect(args),
-            "arb_save" => self.tool_save("save.trigger", args),
+            "arb_save" => self.tool_save(save::save_method(args), args),
             "arb_screenshot" => self.tool_screenshot(args),
             "arb_save_logs" => self.tool_save("save.logs", args),
             "arb_list_bundles" => self.list_bundles(args),

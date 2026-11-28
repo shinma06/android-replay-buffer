@@ -264,6 +264,7 @@ enum CommandSpec {
         drain_timeout_ms: Option<u64>,
     },
     Screenshot {
+        source: String,
         serial: Option<String>,
         out: Option<PathBuf>,
         out_dir: Option<PathBuf>,
@@ -732,6 +733,7 @@ fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut serial = None;
     let mut out = None;
     let mut out_dir = None;
+    let mut source = "auto".to_owned();
     let mut overwrite = false;
     let mut i = 0_usize;
 
@@ -741,6 +743,16 @@ fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 let raw = require_val(args, i, "--serial")?;
                 validate_adb_serial(raw).map_err(|err| CliError::usage(err.to_string()))?;
                 serial = Some(raw.to_owned());
+                i += 2;
+            }
+            "--source" => {
+                let value = require_val(args, i, "--source")?;
+                if !matches!(value, "auto" | "capture" | "screencap") {
+                    return Err(CliError::usage(
+                        "--source は auto、capture、screencap から選んでください",
+                    ));
+                }
+                value.clone_into(&mut source);
                 i += 2;
             }
             "--out" => {
@@ -774,6 +786,7 @@ fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     }
 
     Ok(CommandSpec::Screenshot {
+        source,
         serial,
         out,
         out_dir,
@@ -1013,21 +1026,26 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
 
 fn parse_gc(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut ignore_grace = false;
-    let mut dry_run = false;
+    let mut preview = false;
+    let mut execute = false;
     for flag in args {
         match flag.as_str() {
             "--now" => ignore_grace = true,
-            "--dry-run" => dry_run = true,
+            "--dry-run" => preview = true,
+            "--yes" | "--execute" => execute = true,
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown bundles gc option `{other}` (expected `--now` or `--dry-run`)"
+                    "unknown bundles gc option `{other}` (expected --now, --yes or --dry-run)"
                 )));
             }
         }
     }
+    if preview && execute {
+        return Err(CliError::usage("--dry-run と --yes は同時に指定できません"));
+    }
     Ok(CommandSpec::BundlesGc {
         ignore_grace,
-        dry_run,
+        dry_run: !execute,
     })
 }
 
@@ -1515,13 +1533,14 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
             "log-only save result",
         ),
         CommandSpec::Screenshot {
+            source,
             serial,
             out,
             out_dir,
             overwrite,
         } => (
             "save.screenshot",
-            json!({ "serial": serial, "output_path": out, "output_dir": out_dir, "overwrite": overwrite }),
+            json!({ "source": source, "serial": serial, "output_path": out, "output_dir": out_dir, "overwrite": overwrite }),
             "screenshot saved",
         ),
         CommandSpec::ConfigGet => ("config.get", json!({}), "config"),
@@ -1978,13 +1997,13 @@ COMMANDS:\n  \
   capture stop\n  \
   save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   save-logs [--window-secs <N>] [--note <TEXT>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
-  screenshot [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
+  screenshot [--source auto|capture|screencap] [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
   config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--crash-autosave-post-roll-ms <0..10000>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> [--dest <DIR>] | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--start-offset-ms MS] [--end-offset-ms MS] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run | --yes]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--start-offset-ms MS] [--end-offset-ms MS] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run | --yes] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
@@ -2435,7 +2454,7 @@ mod tests {
             gc_default,
             CommandSpec::BundlesGc {
                 ignore_grace: false,
-                dry_run: false,
+                dry_run: true,
             }
         );
         let (_, gc_now) =
@@ -2444,10 +2463,15 @@ mod tests {
             gc_now,
             CommandSpec::BundlesGc {
                 ignore_grace: true,
-                dry_run: false
+                dry_run: true
             }
         );
         assert!(parse_args(&vec_str(&["bundles", "gc", "--bogus"])).is_err());
+        assert!(parse_args(&vec_str(&["bundles", "gc", "--yes", "--dry-run"])).is_err());
+        assert!(matches!(
+            parse_args(&vec_str(&["bundles", "gc", "--yes"])).unwrap().1,
+            CommandSpec::BundlesGc { dry_run: false, .. }
+        ));
 
         let (_, forget_one) =
             parse_args(&vec_str(&["bundles", "forget", "b-1"])).expect("bundles forget <id>");
@@ -2564,6 +2588,7 @@ mod tests {
         assert_eq!(
             shot,
             CommandSpec::Screenshot {
+                source: "auto".to_owned(),
                 serial: Some("emu-5554".to_owned()),
                 out: Some(cwd.join("shots/s1.png")),
                 out_dir: None,
@@ -2751,6 +2776,7 @@ mod tests {
         assert_eq!(
             shot_dir,
             CommandSpec::Screenshot {
+                source: "auto".to_owned(),
                 serial: Some("[fe80::1]:5555".to_owned()),
                 out: None,
                 out_dir: Some(cwd.join("shots-dir")),
