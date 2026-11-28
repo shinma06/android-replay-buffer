@@ -127,7 +127,7 @@ pub struct ClassifiedError {
 
 fn not_found_feedback(entity: NotFoundEntity) -> (&'static str, &'static str) {
     match entity {
-        NotFoundEntity::Bundle => ("BUNDLE_NOT_FOUND", "指定されたバンドルが見つかりません。"),
+        NotFoundEntity::Bundle => ("BUNDLE_NOT_FOUND", "指定された対象が見つかりません。"),
         NotFoundEntity::Job => ("JOB_NOT_FOUND", "指定された保存ジョブが見つかりません。"),
         NotFoundEntity::Lease => ("LEASE_NOT_FOUND", "指定されたリースが見つかりません。"),
         NotFoundEntity::Viewport => (

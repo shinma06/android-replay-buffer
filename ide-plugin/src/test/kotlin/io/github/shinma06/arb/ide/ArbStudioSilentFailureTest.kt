@@ -1,6 +1,7 @@
 package io.github.shinma06.arb.ide
 
 import io.github.shinma06.arb.model.ArbdRpcException
+import io.github.shinma06.arb.model.RpcErrorDetails
 import io.github.shinma06.arb.state.AuxStream
 import io.github.shinma06.arb.state.StreamLoadState
 import io.github.shinma06.arb.testsupport.Fault
@@ -30,6 +31,10 @@ class ArbStudioSilentFailureTest {
     @Test
     fun missingBundleRecoveryUsesTheRpcCodeAndSupportsFilesystemErrors() {
         assertTrue(ArbdRpcException(-32001, "指定されたバンドルが見つかりません。").isMissingBundle())
+        for (label in listOf("NOT_FOUND", "DEVICE_NOT_FOUND", "VIEWPORT_NOT_FOUND", "SAVE_FAILED")) {
+            assertFalse(ArbdRpcException(-32001, "業務エラー", details = RpcErrorDetails(errorCode = label)).isMissingBundle(), label)
+        }
+        assertTrue(ArbdRpcException(-32001, "未検出", details = RpcErrorDetails(errorCode = "BUNDLE_NOT_FOUND")).isMissingBundle())
         assertFalse(ArbdRpcException(-32602, "video not found").isMissingBundle())
         assertTrue(java.io.IOException("No such file or directory").isMissingBundle())
     }
