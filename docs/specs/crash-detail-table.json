@@ -680,6 +680,111 @@
           "is_crash": false
         }
       ]
+    },
+    {
+      "id": "PE-08",
+      "note": "複数プロセスのアプリの force-stop。2 本目以降の Killing も統合し、そのどの PID の has died も force-stop の結果として出さない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 100000,
+          "boot": "b1",
+          "message": "Force stopping com.example.app appid=10123 user=0: from pid 8123"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 100001,
+          "boot": "b1",
+          "message": "Killing 4242:com.example.app/u0a123 (adj 0): stop com.example.app due to from pid 8123"
+        },
+        {
+          "seq": 3,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 100002,
+          "boot": "b1",
+          "message": "Killing 4343:com.example.app:sync/u0a123 (adj 0): stop com.example.app due to from pid 8123"
+        },
+        {
+          "seq": 4,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 100050,
+          "boot": "b1",
+          "message": "Process com.example.app (pid 4242) has died: fg  TOP"
+        },
+        {
+          "seq": 5,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 100060,
+          "boot": "b1",
+          "message": "Process com.example.app:sync (pid 4343) has died: cch+5 CEM"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "force_stop",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "stop com.example.app due to from pid 8123",
+          "source_log_seq": 1,
+          "is_crash": false
+        }
+      ]
+    },
+    {
+      "id": "PE-09",
+      "note": "ANR は終了ではないので、直後の同じ PID の has died を抑止しない。",
+      "logs": [
+        {
+          "seq": 1,
+          "tag": "am_anr",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 110000,
+          "boot": "b1",
+          "message": "[0,4242,com.example.app,952745541,Input dispatching timed out]"
+        },
+        {
+          "seq": 2,
+          "tag": "ActivityManager",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 112000,
+          "boot": "b1",
+          "message": "Process com.example.app (pid 4242) has died: fg  TOP"
+        }
+      ],
+      "crashes": [],
+      "expected": [
+        {
+          "kind": "anr",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "Input dispatching timed out",
+          "source_log_seq": 1,
+          "is_crash": false
+        },
+        {
+          "kind": "died",
+          "package_name": "com.example.app",
+          "pid": 4242,
+          "reason": "fg  TOP",
+          "source_log_seq": 2,
+          "is_crash": false
+        }
+      ]
     }
   ]
 }

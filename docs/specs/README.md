@@ -67,7 +67,7 @@
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 21 ツールと実書き出し、IDE と仕様書の表示名 |
-| [クラッシュ詳細・プロセス終了](crash-detail-table.json) | 固定ログ列から `stack_top`・`first_app_frame`・`caused_by` と `process_events`（偽装 UID 10xxx の拒否、force-stop 2 行の統合、クラッシュ直後の has died の抑止）を引く。K18・G9・TCB-23 |
+| [クラッシュ詳細・プロセス終了](crash-detail-table.json) | 固定ログ列から `stack_top`・`first_app_frame`・`caused_by` と `process_events`（偽装 UID 10xxx の拒否、複数プロセスを含む force-stop の統合、クラッシュ・kill 直後の has died の抑止、ANR 後の死亡の保持）を引く。K18・G9・TCB-23 |
 | [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K18、S1〜S7、G1〜G9、M1〜M2、構造ガードと実機・外部実装への依存 |
 
 ## 症状から判定する
