@@ -40,7 +40,7 @@ use arb_core::bundle::RecordBucket;
 use arb_core::config::{
     ArbConfig, ArbConfigPatch, CaptureMode, MAX_SAVE_WINDOW_SECS, MIN_SAVE_WINDOW_SECS,
 };
-use arb_core::device::validate_adb_serial;
+use arb_core::device::{DeviceSelectionOutcome, validate_adb_serial};
 use arb_core::selection::{DrainOutcome, SelectionPolicy, evaluate_stream_drain};
 use arb_core::state::{RingBudgetPolicy, SaveTriggerKind};
 use arb_media::codec::default_codec_backend;
@@ -200,6 +200,9 @@ struct LiveCapture {
     handle: Option<LiveCaptureHandle>,
     reservation: Option<Arc<()>>,
     request: CaptureStartParams,
+    /// Bumped by every stop (`capture.stop`, a device reselection, a pressure disarm). A start
+    /// remembers it on entry, so a stop also cancels starts still queued or waiting.
+    stop_epoch: u64,
 }
 
 struct DaemonState {
@@ -352,6 +355,7 @@ impl DaemonState {
             let generation = self.lock_capture()?.session_generation();
             live_guard.reservation = None;
             live_guard.request = CaptureStartParams::default();
+            live_guard.stop_epoch = live_guard.stop_epoch.wrapping_add(1);
             (live_guard.handle.take(), generation)
         };
         let was_running = handle.is_some();
@@ -764,79 +768,239 @@ impl DaemonState {
         Ok(serde_json::to_value(DeviceListResponse { devices })?)
     }
 
+    /// `capture.start` (#583). An explicit `serial` is only a tentative target: nothing reaches
+    /// `config.json` or `live.request` until that device is `Selected` and its capture started,
+    /// and then `(capture_enabled=true, device_serial)` is committed in one atomic write. A start
+    /// without `serial` keeps the always-on arming contract (DS-02/DS-03).
     fn handle_capture_start(self: &Arc<Self>, params: Value) -> Result<Value, DaemonError> {
         let request: CaptureStartParams = parse_optional_params(params)?;
-        let (reservation, parsed, mut response) = {
-            let _guard = self.lock(&self.config_update_lock, "config update")?;
-            if self.is_shutting_down() {
-                return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
-            }
-            let mut live = self.lock(&self.live_capture, "live capture")?;
-            if live.handle.as_ref().is_some_and(|h| !h.is_finished()) {
-                return Err(DaemonError::Conflict(
-                    "capture session is already active".into(),
-                ));
-            }
-            let parsed = self.capture_options(request.clone())?;
-            let explicit = request
-                .serial
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let serial_source = if explicit.is_some() {
-                SerialSource::Argument
-            } else if parsed.serial.is_some() {
-                SerialSource::Config
+        let explicit = request
+            .serial
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let wait = Duration::from_millis(request.wait_timeout_ms.unwrap_or(5000).min(30_000));
+        // A reservation is a single discovery (auto-attach) or another caller's bounded wait;
+        // queue behind it instead of cancelling it, and report a conflict if it never ends.
+        let reservation_deadline = Instant::now()
+            + START_RESERVATION_WAIT.max(if request.wait_connected {
+                wait
             } else {
-                SerialSource::Auto
-            };
-            let config_changed = self.persist_capture_intent(CaptureIntent::Armed, explicit)?;
-            let response = CaptureStartResponse {
-                serial_source: Some(serial_source),
-                config_changed,
-                selection: None,
-                serial: parsed.serial.clone().unwrap_or_default(),
-                capture_mode: parsed.capture_mode.unwrap_or_default(),
-                started: false,
-                connected: Some(false),
-                wait_timed_out: Some(false),
-                audio_state: Some(protocol::AudioCaptureState::Unknown),
-                audio_cause: None,
-            };
-            self.lock_capture()?.clear_storage_pressure_stop();
-            live.request = request;
-            let ticket = Arc::new(());
-            live.reservation = Some(Arc::clone(&ticket));
-            (ticket, parsed, response)
+                Duration::ZERO
+            });
+        // The connection wait starts once this call holds the slot, so queuing never uses it up.
+        let deadline_from_now = || request.wait_connected.then(|| Instant::now() + wait);
+        let epoch = self.lock(&self.live_capture, "live capture")?.stop_epoch;
+        let (reservation, parsed, mut response) = loop {
+            match self.admit_capture_start(&request, explicit.as_deref(), epoch)? {
+                StartAdmission::Reserved(ticket, parsed, response) => {
+                    break (ticket, parsed, *response);
+                }
+                StartAdmission::AlreadyActive(response, generation) => {
+                    return self.wait_for_connection(
+                        serde_json::to_value(*response)?,
+                        Some(generation),
+                        deadline_from_now(),
+                    );
+                }
+                StartAdmission::Busy if Instant::now() < reservation_deadline => {
+                    thread::sleep(Duration::from_millis(DRAIN_POLL_INTERVAL_MS));
+                }
+                StartAdmission::Busy => {
+                    return Err(DaemonError::CaptureConflict {
+                        reason: "attach_in_progress",
+                        active_serial: None,
+                        requested_serial: explicit,
+                    });
+                }
+            }
         };
-        let deadline = parsed.wait_connected.then(|| {
-            Instant::now()
-                + Duration::from_millis(parsed.wait_timeout_ms.unwrap_or(5000).min(30_000))
-        });
-        let outcome = if let Some(deadline) = deadline {
-            self.attach_with_deadline(&reservation, parsed, deadline)?
+        let deadline = deadline_from_now();
+        let observed = Mutex::new(None);
+        // A deadline always goes through the bounded worker, even `wait_timeout_ms = 0`, so a
+        // hung `adb devices` can never hold the reply past it.
+        let outcome = if let Some(end) = deadline {
+            self.attach_with_deadline(&reservation, parsed, end, &observed, epoch)?
         } else {
-            Some(self.attach_reserved(&reservation, &parsed, None)?)
+            Some(self.attach_reserved(&reservation, &parsed, None, Some(&observed))?)
         };
-        let Some((selection, generation)) = outcome else {
-            response.wait_timed_out = Some(true);
-            return Ok(serde_json::to_value(response)?);
-        };
-        if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
+        // `None`: the deadline passed and this call cancelled its own reservation. The last
+        // discovery may still read `Selected` (the worker saw the device but never started it),
+        // so a timed-out attach is reported as a timeout, never as a started session.
+        let timed_out = outcome.is_none();
+        let (selection, generation) = outcome.unwrap_or_else(|| {
+            let seen = observed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            (
+                seen.unwrap_or(DeviceSelectionOutcome::NoOnlineDevices),
+                None,
+            )
+        });
+        let waited_out = deadline.is_some()
+            && (timed_out
+                || matches!(
+                    selection,
+                    DeviceSelectionOutcome::NoOnlineDevices
+                        | DeviceSelectionOutcome::WaitingForPreferredDevice { .. }
+                ));
+        if !timed_out && let DeviceSelectionOutcome::Selected { serial } = selection {
+            if let Some(explicit) = explicit.as_deref() {
+                response.config_changed =
+                    self.commit_explicit_start(&request, explicit, generation, epoch)?;
+            }
             response.started = true;
             response.serial = serial;
-        } else {
-            response.wait_timed_out =
-                Some(
-                    deadline.is_some()
-                        && matches!(selection,
-                arb_core::device::DeviceSelectionOutcome::NoOnlineDevices |
-                arb_core::device::DeviceSelectionOutcome::WaitingForPreferredDevice { .. }),
-                );
-            response.selection = Some(selection);
-            return Ok(serde_json::to_value(response)?);
+            return self.wait_for_connection(serde_json::to_value(response)?, generation, deadline);
         }
-        self.wait_for_connection(serde_json::to_value(response)?, generation, deadline)
+        if let Some(serial) = explicit {
+            return Err(DaemonError::StartTargetNotFound {
+                serial: serial.clone(),
+                // Still waiting for this serial at the deadline (it may have been seen online
+                // while the attach never got to start it).
+                selection: match selection {
+                    DeviceSelectionOutcome::NoOnlineDevices
+                    | DeviceSelectionOutcome::Selected { .. } => {
+                        DeviceSelectionOutcome::WaitingForPreferredDevice {
+                            preferred_serial: serial,
+                            other_online_serials: Vec::new(),
+                        }
+                    }
+                    other => other,
+                },
+                wait_timed_out: waited_out,
+            });
+        }
+        response.wait_timed_out = Some(waited_out);
+        response.warnings = vec![waiting_for_device_warning(&selection)];
+        response.selection = Some(selection);
+        Ok(serde_json::to_value(response)?)
+    }
+
+    /// Decides, under `config_update_lock` and the live lock, whether a start may reserve the
+    /// attach slot. Only a start without `serial` persists anything here (the armed intent).
+    fn admit_capture_start(
+        &self,
+        request: &CaptureStartParams,
+        explicit: Option<&str>,
+        epoch: u64,
+    ) -> Result<StartAdmission, DaemonError> {
+        let _guard = self.lock(&self.config_update_lock, "config update")?;
+        if self.is_shutting_down() {
+            return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+        }
+        let mut live = self.lock(&self.live_capture, "live capture")?;
+        if live.stop_epoch != epoch {
+            // A stop arrived while this start was queued: it must not resume recording.
+            return Err(start_cancelled());
+        }
+        let parsed = self.capture_options(request.clone())?;
+        let serial_source = if explicit.is_some() {
+            SerialSource::Argument
+        } else if parsed.serial.is_some() {
+            SerialSource::Config
+        } else {
+            SerialSource::Auto
+        };
+        let mut response = CaptureStartResponse {
+            serial_source: Some(serial_source),
+            config_changed: CaptureConfigChanges::default(),
+            selection: None,
+            serial: parsed.serial.clone().unwrap_or_default(),
+            capture_mode: parsed.capture_mode.unwrap_or_default(),
+            started: false,
+            connected: Some(false),
+            wait_timed_out: Some(false),
+            audio_state: Some(protocol::AudioCaptureState::Unknown),
+            audio_cause: None,
+            already_active: false,
+            warnings: Vec::new(),
+        };
+        if live.handle.as_ref().is_some_and(|h| !h.is_finished()) {
+            let (status, generation) = {
+                let cap = self.lock_capture()?;
+                (cap.status_view(), cap.session_generation())
+            };
+            if let Some(requested) = explicit
+                && status.serial.as_deref() != Some(requested)
+            {
+                return Err(DaemonError::CaptureConflict {
+                    reason: "different_active_serial",
+                    active_serial: status.serial,
+                    requested_serial: Some(requested.to_owned()),
+                });
+            }
+            // The same device keeps recording: an idempotent start, never a restart (CI-08).
+            response.config_changed =
+                self.persist_capture_intent(CaptureIntent::Armed, explicit)?;
+            response.started = true;
+            response.already_active = true;
+            response.connected = Some(status.connected);
+            response.serial = status.serial.unwrap_or_default();
+            response.capture_mode = status.capture_mode;
+            response.audio_state = Some(status.audio_state);
+            response.audio_cause = status.audio_cause;
+            return Ok(StartAdmission::AlreadyActive(
+                Box::new(response),
+                generation,
+            ));
+        }
+        if live.reservation.is_some() {
+            return Ok(StartAdmission::Busy);
+        }
+        if explicit.is_none() {
+            response.config_changed = self.persist_capture_intent(CaptureIntent::Armed, None)?;
+            self.lock_capture()?.clear_storage_pressure_stop();
+            live.request = request.clone();
+        } else if self.config_unreadable {
+            return Err(DaemonError::Conflict(
+                "config.json could not be read".into(),
+            ));
+        }
+        let ticket = Arc::new(());
+        live.reservation = Some(Arc::clone(&ticket));
+        Ok(StartAdmission::Reserved(ticket, parsed, Box::new(response)))
+    }
+
+    /// Commits an explicit start once its device is `Selected` and capturing: one atomic write
+    /// of `(capture_enabled=true, device_serial)`. A stop or reselection that replaced the
+    /// session in between wins, and nothing is persisted.
+    fn commit_explicit_start(
+        &self,
+        request: &CaptureStartParams,
+        serial: &str,
+        generation: Option<u64>,
+        epoch: u64,
+    ) -> Result<CaptureConfigChanges, DaemonError> {
+        let (committed, orphan) = {
+            let _guard = self.lock(&self.config_update_lock, "config update")?;
+            let mut live = self.lock(&self.live_capture, "live capture")?;
+            let current = live.stop_epoch == epoch
+                && live.handle.as_ref().is_some_and(|h| !h.is_finished())
+                && generation == Some(self.lock_capture()?.session_generation());
+            if !current {
+                return Err(start_cancelled());
+            }
+            let committed = self.persist_capture_intent(CaptureIntent::Armed, Some(serial));
+            let orphan = if committed.is_ok() {
+                live.request = request.clone();
+                live.request.serial = Some(serial.to_owned());
+                None
+            } else {
+                // Detach exactly this tentative session while it is still provably ours.
+                live.handle.take()
+            };
+            (committed, orphan)
+        };
+        if let Some(mut handle) = orphan {
+            handle.stop();
+            if let Some(generation) = generation {
+                self.lock_capture()?.mark_stopped_if_current(generation);
+            }
+        }
+        committed
     }
 
     fn attach_with_deadline(
@@ -844,27 +1008,78 @@ impl DaemonState {
         reservation: &Arc<()>,
         parsed: CaptureStartParams,
         deadline: Instant,
+        observed: &Mutex<Option<DeviceSelectionOutcome>>,
+        epoch: u64,
     ) -> Result<Option<AttachResult>, DaemonError> {
         let (tx, rx) = mpsc::channel();
         let state = Arc::clone(self);
         let worker_ticket = Arc::clone(reservation);
+        let seen = Arc::new(Mutex::new(None));
+        let worker_seen = Arc::clone(&seen);
         let spawned = thread::Builder::new()
             .name("arbd-connect-wait".into())
             .spawn(move || {
-                let _ = tx.send(state.attach_reserved(&worker_ticket, &parsed, Some(deadline)));
+                let _ = tx.send(state.attach_reserved(
+                    &worker_ticket,
+                    &parsed,
+                    Some(deadline),
+                    Some(&*worker_seen),
+                ));
             });
         if let Err(err) = spawned {
-            let mut live = self.lock(&self.live_capture, "live capture")?;
-            if live
-                .reservation
-                .as_ref()
-                .is_some_and(|ticket| Arc::ptr_eq(ticket, reservation))
-            {
-                live.reservation = None;
-            }
+            self.release_reservation(reservation, epoch)?;
             return Err(err.into());
         }
-        self.await_attach(&rx, deadline)
+        let result = self.await_attach(&rx, deadline);
+        observed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone_from(&seen.lock().unwrap_or_else(PoisonError::into_inner));
+        if !matches!(result, Ok(None)) {
+            return result;
+        }
+        // Deadline passed. A reservation still ours is cancelled, so a late attach cannot start
+        // a session after this caller was told it timed out. A stop that took it reports the
+        // cancellation now, without waiting for a discovery that may still be blocked. Only when
+        // the worker itself consumed it (under the live lock) is its result the answer.
+        match self.release_reservation(reservation, epoch)? {
+            ReservationFate::Released => return Ok(None),
+            ReservationFate::Cancelled => return Err(start_cancelled()),
+            ReservationFate::Consumed => {}
+        }
+        loop {
+            if self.is_shutting_down() {
+                return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
+            }
+            match rx.recv_timeout(Duration::from_millis(DRAIN_POLL_INTERVAL_MS)) {
+                Ok(r) => return r.map(Some),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
+            }
+        }
+    }
+
+    /// Drops `reservation` if it is still the active one, and otherwise tells whether a stop
+    /// (epoch changed) or the attach worker took it.
+    fn release_reservation(
+        &self,
+        reservation: &Arc<()>,
+        epoch: u64,
+    ) -> Result<ReservationFate, DaemonError> {
+        let mut live = self.lock(&self.live_capture, "live capture")?;
+        if live
+            .reservation
+            .as_ref()
+            .is_some_and(|ticket| Arc::ptr_eq(ticket, reservation))
+        {
+            live.reservation = None;
+            return Ok(ReservationFate::Released);
+        }
+        Ok(if live.stop_epoch == epoch {
+            ReservationFate::Consumed
+        } else {
+            ReservationFate::Cancelled
+        })
     }
 
     /// Waits for the attach worker; `None` means the deadline passed first.
@@ -1009,6 +1224,7 @@ impl DaemonState {
         ticket: &Arc<()>,
         parsed: &CaptureStartParams,
         deadline: Option<Instant>,
+        observed: Option<&Mutex<Option<DeviceSelectionOutcome>>>,
     ) -> AttachOutcome {
         use arb_core::device::DeviceSelectionOutcome::{
             NoOnlineDevices, WaitingForPreferredDevice,
@@ -1020,6 +1236,9 @@ impl DaemonState {
                     let outcome = select_live_target(&adb, parsed.serial.as_deref())?;
                     Ok((adb, outcome))
                 });
+            if let (Some(observed), Ok((_, outcome))) = (observed, &discovery) {
+                *observed.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome.clone());
+            }
             let mut live = self.lock(&self.live_capture, "live capture")?;
             if self.is_shutting_down()
                 || !live
@@ -1027,7 +1246,7 @@ impl DaemonState {
                     .as_ref()
                     .is_some_and(|active| Arc::ptr_eq(active, ticket))
             {
-                return Err(DaemonError::Conflict("capture start was cancelled".into()));
+                return Err(start_cancelled());
             }
             // Keep this request's reservation across discovery attempts. A stop or replacement
             // invalidates the ticket, and the background supervisor cannot claim this generation.
@@ -1046,12 +1265,15 @@ impl DaemonState {
             }
             live.reservation = None;
             let (adb, selection) = discovery?;
-            if let arb_core::device::DeviceSelectionOutcome::Selected { serial } = selection {
+            if let DeviceSelectionOutcome::Selected { serial } = selection {
+                // A start that reached its device may record again after a pressure stop; a
+                // start that never got here leaves the latch (and the generation) untouched.
+                self.lock_capture()?.clear_storage_pressure_stop();
                 let (serial, handle) = start_selected_capture(parsed, &self.capture, adb, serial)?;
                 live.handle = Some(handle);
                 let generation = self.lock_capture()?.session_generation();
                 return Ok((
-                    arb_core::device::DeviceSelectionOutcome::Selected { serial },
+                    DeviceSelectionOutcome::Selected { serial },
                     Some(generation),
                 ));
             }
@@ -1082,7 +1304,7 @@ impl DaemonState {
             live.reservation = Some(Arc::clone(&ticket));
             (ticket, parsed)
         };
-        self.attach_reserved(&ticket, &parsed, None)?;
+        self.attach_reserved(&ticket, &parsed, None, None)?;
         Ok(())
     }
 
@@ -2747,7 +2969,55 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
     state.close_client_viewports(&owned_viewports);
 }
 
-type AttachResult = (arb_core::device::DeviceSelectionOutcome, Option<u64>);
+type AttachResult = (DeviceSelectionOutcome, Option<u64>);
+
+/// How long a `capture.start` queues behind another device reservation before `CONFLICT`.
+const START_RESERVATION_WAIT: Duration = Duration::from_secs(5);
+
+/// Admission decision for `capture.start`, taken under the live lock.
+enum StartAdmission {
+    /// The attach slot is reserved for this call.
+    Reserved(Arc<()>, CaptureStartParams, Box<CaptureStartResponse>),
+    /// The same session keeps recording; carries its generation.
+    AlreadyActive(Box<CaptureStartResponse>, u64),
+    /// Auto-attach or another start holds the reservation.
+    Busy,
+}
+
+/// What happened to a start's reservation when its deadline passed.
+enum ReservationFate {
+    /// Still ours; this call released it.
+    Released,
+    /// A stop cleared it.
+    Cancelled,
+    /// The attach worker consumed it and decided under the live lock.
+    Consumed,
+}
+
+fn start_cancelled() -> DaemonError {
+    DaemonError::Conflict("capture start was cancelled".into())
+}
+
+/// `waiting_for_device`: an armed start without `serial` is waiting for its target (DS-02/03).
+fn waiting_for_device_warning(selection: &DeviceSelectionOutcome) -> protocol::WarningDetail {
+    let message = match selection {
+        DeviceSelectionOutcome::MultipleDevicesNeedSelection { .. } => {
+            "複数の端末が接続されています。録画する端末を選ぶまで待機します。"
+        }
+        DeviceSelectionOutcome::WaitingForPreferredDevice { .. } => {
+            "設定済みの端末の接続を待っています。接続すると自動で録画を始めます。"
+        }
+        _ => "端末の接続を待っています。接続すると自動で録画を始めます。",
+    };
+    let details = serde_json::to_value(selection)
+        .ok()
+        .and_then(|v| v.as_object().cloned());
+    protocol::WarningDetail {
+        code: "waiting_for_device".to_owned(),
+        message: message.to_owned(),
+        details,
+    }
+}
 type AttachOutcome = Result<AttachResult, DaemonError>;
 
 /// Applies the default and maximum `limit` of `timeline.query_*` (R3 S10).
@@ -3045,9 +3315,16 @@ mod supervisor_hardening_tests {
         );
 
         free.store(10 * 1024 * 1024 * 1024, Ordering::Release);
+        // An explicit serial that is not online re-arms nothing (#583); the stored pin does.
         let _ = server
             .state
             .handle_capture_start(json!({ "serial": "absent-test-device" }));
+        assert_eq!(
+            server.state.dispatch("system.status", json!({})).unwrap()["capture_enabled"],
+            false,
+            "a failed explicit start must not persist capture_enabled"
+        );
+        let _ = server.state.handle_capture_start(json!({}));
         let _ = server.state.auto_attach();
         let status = server.state.dispatch("system.status", json!({})).unwrap();
         assert_eq!(

@@ -51,7 +51,7 @@
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "録画を開始。capture_enabled=true と明示した serial（device_serial）を保存。稼働中なら CONFLICT。",
+      "description": "録画を開始。明示 serial は接続・取得開始後にだけ device_serial と capture_enabled=true を保存し、未接続なら DEVICE_NOT_FOUND で設定は不変（オフライン端末の予約は arb_config_update）。録画中は同じ端末なら already_active、別端末は CONFLICT。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -64,7 +64,7 @@
           "max_fps": {"description": "映像の最大 fps。", "maximum": 120, "minimum": 1, "type": "integer"},
           "max_size": {"description": "映像の長辺上限（px）。", "maximum": 4096, "minimum": 256, "type": "integer"},
           "scrcpy_jar": {"description": "scrcpy サーバー JAR。", "type": "string"},
-          "serial": {"description": "ADB シリアル。省略時は自動選択。", "type": "string"},
+          "serial": {"description": "ADB シリアル。接続中の端末だけ確定。省略時は設定値か自動選択。", "type": "string"},
           "video_bit_rate": {"description": "映像の目標 bps。", "minimum": 100000, "type": "integer", "maximum": 4294967295},
           "wait_connected": {"type": "boolean", "description": "端末の接続成立を待機。", "default": false},
           "wait_timeout_ms": {"type": "integer", "description": "接続の待ち時間（ms）。", "minimum": 0, "maximum": 30000, "default": 5000}
@@ -104,7 +104,7 @@
           "capture_mode": {"enum": ["video_and_logs", "logs_only"], "type": "string", "description": "録画方式。既定は設定値。"},
           "crash_autosave_cooldown_secs": {"maximum": 3600, "minimum": 1, "type": "integer", "description": "クラッシュ自動保存の最短間隔（秒）。"},
           "crash_autosave_enabled": {"type": "boolean", "description": "クラッシュ時に自動保存。"},
-          "device_serial": {"type": ["string", "null"], "description": "優先端末。null で解除。"},
+          "device_serial": {"type": ["string", "null"], "description": "優先端末。null で解除。未接続の端末も予約できる。"},
           "ide_default_save_action": {"enum": ["save_and_open", "save_only"], "type": "string", "description": "保存後に IDE で開くか。"},
           "min_free_disk_bytes": {"minimum": 67108864, "type": "integer", "maximum": 1099511627776, "description": "確保する空き容量（B）。"},
           "output_dir_override": {"type": ["string", "null"], "description": "既定の保存先。null で解除。"},
@@ -707,7 +707,9 @@
         "serial": {"type": "string"},
         "started": {"type": "boolean"},
         "capture_mode": {"$ref": "#/$defs/CaptureMode"},
-        "selection": {"$ref": "#/$defs/DeviceSelectionOutcome"}
+        "selection": {"$ref": "#/$defs/DeviceSelectionOutcome"},
+        "already_active": {"type": "boolean"},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}}
       },
       "required": ["serial", "started", "capture_mode", "connected", "wait_timed_out", "audio_state", "audio_cause"],
       "additionalProperties": false

@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.state
 
+import com.google.gson.JsonParser
 import io.github.shinma06.arb.ipc.ArbdProcessManager
 import io.github.shinma06.arb.model.AdbDeviceInfo
 import io.github.shinma06.arb.model.AdbDeviceState
@@ -23,6 +24,7 @@ import io.github.shinma06.arb.model.TimeAlignment
 import io.github.shinma06.arb.model.TimestampSemantics
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.FileTime
@@ -103,6 +105,54 @@ class DeviceSelectionPolicyTest {
         assertIs<DeviceSelectionOutcome.WaitingForPreferredDevice>(waiting)
         assertEquals("192.168.1.50:5555", waiting.preferredSerial)
         assertEquals(listOf("emulator-5554"), waiting.otherOnlineSerials)
+    }
+
+    /**
+     * #583 two-phase explicit start, judged with the Kotlin policy over the shared rows (Rust
+     * `capture_intent_rows_follow_two_phase_explicit_start` checks the same rows). An explicit
+     * serial is pinned only when the policy selects it; a failed start changes nothing; while
+     * recording, only the active serial (or none) succeeds.
+     */
+    @Test
+    fun captureIntentRowsFollowTwoPhaseExplicitStart() {
+        val root = System.getProperty("arb.repo.root") ?: error("arb.repo.root is not set")
+        val doc = JsonParser.parseString(File(root, "docs/specs/device-selection-policy-table.json").readText()).asJsonObject
+        val rows = doc.getAsJsonArray("capture_intent_rows").map { it.asJsonObject }
+        assertTrue(rows.size >= 9)
+        assertTrue(rows.map { it["id"].asString }.containsAll(listOf("CI-06", "CI-07", "CI-08", "CI-09")))
+        fun com.google.gson.JsonObject.str(key: String): String? = get(key)?.takeUnless { it.isJsonNull }?.asString
+        for (row in rows) {
+            val id = row["id"].asString
+            val online = row.getAsJsonArray("online").map { device(it.asString) }
+            val argument = row.str("argument")
+            val active = row.str("active")
+            val expected = when {
+                active != null && argument != null && argument != active -> "conflict"
+                active != null -> "already_active"
+                argument != null -> when (DeviceSelectionPolicy.evaluate(argument, online)) {
+                    is DeviceSelectionOutcome.Selected -> "started"
+                    else -> "device_not_found"
+                }
+                else -> when (DeviceSelectionPolicy.evaluate(row.str("configured"), online)) {
+                    is DeviceSelectionOutcome.Selected -> "started"
+                    else -> "waiting"
+                }
+            }
+            assertEquals(expected, row.str("outcome"), "$id: outcome")
+            val failed = expected == "conflict" || expected == "device_not_found"
+            if (failed) {
+                assertEquals(row.str("configured"), row.str("persisted"), "$id: serial unchanged")
+                assertEquals(row["enabled"].asBoolean, row["persisted_enabled"].asBoolean, "$id: intent unchanged")
+                assertEquals(0, row.getAsJsonObject("config_changed").size(), "$id: no config_changed")
+            } else {
+                assertTrue(row["persisted_enabled"].asBoolean, "$id: a start arms capture")
+                val pinned = argument ?: row.str("configured")
+                assertEquals(pinned, row.str("persisted"), "$id: persisted serial")
+                if (argument != null) {
+                    assertTrue(online.any { it.serial == argument }, "$id: pinned only after Selected")
+                }
+            }
+        }
     }
 
     @Test

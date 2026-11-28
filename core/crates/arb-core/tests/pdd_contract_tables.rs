@@ -100,6 +100,95 @@ fn device_selection_rows_match_rust_policy() {
     }
 }
 
+/// #583 capture-intent rows: the two-phase explicit start, judged by the production policy.
+/// A failed start keeps `(enabled, serial)`; a persisted argument serial is one the policy
+/// selects from `online`; while recording, only the active serial (or none) succeeds.
+#[test]
+fn capture_intent_rows_follow_two_phase_explicit_start() {
+    let doc = table(DEVICE_TABLE);
+    let ids: Vec<&str> = rows(&doc, "capture_intent_rows", 9)
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    for id in ["CI-06", "CI-07", "CI-08", "CI-09"] {
+        assert!(ids.contains(&id), "missing {id}");
+    }
+    for row in rows(&doc, "capture_intent_rows", 9) {
+        let id = &row["id"];
+        let online: Vec<String> = selectable_online_serials(
+            row["online"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| (s.as_str().unwrap(), true)),
+        );
+        let argument = row["argument"].as_str();
+        let outcome = row["outcome"].as_str().unwrap();
+        let changed = row["config_changed"].as_object().unwrap();
+        let expected = match (row["active"].as_str(), argument) {
+            (Some(active), Some(arg)) if arg != active => "conflict",
+            (Some(_), _) => "already_active",
+            (None, Some(arg)) => match DeviceSelectionPolicy::evaluate(Some(arg), &online) {
+                arb_core::device::DeviceSelectionOutcome::Selected { .. } => "started",
+                _ => "device_not_found",
+            },
+            (None, None) => {
+                let preferred = row["configured"].as_str();
+                match DeviceSelectionPolicy::evaluate(preferred, &online) {
+                    arb_core::device::DeviceSelectionOutcome::Selected { .. } => "started",
+                    _ => "waiting",
+                }
+            }
+        };
+        assert_eq!(outcome, expected, "{id}: outcome");
+        if matches!(outcome, "device_not_found" | "conflict") {
+            assert!(changed.is_empty(), "{id}: failure changes nothing");
+            assert_eq!(row["persisted"], row["configured"], "{id}");
+            assert_eq!(row["persisted_enabled"], row["enabled"], "{id}");
+            assert_eq!(row["error_details"]["config_changed"], json!({}), "{id}");
+            continue;
+        }
+        assert_eq!(row["persisted_enabled"], true, "{id}: a start arms capture");
+        if let Some(arg) = argument {
+            assert_eq!(row["persisted"], arg, "{id}: explicit serial is pinned");
+            assert!(
+                online.iter().any(|s| s == arg),
+                "{id}: pinned only if Selected"
+            );
+        } else {
+            assert_eq!(
+                row["persisted"], row["configured"],
+                "{id}: no-arg keeps the pin"
+            );
+        }
+        let waiting = outcome == "waiting";
+        assert_eq!(
+            row["warning_codes"],
+            if waiting {
+                json!(["waiting_for_device"])
+            } else {
+                json!([])
+            },
+            "{id}"
+        );
+        for (key, before, after) in [
+            (
+                "capture_enabled",
+                &row["enabled"],
+                &row["persisted_enabled"],
+            ),
+            ("device_serial", &row["configured"], &row["persisted"]),
+        ] {
+            let diff = (before != after).then(|| json!([before, after]));
+            assert_eq!(
+                changed.get(key),
+                diff.as_ref(),
+                "{id}: config_changed.{key}"
+            );
+        }
+    }
+}
+
 #[test]
 fn serial_validation_rows_match_rust_validator() {
     let doc = table(DEVICE_TABLE);

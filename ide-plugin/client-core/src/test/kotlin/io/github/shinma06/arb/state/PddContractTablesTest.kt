@@ -125,15 +125,40 @@ class PddContractTablesTest {
 
     @Test
     fun captureIntentRowsDecodePersistedPreferencesAndChanges() {
-        for (row in table("device-selection-policy-table.json").rows("capture_intent_rows", 5)) {
+        for (row in table("device-selection-policy-table.json").rows("capture_intent_rows", 9)) {
             val changes = row.getAsJsonObject("config_changed")
+            val outcome = row.str("outcome")
+            val failed = outcome == "device_not_found" || outcome == "conflict"
+            if (failed) {
+                // #583: a rejected start reports no change and keeps the stored pair.
+                assertEquals(0, changes.size(), "${row.str("id")}: failure changes nothing")
+                assertEquals(row.str("configured"), row.str("persisted"), "${row.str("id")}")
+                assertEquals(row["enabled"].asBoolean, row["persisted_enabled"].asBoolean, "${row.str("id")}")
+            }
             val wire = JsonObject().apply {
                 addProperty("serial", row.str("persisted").orEmpty())
-                addProperty("started", false)
+                addProperty("started", outcome == "started" || outcome == "already_active")
                 add("serial_source", row["serial_source"])
                 add("config_changed", changes)
+                if (outcome == "already_active") addProperty("already_active", true)
+                row.getAsJsonArray("warning_codes")?.takeIf { it.size() > 0 }?.let { codes ->
+                    add("warnings", JsonArray().apply {
+                        codes.forEach { code ->
+                            add(JsonObject().apply {
+                                add("code", code)
+                                addProperty("message", "待機中")
+                            })
+                        }
+                    })
+                }
             }
             val start = ProtocolJson.gson.fromJson(wire, CaptureStartResponse::class.java)
+            assertEquals(outcome == "already_active", start.alreadyActive == true, "${row.str("id")}: already_active")
+            assertEquals(
+                row.getAsJsonArray("warning_codes")?.map { it.asString }.orEmpty(),
+                start.warnings.orEmpty().map { it.code },
+                "${row.str("id")}: warnings",
+            )
             assertEquals(row.str("serial_source"), start.serialSource)
             assertEquals(changes.getAsJsonArray("capture_enabled")?.map { it.asBoolean }, start.configChanged?.captureEnabled)
             assertEquals(changes.getAsJsonArray("device_serial")?.map { it.takeUnless { value -> value.isJsonNull }?.asString }, start.configChanged?.deviceSerial)

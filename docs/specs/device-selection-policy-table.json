@@ -3,7 +3,8 @@
   "schema_version": 1,
   "semantics": {
     "selection": "online（adb state = device）かつ有効な serial の端末だけを対象に DeviceSelectionPolicy を評価した結果。Rust は arb_core::device::{selectable_online_serials, DeviceSelectionPolicy::evaluate}、Kotlin は DeviceSelectionPolicy.evaluate。auto_selected は Kotlin だけが持つ（明示 serial が空のとき true）。 録画開始にはこの選択に加えて arbd のアーム・容量・セッション状態が関与する。CLI/MCP の device.list は recovery / bootloader も元の状態で返し、IDE はその状態をヒントに表示する。",
-    "ide": "CaptureBarReducer.fromStatus（初回 poll, 非録画）の selectedSerial / isSelectedDeviceOnline と、ツールバー共通の CaptureToggleState。capture_enabled は選択結果に関係なく維持される。"
+    "ide": "CaptureBarReducer.fromStatus（初回 poll, 非録画）の selectedSerial / isSelectedDeviceOnline と、ツールバー共通の CaptureToggleState。capture_enabled は選択結果に関係なく維持される。",
+    "capture_intent": "capture.start の意図と永続化。online は adb devices の device 状態、active は開始前に録画中の serial。明示 serial は接続前は一時ターゲットで、Selected かつ取得開始の後にだけ (capture_enabled=true, device_serial) を 1 回の原子的書き込みで確定する。失敗（device_not_found / conflict）は config_changed {} で設定・録画世代・live.request を変えない。serial 省略は従来どおり ON の意図を先に保存し、待機中は warning_codes に waiting_for_device を返す。稼働中は同じ serial（または省略）なら already_active の冪等な成功、別 serial は CONFLICT。オフライン端末の事前予約は config.update の device_serial を使う。"
   },
   "selection_rows": [
     {
@@ -727,11 +728,15 @@
     }
   ],
   "capture_intent_rows": [
-    {"id": "CI-01", "enabled": false, "configured": "A", "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"capture_enabled": [false, true], "device_serial": ["A", "B"]}},
-    {"id": "CI-02", "enabled": true, "configured": "A", "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"device_serial": ["A", "B"]}},
-    {"id": "CI-03", "enabled": true, "configured": "A", "argument": null, "serial_source": "config", "persisted": "A", "config_changed": {}},
-    {"id": "CI-04", "enabled": false, "configured": null, "argument": null, "serial_source": "auto", "persisted": null, "config_changed": {"capture_enabled": [false, true]}},
-    {"id": "CI-05", "enabled": true, "configured": null, "argument": "B", "serial_source": "argument", "persisted": "B", "config_changed": {"device_serial": [null, "B"]}}
+    {"id": "CI-01", "description": "停止中・設定 A・明示 B（オンライン）→ 接続後に B と ON を確定", "enabled": false, "configured": "A", "active": null, "online": ["B"], "argument": "B", "outcome": "started", "serial_source": "argument", "persisted_enabled": true, "persisted": "B", "config_changed": {"capture_enabled": [false, true], "device_serial": ["A", "B"]}, "warning_codes": []},
+    {"id": "CI-02", "description": "待機中（A 不在）・明示 B（オンライン）→ B を確定", "enabled": true, "configured": "A", "active": null, "online": ["B"], "argument": "B", "outcome": "started", "serial_source": "argument", "persisted_enabled": true, "persisted": "B", "config_changed": {"device_serial": ["A", "B"]}, "warning_codes": []},
+    {"id": "CI-03", "description": "待機中・serial 省略 → 設定 A のまま待機（warnings で明示）", "enabled": true, "configured": "A", "active": null, "online": [], "argument": null, "outcome": "waiting", "serial_source": "config", "persisted_enabled": true, "persisted": "A", "config_changed": {}, "warning_codes": ["waiting_for_device"]},
+    {"id": "CI-04", "description": "停止中・端末 0 台・serial 省略 → ON の意図を保持して待機", "enabled": false, "configured": null, "active": null, "online": [], "argument": null, "outcome": "waiting", "serial_source": "auto", "persisted_enabled": true, "persisted": null, "config_changed": {"capture_enabled": [false, true]}, "warning_codes": ["waiting_for_device"]},
+    {"id": "CI-05", "description": "待機中（2 台で選択待ち）・明示 B → B を確定", "enabled": true, "configured": null, "active": null, "online": ["B", "C"], "argument": "B", "outcome": "started", "serial_source": "argument", "persisted_enabled": true, "persisted": "B", "config_changed": {"device_serial": [null, "B"]}, "warning_codes": []},
+    {"id": "CI-06", "description": "停止中・明示 serial が未接続（typo）→ 設定不変で DEVICE_NOT_FOUND", "enabled": false, "configured": null, "active": null, "online": ["A"], "argument": "1.2.3.4:5555", "outcome": "device_not_found", "error_code": "DEVICE_NOT_FOUND", "persisted_enabled": false, "persisted": null, "config_changed": {}, "error_details": {"serial": "1.2.3.4:5555", "selection": {"status": "waiting_for_preferred_device", "preferred_serial": "1.2.3.4:5555", "other_online_serials": ["A"]}, "config_changed": {}, "wait_timed_out": false}},
+    {"id": "CI-07", "description": "A を録画中・明示 B → CONFLICT、録画と設定は不変", "enabled": true, "configured": "A", "active": "A", "online": ["A"], "argument": "B", "outcome": "conflict", "error_code": "CONFLICT", "persisted_enabled": true, "persisted": "A", "config_changed": {}, "error_details": {"reason": "different_active_serial", "active_serial": "A", "requested_serial": "B", "config_changed": {}}},
+    {"id": "CI-08", "description": "A を録画中・明示 A → 冪等な成功（already_active）", "enabled": true, "configured": "A", "active": "A", "online": ["A"], "argument": "A", "outcome": "already_active", "serial_source": "argument", "persisted_enabled": true, "persisted": "A", "config_changed": {}, "warning_codes": []},
+    {"id": "CI-09", "description": "停止中・設定なし・明示 A（オンライン）→ 取得開始後に A と ON を 1 回で原子確定", "enabled": false, "configured": null, "active": null, "online": ["A"], "argument": "A", "outcome": "started", "serial_source": "argument", "persisted_enabled": true, "persisted": "A", "config_changed": {"capture_enabled": [false, true], "device_serial": [null, "A"]}, "warning_codes": []}
   ],
   "serial_validation_rows": [
     {

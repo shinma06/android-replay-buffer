@@ -878,6 +878,19 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     assert_eq!(error["retryable"], true);
     assert!(error["message"].as_str().unwrap().contains("端末"));
     assert!(error["hint"].as_str().unwrap().contains("接続"));
+    // #583: an absent explicit serial fails the start and leaves config.json untouched.
+    let before = c.tool("arb_config_get", json!({}))["config"].clone();
+    let start = c.result(
+        "tools/call",
+        json!({"name":"arb_capture_start","arguments":{"serial":"1.2.3.4:5555"}}),
+    );
+    assert_eq!(start["isError"], true, "{start}");
+    let error = &start["structuredContent"];
+    assert_eq!(error["error_code"], "DEVICE_NOT_FOUND", "{start}");
+    assert_eq!(error["details"]["serial"], "1.2.3.4:5555");
+    assert_eq!(error["details"]["config_changed"], json!({}));
+    assert!(error["hint"].as_str().unwrap().contains("arb_devices"));
+    assert_eq!(c.tool("arb_config_get", json!({}))["config"], before);
     let overview = c.tool("arb_timeline_overview", target.clone());
     assert!(overview["logcat_completeness"].is_object());
     assert_eq!(overview["noise_candidates"], json!([]));
