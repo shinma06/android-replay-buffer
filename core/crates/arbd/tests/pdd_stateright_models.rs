@@ -2045,21 +2045,15 @@ fn s4_viewport_export_handover_model() {
     run("S4", ViewModel);
 }
 
-// Protocol model of the intended crash-watcher design: a boot-qualified crash identity is
-// reserved durably together with its pins. Detection and queue delivery are volatile; on
-// restart durable pending work is replayed.
-//
-// This is a design premise, not a refinement of `arbd`. Today the pins and the save job are
-// durable (`save_jobs/<job>.json`, catalog row, `interrupted_crash_autosave_is_requeued_once_on_startup`),
-// but no crash identity (boot id + boottime + process + exception) is stored with them. Repeat
-// suppression is the in-memory `CrashAutoSaveGate` cooldown, which restarts empty with the
-// daemon. So `Pin`'s `saved` check and "at most once per boot" describe what a persisted
-// identity would give; if the device re-delivers an `am_crash` record after a daemon restart,
-// production can still save it twice. Listed as TCB-16 in docs/proofs/tcb-axioms.md.
+// Two boot-qualified log records. Only params, pin journals and committed jobs survive exit.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct WatchState {
     boot: u8,
+    down: bool,
     detected: u8,
+    params: u8,
+    waiting: u8,
+    interrupted: u8,
     pinned: u8,
     queued: u8,
     saved: u8,
@@ -2068,7 +2062,11 @@ struct WatchState {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum WatchAction {
     Detect,
+    WriteParams(u8),
     Pin(u8),
+    Deadline(u8),
+    Disconnect,
+    Exit,
     Queue(u8),
     Commit(u8),
     Restart,
@@ -2081,7 +2079,11 @@ impl Model for WatchModel {
     fn init_states(&self) -> Vec<Self::State> {
         vec![WatchState {
             boot: 0,
+            down: false,
             detected: 0,
+            params: 0,
+            waiting: 0,
+            interrupted: 0,
             pinned: 0,
             queued: 0,
             saved: 0,
@@ -2090,30 +2092,57 @@ impl Model for WatchModel {
     }
     fn actions(&self, _: &Self::State, out: &mut Vec<Self::Action>) {
         use WatchAction::*;
-        out.extend([Detect, Restart, Reboot]);
+        out.extend([Detect, Disconnect, Exit, Restart, Reboot]);
         for id in 0..2 {
-            out.extend([Pin(id), Queue(id), Commit(id)]);
+            out.extend([
+                WriteParams(id),
+                Pin(id),
+                Deadline(id),
+                Queue(id),
+                Commit(id),
+            ]);
         }
     }
     fn next_state(&self, s: &Self::State, a: Self::Action) -> Option<Self::State> {
         use WatchAction::*;
         let mut n = *s;
+        if s.down && a != Restart {
+            return None;
+        }
         match a {
             Detect => n.detected |= 1 << s.boot,
-            Pin(id) if s.detected & (1 << id) != 0 => {
+            WriteParams(id)
+                if s.detected & (1 << id) != 0 && (s.saved | s.pinned) & (1 << id) == 0 =>
+            {
+                n.params |= 1 << id;
+            }
+            Pin(id) if s.detected & s.params & (1 << id) != 0 => {
                 n.detected &= !(1 << id);
                 if s.saved & (1 << id) == 0 {
                     n.pinned |= 1 << id;
+                    n.waiting |= 1 << id;
                 }
             }
-            Queue(id) if s.pinned & (1 << id) != 0 => n.queued |= 1 << id,
+            Deadline(id) => n.waiting &= !(1 << id),
+            Disconnect => {
+                n.interrupted |= n.waiting;
+                n.waiting = 0;
+            }
+            Queue(id) if s.pinned & s.params & !s.waiting & (1 << id) != 0 => n.queued |= 1 << id,
             Commit(id) if s.queued & (1 << id) != 0 => {
                 n.saved |= 1 << id;
                 n.commits[usize::from(id)] = (s.commits[usize::from(id)] + 1).min(2);
                 n.queued &= !(1 << id);
                 n.pinned &= !(1 << id);
+                n.params &= !(1 << id);
             }
-            Restart => {
+            Restart if s.down => {
+                n.down = false;
+            }
+            Exit => {
+                n.down = true;
+                n.interrupted |= n.waiting;
+                n.waiting = 0;
                 n.detected = 0;
                 n.queued = 0;
             }
@@ -2124,11 +2153,25 @@ impl Model for WatchModel {
     }
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
+            Property::<Self>::always("S5 every pin has replayable params", |_, s| {
+                s.pinned & !s.params == 0
+            }),
+            Property::<Self>::sometimes(
+                "S5 exit during post-roll retains pin and params",
+                |_, s| s.down && (s.interrupted & s.pinned & s.params != 0),
+            ),
+            Property::<Self>::sometimes(
+                "S5 interrupted post-roll materializes and releases pin",
+                |_, s| s.interrupted & s.saved & !s.pinned != 0,
+            ),
             Property::<Self>::always("S5 crash commits at most once per boot", |_, s| {
                 s.commits.iter().all(|&n| n <= 1)
             }),
             Property::<Self>::always("S5 pending pins always replay after restart", |m, s| {
-                let mut n = m.next_state(s, WatchAction::Restart).unwrap_or(*s);
+                let stopped = m.next_state(s, WatchAction::Exit).unwrap_or(*s);
+                let mut n = m
+                    .next_state(&stopped, WatchAction::Restart)
+                    .unwrap_or(stopped);
                 for id in 0..2 {
                     if s.pinned & (1 << id) != 0 {
                         let Some(done) = m
@@ -2138,7 +2181,7 @@ impl Model for WatchModel {
                             return false;
                         };
                         n = done;
-                        if n.commits[usize::from(id)] != 1 {
+                        if n.commits[usize::from(id)] != 1 || n.pinned & (1 << id) != 0 {
                             return false;
                         }
                     }

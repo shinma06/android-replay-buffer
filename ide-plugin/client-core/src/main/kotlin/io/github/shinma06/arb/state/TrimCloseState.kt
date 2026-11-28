@@ -101,6 +101,7 @@ data class ArbSettingsDraft(
     val audioEnabled: Boolean = true,
     val audioCaptureMode: AudioCaptureMode = AudioCaptureMode.PLAYBACK_DUP,
     val crashAutosaveEnabled: Boolean = true,
+    val crashAutosavePostRollMs: Long = ArbConfig.DEFAULT_CRASH_AUTOSAVE_POST_ROLL_MS,
     val crashAutosaveCooldownSecs: Int = ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
     val outputDirOverride: String = "",
     val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
@@ -132,6 +133,9 @@ data class ArbSettingsDraft(
         }
         if (videoMaxFps !in ArbConfig.MIN_VIDEO_MAX_FPS..ArbConfig.MAX_VIDEO_MAX_FPS) {
             return "映像最大 fps は ${ArbConfig.MIN_VIDEO_MAX_FPS} 〜 ${ArbConfig.MAX_VIDEO_MAX_FPS} の範囲で指定してください。"
+        }
+        if (crashAutosavePostRollMs !in 0..ArbConfig.MAX_CRASH_AUTOSAVE_POST_ROLL_MS) {
+            return "クラッシュ後の記録時間は 0〜10,000 ミリ秒で指定してください。"
         }
         if (crashAutosaveCooldownSecs !in ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS..ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS) {
             return "クラッシュ自動保存のクールダウンは ${ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS}s 〜 ${ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS}s の範囲で指定してください。"
@@ -169,6 +173,7 @@ data class ArbSettingsDraft(
             normalizedDeviceSerial() != baseline.deviceSerial ||
             crashAutosaveEnabled != baseline.crashAutosaveEnabled ||
             crashAutosaveCooldownSecs != baseline.crashAutosaveCooldownSecs ||
+            crashAutosavePostRollMs != baseline.crashAutosavePostRollMs ||
             normalizedOutputDir() != baseline.outputDirOverride ||
             normalizedScreenshotDir() != baseline.screenshotDirOverride ||
             ideDefaultSaveAction != baseline.ideDefaultSaveAction
@@ -188,6 +193,7 @@ data class ArbSettingsDraft(
             captureMode = if (captureMode == base.captureMode) next.captureMode else captureMode,
             crashAutosaveEnabled = if (crashAutosaveEnabled == base.crashAutosaveEnabled) next.crashAutosaveEnabled else crashAutosaveEnabled,
             crashAutosaveCooldownSecs = if (crashAutosaveCooldownSecs == base.crashAutosaveCooldownSecs) next.crashAutosaveCooldownSecs else crashAutosaveCooldownSecs,
+            crashAutosavePostRollMs = if (crashAutosavePostRollMs == base.crashAutosavePostRollMs) next.crashAutosavePostRollMs else crashAutosavePostRollMs,
             outputDirOverride = if (outputDirOverride == base.outputDirOverride) next.outputDirOverride else outputDirOverride,
             ideDefaultSaveAction = if (ideDefaultSaveAction == base.ideDefaultSaveAction) next.ideDefaultSaveAction else ideDefaultSaveAction,
         )
@@ -224,6 +230,7 @@ data class ArbSettingsDraft(
             deviceSerial = serialPatch,
             crashAutosaveEnabled = crashAutosaveEnabled.takeIf { it != baseline.crashAutosaveEnabled },
             crashAutosaveCooldownSecs = crashAutosaveCooldownSecs.takeIf { it != baseline.crashAutosaveCooldownSecs },
+            crashAutosavePostRollMs = crashAutosavePostRollMs.takeIf { it != baseline.crashAutosavePostRollMs },
             outputDirOverride = dirPatch,
             screenshotDirOverride = shotDirPatch,
             ideDefaultSaveAction = ideDefaultSaveAction.takeIf { it != baseline.ideDefaultSaveAction },
@@ -241,6 +248,7 @@ data class ArbSettingsDraft(
             audioEnabled = config.audioEnabled,
             crashAutosaveEnabled = config.crashAutosaveEnabled,
             crashAutosaveCooldownSecs = config.crashAutosaveCooldownSecs,
+            crashAutosavePostRollMs = config.crashAutosavePostRollMs,
             outputDirOverride = config.outputDirOverride.orEmpty(),
             ideDefaultSaveAction = config.ideDefaultSaveAction,
             customArbdBinaryPath = customArbdBinaryPath,

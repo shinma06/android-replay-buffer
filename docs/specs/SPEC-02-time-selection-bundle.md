@@ -37,6 +37,12 @@ satisfies:
 
 管理域（データディレクトリ配下の bundles）外への保存（dest_dir、output_dir_override）は unmanaged で arb_gc_bundles の物理削除対象外です。実体を手動で移動・削除し、元の保存先が missing になったら arb_forget_bundle で登録を解除します。
 
+### クラッシュ後の保存窓
+
+クラッシュ検出時刻 T に、直前 D′ 秒の params と pin をこの順に永続化する。設定 P は `crash_autosave_post_roll_ms`（既定 4,000 ms、0〜10,000 ms）。D′ = min(D, 600 − ceil(P / 1000))。その場で保護した区間から、同じ取得世代・boot のビーコンまたは映像が T + P に達するまで末尾を延ばす。切断・停止・世代交代・容量不足・終了、または P + 境界ドレイン上限の経過で打ち切る。待機中に閉じたチャンクは次のリング書き込み前に pin し、末尾の pin は自ジョブの pin も含めて `max_pinned_ring_fraction` 以内に収め、超える場合や pin 失敗時は最後に保護できた時刻で打ち切り、ライブ録画を止めない。P = 0 は従来の境界ドレインを使う。
+
+保存結果と manifest の `requested_window` は要求 `post_roll_ms`、クラッシュ後に映像またはログの稼働を確認した区間の和集合 `actual_post_roll_ms`、待機を打ち切ったかを示す `post_roll_truncated` を持つ。打ち切り時は `tail_may_be_incomplete` も立つ。映像だけが期限へ先着した場合も窓は閉じる。companion の FIFO が期限まで排出された証拠はないため、`post_roll_truncated=false` と `tail_may_be_incomplete=true` を区別して返す。短尺判定の要求は D′ × 1000 + P ミリ秒。起動回復で使う初期 params の窓は T で終わり、待機中断を示す。待機中のジョブはカタログから確認できる。末尾 pin をジャーナル、カタログの順に拡張してから params を置換し、失敗時は保存済みの窓を再試行できる。
+
 ### ストリーム被覆台帳と引き継ぎフレーム
 
 フレームやログ行の出現幅（最後−最初）は、ストリームが窓を被覆した時間ではない。静止画面は映像フレームを送らず、静かなアプリはログ行を書かない。`arbd` は端末ごとに映像と logcat の連続被覆区間を [`arb-core::coverage`](../../core/crates/arb-core/src/coverage.rs) で記録する。時間軸はホストの受信時刻（`PcContinuousMono`）。
@@ -77,7 +83,7 @@ satisfies:
 | `actual_log_duration_ms` | 同一 boot 内の確定ログの最小・最大時刻の差。0〜1 件なら 0。隔離ログと時計アンカーを含めない。行の出現幅であり、被覆時間ではない |
 | `log_coverage_ms` | 保存窓のうち logcat ストリームが動作していた時間（窓 ∩ logcat 被覆区間）。ギャップ・切断・未開始の区間を含めない。被覆の記録がない旧ジョブでは省略 |
 | `video_coverage_ms`・`carried_in_frame`・`static_hold_ms`・`info_codes` | 映像の被覆時間（書いた先頭フレームより前と、映像を書かなかった保存は数えない）、引き継ぎフレームの有無、窓の両端で同じフレームを保持した時間。静止の保持は警告ではなく `info_codes` の `video_static_hold` で示す（ログ単体では省略） |
-| `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。映像は MP4 の再生尺、ログは `log_coverage_ms`（記録がない旧ジョブは `actual_log_duration_ms`）で、それぞれ `actual_ms + 1000 < requested_secs × 1000` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
+| `window_shortfall` | `video_shortfall`（映像保存時のみ）と `log_shortfall`（両モード）の論理和。映像は MP4 の再生尺、ログは `log_coverage_ms`（記録がない旧ジョブは `actual_log_duration_ms`）で、それぞれ `actual_ms + 1000 < requested_secs × 1000 + post_roll_ms` のとき true。ちょうど 1 秒不足したストリームのフラグは false |
 | `video_frame_count`・`log_count`・`unanchored_log_count` | 映像枚数、隔離分を含むログ総数、そのうち隔離ログ数。未測定と確認済みの 0 を区別する |
 | `truncated_unanchored_count`・`discontinuity_count`・`warnings` | 全ストリームの隔離切り捨て、不連続の数、短尺・音声なし・末尾未確認などの警告。空の警告だけでは完全取得を保証しない |
 

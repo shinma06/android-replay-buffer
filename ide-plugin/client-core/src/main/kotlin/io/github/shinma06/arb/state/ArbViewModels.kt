@@ -76,6 +76,7 @@ data class CaptureBarState(
     val ringTotalBytes: Long = 0,
     val ringPinnedChunkCount: Long = 0,
     val ringBufferedSecs: Long? = null,
+    val postRollUntilUtc: String? = null,
     val saveDurationSec: Long = ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toLong(),
     val banners: List<CaptureBanner> = emptyList(),
     val lastStatusMessage: String? = null,
@@ -301,6 +302,8 @@ object CaptureBarReducer {
             selectedSerial = resolvedSerial,
             autoSelectedSerial = nextAutoSelectedSerial,
             deviceSelection = selection,
+            // Gson can leave this nested object null in older daemon responses.
+            postRollUntilUtc = status.crashAutosave?.postRollUntilUtc,
             capture = status.capture,
             config = config,
             saveDurationSec = config.saveWindowSecs.toLong(),

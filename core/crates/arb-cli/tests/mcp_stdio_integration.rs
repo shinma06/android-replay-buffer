@@ -252,6 +252,9 @@ fn seed_bundle_with_events(
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 5,
             trigger_pc_wall_utc: "2026-11-23T09:10:00Z".to_owned(),
         },

@@ -372,6 +372,9 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 10,
             trigger_pc_wall_utc: "2026-11-23T09:00:00Z".to_owned(),
         },
@@ -1038,6 +1041,9 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 10,
             trigger_pc_wall_utc: "2026-11-23T12:00:00Z".to_owned(),
         },
