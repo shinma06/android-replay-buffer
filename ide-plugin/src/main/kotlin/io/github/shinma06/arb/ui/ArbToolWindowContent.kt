@@ -646,6 +646,14 @@ private fun FailedSaveJobBanner(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            val guidance = when (job.recommendedAction) {
+                "retarget" -> "書き込める保存先に変更してください。"
+                "discard" -> "保存に必要なデータが破損または欠損しています。破棄で保護を解除できます。"
+                else -> null
+            }
+            if (guidance != null) {
+                Text(text = guidance, style = ArbJewelPalette.bodyStyle(sizeSp = 10.5f, color = ArbJewelPalette.mutedText()))
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 ArbSubtleAction(
                     label = "再試行",

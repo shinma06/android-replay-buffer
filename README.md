@@ -8,7 +8,7 @@ Android Replay Buffer（ARB）は Rust コア・Android 端末エージェント
 
 | ディレクトリ | 内容 |
 | --- | --- |
-| [`core/`](core/) | Rust ワークスペース。`arbd`（常駐デーモン）、`arb-cli`（CLI と 20 ツールの MCP サーバー）、`arb-tray`（トレイ）、`arb-core` / `arb-os` / `arb-adb` / `arb-media` / `arb-storage`（共有ライブラリ） |
+| [`core/`](core/) | Rust ワークスペース。`arbd`（常駐デーモン）、`arb-cli`（CLI と 21 ツールの MCP サーバー）、`arb-tray`（トレイ）、`arb-core` / `arb-os` / `arb-adb` / `arb-media` / `arb-storage`（共有ライブラリ） |
 | [`device-agent/`](device-agent/) | 端末側 Companion（Java、`arb-companion.dex.jar`）と、パッチ済み scrcpy 音声取得 DEX |
 | [`ide-plugin/`](ide-plugin/) | Android Studio / IntelliJ プラグイン（Kotlin、Compose / Jewel）。`arbd` / `arb-cli` / `arb-tray` と DEX を同梱した自己完結 ZIP（zsh 不要） |
 | [`docs/`](docs/) | 要件（REQ）・仕様（SPEC）・検証記録（VER）。[`sara`](https://crates.io/crates/sara-cli) でトレーサビリティを検査 |

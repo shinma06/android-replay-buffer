@@ -29,6 +29,14 @@
   ],
   "tools": [
     {
+      "name": "arb_jobs",
+      "description": "list は一覧を読む。retry は同じ保存先で再試行。retarget は保存先を変えて再試行（省略時は管理域）。discard はジョブを破棄して pin を解放する。",
+      "inputSchema": {"type":"object","properties":{"action":{"type":"string","enum":["list","retry","retarget","discard"]},"job_id":{"type":"string","minLength":1},"dest_dir":{"type":"string","minLength":1}},"required":["action"],"additionalProperties":false,"if":{"properties":{"action":{"enum":["retry","retarget","discard"]}}},"then":{"required":["job_id"]}},
+      "outputType":"Jobs",
+      "errorTypes":["ToolError","SaveError"],
+      "annotations":{"title":"保存ジョブ管理","readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}
+    },
+    {
       "description": "デーモンと録画の状態。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_status",
@@ -106,6 +114,8 @@
           "video_max_fps": {"maximum": 120, "minimum": 1, "type": "integer", "description": "録画 fps 上限。"},
           "video_max_size": {"maximum": 4096, "minimum": 256, "type": "integer", "description": "録画の長辺上限（px）。"},
           "capture_enabled": {"type": "boolean", "description": "バックグラウンド録画を有効化。"},
+        "failed_job_rescue_after_secs":{"type":"integer","minimum":0},
+        "max_pinned_ring_fraction":{"type":"number","exclusiveMinimum":0,"maximum":1},
           "gc_grace_secs": {"type": "integer", "description": "ごみ箱の猶予期間（秒）。", "minimum": 0}
         },
         "type": "object"
@@ -479,6 +489,8 @@
         "capture_mode": {"$ref": "#/$defs/CaptureMode"},
         "device_serial": {"type": ["string", "null"]},
         "save_window_secs": {"$ref":"#/$defs/UInt"},
+        "failed_job_rescue_after_secs":{"type":"integer","minimum":0},
+        "max_pinned_ring_fraction":{"type":"number","exclusiveMinimum":0,"maximum":1},
         "gc_grace_secs": {"$ref":"#/$defs/UInt"},
         "ring_budget_bytes": {"$ref":"#/$defs/UInt"},
         "min_free_disk_bytes": {"$ref":"#/$defs/UInt"},
@@ -1315,29 +1327,18 @@
       "unevaluatedProperties":false
     },
     "SaveJobState": {"enum": ["pinned", "draining", "materializing", "failed_retryable", "completed", "discarded"]},
+    "Jobs": {"oneOf":[{"type":"object","properties":{"jobs":{"type":"array","items":{"$ref":"#/$defs/SaveJobView"}}},"required":["jobs"],"additionalProperties":false},{"type":"object","properties":{"job":{"$ref":"#/$defs/SaveJobView"}},"required":["job"],"additionalProperties":false},{"$ref":"#/$defs/SaveWithLinks"}]},
     "SaveJobView": {
-      "type": "object",
-      "properties": {
-        "job_id": {"type": "string"},
-        "state": {"$ref": "#/$defs/SaveJobState"},
-        "trigger": {"$ref": "#/$defs/SaveTriggerKind"},
-        "destination_path": {"type": "string"},
-        "pinned_chunk_ids": {"$ref":"#/$defs/Strings"},
-        "last_error": {"type": ["string", "null"]},
-        "created_at_utc": {"type": "string"},
-        "updated_at_utc": {"type": "string"}
+      "type":"object",
+      "properties":{
+        "job_id":{"type":"string"}, "state":{"$ref":"#/$defs/SaveJobState"},
+        "failure_class":{"enum":[null,"permanent_destination","transient","integrity"]},
+        "recommended_action":{"enum":[null,"retry","retarget","discard"]},
+        "last_error":{"type":["string","null"]}, "pinned_chunk_count":{"$ref":"#/$defs/UInt"},
+        "destination_path":{"type":"string"}
       },
-      "required": [
-        "job_id",
-        "state",
-        "trigger",
-        "destination_path",
-        "pinned_chunk_ids",
-        "last_error",
-        "created_at_utc",
-        "updated_at_utc"
-      ],
-      "additionalProperties": false
+      "required":["job_id","state","failure_class","recommended_action","last_error","pinned_chunk_count","destination_path"],
+      "additionalProperties":false
     },
     "SaveWithLinks": {"properties":{"resource_links":{"$ref":"#/$defs/ResourceLinks"}},"required":["resource_links"],"allOf":[{"$ref":"#/$defs/SaveFields"}],"unevaluatedProperties":false},
     "SaveOutcomeResponse": {"allOf":[{"$ref":"#/$defs/SaveFields"}],"unevaluatedProperties":false},
@@ -1481,6 +1482,8 @@
         "ring_pinned_chunk_count": {"$ref":"#/$defs/UInt"},
         "buffered_secs": {"$ref":"#/$defs/UInt"},
         "active_viewports": {"$ref":"#/$defs/UInt"},
+        "failed_save_jobs":{"$ref":"#/$defs/UInt"},
+        "oldest_failed_job_id":{"type":["string","null"]},
         "active_save_jobs": {"$ref":"#/$defs/UInt"},
         "recovery": {"$ref": "#/$defs/RecoverySummaryView"},
         "crash_autosave": {"$ref": "#/$defs/CrashAutoSaveStatusView"},
@@ -1724,6 +1727,7 @@
             "NO_VIDEO",
             "DAEMON_UNAVAILABLE",
             "FAILED_RETRYABLE",
+            "OUTPUT_DIR_UNUSABLE", "STORAGE_PRESSURE", "SAVE_NEEDS_RETARGET",
             "OPERATION_FAILED",
             "CANCELLED"
           ]

@@ -451,8 +451,9 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     let tools = tools_resp["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 20, "expected all 20 MCP tools");
+    assert_eq!(tools.len(), 21, "expected all 21 MCP tools");
     for required in [
+        "arb_jobs",
         "arb_status",
         "arb_devices",
         "arb_capture_start",
@@ -838,6 +839,13 @@ fn arb_cli_mcp_full_stdio_workflow_and_share_mp4_cli_e2e() {
     assert!(status.success(), "arb-cli mcp must exit 0 cleanly");
 
     // Also smoke-test `arb-cli share-mp4 --json` subcommand directly.
+    // An explicit standalone MP4 does not use the configured bundle directory.
+    let blocked = tmp.path().join("not-a-directory");
+    fs::write(&blocked, b"file").unwrap();
+    arb_os::rpc::RpcClient::connect_endpoint(&paths.ipc_endpoint())
+        .unwrap()
+        .call("config.update", json!({"output_dir_override":blocked}))
+        .unwrap();
     let cli_mp4 = tmp.path().join("cli-share.mp4");
     let share_out = Command::new(cli_bin)
         .args([
@@ -900,49 +908,105 @@ fn mcp_reports_retryable_saves_with_recoverable_job_and_pins() {
         )
         .unwrap();
     let mut rpc = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_arb-cli"))
-        .arg("--data-dir")
-        .arg(&paths.data_dir)
-        .arg("--cache-dir")
-        .arg(&paths.cache_dir)
-        .arg("--runtime-dir")
-        .arg(&paths.runtime_dir)
-        .arg("mcp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    for name in ["arb_save", "arb_save_logs"] {
-        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}});
-        faults.fail_complete_job_once.store(true, Ordering::Release);
-        let failed = send_mcp_request(&mut stdin, &mut stdout, &request);
-        assert_eq!(failed["result"]["isError"], true, "{name}: {failed}");
-        let body: Value =
-            serde_json::from_str(failed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert!(body["bundle_id"].is_null());
-        let job = &body["job"];
-        assert_eq!(job["state"], "failed_retryable");
-        assert!(
-            job["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("injected complete_job failure")
-        );
-        assert!(job["pinned_chunk_ids"][0].is_string(), "{job}");
-        // Recovery is exposed by the daemon/CLI; MCP offers only the two save entry points.
-        let recovered = rpc
-            .call("save.retry", json!({"job_id":job["job_id"]}))
+    for version in version::ProtocolVersion::ALL {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_arb-cli"))
+            .arg("--data-dir")
+            .arg(&paths.data_dir)
+            .arg("--cache-dir")
+            .arg(&paths.cache_dir)
+            .arg("--runtime-dir")
+            .arg(&paths.runtime_dir)
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
             .unwrap();
-        assert_eq!(recovered["job"]["job_id"], job["job_id"]);
-        assert_eq!(recovered["job"]["state"], "completed");
-        assert!(recovered["bundle_id"].is_string());
-        let success = send_mcp_request(&mut stdin, &mut stdout, &request);
-        assert_eq!(success["result"]["isError"], false, "{success}");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        send_mcp_request(
+            &mut stdin,
+            &mut stdout,
+            &json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":version.as_str(),"capabilities":{},"clientInfo":{"name":"arb-test","version":"1"}}}),
+        );
+        let schema = send_mcp_request(
+            &mut stdin,
+            &mut stdout,
+            &json!({"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"arb://schemas/arb_jobs"}}),
+        );
+        let jobs_schema: Value =
+            serde_json::from_str(schema["result"]["contents"][0]["text"].as_str().unwrap())
+                .unwrap();
+        let mut call = |name: &str, args: Value| {
+            let response = send_mcp_request(
+                &mut stdin,
+                &mut stdout,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}),
+            );
+            assert!(
+                !response.to_string().contains("pinned_chunk_ids"),
+                "{name}: {response}"
+            );
+            let result = &response["result"];
+            let body: Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            if name == "arb_jobs" {
+                stdio_contract::assert_valid_jobs_response(&jobs_schema, &body);
+            }
+            (result["isError"] == true, body)
+        };
+        for (name, action) in [
+            ("arb_save", "retry"),
+            ("arb_save_logs", "retarget"),
+            ("arb_save_and_inspect", "discard"),
+        ] {
+            if action == "retry" {
+                faults.fail_complete_job_once.store(true, Ordering::Release);
+            } else {
+                faults
+                    .deny_output_after_pin_once
+                    .store(true, Ordering::Release);
+            }
+            let (failed, body) = call(name, json!({}));
+            assert!(failed, "{name}: {body}");
+            assert_eq!(
+                body["error_code"],
+                if action == "retry" {
+                    "FAILED_RETRYABLE"
+                } else {
+                    "SAVE_NEEDS_RETARGET"
+                }
+            );
+            assert_eq!(body["retryable"], action == "retry");
+            let job = &body["job"];
+            assert_eq!(job["state"], "failed_retryable");
+            assert!(job["pinned_chunk_count"].as_u64().unwrap() > 0);
+            let id = &job["job_id"];
+            let (error, list) = call("arb_jobs", json!({"action":"list"}));
+            assert!(!error);
+            assert!(list["jobs"].as_array().unwrap().iter().any(|j| j == job));
+            let raw = rpc.call("save.list_jobs", json!({})).unwrap();
+            assert!(
+                raw["jobs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|j| &j["job_id"] == id && j["pinned_chunk_ids"].is_array())
+            );
+            let (error, result) = call("arb_jobs", json!({"action":action,"job_id":id}));
+            assert!(!error, "{action}: {result}");
+            assert_eq!(&result["job"]["job_id"], id);
+            assert_eq!(
+                result["job"]["state"],
+                if action == "discard" {
+                    "discarded"
+                } else {
+                    "completed"
+                }
+            );
+        }
+        drop(stdin);
+        assert!(child.wait().unwrap().success());
     }
-    drop(stdin);
-    assert!(child.wait().unwrap().success());
     drop(rpc);
     drop(server);
 }

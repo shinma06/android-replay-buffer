@@ -1309,18 +1309,53 @@ fn scenario_07_device_reboot_boot_id_hard_boundary() {
 }
 
 #[test]
+fn issue_581_unusable_output_root_never_creates_a_job_or_pin() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths)).unwrap();
+    let mut source = build_barcode_mock_source("boot-581", 30, WallClockMode::Steady);
+    server.ingest_device_source(&mut source).unwrap();
+    let blocked = tmp.path().join("file");
+    fs::write(&blocked, b"original").unwrap();
+    let mut rpc = TestIpcClient::connect(server.endpoint());
+    for method in ["save.trigger", "save.logs"] {
+        let dest = blocked.join("missing");
+        let error = rpc.call_error_object(method, &json!({"dest_dir":dest}));
+        assert_eq!(error["code"], -32602);
+        assert_eq!(error["data"]["error_code"], "OUTPUT_DIR_UNUSABLE");
+        assert_eq!(error["data"]["details"]["stage"], "preflight");
+        assert_eq!(error["data"]["retryable"], false);
+        assert_eq!(rpc.call("save.list_jobs", &json!({}))["jobs"], json!([]));
+        assert_eq!(
+            rpc.call("system.status", &json!({}))["ring_pinned_chunk_count"],
+            0
+        );
+    }
+    assert_eq!(
+        rpc.call("save.logs", &json!({"dest_dir":tmp.path().join("valid")}))["job"]["state"],
+        "completed"
+    );
+    server.shutdown();
+}
+
+#[test]
 fn scenario_08_save_failure_unwritable_dest_pin_preserved_retarget_succeeds() {
     let tmp = TempDir::new().expect("tempdir");
     let paths = isolated_paths(&tmp);
     let mux_work = paths.data_dir.join("tmp");
-    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("start arbd");
+    let faults = Arc::new(FaultInjection::default());
+    let server =
+        DaemonServer::start(DaemonConfig::new(paths).with_fault_injection(Arc::clone(&faults)))
+            .expect("start arbd");
 
     let mut source = build_barcode_mock_source("boot-s08", 30, WallClockMode::Steady);
     server.ingest_device_source(&mut source).expect("ingest");
 
-    // Create a regular file to act as an impossible parent directory (fails cross-OS even as root).
+    // The destination loses write access between preflight and publication.
     let blocked_dest = tmp.path().join("unwritable-file-as-dir");
-    fs::write(&blocked_dest, b"not-a-directory").expect("create blocking file");
+    faults
+        .deny_output_after_pin_once
+        .store(true, Ordering::Release);
 
     let mut client = TestIpcClient::connect(server.endpoint());
     let failed = client.call(
@@ -1509,9 +1544,11 @@ fn scenario_10_disk_pressure_storage_pressure_stop_protects_saved_and_pinned() {
         max_ring_duration_ns: 600_000_000_000,
         min_free_disk_bytes: 3 * 1024 * 1024 * 1024, // 3 GiB floor
     };
+    let faults = Arc::new(FaultInjection::default());
     let server = DaemonServer::start(
         DaemonConfig::new(isolated_paths(&tmp))
             .with_ring_policy(policy)
+            .with_fault_injection(Arc::clone(&faults))
             .with_disk_provider(disk_provider),
     )
     .expect("start arbd");
@@ -1527,7 +1564,9 @@ fn scenario_10_disk_pressure_storage_pressure_stop_protects_saved_and_pinned() {
     let saved_path = PathBuf::from(saved["bundle_path"].as_str().expect("saved path"));
 
     let blocked_file = tmp.path().join("blocked-dest");
-    fs::write(&blocked_file, b"x").expect("write blocking file");
+    faults
+        .deny_output_after_pin_once
+        .store(true, Ordering::Release);
     let pinned_failed = client.call(
         "save.trigger",
         &json!({ "duration_sec": 30, "dest_dir": blocked_file }),
@@ -1990,9 +2029,13 @@ fn r3_m2_selective_window_pinning_leaves_older_chunks_evictable() {
         max_ring_duration_ns: 60_000_000_000,
         min_free_disk_bytes: 0,
     };
-    let server =
-        DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp)).with_ring_policy(policy))
-            .expect("start arbd");
+    let faults = Arc::new(FaultInjection::default());
+    let server = DaemonServer::start(
+        DaemonConfig::new(isolated_paths(&tmp))
+            .with_ring_policy(policy)
+            .with_fault_injection(Arc::clone(&faults)),
+    )
+    .expect("start arbd");
 
     let base_dev = 1_000 * SEC_NS;
     let mut source = build_chunked_heartbeat_source("boot-r3-m2", base_dev, 0..50);
@@ -2009,9 +2052,11 @@ fn r3_m2_selective_window_pinning_leaves_older_chunks_evictable() {
         "expected >= 45 ring chunks across 50s, got {total_chunks}"
     );
 
-    // Trigger a 10s save to an unwritable file so the job stays `FailedRetryable` holding pins.
+    // Inject a write failure after pinning the ten-second window.
     let blocked_file = tmp.path().join("blocked-m2");
-    fs::write(&blocked_file, b"file").expect("create blocking file");
+    faults
+        .deny_output_after_pin_once
+        .store(true, Ordering::Release);
     let failed = client.call(
         "save.trigger",
         &json!({ "duration_sec": 10, "dest_dir": blocked_file,

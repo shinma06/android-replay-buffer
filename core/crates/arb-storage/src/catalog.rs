@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS save_jobs (
   trigger_kind TEXT NOT NULL DEFAULT 'manual'
 );
 
+CREATE INDEX IF NOT EXISTS failed_jobs_by_time ON save_jobs(updated_at_utc, job_id) WHERE state='failed_retryable';
+
 CREATE TABLE IF NOT EXISTS pending_staging (
   job_id TEXT NOT NULL,
   destination_path TEXT NOT NULL,
@@ -218,6 +220,10 @@ pub struct LeaseRecord {
 /// Persisted save job row wrapping [`arb_core::state::SaveJob`] with timestamps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSaveJob {
+    /// Failure disposition of the current failed attempt (older rows default to transient).
+    pub failure_class: Option<arb_core::save_failure::SaveFailureClass>,
+    /// Durable one-shot claim, including a rescue interrupted by a restart.
+    pub rescue_attempted: bool,
     /// Core state-machine representation including `pinned_chunk_ids`.
     pub job: SaveJob,
     /// Origin that initiated this save job (`Manual` or `CrashAutoSave`).
@@ -226,6 +232,17 @@ pub struct CatalogSaveJob {
     pub created_at_utc: String,
     /// ISO-8601 UTC last-update timestamp.
     pub updated_at_utc: String,
+}
+
+/// Recovery information for status and admission checks, without loading chunk ID arrays.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SaveJobCounts {
+    /// Jobs retaining ownership of ring data.
+    pub active: usize,
+    /// Jobs waiting for a recovery operation.
+    pub failed: usize,
+    /// Job with the oldest failure time.
+    pub oldest_failed_job_id: Option<String>,
 }
 
 /// Non-destructive editor state stored outside immutable Zone-2 bundles.
@@ -1650,6 +1667,8 @@ impl Catalog {
         .map_err(|source| StorageError::sqlite("create_pinned_job", source))?;
 
         Ok(CatalogSaveJob {
+            failure_class: None,
+            rescue_attempted: false,
             job,
             trigger_kind,
             created_at_utc: now_utc.to_owned(),
@@ -1695,7 +1714,28 @@ impl Catalog {
         error_message: &str,
         now_utc: &str,
     ) -> Result<CatalogSaveJob, StorageError> {
-        self.apply_save_job_event(
+        self.mark_failed_classified(
+            job_id,
+            error_message,
+            arb_core::save_failure::SaveFailureClass::Transient,
+            now_utc,
+        )
+    }
+
+    /// Records the failure and its recovery policy in the same state transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transition, serialization or database error if the change cannot be recorded.
+    pub fn mark_failed_classified(
+        &self,
+        job_id: &str,
+        error_message: &str,
+        class: arb_core::save_failure::SaveFailureClass,
+        now_utc: &str,
+    ) -> Result<CatalogSaveJob, StorageError> {
+        self.apply_classified_event(
+            Some(class),
             job_id,
             SaveJobEvent::FailRetryable {
                 error_message: error_message.to_owned(),
@@ -1774,13 +1814,52 @@ impl Catalog {
     ///
     /// Returns [`StorageError::Sqlite`] or [`StorageError::CorruptData`].
     pub fn list_save_jobs(&self) -> Result<Vec<CatalogSaveJob>, StorageError> {
+        self.query_save_jobs("ORDER BY julianday(created_at_utc), job_id")
+    }
+
+    /// Reads active and failed job counts from one consistent catalog snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the counts cannot be read.
+    pub fn save_job_counts(&self) -> Result<SaveJobCounts, StorageError> {
+        self.lock_conn()?
+            .query_row(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE state='failed_retryable'),
+                    (SELECT job_id FROM save_jobs WHERE state='failed_retryable'
+                     ORDER BY julianday(updated_at_utc), job_id LIMIT 1)
+             FROM save_jobs WHERE state NOT IN ('completed','discarded')",
+                [],
+                |row| {
+                    Ok(SaveJobCounts {
+                        active: row.get(0)?,
+                        failed: row.get(1)?,
+                        oldest_failed_job_id: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|source| StorageError::sqlite("save_job_counts", source))
+    }
+
+    /// Lists only failures, oldest failure first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or decoding error if a persisted row cannot be read.
+    pub fn failed_save_jobs(&self) -> Result<Vec<CatalogSaveJob>, StorageError> {
+        self.query_save_jobs(
+            "WHERE state='failed_retryable' ORDER BY julianday(updated_at_utc), job_id",
+        )
+    }
+
+    fn query_save_jobs(&self, filter: &'static str) -> Result<Vec<CatalogSaveJob>, StorageError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT job_id, state, destination_path, pinned_chunks_json,
-                        error_message, created_at_utc, updated_at_utc, trigger_kind
+                &format!("SELECT job_id, state, destination_path, pinned_chunks_json,
+                        error_message, created_at_utc, updated_at_utc, trigger_kind, failure_class, rescue_attempted
                  FROM save_jobs
-                 ORDER BY julianday(created_at_utc) ASC, job_id ASC",
+                 {filter}"),
             )
             .map_err(|source| StorageError::sqlite("prepare_list_save_jobs", source))?;
 
@@ -2144,18 +2223,44 @@ impl Catalog {
         event: SaveJobEvent,
         now_utc: &str,
     ) -> Result<CatalogSaveJob, StorageError> {
+        self.apply_classified_event(None, job_id, event, now_utc)
+    }
+
+    /// Claims a failure once, only while it is still the failure observed by maintenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the durable claim cannot be recorded.
+    pub fn claim_rescue(&self, job_id: &str, updated_at: &str) -> Result<bool, StorageError> {
+        self.lock_conn()?.execute(
+            "UPDATE save_jobs SET rescue_attempted=1 WHERE job_id=?1 AND updated_at_utc=?2
+             AND state='failed_retryable' AND rescue_attempted=0 AND COALESCE(failure_class,'transient') != 'integrity'",
+            params![job_id, updated_at],
+        ).map(|n| n == 1).map_err(|source| StorageError::sqlite("claim_rescue", source))
+    }
+
+    fn apply_classified_event(
+        &self,
+        class: Option<arb_core::save_failure::SaveFailureClass>,
+        job_id: &str,
+        event: SaveJobEvent,
+        now_utc: &str,
+    ) -> Result<CatalogSaveJob, StorageError> {
         let conn = self.lock_conn()?;
         let mut record = fetch_save_job(&conn, job_id)?.ok_or_else(|| StorageError::NotFound {
             entity: NotFoundEntity::Job,
             id: job_id.to_owned(),
         })?;
         record.job.apply(event)?;
+        record.failure_class = class;
+        let class = serde_json::to_value(class)
+            .map_err(|source| StorageError::json("encode_failure_class", source))?;
         let chunks_json = serde_json::to_string(&record.job.pinned_chunk_ids)
             .map_err(|source| StorageError::json("serialize_pinned_chunks", source))?;
         conn.execute(
             "UPDATE save_jobs
              SET state = ?1, destination_path = ?2, pinned_chunks_json = ?3,
-                 error_message = ?4, updated_at_utc = ?5
+                 error_message = ?4, updated_at_utc = ?5, failure_class = ?7
              WHERE job_id = ?6",
             params![
                 save_job_state_to_str(record.job.state),
@@ -2164,6 +2269,7 @@ impl Catalog {
                 record.job.last_error,
                 now_utc,
                 job_id,
+                class.as_str(),
             ],
         )
         .map_err(|source| StorageError::sqlite("update_save_job", source))?;
@@ -2536,6 +2642,8 @@ struct RawSaveJobRow {
     created_at_utc: String,
     updated_at_utc: String,
     trigger_kind: String,
+    failure_class: Option<String>,
+    rescue_attempted: bool,
 }
 
 fn read_save_job_sql_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSaveJobRow> {
@@ -2548,6 +2656,8 @@ fn read_save_job_sql_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSaveJob
         created_at_utc: row.get(5)?,
         updated_at_utc: row.get(6)?,
         trigger_kind: row.get(7)?,
+        failure_class: row.get(8)?,
+        rescue_attempted: row.get(9)?,
     })
 }
 
@@ -2556,7 +2666,21 @@ fn decode_save_job_row(raw: RawSaveJobRow) -> Result<CatalogSaveJob, StorageErro
     let trigger_kind = parse_save_trigger_kind(&raw.trigger_kind)?;
     let pinned_chunk_ids: Vec<String> = serde_json::from_str(&raw.pinned_chunks_json)
         .map_err(|source| StorageError::json("deserialize_pinned_chunks", source))?;
+    let failure_class = if state == SaveJobState::FailedRetryable {
+        Some(
+            raw.failure_class
+                .as_deref()
+                .map(|value| serde_json::from_value(serde_json::Value::String(value.to_owned())))
+                .transpose()
+                .map_err(|source| StorageError::json("read_failure_class", source))?
+                .unwrap_or(arb_core::save_failure::SaveFailureClass::Transient),
+        )
+    } else {
+        None
+    };
     Ok(CatalogSaveJob {
+        failure_class,
+        rescue_attempted: raw.rescue_attempted,
         job: SaveJob {
             job_id: raw.job_id,
             state,
@@ -2574,7 +2698,7 @@ fn fetch_save_job(conn: &Connection, job_id: &str) -> Result<Option<CatalogSaveJ
     let raw = conn
         .query_row(
             "SELECT job_id, state, destination_path, pinned_chunks_json,
-                    error_message, created_at_utc, updated_at_utc, trigger_kind
+                    error_message, created_at_utc, updated_at_utc, trigger_kind, failure_class, rescue_attempted
              FROM save_jobs
              WHERE job_id = ?1",
             params![job_id],
@@ -2589,7 +2713,7 @@ fn fetch_interrupted_save_jobs(conn: &Connection) -> Result<Vec<CatalogSaveJob>,
     let mut stmt = conn
         .prepare(
             "SELECT job_id, state, destination_path, pinned_chunks_json,
-                    error_message, created_at_utc, updated_at_utc, trigger_kind
+                    error_message, created_at_utc, updated_at_utc, trigger_kind, failure_class, rescue_attempted
              FROM save_jobs
              WHERE state IN ('pinned', 'draining', 'materializing')
              ORDER BY julianday(created_at_utc) ASC, job_id ASC",
@@ -2796,20 +2920,28 @@ fn ensure_save_jobs_trigger_column(conn: &Connection) -> Result<(), StorageError
     let cols = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|source| StorageError::sqlite("query_save_jobs_info", source))?;
-    let mut has_trigger_kind = false;
-    for col in cols {
-        let name = col.map_err(|source| StorageError::sqlite("read_save_jobs_col", source))?;
-        if name == "trigger_kind" {
-            has_trigger_kind = true;
-            break;
-        }
-    }
-    if !has_trigger_kind {
-        conn.execute(
+    let columns = cols
+        .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()
+        .map_err(|source| StorageError::sqlite("read_save_jobs_col", source))?;
+    drop(stmt);
+    for (name, ddl) in [
+        (
+            "trigger_kind",
             "ALTER TABLE save_jobs ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'",
-            [],
-        )
-        .map_err(|source| StorageError::sqlite("migrate_save_jobs_trigger_kind", source))?;
+        ),
+        (
+            "failure_class",
+            "ALTER TABLE save_jobs ADD COLUMN failure_class TEXT",
+        ),
+        (
+            "rescue_attempted",
+            "ALTER TABLE save_jobs ADD COLUMN rescue_attempted INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !columns.contains(name) {
+            conn.execute(ddl, [])
+                .map_err(|source| StorageError::sqlite("migrate_save_jobs", source))?;
+        }
     }
     Ok(())
 }
@@ -3014,6 +3146,35 @@ mod tests {
             parent_bundle_id: None,
             created_at_utc: "2026-11-22T10:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn status_uses_the_failure_instant_with_mixed_timestamp_precision() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let catalog = Catalog::open(tmp.path().join("db"), tmp.path().join("bundles")).unwrap();
+        for (id, at) in [
+            ("a", "2026-11-28T00:00:00.500Z"),
+            ("z", "2026-11-28T00:00:00Z"),
+        ] {
+            catalog
+                .create_pinned_job(id, tmp.path().join(id), &["chunk".to_owned()], at)
+                .unwrap();
+            catalog.mark_draining(id, at).unwrap();
+            catalog.mark_materializing(id, at).unwrap();
+            catalog.mark_failed_retryable(id, "write", at).unwrap();
+        }
+        let counts = catalog.save_job_counts().unwrap();
+        assert_eq!((counts.active, counts.failed), (2, 2));
+        assert_eq!(counts.oldest_failed_job_id.as_deref(), Some("z"));
+        catalog.discard_job("z", "2026-11-28T00:01:00Z").unwrap();
+        assert_eq!(
+            catalog
+                .save_job_counts()
+                .unwrap()
+                .oldest_failed_job_id
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[test]

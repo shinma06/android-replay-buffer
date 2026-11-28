@@ -198,6 +198,8 @@ data class SystemStatusResponse(
     val captureEnabled: Boolean = false,
     val configuredDeviceSerial: String? = null,
     val serialMismatch: Boolean = false,
+    val failedSaveJobs: Long = 0,
+    val oldestFailedJobId: String? = null,
 )
 
 data class ShutdownResponse(
@@ -235,6 +237,8 @@ data class ArbConfig(
     val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
     /** Always-on background capture (`capture_enabled`): `arbd` auto-attaches and records while on. */
     val captureEnabled: Boolean = false,
+    val failedJobRescueAfterSecs: Long = 900,
+    val maxPinnedRingFraction: Double = 0.5,
 ) {
     companion object {
         const val CONFIG_SCHEMA_VERSION: Int = 1
@@ -293,6 +297,8 @@ data class ArbConfigPatch(
     val ideDefaultSaveAction: IdeDefaultSaveAction? = null,
     /** `capture_enabled` toggle; `null` leaves the persisted value unchanged. */
     val captureEnabled: Boolean? = null,
+    val failedJobRescueAfterSecs: Long? = null,
+    val maxPinnedRingFraction: Double? = null,
 )
 
 // ---------------- Device & Capture ----------------
@@ -476,6 +482,10 @@ data class SaveJobView(
     val lastError: String? = null,
     val createdAtUtc: String,
     val updatedAtUtc: String,
+    val failureClass: String? = null,
+    val recommendedAction: String? = null,
+    val rescueEligibleAtUtc: String? = null,
+    val rescueAttempted: Boolean = false,
 )
 
 data class UnanchoredSummary(

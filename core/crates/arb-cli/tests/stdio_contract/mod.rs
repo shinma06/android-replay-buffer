@@ -26,6 +26,10 @@ mod arguments;
 #[path = "../../src/mcp/validate.rs"]
 mod validate;
 
+pub(super) fn assert_valid_jobs_response(schema: &Value, body: &Value) {
+    validate::validate(schema, body, "arb_jobs").unwrap();
+}
+
 /// The recorded window contains one Error and one Fatal row, generated from the same anchored sample.
 struct ErrorLogSource {
     inner: MockDeviceSource,
@@ -380,7 +384,7 @@ fn registry(c: &mut Client) {
             version >= ProtocolVersion::V2025_11_25.as_str()
         );
         let tools = c.result("tools/list", json!({}));
-        assert_eq!(tools["tools"].as_array().unwrap().len(), 20);
+        assert_eq!(tools["tools"].as_array().unwrap().len(), 21);
         for (name, flag) in [
             ("arb_export_trim", "trash_original"),
             ("arb_screenshot", "overwrite"),
@@ -436,6 +440,7 @@ fn registry(c: &mut Client) {
                 "output_path" => json!("out.png"),
                 "frame_index" => json!(0),
                 "mode" => json!("single"),
+                "action" => json!("list"),
                 _ => panic!("unexpected required {name}.{k}"),
             };
         }
@@ -687,6 +692,8 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     let mut c = Client::open(&paths);
     registry(&mut c);
     let target = json!({"bundle_id":id});
+    let listed = c.tool("arb_jobs", json!({"action":"list"}));
+    assert!(listed["jobs"].is_array());
     let status = c.tool("arb_status", json!({}));
     assert_eq!(
         status["status"].get("configured_device_serial"),

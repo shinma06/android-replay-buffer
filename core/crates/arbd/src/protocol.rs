@@ -313,6 +313,11 @@ pub struct SystemStatusResponse {
     pub active_viewports: usize,
     /// Number of non-terminal save jobs in the catalog.
     pub active_save_jobs: usize,
+    #[serde(default)]
+    /// Number of jobs that require recovery.
+    pub failed_save_jobs: usize,
+    /// Identifier of the least recently failed job.
+    pub oldest_failed_job_id: Option<String>,
     /// Startup crash recovery report summary.
     pub recovery: RecoverySummaryView,
     /// Live `am_crash` debounced auto-save telemetry.
@@ -326,7 +331,7 @@ pub struct SystemStatusResponse {
 // ---------------- Persisted Config ----------------
 
 /// Response payload for `config.get` and `config.update`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigResponse {
     /// Active validated user configuration.
     pub config: ArbConfig,
@@ -549,6 +554,18 @@ pub struct SaveJobView {
     pub destination_path: PathBuf,
     /// Ring chunk IDs currently pinned by this job.
     pub pinned_chunk_ids: Vec<String>,
+    #[serde(default)]
+    /// Number of chunk IDs protected by the job.
+    pub pinned_chunk_count: usize,
+    /// Cause of the current failed attempt.
+    pub failure_class: Option<arb_core::save_failure::SaveFailureClass>,
+    /// Suggested manual recovery action.
+    pub recommended_action: Option<arb_core::save_failure::RecommendedJobAction>,
+    /// Earliest automatic rescue time when eligible.
+    pub rescue_eligible_at_utc: Option<String>,
+    #[serde(default)]
+    /// Whether automatic rescue has already claimed the job.
+    pub rescue_attempted: bool,
     /// Last error message when in `failed_retryable`.
     pub last_error: Option<String>,
     /// Creation UTC timestamp.
@@ -721,7 +738,7 @@ pub struct SaveRetargetParams {
     /// Save job identifier.
     pub job_id: String,
     /// Replacement destination parent directory (or full bundle directory path).
-    pub dest_dir: PathBuf,
+    pub dest_dir: Option<PathBuf>,
 }
 
 // ---------------- Bundles & Leases ----------------
@@ -1246,6 +1263,7 @@ pub struct ExportPngParams {
     /// Explicit destination. An omitted or empty path requests automatic naming.
     pub output_path: Option<PathBuf>,
     /// Optional screenshot directory for automatically named images.
+    #[serde(alias = "dest_dir")]
     pub output_dir: Option<PathBuf>,
 }
 

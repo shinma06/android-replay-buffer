@@ -279,7 +279,7 @@ enum CommandSpec {
     },
     JobsRetarget {
         job_id: String,
-        dest: PathBuf,
+        dest: Option<PathBuf>,
     },
     JobsDiscard {
         job_id: String,
@@ -786,6 +786,13 @@ fn parse_optional_dir_value(raw: &str) -> Result<Value, CliError> {
     }
 }
 
+fn parse_pin_fraction(val: &str) -> Result<f64, CliError> {
+    val.parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0 && *v <= 1.0)
+        .ok_or_else(|| CliError::usage("--max-pinned-ring-fraction expects a number in (0, 1]"))
+}
+
 fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut patch = serde_json::Map::new();
     let mut i = 0_usize;
@@ -796,12 +803,15 @@ fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
             "--save-window-secs" => {
                 patch.insert("save_window_secs".to_owned(), json!(parse_u32(val, flag)?));
             }
-            "--ring-budget-bytes" => {
-                patch.insert("ring_budget_bytes".to_owned(), json!(parse_u64(val, flag)?));
-            }
-            "--min-free-disk-bytes" => {
+            "--max-pinned-ring-fraction" => {
                 patch.insert(
-                    "min_free_disk_bytes".to_owned(),
+                    "max_pinned_ring_fraction".into(),
+                    json!(parse_pin_fraction(val)?),
+                );
+            }
+            "--ring-budget-bytes" | "--min-free-disk-bytes" | "--failed-job-rescue-after-secs" => {
+                patch.insert(
+                    flag.trim_start_matches("--").replace('-', "_"),
                     json!(parse_u64(val, flag)?),
                 );
             }
@@ -910,7 +920,7 @@ fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
         Some("retarget") => {
             let job_id = args
                 .get(1)
-                .ok_or_else(|| CliError::usage("jobs retarget requires <job-id> --dest <dir>"))?
+                .ok_or_else(|| CliError::usage("jobs retarget requires <job-id> [--dest <dir>]"))?
                 .clone();
             let mut dest = None;
             let mut i = 2_usize;
@@ -927,8 +937,6 @@ fn parse_jobs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                     }
                 }
             }
-            let dest =
-                dest.ok_or_else(|| CliError::usage("jobs retarget requires --dest <dir>"))?;
             Ok(CommandSpec::JobsRetarget { job_id, dest })
         }
         other => Err(CliError::usage(format!(
@@ -1946,7 +1954,7 @@ COMMANDS:\n  \
   save-logs [--window-secs <N>] [--note <TEXT>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   screenshot [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
   config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
-  jobs list | retry <JOB_ID> | retarget <JOB_ID> --dest <DIR> | discard <JOB_ID>\n  \
+  jobs list | retry <JOB_ID> | retarget <JOB_ID> [--dest <DIR>] | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
@@ -2148,7 +2156,7 @@ mod tests {
             retarget.1,
             CommandSpec::JobsRetarget {
                 job_id: "job-42".to_owned(),
-                dest: abs("/tmp/new"),
+                dest: Some(abs("/tmp/new")),
             },
             "retarget command must match"
         );

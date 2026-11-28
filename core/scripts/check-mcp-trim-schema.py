@@ -64,7 +64,7 @@ def check_version(cli, flags, fixture, version):
             result, size = call("tools/list", {})
             assert size <= TOOLS_LIST_BUDGET, size
             tools = result["tools"]
-            assert len(tools) == 20 and "nextCursor" not in result
+            assert len(tools) == 21 and "nextCursor" not in result
             outputs_by_tool = {}
             for tool in tools:
                 assert "outputSchema" not in tool, tool["name"]
@@ -98,7 +98,7 @@ def check_version(cli, flags, fixture, version):
                 for key in ("in_time_ns", "out_time_ns"):
                     assert body[key] == args[key]
             assert not inputs.is_valid({"bundle_id": str(fixture), "in_time_ns": 1})
-            print(f"{version}: 20 tools, 20 inputSchema + 20 outputSchema (arb://schemas), "
+            print(f"{version}: 21 tools, 21 inputSchema + 21 outputSchema (arb://schemas), "
                   f"2 real exports, tools/list {size} bytes")
         finally:
             proc.stdin.close()

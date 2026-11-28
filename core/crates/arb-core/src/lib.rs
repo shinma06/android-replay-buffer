@@ -18,6 +18,7 @@ pub mod gesture;
 pub mod injected_input;
 pub mod input_capture;
 pub mod legacy;
+pub mod save_failure;
 pub mod selection;
 pub mod state;
 pub mod time;

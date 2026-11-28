@@ -205,6 +205,9 @@ pub enum ConfigValidationError {
         /// Maximum inclusive bound.
         max: u64,
     },
+    /// Pin fraction must be finite and in (0, 1].
+    #[error("max_pinned_ring_fraction must be greater than zero and at most one")]
+    InvalidPinFraction,
     /// Path field was empty or relative.
     #[error("config field '{field}' is invalid: {reason}")]
     InvalidPath {
@@ -234,7 +237,7 @@ pub enum ConfigValidationError {
 }
 
 /// Persisted user configuration stored atomically in `<data_dir>/config.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArbConfig {
     /// Configuration schema version; must equal [`CONFIG_SCHEMA_VERSION`] (`1`).
@@ -251,6 +254,10 @@ pub struct ArbConfig {
     pub save_window_secs: u32,
     /// Minimum trash retention before physical deletion, in seconds.
     pub gc_grace_secs: u64,
+    /// Age at which a failed job is rescued, or zero to disable.
+    pub failed_job_rescue_after_secs: u64,
+    /// Maximum share of the ring byte budget protected by save jobs.
+    pub max_pinned_ring_fraction: f64,
     /// Maximum live Zone-1 ring buffer byte budget (default `1.5 GiB`).
     pub ring_budget_bytes: u64,
     /// Minimum free host disk space safety floor in bytes (default `3 GiB`).
@@ -288,6 +295,8 @@ impl ArbConfig {
             device_serial: None,
             save_window_secs: DEFAULT_SAVE_WINDOW_SECS,
             gc_grace_secs: 86_400,
+            failed_job_rescue_after_secs: 900,
+            max_pinned_ring_fraction: 0.5,
             ring_budget_bytes: DEFAULT_RING_BUDGET_BYTES,
             min_free_disk_bytes: DEFAULT_MIN_FREE_DISK_BYTES,
             video_max_size: DEFAULT_VIDEO_MAX_SIZE,
@@ -308,6 +317,9 @@ impl ArbConfig {
     ///
     /// Returns [`ConfigValidationError`] describing the first violated constraint.
     pub fn validate(&self) -> Result<(), ConfigValidationError> {
+        if !(self.max_pinned_ring_fraction > 0.0 && self.max_pinned_ring_fraction <= 1.0) {
+            return Err(ConfigValidationError::InvalidPinFraction);
+        }
         if self.config_version != CONFIG_SCHEMA_VERSION {
             return Err(ConfigValidationError::UnsupportedVersion {
                 found: self.config_version,
@@ -382,6 +394,12 @@ impl ArbConfig {
             DeviceSerialPatch::Unchanged => {}
             DeviceSerialPatch::Clear => next.device_serial = None,
             DeviceSerialPatch::Set(serial) => next.device_serial = Some(serial.clone()),
+        }
+        if let Some(v) = patch.max_pinned_ring_fraction {
+            next.max_pinned_ring_fraction = v;
+        }
+        if let Some(v) = patch.failed_job_rescue_after_secs {
+            next.failed_job_rescue_after_secs = v;
         }
         if let Some(v) = patch.gc_grace_secs {
             next.gc_grace_secs = v;
@@ -534,7 +552,7 @@ where
 /// Omitted fields retain their existing values. Passing `"output_dir_override": null`,
 /// `"screenshot_dir_override": null`, or `"device_serial": null` explicitly clears the field
 /// back to `None`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArbConfigPatch {
     /// Arm or disarm the background capture supervisor.
@@ -556,6 +574,12 @@ pub struct ArbConfigPatch {
     /// Updated trash retention in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gc_grace_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Replacement cap on the protected fraction of ring capacity.
+    pub max_pinned_ring_fraction: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Replacement rescue delay. Zero disables automatic rescue.
+    pub failed_job_rescue_after_secs: Option<u64>,
     /// Updated live ring byte budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_budget_bytes: Option<u64>,
