@@ -27,33 +27,26 @@ fn groups(name: &str) -> impl Iterator<Item = &'static Group> {
         .filter(move |g| g.tools.iter().any(|t| t == name))
 }
 
+/// Publishes each group's canonical name only. Deprecated aliases stay accepted by [`normalize`],
+/// which folds them into the canonical name before the schema sees the arguments.
 pub(super) fn describe(name: &str, schema: &mut Value) {
     let mut exclusions = Vec::new();
     for group in groups(name) {
-        let canonical = &group.names[0];
-        if group.aliases {
-            for alias in &group.names[1..] {
-                let mut field = schema["properties"][canonical].clone();
-                field["deprecated"] = json!(true);
-                field["description"] = if group.allow_equal {
-                    json!(format!("{canonical} の別名。併用は同値のみ。"))
-                } else {
-                    json!(format!("{canonical} の別名。"))
-                };
-                schema["properties"][alias] = field;
-            }
-        }
         if group.required {
-            schema["anyOf"] = Value::Array(
-                group
-                    .names
-                    .iter()
-                    .map(|k| json!({"required":[k]}))
+            let required = schema["required"]
+                .as_array_mut()
+                .map_or_else(Vec::new, std::mem::take);
+            let canonical = json!(group.names[0]);
+            schema["required"] = Value::Array(
+                required
+                    .into_iter()
+                    .filter(|k| *k != canonical)
+                    .chain(std::iter::once(canonical.clone()))
                     .collect(),
             );
         }
-        // JSON Schema cannot compare two sibling values. Execution checks equality.
-        if group.allow_equal {
+        // Aliases are not listed, and JSON Schema cannot compare two sibling values.
+        if group.aliases {
             continue;
         }
         for (i, a) in group.names.iter().enumerate() {
@@ -67,33 +60,75 @@ pub(super) fn describe(name: &str, schema: &mut Value) {
     }
 }
 
+/// Checks every argument group, folds aliases into their canonical name, then validates.
+///
+/// Within a group, every supplied name is compared: equal values are one argument when the group
+/// `allowEqual`s it; any other combination is reported with all supplied names.
 pub(super) fn normalize(
     name: &str,
     schema: &Value,
     mut args: Value,
 ) -> Result<Map<String, Value>, Violation> {
-    // Report both submitted names even if another required argument is absent.
+    let props = &schema["properties"];
+    // Report every submitted name even if another required argument is absent.
     for group in groups(name) {
-        let mut present = group.names.iter().filter(|k| args.get(*k).is_some());
-        if let (Some(a), Some(b)) = (present.next(), present.next())
-            && !(group.allow_equal && args[a] == args[b])
-        {
-            return Err(Violation::conflicts(&[a, b]));
+        let canonical = &group.names[0];
+        let present: Vec<&str> = group
+            .names
+            .iter()
+            .map(String::as_str)
+            .filter(|k| args.get(*k).is_some())
+            .collect();
+        for alias in present.iter().filter(|_| group.aliases) {
+            validate::normalize_integers(&props[canonical], &mut args[*alias]);
+        }
+        if present.len() > 1 {
+            let first = &args[present[0]];
+            if !group.allow_equal || present.iter().any(|k| args[*k] != *first) {
+                return Err(if group.allow_equal {
+                    differing(&present)
+                } else {
+                    Violation::conflicts(&present)
+                });
+            }
+        }
+        if !group.aliases {
+            continue;
+        }
+        for alias in present.iter().filter(|k| **k != canonical) {
+            validate::validate(
+                &props[canonical],
+                &args[*alias],
+                &format!("arguments.{alias}"),
+            )?;
+        }
+        if let Some(obj) = args.as_object_mut() {
+            for alias in &group.names[1..] {
+                if let Some(value) = obj.remove(alias) {
+                    obj.insert(canonical.clone(), value);
+                }
+            }
         }
     }
     validate::normalize_integers(schema, &mut args);
     validate::validate(schema, &args, "arguments")?;
-    let Value::Object(mut args) = args else {
+    let Value::Object(args) = args else {
         unreachable!("tool inputs are object schemas")
     };
-    for group in groups(name).filter(|g| g.aliases) {
-        for alias in &group.names[1..] {
-            if let Some(value) = args.remove(alias) {
-                args.insert(group.names[0].clone(), value);
-            }
-        }
-    }
     Ok(args)
+}
+
+/// Aliases of one argument were supplied with different values.
+fn differing(names: &[&str]) -> Violation {
+    let fields = names.join(" と ");
+    Violation::new(
+        format!("{fields} は同じ意味の引数ですが、値が異なります。"),
+        json!({ "conflicts": names }),
+        format!(
+            "{fields} は同じ値にするか、{}だけ指定してください。",
+            validate::one_of(names)
+        ),
+    )
 }
 
 /// Both save RPCs accept `duration_sec` and `note`, including `save.logs` via its serde alias.

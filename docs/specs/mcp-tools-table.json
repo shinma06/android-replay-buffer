@@ -15,15 +15,13 @@
   },
   "argumentGroups": [
     {"tools":["arb_query_logs","arb_timeline_overview","arb_inspect_frames","arb_export_trim","arb_export_frame_png"],"names":["bundle_id","bundle_id_or_path"],"aliases":true,"required":true,"allowEqual":true},
-    {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["duration_secs","window_secs","duration_sec"],"aliases":true},
-    {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["note","memo"],"aliases":true},
+    {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["duration_secs","window_secs","duration_sec"],"aliases":true,"allowEqual":true},
+    {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["note","memo"],"aliases":true,"allowEqual":true},
     {"tools":["arb_query_logs"],"names":["cursor","after_seq"]},
     {"tools":["arb_query_logs"],"names":["level","min_level"]},
     {"tools":["arb_screenshot"],"names":["output_path","output_dir"]}
   ],
   "overlays": [
-    {"when":"legacyFullLogRows","tools":{"arb_query_logs":{"inputSchema":{"properties":{"fields":{"default":"full"}}}}}},
-    {"when":"legacyScreenshotInline","tools":{"arb_screenshot":{"inputSchema":{"properties":{"include_image":{"default":true}}}}}},
     {"when":"legacyScreenshotOverwrite","tools":{"arb_screenshot":{"inputSchema":{"properties":{"overwrite":{"type":"boolean","default":false,"description":"同名 PNG を上書き。"}}},"annotations":{"destructiveHint":true}}}},
     {"when":"legacyTrashOriginal","tools":{"arb_export_trim":{"inputSchema":{"properties":{"trash_original":{"type":"boolean","default":false,"description":"書き出し確定後に元バンドルを退避。"}}},"annotations":{"destructiveHint":true}}}},
     {"when":"legacyAssertAbbreviation","tools":{"arb_query_logs":{"inputSchema":{"properties":{"level":{"description":"完全一致（大小無視）。V/D/I/W/E/F、VERBOSE/DEBUG/INFO/WARN/WARNING/ERROR/FATAL/ASSERT。A は F の別名。","pattern":"^([Aa]|[Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"}}}}}}
@@ -144,7 +142,7 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "include_image": {"description": "応答に PNG を添付。", "type": "boolean", "default": false},
+          "include_image": {"description": "応答に PNG を添付。既定は file_uri と resource_links のみ。", "type": "boolean", "default": false},
           "output_dir": {"description": "自動命名する保存先。", "type": "string"},
           "output_path": {"description": "出力パス。", "type": "string"},
           "serial": {"description": "ADB シリアル。省略時は自動選択。", "type": "string"},
@@ -300,7 +298,7 @@
             "pattern": "^([Vv]|[Dd]|[Ii]|[Ww]|[Ee]|[Ff]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Ww][Aa][Rr][Nn]|[Ww][Aa][Rr][Nn][Ii][Nn][Gg]|[Ee][Rr][Rr][Oo][Rr]|[Ff][Aa][Tt][Aa][Ll]|[Aa][Ss][Ss][Ee][Rr][Tt])$"
           },
           "min_level": {"enum":["V","D","I","W","E","F"],"description":"下限。E は E・F。level と排他。"},
-          "limit": {"maximum": 100000, "minimum": 1, "type": "integer", "default": 100, "description": "ページの最大行数。"},
+          "limit": {"maximum": 500, "minimum": 1, "type": "integer", "default": 100, "description": "ページの最大行数。本文が 48 KB を超える分は next_cursor へ回します。"},
           "package": {"description": "Android パッケージ名（完全一致）。", "type": "string"},
           "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
           "start_ns": {"type": "integer", "description": "範囲の開始。端末 boottime（ns、epochs 基準）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
@@ -1342,7 +1340,7 @@
         "captured_at_local": {"type": ["string", "null"]},
         "serial": {"type": "string"}
       },
-      "required": ["resource_links", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
+      "required": ["resource_links", "file_uri", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
       "additionalProperties": false
     },
     "SaveTriggerKind": {"enum": ["manual", "crash_auto_save"]},
@@ -1501,9 +1499,10 @@
         "total_matched": {"$ref":"#/$defs/UInt"},
         "returned_count": {"$ref":"#/$defs/UInt"},
         "has_more": {"type": "boolean"},
-        "next_cursor": {"type": ["string", "null"]}
+        "next_cursor": {"type": ["string", "null"]},
+        "truncated_by_byte_budget": {"description": "本文 48 KB に収めるため limit より少なく返したとき true。続きは next_cursor。", "type": "boolean"}
       },
-      "required": ["fields", "logs", "total_matched", "returned_count", "has_more", "next_cursor"],
+      "required": ["fields", "logs", "total_matched", "returned_count", "has_more", "next_cursor", "truncated_by_byte_budget"],
       "additionalProperties": false
     },
     "TimelineOverviewResponse": {

@@ -131,6 +131,32 @@ impl Client {
     fn init(&mut self, version: &str) -> Value {
         self.result("initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"contract","version":"1"}}))
     }
+    /// Lists the negotiated catalog and attaches each tool's complete `outputSchema` from
+    /// `arb://schemas/{tool}`, which `tools/list` leaves out (#586-A).
+    fn load_schemas(&mut self) -> Vec<Value> {
+        let tools = self.result("tools/list", json!({}))["tools"].take();
+        let mut defs = Vec::new();
+        for def in tools.as_array().unwrap() {
+            assert!(def.get("outputSchema").is_none(), "{def}");
+            let name = def["name"].as_str().unwrap();
+            let uri = format!("arb://schemas/{name}");
+            let read = self.result("resources/read", json!({ "uri": uri }));
+            let content = &read["contents"][0];
+            assert_eq!(content["uri"], uri);
+            assert_eq!(content["mimeType"], "application/schema+json");
+            let schema: Value = serde_json::from_str(content["text"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                schema["$schema"],
+                "https://json-schema.org/draft/2020-12/schema"
+            );
+            assert_eq!(schema["type"], "object");
+            let mut full = def.clone();
+            full["outputSchema"] = schema;
+            self.schemas.insert(name.to_owned(), full.clone());
+            defs.push(full);
+        }
+        defs
+    }
     fn tool(&mut self, name: &str, args: Value) -> Value {
         let mut params = json!({"name":name});
         params["arguments"] = args;
@@ -385,12 +411,10 @@ fn registry(c: &mut Client) {
             false
         );
     }
-    let tools = c.result("tools/list", json!({}));
-    for def in tools["tools"].as_array().unwrap() {
+    for def in &c.load_schemas() {
         let name = def["name"].as_str().unwrap();
         let input = &def["inputSchema"];
         assert_eq!(input["type"], "object");
-        assert_eq!(def["outputSchema"]["type"], "object");
         for hint in [
             "readOnlyHint",
             "destructiveHint",
@@ -400,7 +424,6 @@ fn registry(c: &mut Client) {
             assert!(def["annotations"][hint].is_boolean());
         }
         assert!(def["annotations"]["title"].is_string());
-        c.schemas.insert(name.to_owned(), def.clone());
         let mut base = json!({});
         for k in input["required"]
             .as_array()
@@ -471,12 +494,26 @@ fn resources_and_prompts(c: &mut Client, id: &str) {
             .len(),
         2
     );
+    let templates = c.result("resources/templates/list", json!({}))["resourceTemplates"].take();
+    assert_eq!(templates.as_array().unwrap().len(), 6);
+    assert!(templates.as_array().unwrap().iter().any(|t| t
+        == &json!({"uriTemplate":"arb://schemas/{tool}","name":"schema","description":"ツールの outputSchema（交渉した版）","mimeType":"application/schema+json"})));
+    for (uri, code) in [
+        ("arb://schemas/arb_unknown", -32602),
+        ("arb://schemas/../arb_status", -32602),
+        ("arb://schemas/%2e%2e%2farb_status", -32602),
+        ("arb://schemas/", -32602),
+    ] {
+        let response = c.request("resources/read", json!({"uri":uri}));
+        assert_eq!(response["error"]["code"], code, "{uri}");
+    }
+    let r = c.result(
+        "completion/complete",
+        json!({"ref":{"type":"ref/resource","uri":"arb://schemas/{tool}"},"argument":{"name":"tool","value":"arb_export"}}),
+    );
     assert_eq!(
-        c.result("resources/templates/list", json!({}))["resourceTemplates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        5
+        r["completion"],
+        json!({"values":["arb_export_trim","arb_export_frame_png"],"total":2,"hasMore":false})
     );
     for uri in [
         "arb://status".into(),
@@ -732,14 +769,19 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     )
     .unwrap();
     fs::write(adb_dir.join("devices"), "contract-device\tdevice\n").unwrap();
+    // #586-B: every version saves without an inline PNG unless asked, and returns `path`,
+    // `file_uri` and `resource_links` for `resources/read`.
     for (version, inline, expected) in [
-        (ProtocolVersion::V2024_11_05.as_str(), None, true),
-        (ProtocolVersion::V2025_03_26.as_str(), None, true),
+        (ProtocolVersion::V2024_11_05.as_str(), None, false),
+        (ProtocolVersion::V2025_03_26.as_str(), None, false),
         (ProtocolVersion::V2025_06_18.as_str(), None, false),
         (ProtocolVersion::V2025_11_25.as_str(), None, false),
+        (ProtocolVersion::V2024_11_05.as_str(), Some(true), true),
+        (ProtocolVersion::V2025_03_26.as_str(), Some(true), true),
         (ProtocolVersion::V2025_11_25.as_str(), Some(true), true),
     ] {
         c.init(version);
+        c.load_schemas();
         let out = root.path().join(format!("shot-{version}-{expected}.png"));
         let mut args = json!({"serial":"contract-device","output_path":out});
         if let Some(flag) = inline {
@@ -769,14 +811,13 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         if let Some(block) = link_blocks.first() {
             assert_eq!(block["uri"], link["uri"]);
         }
-        let modern = version >= ProtocolVersion::V2025_06_18.as_str();
         let shot = c.check_tool("arb_screenshot", result);
         assert_eq!(shot["resource_links"], json!([link]));
         assert_eq!(shot["path"], json!(out));
-        // W3B: both structured-content versions return the same `file_uri` as the link.
+        // Every version returns the same `file_uri` as the link.
         assert_eq!(
             shot.get("file_uri"),
-            modern.then_some(&link["uri"]),
+            Some(&link["uri"]),
             "{version}: {shot}"
         );
         assert!(out.is_file());
@@ -852,11 +893,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         ProtocolVersion::V2025_11_25.as_str(),
     ] {
         c.init(version);
-        let tools = c.result("tools/list", json!({}));
-        for def in tools["tools"].as_array().unwrap() {
-            c.schemas
-                .insert(def["name"].as_str().unwrap().into(), def.clone());
-        }
+        c.load_schemas();
         arguments::verify(&mut c);
         log_fields(&mut c, id, version);
         inspect_shape(&mut c, id);
@@ -1258,16 +1295,12 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
     assert!(listed["bundles"][0].get("created_local").is_none());
 }
 
-/// #571: `fields` defaults to compact only where structured content exists.
+/// #586-B: `fields` defaults to compact on every version; `full` stays available.
 fn log_fields(c: &mut Client, id: &str, version: &str) {
-    let compact = version >= ProtocolVersion::V2025_06_18.as_str();
     let page = c.tool("arb_query_logs", json!({"bundle_id":id}));
-    assert_eq!(page["fields"], if compact { "compact" } else { "full" });
-    assert_eq!(
-        page["logs"][0].get("alignment").is_none(),
-        compact,
-        "{version}"
-    );
+    assert_eq!(page["fields"], "compact", "{version}");
+    assert!(page["logs"][0].get("alignment").is_none(), "{version}");
+    assert_eq!(page["truncated_by_byte_budget"], false);
     let full = c.tool("arb_query_logs", json!({"bundle_id":id,"fields":"full"}));
     let light = c.tool("arb_query_logs", json!({"bundle_id":id,"fields":"compact"}));
     assert_eq!(light["boot_id"], "boot-mcp");
@@ -1295,13 +1328,15 @@ fn log_fields(c: &mut Client, id: &str, version: &str) {
 
 /// #571: `include_images` adds a PNG block; the body keeps one shape.
 fn inspect_shape(c: &mut Client, id: &str) {
-    let args = json!({"bundle_id":id,"bundle_id_or_path":id,"mode":"contact_sheet","start_frame":0,"end_frame":5,"include_images":false});
+    let mut args = json!({"bundle_id":id,"mode":"contact_sheet","start_frame":0,"end_frame":5,"include_images":false});
     validate::validate(
         &c.schemas["arb_inspect_frames"]["inputSchema"],
         &args,
         "arguments",
     )
     .unwrap();
+    // The unlisted alias with the same value is still one target.
+    args["bundle_id_or_path"] = json!(id);
     let meta = c.tool("arb_inspect_frames", args.clone());
     let mut inline_args = args;
     inline_args["include_images"] = json!(true);

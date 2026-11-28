@@ -25,10 +25,6 @@ struct Overlay {
 }
 #[derive(Deserialize)]
 enum Capability {
-    #[serde(rename = "legacyFullLogRows")]
-    FullLogRows,
-    #[serde(rename = "legacyScreenshotInline")]
-    ScreenshotInline,
     #[serde(rename = "legacyScreenshotOverwrite")]
     ScreenshotOverwrite,
     #[serde(rename = "legacyTrashOriginal")]
@@ -39,8 +35,6 @@ enum Capability {
 impl Capability {
     fn applies(&self, version: ProtocolVersion) -> bool {
         match self {
-            Self::FullLogRows => !version.default_compact_logs(),
-            Self::ScreenshotInline => version.legacy_screenshot_inline(),
             Self::ScreenshotOverwrite => version.allows_legacy_screenshot_overwrite(),
             Self::TrashOriginal => version.allows_legacy_trash_original(),
             Self::AssertAbbreviation => version.accepts_assert_abbreviation(),
@@ -75,18 +69,48 @@ pub(super) fn known_error_label(label: &str) -> Option<&'static str> {
         .find(|&known| known == label)
 }
 
+/// The complete catalog: every tool with its full `outputSchema`. Execution validates against
+/// these input schemas, and `arb://schemas/{tool}` serves these output schemas.
 pub(super) fn for_version(version: ProtocolVersion) -> &'static [Value] {
-    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
-    static NOVEMBER: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(V2025_11_25));
-    static JUNE: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(V2025_06_18));
-    static FIRST: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(V2024_11_05));
-    static MARCH: LazyLock<Vec<Value>> = LazyLock::new(|| build_catalog(V2025_03_26));
-    match version {
-        V2024_11_05 => &FIRST,
-        V2025_03_26 => &MARCH,
-        V2025_06_18 => &JUNE,
-        V2025_11_25 => &NOVEMBER,
+    static FULL: [LazyLock<Vec<Value>>; 4] = [
+        LazyLock::new(|| build_catalog_with_output_schemas(ProtocolVersion::ALL[0])),
+        LazyLock::new(|| build_catalog_with_output_schemas(ProtocolVersion::ALL[1])),
+        LazyLock::new(|| build_catalog_with_output_schemas(ProtocolVersion::ALL[2])),
+        LazyLock::new(|| build_catalog_with_output_schemas(ProtocolVersion::ALL[3])),
+    ];
+    &FULL[version.index()]
+}
+
+/// The `tools/list` view: the same tools without `outputSchema` (optional in MCP), which clients
+/// read on demand from `arb://schemas/{tool}`. Results keep `structuredContent` regardless.
+pub(super) fn listed(version: ProtocolVersion) -> &'static [Value] {
+    fn strip(version: ProtocolVersion) -> Vec<Value> {
+        let mut tools = for_version(version).to_vec();
+        for tool in &mut tools {
+            tool.as_object_mut()
+                .expect("tool object")
+                .remove("outputSchema");
+        }
+        tools
     }
+    static LISTED: [LazyLock<Vec<Value>>; 4] = [
+        LazyLock::new(|| strip(ProtocolVersion::ALL[0])),
+        LazyLock::new(|| strip(ProtocolVersion::ALL[1])),
+        LazyLock::new(|| strip(ProtocolVersion::ALL[2])),
+        LazyLock::new(|| strip(ProtocolVersion::ALL[3])),
+    ];
+    &LISTED[version.index()]
+}
+
+/// The negotiated version's complete output schema for one listed tool, as a standalone
+/// Draft 2020-12 document whose references resolve inside it.
+pub(super) fn tool_output_schema(version: ProtocolVersion, name: &str) -> Option<Value> {
+    let tool = for_version(version).iter().find(|t| t["name"] == name)?;
+    let mut schema = json!({"$schema":"https://json-schema.org/draft/2020-12/schema"});
+    for (key, value) in tool["outputSchema"].as_object()? {
+        schema[key] = value.clone();
+    }
+    Some(schema)
 }
 
 pub(super) fn long_running(name: &str) -> bool {
@@ -96,7 +120,7 @@ pub(super) fn long_running(name: &str) -> bool {
         .any(|t| t["name"] == name && t.get("execution").is_some())
 }
 
-fn build_catalog(version: ProtocolVersion) -> Vec<Value> {
+fn build_catalog_with_output_schemas(version: ProtocolVersion) -> Vec<Value> {
     let mut defs = TABLE.defs.clone();
     let overlays: Vec<_> = TABLE
         .overlays

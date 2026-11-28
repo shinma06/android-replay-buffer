@@ -111,24 +111,13 @@ pub(super) fn verify(c: &mut Client) {
         &["frame_indices", "件数 0", "1..=16 件の範囲外です"],
         &["frame_indices は 1..=16 件の範囲で指定してください。"],
     );
+    // Exclusive pairs conflict even with equal values.
     for (tool, first, second, args) in [
         (
             "arb_query_logs",
             "level",
             "min_level",
             json!({"bundle_id":"fixture","level":"E","min_level":"E"}),
-        ),
-        (
-            "arb_save",
-            "duration_secs",
-            "window_secs",
-            json!({"window_secs":5,"duration_secs":5}),
-        ),
-        (
-            "arb_save_logs",
-            "note",
-            "memo",
-            json!({"note":"a","memo":"a"}),
         ),
         (
             "arb_query_logs",
@@ -144,6 +133,18 @@ pub(super) fn verify(c: &mut Client) {
             &json!({"conflicts":[first,second]}),
             &[first, second],
             &[first, second, "だけ"],
+        );
+    }
+    aliases(c);
+    // #586-C: an MCP page holds at most 500 rows; the remedy is the cursor.
+    for got in [0, 501, 100_000] {
+        rejected(
+            c,
+            "arb_query_logs",
+            &json!({"bundle_id":"fixture","limit":got}),
+            &json!({"field":"limit","min":1,"max":500,"got":got}),
+            &["limit", "1..=500"],
+            &["1..=500", "next_cursor", "cursor"],
         );
     }
     for tool in [
@@ -199,8 +200,90 @@ pub(super) fn verify(c: &mut Client) {
         c,
         "arb_timeline_overview",
         &json!({}),
-        &json!({"any_of_required":["bundle_id","bundle_id_or_path"]}),
+        &json!({"field":"bundle_id","missing":"bundle_id"}),
         &["bundle_id"],
         &["bundle_id"],
     );
+}
+
+/// #587: in every alias group, equal values are one argument and any difference names every
+/// supplied key. Acceptance is observed through a later, unrelated range error, so no save runs.
+fn aliases(c: &mut Client) {
+    let past_aliases = json!({"field":"drain_timeout_ms","min":0,"max":5000,"got":999_999});
+    for tool in ["arb_save", "arb_save_logs", "arb_save_and_inspect"] {
+        for args in [
+            json!({"duration_secs":10,"window_secs":10}),
+            json!({"duration_secs":10,"duration_sec":10}),
+            json!({"window_secs":10,"duration_sec":10}),
+            json!({"duration_secs":10,"window_secs":10,"duration_sec":10}),
+            json!({"note":"a","memo":"a"}),
+            json!({"duration_secs":10,"window_secs":10.0,"note":"a","memo":"a"}),
+        ] {
+            let mut args = args;
+            args["drain_timeout_ms"] = json!(999_999);
+            rejected(
+                c,
+                tool,
+                &args,
+                &past_aliases,
+                &["drain_timeout_ms"],
+                &["0..=5000"],
+            );
+        }
+        for (args, keys) in [
+            (
+                json!({"duration_secs":10,"window_secs":11}),
+                vec!["duration_secs", "window_secs"],
+            ),
+            (
+                json!({"window_secs":10,"duration_sec":11}),
+                vec!["window_secs", "duration_sec"],
+            ),
+            (
+                json!({"duration_secs":10,"window_secs":10,"duration_sec":20}),
+                vec!["duration_secs", "window_secs", "duration_sec"],
+            ),
+            (json!({"note":"a","memo":"b"}), vec!["note", "memo"]),
+        ] {
+            let mut hint = keys.clone();
+            hint.push("同じ値");
+            rejected(c, tool, &args, &json!({ "conflicts": keys }), &keys, &hint);
+        }
+        // The unlisted alias keeps its own name in errors.
+        rejected(
+            c,
+            tool,
+            &json!({"window_secs":3}),
+            &json!({"field":"window_secs","min":5,"max":600,"got":3}),
+            &["window_secs", "5..=600"],
+            &["window_secs"],
+        );
+    }
+    for tool in [
+        "arb_timeline_overview",
+        "arb_query_logs",
+        "arb_inspect_frames",
+        "arb_export_trim",
+        "arb_export_frame_png",
+    ] {
+        let schema = &c.schemas[tool]["inputSchema"]["properties"];
+        assert!(schema.get("bundle_id_or_path").is_none(), "{tool}");
+        let mut args =
+            json!({"bundle_id":"no-such-bundle-alias","bundle_id_or_path":"no-such-bundle-alias"});
+        match tool {
+            "arb_inspect_frames" => args["mode"] = json!("single"),
+            "arb_export_frame_png" => {
+                args["frame_index"] = json!(0);
+                args["output_dir"] = json!("out");
+            }
+            _ => (),
+        }
+        let result = c.result("tools/call", json!({"name":tool,"arguments":args}));
+        let body: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            body["error_code"], "BUNDLE_NOT_FOUND",
+            "{tool}: equal aliases reach the daemon as one target: {body}"
+        );
+    }
 }
