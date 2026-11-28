@@ -74,7 +74,9 @@ impl McpServer {
             .map_err(|()| Failure::unavailable("書き出し先のパスが不正です。"))?;
         let link = crate::mcp::resources::ResourceLink::file(path, uri, mime, "書き出し先");
         resp["output_path"] = resp[path_field].clone();
-        resp["info_codes"] = if args.contains_key("output_path") || args.contains_key("dest_dir") {
+        let explicit_destination = args.contains_key("dest_dir")
+            || (format == "share_mp4" && args.contains_key("output_path"));
+        resp["info_codes"] = if explicit_destination {
             json!([])
         } else {
             json!(["default_export_dir"])

@@ -106,6 +106,27 @@ class ArbStudioControllerOrderingTest {
         }
     }
 
+    @Test
+    fun emptyBurnDisplaysBothStructuredAndLegacyWarnings(@TempDir tmp: Path) {
+        val edt = ManualEdt()
+        val (editor, _) = readyEditor(tmp, edt, StudioDaemon(tmp, emptyBurn = true))
+        try {
+            val ctrl = editor.studioController
+            ctrl.toggleBurnTapsOnExport(true)
+            ctrl.triggerExport()
+            awaitTrue {
+                edt.drain()
+                ctrl.viewerState?.exportCompletion != null
+            }
+            val completion = assertNotNull(ctrl.viewerState?.exportCompletion)
+            assertTrue(completion.summaryText.contains("対象の物理操作は 0 件です。"))
+            assertTrue(completion.summaryText.contains("同期を確認してください。"))
+            assertFalse(completion.burnTapsApplied)
+        } finally {
+            editor.dispose()
+        }
+    }
+
     // ---------------- double export ----------------
 
     @Test

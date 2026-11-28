@@ -92,4 +92,4 @@ satisfies:
 
 ## 調査・書き出しの明示指定と警告
 
-`single` は `frame_index` または `frame_indices`、座標を直接渡す `tap_crop` は `frame_index` が必須。ログ検索の開始・終了はそれぞれ ns とフレームの片方を選ぶ。トリムの範囲を省略するには `full_range: true` を指定する。既定の保存先は `output_path`、file URI の `resource_links`、`info_codes` の `default_export_dir` で確認できる。スクリーンショットとフレーム PNG の明示パスは拡張子 `.png` が必須（大小無視）。引数違反は `INVALID_PARAMS`。間引き・焼き込み 0 件などの追加情報は `warnings` の各 `WarningDetail` に格納する。
+`single` は `frame_index` または `frame_indices`、座標を直接渡す `tap_crop` は `frame_index` が必須。ログ検索の開始・終了はそれぞれ ns とフレームの片方を選ぶ。トリムの範囲を省略するには `full_range: true` を指定する。既定の保存先は `output_path`、file URI の `resource_links`、`info_codes` の `default_export_dir` で確認できる。バンドル形式では `output_path` の入力は共有 MP4 のコピー先で、本体の保存先を選ぶのは `dest_dir`。そのため本体の既定保存先を使った場合は、コピー先を指定しても同じ情報を返す。スクリーンショットとフレーム PNG の明示パスは拡張子 `.png` が必須（大小無視）。引数違反は `INVALID_PARAMS`。間引き・焼き込み 0 件などの追加情報は `warnings` の各 `WarningDetail` に格納する。

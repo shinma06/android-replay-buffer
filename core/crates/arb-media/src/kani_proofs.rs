@@ -1075,36 +1075,70 @@ fn k13_quantize_durations_positive_and_drift_free() {
     );
 }
 
-/// K19: symbolic offset, range, capacity and arbitrary duplicate/out-of-range anchors.
+/// K19 exercises the production partition traversal with bounded storage. Each output
+/// bucket is observed as a bit set independently of the selector's mutable scratch.
 #[kani::proof]
-#[kani::unwind(8)]
+#[kani::unwind(19)]
 fn k19_contact_sheet_partitions_range_and_keeps_anchors() {
-    use crate::contact_sheet::select_contact_sheet_indices_with_anchors;
+    use crate::contact_sheet::visit_contact_sheet_indices;
     let start: usize = kani::any();
-    let span: usize = kani::any();
-    kani::assume(span <= 4 && start <= usize::MAX - span);
+    let span = usize::from(kani::any::<u8>() % 17);
+    kani::assume(start <= usize::MAX - span);
     let end = start + span;
     let budget: usize = kani::any();
-    kani::assume((2..=5).contains(&budget));
-    let anchors: [usize; 2] = kani::any();
-    let (kept, dropped) = select_contact_sheet_indices_with_anchors(start, end, budget, &anchors);
-    assert!(kept.first() == Some(&start) && kept.last() == Some(&end));
-    assert!(kept.len() <= budget && kept.windows(2).all(|w| w[0] < w[1]));
-    assert!(dropped.windows(2).all(|w| w[0] < w[1]));
-    let mut required = 0;
-    for i in start..=end {
-        assert!(kept.binary_search(&i).is_ok() ^ dropped.binary_search(&i).is_ok());
-        required += usize::from(i == start || i == end || anchors[0] == i || anchors[1] == i);
-    }
-    assert!(kept.len() + dropped.len() == span + 1);
-    if required <= budget {
-        for a in anchors {
-            assert!(!(start..=end).contains(&a) || kept.binary_search(&a).is_ok());
+    kani::assume(budget >= 2);
+    let anchors: [usize; 3] = kani::any();
+    let mut scratch = [false; 17];
+    let mut previous = None;
+    let (mut selected, mut omitted) = (0_u32, 0_u32);
+    let mut count = 0;
+    visit_contact_sheet_indices(
+        start,
+        &mut scratch[..=span],
+        budget,
+        &anchors,
+        |index, keep| {
+            assert!((start..=end).contains(&index));
+            assert!(previous.is_none_or(|p| p < index));
+            previous = Some(index);
+            let bit = 1 << (index - start);
+            if keep {
+                selected |= bit;
+                count += 1;
+            } else {
+                omitted |= bit;
+            }
+        },
+    );
+    assert!(count == budget.min(span + 1));
+    assert!(selected & omitted == 0 && selected | omitted == (2 << span) - 1);
+    let ends = 1 | (1 << span);
+    assert!(selected & ends == ends);
+    let mut required: u32 = ends;
+    for a in anchors {
+        if (start..=end).contains(&a) {
+            required |= 1 << (a - start);
         }
     }
+    let fits = required.count_ones() as usize <= budget;
+    if fits {
+        assert!(selected & required == required);
+    }
     kani::cover!(
-        required == budget && required > 2 && !dropped.is_empty(),
+        fits && required != ends && omitted != 0,
         "anchor retained while sampling"
     );
-    kani::cover!(required > budget, "more anchors than slots");
+    kani::cover!(!fits, "more anchors than slots");
+}
+
+/// Pin the public collector to the two buckets verified by the symbolic traversal.
+#[kani::proof]
+#[kani::unwind(6)]
+fn k19_public_selection_returns_both_buckets() {
+    let (anchor, omitted) = if kani::any() { (421, 422) } else { (422, 421) };
+    let (kept, dropped) =
+        crate::contact_sheet::select_contact_sheet_indices_with_anchors(420, 423, 3, &[anchor]);
+    assert_eq!(kept.len(), 3);
+    assert!(kept[0] == 420 && kept[1] == anchor && kept[2] == 423);
+    assert!(dropped.len() == 1 && dropped[0] == omitted);
 }

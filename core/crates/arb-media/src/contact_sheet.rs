@@ -180,63 +180,67 @@ pub fn select_contact_sheet_indices_with_anchors(
     max_tiles: usize,
     anchors: &[usize],
 ) -> (Vec<usize>, Vec<usize>) {
-    if start > end || max_tiles == 0 {
-        return (Vec::new(), (start..=end).collect());
-    }
-    let span = end - start;
-    if max_tiles > span {
-        return ((start..=end).collect(), Vec::new());
-    }
-    if max_tiles == 1 {
-        return (vec![start], (start + 1..=end).collect());
-    }
-
-    // The endpoints already own two slots. Index interior frames relative to start.
-    let mut interior = vec![false; span - 1];
-    let mut free = max_tiles - 2;
-    for &index in anchors {
-        if free == 0 {
-            break;
-        }
-        if start < index && index < end && !interior[index - start - 1] {
-            interior[index - start - 1] = true;
-            free -= 1;
-        }
-    }
-    // Advance floor(i * span / steps) without multiplying frame indices.
-    let steps = max_tiles - 1;
-    let stride = span / steps;
-    let remainder = span % steps;
-    let mut offset = 0;
-    let mut carry = 0;
-    while free > 0 {
-        offset += stride;
-        if carry >= steps - remainder {
-            carry -= steps - remainder;
-            offset += 1;
-        } else {
-            carry += remainder;
-        }
-        let selected = &mut interior[offset - 1];
-        if !*selected {
-            *selected = true;
-            free -= 1;
-        }
-    }
-
-    let mut kept = Vec::with_capacity(max_tiles);
-    let mut dropped = Vec::with_capacity(span - max_tiles + 1);
-    kept.push(start);
-    for (i, selected) in interior.into_iter().enumerate() {
-        let index = start + i + 1;
-        if selected {
+    let len = (start..=end).size_hint().0;
+    let mut selected = vec![false; len];
+    let mut kept = Vec::with_capacity(len.min(max_tiles));
+    let mut dropped = Vec::with_capacity(len.saturating_sub(max_tiles));
+    visit_contact_sheet_indices(start, &mut selected, max_tiles, anchors, |index, keep| {
+        if keep {
             kept.push(index);
         } else {
             dropped.push(index);
         }
-    }
-    kept.push(end);
+    });
     (kept, dropped)
+}
+
+/// Classifies every frame in order using an initially clear slice. The daemon collects both
+/// outputs; K19 observes this same traversal using a fixed-size symbolic range.
+pub(super) fn visit_contact_sheet_indices(
+    start: usize,
+    selected: &mut [bool],
+    max_tiles: usize,
+    anchors: &[usize],
+    mut visit: impl FnMut(usize, bool),
+) {
+    let len = selected.len();
+    let budget = len.min(max_tiles);
+    let mut free = budget;
+    if free > 0 {
+        selected[0] = true;
+        free -= 1;
+    }
+    if free > 0 {
+        selected[len - 1] = true;
+        free -= 1;
+    }
+    for &index in anchors {
+        if free == 0 {
+            break;
+        }
+        if let Some(slot) = index.checked_sub(start).and_then(|i| selected.get_mut(i))
+            && !*slot
+        {
+            *slot = true;
+            free -= 1;
+        }
+    }
+
+    // On the remaining positions, accumulate the spacing numerator rather than
+    // multiplying indices. With no anchors this visits floor(i * span / (budget - 1)).
+    let gap = len - budget;
+    let mut credit = free;
+    for (offset, keep) in selected.iter_mut().enumerate() {
+        if !*keep {
+            if credit >= gap {
+                *keep = true;
+                credit -= gap;
+            } else {
+                credit += free + 1;
+            }
+        }
+        visit(start + offset, *keep);
+    }
 }
 
 /// Renders a contact sheet PNG from `frames` (1 to [`MAX_CONTACT_SHEET_TILES`] tiles).

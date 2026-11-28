@@ -216,7 +216,15 @@ fn pdd_contract_tables_direct_rpc_preserves_legacy_requests_with_warnings() {
         root.path(),
         root.path(),
         "silent-success",
-        vec![injection],
+        vec![
+            injection,
+            fixture_log(
+                7,
+                "E",
+                "AndroidRuntime",
+                "FATAL EXCEPTION: main\nProcess: com.example.demo, PID: 42\njava.lang.IllegalStateException: test",
+            ),
+        ],
         vec![],
     );
     let mut rpc = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
@@ -269,11 +277,18 @@ fn pdd_contract_tables_direct_rpc_preserves_legacy_requests_with_warnings() {
             _ => {}
         }
     }
-    // The synthetic activity transition begins at frame 2. A uniform 3-tile sheet misses it.
+    // The crash at frame 7 outranks the transition at frame 2 when only one interior tile fits.
     for metadata in [true, false] {
         let args = json!({"bundle_id":bundle,"mode":"contact_sheet","end_frame":10,"max_tiles":3,"metadata_only":metadata});
         let body = rpc.call("media.inspect_frames", args).unwrap();
-        assert_eq!(body["frame_indices_rendered"], json!([0, 2, 10]), "{body}");
+        assert_eq!(body["frame_indices_rendered"], json!([0, 7, 10]), "{body}");
+        let args = json!({"bundle_id":bundle,"mode":"contact_sheet","end_frame":10,"max_tiles":4,"metadata_only":metadata});
+        let body = rpc.call("media.inspect_frames", args).unwrap();
+        assert_eq!(
+            body["frame_indices_rendered"],
+            json!([0, 2, 7, 10]),
+            "{body}"
+        );
     }
 }
 

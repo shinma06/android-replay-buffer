@@ -126,9 +126,17 @@ def check_version(cli, flags, fixture, version, rows):
                 outputs.validate(body)
                 for key in ("in_time_ns", "out_time_ns"):
                     assert body[key] == args[key]
+            copied_share = fixture.parent / f"copy-{version}.mp4"
+            result, _ = call("tools/call", {"name": trim["name"], "arguments": {
+                "bundle_id": str(fixture), "format": "bundle", "output_path": str(copied_share),
+                "in_frame_index": 0, "out_frame_index": 0}})
+            body = json.loads(result["content"][0]["text"])
+            outputs.validate(body)
+            assert copied_share.is_file() and Path(body["output_path"]).is_dir()
+            assert "default_export_dir" in body["info_codes"]
             assert not inputs.is_valid({"bundle_id": str(fixture), "in_time_ns": 1})
             print(f"{version}: 21 tools, 21 inputSchema + 21 outputSchema (arb://schemas), "
-                  f"2 real exports, tools/list {size} bytes")
+                  f"silent-success rows and real exports, tools/list {size} bytes")
         finally:
             proc.stdin.close()
 
