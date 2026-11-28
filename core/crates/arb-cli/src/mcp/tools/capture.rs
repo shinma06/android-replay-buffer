@@ -15,7 +15,13 @@ impl McpServer {
         }
         let mut status = self.call_daemon("system.status", &json!({}))?;
         summarize_audio_reason(&mut status);
-        Ok(ToolOutput::new(json!({"hello":hello,"status":status})))
+        let input_capture = status
+            .pointer("/capture/input_capture")
+            .cloned()
+            .unwrap_or_else(|| json!(arb_core::input_capture::InputCapture::default()));
+        Ok(ToolOutput::new(
+            json!({"hello":hello,"status":status,"input_capture":input_capture}),
+        ))
     }
 
     pub(in crate::mcp) fn tool_capture_start(

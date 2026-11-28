@@ -496,7 +496,16 @@ pub fn build_timeline_overview(
         .and_then(|v| v.display_height);
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
+    let (input_capture, injected_inputs) = overview_inputs(
+        reader.as_ref(),
+        &frames,
+        &main_taps,
+        width.zip(height),
+        display_width.zip(display_height),
+    )?;
     Ok(TimelineOverviewResponse {
+        input_capture,
+        injected_inputs,
         carried_in: summary
             .streams
             .video
@@ -530,6 +539,113 @@ pub fn build_timeline_overview(
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
         app_logs: summary.app_logs.clone(),
     })
+}
+
+fn overview_inputs(
+    reader: &dyn BundleReader,
+    frames: &[FrameRecord],
+    taps: &[TapRecord],
+    video: Option<(u32, u32)>,
+    display: Option<(u32, u32)>,
+) -> Result<
+    (
+        arb_core::input_capture::InputCapture,
+        Vec<crate::protocol::OverviewInjectedInput>,
+    ),
+    DaemonError,
+> {
+    use arb_core::input_capture::{CommandCounts, InputCapture, PhysicalStatus};
+    let summary = reader.manifest_summary();
+    let extracted = reader.injected_commands()?;
+    let counts = CommandCounts {
+        commands: u64::try_from(extracted.inputs.len() + extracted.unparsed_count)
+            .unwrap_or(u64::MAX),
+        gestures: u64::try_from(
+            extracted
+                .inputs
+                .iter()
+                .filter(|i| i.command.is_gesture())
+                .count(),
+        )
+        .unwrap_or(u64::MAX),
+        unparsed_commands: u64::try_from(extracted.unparsed_count).unwrap_or(u64::MAX),
+    };
+    let meta = summary.streams.input.as_ref();
+    let raw = meta.and_then(|s| s.input_events);
+    let physical = if !taps.is_empty() || raw.is_some_and(|n| n > 0) {
+        PhysicalStatus::Recorded
+    } else if summary.bundle_kind == arb_core::bundle::BundleKind::LogsOnly
+        || meta.is_some_and(|s| s.status == StreamStatus::Excluded)
+    {
+        PhysicalStatus::Disabled
+    } else if meta.is_none() {
+        PhysicalStatus::Unavailable
+    } else {
+        PhysicalStatus::Absent
+    };
+    let capture = InputCapture::new(
+        physical,
+        raw,
+        u64::try_from(
+            taps.iter()
+                .filter(|t| matches!(t.action.as_str(), "TAP" | "SWIPE"))
+                .count(),
+        )
+        .unwrap_or(u64::MAX),
+        counts,
+    );
+    let coordinates = LogCoordinates::new(frames, &summary.epochs);
+    let inputs = extracted
+        .inputs
+        .into_iter()
+        .map(|input| {
+            let table = input
+                .boot_id
+                .as_ref()
+                .and_then(|id| coordinates.frames.get(id.as_str()));
+            let origin = table.and_then(|(pts, _)| pts.first().copied()).or_else(|| {
+                summary
+                    .epochs
+                    .iter()
+                    .find(|e| Some(&e.boot_id) == input.boot_id.as_ref())
+                    .map(|e| e.start_boottime_ns)
+            });
+            let offset_ms = input
+                .boottime_ns
+                .zip(origin)
+                .map(|(t, start)| t.saturating_sub(start) / 1_000_000);
+            let frame_index_hint = input.boottime_ns.and_then(|t| {
+                table.and_then(|(pts, indices)| {
+                    indices.get(pts.partition_point(|p| *p < t)).copied()
+                })
+            });
+            let point = input
+                .command
+                .position()
+                .zip(display)
+                .zip(video)
+                .filter(|_| input.display_id.unwrap_or(0) == 0)
+                .and_then(|(((x, y), (dw, dh)), (w, h))| {
+                    arb_core::gesture::map_touch_to_frame(
+                        f64::from(x),
+                        f64::from(y),
+                        Some(dw),
+                        Some(dh),
+                        w,
+                        h,
+                    )
+                });
+            let (x_video, y_video) = point.unzip();
+            crate::protocol::OverviewInjectedInput {
+                input,
+                offset_ms,
+                frame_index_hint,
+                x_video,
+                y_video,
+            }
+        })
+        .collect();
+    Ok((capture, inputs))
 }
 
 fn inspect_video_track(
@@ -1539,6 +1655,8 @@ fn build_overview_taps(
                 .zip(t_ms)
                 .map(|(off, base)| base.saturating_add(off / 1_000_000));
             OverviewTapItem {
+                source: arb_core::injected_input::InputEventSource::Getevent,
+                injected: false,
                 tap_index,
                 seq: tap.seq,
                 frame_index,

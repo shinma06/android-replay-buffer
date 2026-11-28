@@ -285,6 +285,7 @@ fn seed_bundle_with_events(
                 tail_may_be_incomplete: false,
             }),
             input: Some(InputStreamMeta {
+                input_events: None,
                 status: StreamStatus::Present,
                 tail_may_be_incomplete: false,
             }),

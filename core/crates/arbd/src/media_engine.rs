@@ -1133,6 +1133,7 @@ fn build_trimmed_bundle_draft(
                 stream
             }),
             input: summary.streams.input.clone().map(|mut stream| {
+                stream.input_events = None; // Raw rows are unavailable for recounting after trim.
                 stream.tail_may_be_incomplete &= video.includes_source_tail;
                 stream
             }),

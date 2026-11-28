@@ -189,6 +189,7 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
                 tail_may_be_incomplete: false,
             }),
             input: Some(InputStreamMeta {
+                input_events: None,
                 status: StreamStatus::Present,
                 tail_may_be_incomplete: false,
             }),

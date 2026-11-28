@@ -399,6 +399,7 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
                 tail_may_be_incomplete: false,
             }),
             input: Some(InputStreamMeta {
+                input_events: None,
                 status: StreamStatus::Present,
                 tail_may_be_incomplete: false,
             }),
@@ -1065,12 +1066,13 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             audio: None,
             logcat: Some(LogcatStreamMeta {
                 dropped_count: None,
-                status: StreamStatus::Absent,
+                status: StreamStatus::Present,
                 completeness: LogCompleteness::VerifiedNoOverflow,
                 overflow_events: 0,
                 tail_may_be_incomplete: false,
             }),
             input: Some(InputStreamMeta {
+                input_events: None,
                 status: StreamStatus::Present,
                 tail_may_be_incomplete: false,
             }),
@@ -1084,7 +1086,27 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
         share_mp4: None,
         frames: frame_records,
         discontinuities: Vec::new(),
-        logs: Vec::new(),
+        logs: vec![LogRecord {
+            seq: 9,
+            boot_id: Some("boot-epoch-1".into()),
+            header_epoch_ns: None,
+            device_read_boottime_ns: None,
+            pc_ingest_cont_ns: 0,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-epoch-1".into(),
+                boottime_ns: 5_000_000_000 + 3 * step + 1,
+                half_width_ns: 0,
+                semantics: TimestampSemantics::LogcatHeaderWall,
+            },
+            bucket: RecordBucket::Main,
+            level: Some("I".into()),
+            tag: Some("adbd".into()),
+            pid: None,
+            tid: None,
+            uid: Some(2000),
+            package_name: None,
+            message: "adbd service requested 'shell:input tap 540 1200'".into(),
+        }],
         taps,
         clock_anchors: Vec::new(),
     };
@@ -1116,6 +1138,18 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     assert_eq!(ranges[1]["end_frame_index"], 29);
 
     let overview = rpc.call("timeline.overview", &json!({ "bundle_id": bid }));
+    let injection = &overview["injected_inputs"][0];
+    assert_eq!(
+        injection["frame_index_hint"], 19,
+        "first later frame in the same boot"
+    );
+    assert_eq!(injection["offset_ms"], 100, "relative to the same boot");
+    assert_eq!(injection["x_video"], 64.0);
+    assert_eq!(injection["y_video"], 64.0);
+    assert_eq!(overview["input_capture"]["injected"]["gestures"], 1);
+    assert_eq!(overview["input_capture"]["physical"]["gestures"], 2);
+    assert_eq!(overview["taps"][0]["source"], "getevent");
+    assert_eq!(overview["taps"][0]["injected"], false);
     assert_eq!(overview["display_width"], 1080);
     assert_eq!(overview["display_height"], 2400);
     assert_eq!(

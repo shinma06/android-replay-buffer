@@ -81,3 +81,7 @@ satisfies:
 | Tasks のキャンセル | 以後の段階を停止、発行済み成果物は残り得る | 自動ロールバック済みと断定する |
 
 根拠は Trail #101・#133／PR #538、#151／PR #554、#153／PR #556、TCB-19／21。[実 stdio 契約試験](../../core/crates/arb-cli/tests/stdio_contract)・[エラー・保存結果表](ui-feedback-contract-table.json)
+
+## 入力の観測範囲
+
+状態・概要・保存して調査は input_capture を返す。physical.input_events は生入力行、gestures は認識済み操作数。生行数を保存していない既存バンドルは null。tap_records はライブの生行数の互換名。概要の taps は物理入力で、注入要求は injected_inputs に格納する。injected.commands は未知の要求も含み、gestures は tap・swipe・draganddrop の要求数。

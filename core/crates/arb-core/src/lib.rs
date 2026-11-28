@@ -15,6 +15,8 @@ pub mod config;
 pub mod coverage;
 pub mod device;
 pub mod gesture;
+pub mod injected_input;
+pub mod input_capture;
 pub mod legacy;
 pub mod selection;
 pub mod state;

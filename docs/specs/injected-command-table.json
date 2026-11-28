@@ -1,0 +1,118 @@
+[
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input tap 0 2147483647'",
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 0,
+        "y_display": 2147483647
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 0,
+    "message": "adbd service requested 'shell,v2,raw:/system/bin/input -d 0 touchscreen swipe 1 2 3 4 90'",
+    "expected": [
+      {
+        "kind": "swipe",
+        "end_x_display": 3,
+        "end_y_display": 4,
+        "duration_ms": 90
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:cmd input keyevent --longpress HOME 4 && input text 'a; b && c''",
+    "expected": [
+      {
+        "kind": "keyevent",
+        "keycodes": [
+          "HOME",
+          "4"
+        ],
+        "longpress": true
+      },
+      {
+        "kind": "text",
+        "text": "a; b && c"
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input motionevent DOWN -1 2; input draganddrop 1 2 3 4; input roll 1 -2'",
+    "expected": [
+      {
+        "kind": "motionevent",
+        "action": "DOWN"
+      },
+      {
+        "kind": "draganddrop"
+      },
+      {
+        "kind": "roll",
+        "dx": 1,
+        "dy": -2
+      }
+    ],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 10126,
+    "message": "adbd service requested 'shell,v2,raw:input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": null,
+    "message": "adbd service requested 'shell,v2,raw:input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "App",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:am crash pkg; ls; dumpsys input; echo 'input tap 1 2''",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input tap 2147483648 1; input bad'",
+    "expected": [],
+    "unparsed_count": 2
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:input text 'unterminated'",
+    "expected": [],
+    "unparsed_count": 1
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell,v2,raw:echo ignore # comment; input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  }
+]

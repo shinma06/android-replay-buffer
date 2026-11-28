@@ -198,7 +198,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-21）
+## 4. TCB 公理（TCB-01〜TCB-22）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -225,6 +225,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-19 | CLI/MCP の `save_outcome_failed` と IDE の `SaveOutcomeResponse.savedBundleId` が同じ wire 応答を保存成功と判定する | 共有契約表、KON-7 | `ui-feedback-contract-table.json` の save_rows を arb-cli、PddContractTablesTest、PddUiFeedbackContractTest で検査 | 表にある状態と ID の組合せを検証。実 IDE での通知描画は受け入れ対象 |
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
 | TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 20 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
+| TCB-22 | adbd の service requested 行を logd が付けた UID 0・2000 とタグで認証できる | 注入要求の時刻・件数 | API 37 AVD で確認。K17 の UID・座標境界と共有コマンド表 | API 28〜36 と OEM 端末の書式・出力は未検証。対話シェル内・非 ADB 注入は観測範囲外 |
 
 ### S7 の Studio トリム状態機械
 

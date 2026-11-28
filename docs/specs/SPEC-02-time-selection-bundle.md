@@ -127,3 +127,5 @@ satisfies:
 | 警告の配列 | `warning_codes`・`warnings`・`warning_details` が同じ長さ・順序 | `window_shortfall` だけ表示文がない |
 
 根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570、Round 3B の 600 秒保存（W3B）。K1〜K5・K14・K15、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
+
+入力ストリームの任意項目 input_events は対象 boot の保存窓内に端末が読み取った生イベント行数を表す。旧保存物とトリムで再計算できない場合は省略する。注入要求は保存済みのログから読取時に導出する。
