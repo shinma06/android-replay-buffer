@@ -436,6 +436,7 @@ pub fn build_timeline_overview(
     catalog_bundle_id: Option<&str>,
     params: &crate::protocol::TimelineOverviewParams,
 ) -> Result<TimelineOverviewResponse, DaemonError> {
+    let params = &normalized_overview_params(params);
     let reader = open_bundle(bundle_dir)?;
     let summary = reader.manifest_summary();
     let bundle_id = catalog_bundle_id.unwrap_or(&summary.bundle_id).to_owned();
@@ -537,6 +538,21 @@ pub fn build_timeline_overview(
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
         app_logs: annotated.rows.app_logs,
     })
+}
+
+/// A blank `package` is no filter, and surrounding whitespace is not part of a package name.
+fn normalized_overview_params(
+    params: &crate::protocol::TimelineOverviewParams,
+) -> crate::protocol::TimelineOverviewParams {
+    crate::protocol::TimelineOverviewParams {
+        package: params
+            .package
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned),
+        ..params.clone()
+    }
 }
 
 /// Error groups plus every row array of the overview, annotated for the `package` filter.

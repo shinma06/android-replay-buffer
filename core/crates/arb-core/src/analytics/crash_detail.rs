@@ -271,9 +271,25 @@ fn non_empty(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| bounded_line(text))
 }
 
+/// A kill reason names a low-memory kill as a word (`lmk`, `lowmemorykiller`, `low memory`).
+/// Package and component names (words with `.` or `/`) are skipped, so a reason naming an app
+/// such as `com.filmkit.app` is not taken for one.
 fn kill_kind(reason: &str) -> ProcessEventKind {
-    let lower = reason.to_ascii_lowercase();
-    if lower.contains("lmk") || lower.contains("low memory") || lower.contains("lowmemory") {
+    let words: Vec<String> = reason
+        .split_whitespace()
+        .filter(|w| !w.contains(['.', '/']))
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_ascii_lowercase()
+        })
+        .collect();
+    let lmk = words
+        .iter()
+        .any(|w| matches!(w.as_str(), "lmk" | "lmkd" | "lowmemory" | "lowmemorykiller"))
+        || words
+            .windows(2)
+            .any(|pair| pair[0] == "low" && pair[1] == "memory");
+    if lmk {
         ProcessEventKind::LmkKill
     } else {
         ProcessEventKind::Killed
@@ -738,6 +754,30 @@ mod tests {
             CrashStackDetail::default(),
             "no fabricated stack"
         );
+    }
+
+    #[test]
+    fn kill_reason_names_lmk_only_as_a_word() {
+        let kill = |reason: &str| {
+            let logs = [row(
+                1,
+                "ActivityManager",
+                Some(1_000),
+                900,
+                100,
+                &format!("Killing 42:com.filmkit.app/u0a123 (adj 900): {reason}"),
+            )];
+            extract_process_events(&logs, &[])[0].kind
+        };
+        assert_eq!(
+            kill("depends on provider com.filmkit.app/.P in dying proc com.x"),
+            ProcessEventKind::Killed,
+            "a package name containing `lmk` is not a low-memory kill"
+        );
+        assert_eq!(kill("empty #17"), ProcessEventKind::Killed, "other kill");
+        for reason in ["lmk", "Low Memory", "lowmemorykiller: adj 900", "(lmkd)"] {
+            assert_eq!(kill(reason), ProcessEventKind::LmkKill, "{reason}");
+        }
     }
 
     #[test]

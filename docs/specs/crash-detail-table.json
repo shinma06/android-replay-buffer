@@ -562,7 +562,7 @@
     },
     {
       "id": "PE-05",
-      "note": "lmkd（UID 1069）の Kill と LMK 理由の am_kill は lmk_kill、それ以外の am_kill は killed。",
+      "note": "lmkd（UID 1069）の Kill と LMK 理由の am_kill は lmk_kill、それ以外の am_kill は killed。理由に含まれるパッケージ名の部分一致（com.filmkit.app の lmk）は LMK に数えない。",
       "logs": [
         {
           "seq": 1,
@@ -590,6 +590,15 @@
           "ms": 70000,
           "boot": "b1",
           "message": "[0,6464,com.example.idle,985,empty #17]"
+        },
+        {
+          "seq": 4,
+          "tag": "am_kill",
+          "uid": 1000,
+          "pid": 1500,
+          "ms": 80000,
+          "boot": "b1",
+          "message": "[0,7575,com.filmkit.app,900,depends on provider com.filmkit.app/.Provider in dying proc com.example.idle]"
         }
       ],
       "crashes": [],
@@ -616,6 +625,13 @@
           "pid": 6464,
           "reason": "empty #17",
           "source_log_seq": 3,
+          "is_crash": false
+        },
+        {
+          "kind": "killed",
+          "package_name": "com.filmkit.app",
+          "pid": 7575,
+          "source_log_seq": 4,
           "is_crash": false
         }
       ]

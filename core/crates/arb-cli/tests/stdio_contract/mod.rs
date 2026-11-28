@@ -1608,6 +1608,30 @@ fn crash_detail_and_package_filter(c: &mut Client, work: &Path, paths: &ArbPaths
             .iter()
             .all(|c| c["matches_package"] == false)
     );
+
+    for blank in ["", "   "] {
+        let ov = c.tool(
+            "arb_timeline_overview",
+            json!({"bundle_id":bundle,"package":blank}),
+        );
+        assert_eq!(ov["package_filter"], Value::Null, "{blank:?} is no filter");
+        assert_eq!(ov["warnings"], json!([]), "{blank:?} is no filter");
+        assert_eq!(
+            ov["error_log_highlights"], all["error_log_highlights"],
+            "{blank:?} is no filter"
+        );
+    }
+    let padded = c.tool(
+        "arb_timeline_overview",
+        json!({"bundle_id":bundle,"package":" com.example.demo "}),
+    );
+    assert_eq!(padded["package_filter"], own["package_filter"], "trimmed");
+    assert_eq!(padded["warnings"], json!([]), "trimmed");
+    assert_eq!(padded["crashes"], own["crashes"], "trimmed");
+    assert_eq!(
+        padded["error_log_highlights"], own["error_log_highlights"],
+        "trimmed"
+    );
 }
 
 fn log_fields(c: &mut Client, id: &str, version: &str) {
