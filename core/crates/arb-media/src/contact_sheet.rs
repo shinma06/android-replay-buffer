@@ -169,6 +169,76 @@ pub fn select_contact_sheet_indices(
     indices
 }
 
+/// Partitions the inclusive request into rendered and dropped frame indices.
+///
+/// Endpoints have priority, followed by distinct in-range anchors in the supplied
+/// order. Remaining slots use evenly spaced candidates. Both lists are sorted.
+#[must_use]
+pub fn select_contact_sheet_indices_with_anchors(
+    start: usize,
+    end: usize,
+    max_tiles: usize,
+    anchors: &[usize],
+) -> (Vec<usize>, Vec<usize>) {
+    if start > end || max_tiles == 0 {
+        return (Vec::new(), (start..=end).collect());
+    }
+    let span = end - start;
+    if max_tiles > span {
+        return ((start..=end).collect(), Vec::new());
+    }
+    if max_tiles == 1 {
+        return (vec![start], (start + 1..=end).collect());
+    }
+
+    // The endpoints already own two slots. Index interior frames relative to start.
+    let mut interior = vec![false; span - 1];
+    let mut free = max_tiles - 2;
+    for &index in anchors {
+        if free == 0 {
+            break;
+        }
+        if start < index && index < end && !interior[index - start - 1] {
+            interior[index - start - 1] = true;
+            free -= 1;
+        }
+    }
+    // Advance floor(i * span / steps) without multiplying frame indices.
+    let steps = max_tiles - 1;
+    let stride = span / steps;
+    let remainder = span % steps;
+    let mut offset = 0;
+    let mut carry = 0;
+    while free > 0 {
+        offset += stride;
+        if carry >= steps - remainder {
+            carry -= steps - remainder;
+            offset += 1;
+        } else {
+            carry += remainder;
+        }
+        let selected = &mut interior[offset - 1];
+        if !*selected {
+            *selected = true;
+            free -= 1;
+        }
+    }
+
+    let mut kept = Vec::with_capacity(max_tiles);
+    let mut dropped = Vec::with_capacity(span - max_tiles + 1);
+    kept.push(start);
+    for (i, selected) in interior.into_iter().enumerate() {
+        let index = start + i + 1;
+        if selected {
+            kept.push(index);
+        } else {
+            dropped.push(index);
+        }
+    }
+    kept.push(end);
+    (kept, dropped)
+}
+
 /// Renders a contact sheet PNG from `frames` (1 to [`MAX_CONTACT_SHEET_TILES`] tiles).
 ///
 /// # Errors

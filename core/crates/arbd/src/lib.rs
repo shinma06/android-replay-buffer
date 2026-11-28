@@ -1436,6 +1436,9 @@ impl DaemonState {
                     "pass either output_path or output_dir, not both".to_owned(),
                 ));
             }
+            if let Some(details) = arb_os::rpc::png_extension_error(path) {
+                return Err(DaemonError::PngExtension(details));
+            }
             self.validate_output_location(path, "output_path", source_bundle)?;
             self.reject_data_dir_state_file(path, "output_path")?;
             return Ok(path.to_owned());
@@ -2106,7 +2109,7 @@ impl DaemonState {
             let base_dir = self.resolve_output_dir(
                 parsed.dest_dir.as_deref(),
                 user_cfg.output_dir_override.as_deref(),
-                &self.paths.data_dir.join("exports"),
+                &std::path::absolute(self.paths.data_dir.join("exports"))?,
                 Some(&path),
             )?;
             let stem = next_id("share");

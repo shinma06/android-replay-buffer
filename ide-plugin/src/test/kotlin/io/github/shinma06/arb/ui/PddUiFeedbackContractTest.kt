@@ -6,9 +6,11 @@ import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.ipc.ArbdRpcClient
 import io.github.shinma06.arb.ipc.LocalIpcTransport
 import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleGcResponse
 import io.github.shinma06.arb.model.DeviceListResponse
+import io.github.shinma06.arb.model.ExportPngParams
 import io.github.shinma06.arb.model.ProtocolJson
 import io.github.shinma06.arb.model.SystemStatusResponse
 import io.github.shinma06.arb.state.BundleCatalogState
@@ -22,6 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import javax.swing.SwingUtilities
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -102,6 +105,33 @@ class PddUiFeedbackContractTest {
     private fun JsonObject.strings(key: String): List<String> = getAsJsonArray(key).map { it.asString }
 
     private fun ok(id: Long, result: String): String = """{"jsonrpc":"2.0","id":$id,"result":$result}"""
+
+    @Test
+    fun invalidFramePngPathIsAnOperationErrorAndLeavesTheRpcSessionUsable() {
+        val row = table("ui-feedback-contract-table.json").rows("silent_success_rows")
+            .single { it["tool"].asString == "arb_export_frame_png" }
+        val path = row["arguments"].asJsonObject["output_path"].asString
+        val transport = ScriptTransport { id, method, params ->
+            if (method == "export.png") {
+                assertEquals(path, params["output_path"].asString)
+                val data = JsonObject().apply {
+                    add("error_code", row["error"])
+                    add("details", row["details"])
+                }
+                """{"jsonrpc":"2.0","id":$id,"error":{"code":-32602,"message":"PNG","data":$data}}"""
+            } else {
+                ok(id, "{}")
+            }
+        }
+        ArbdRpcClient(transport).use { rpc ->
+            val failure = assertFailsWith<ArbdRpcException> {
+                rpc.exportPng(ExportPngParams("fixture", 0, path))
+            }
+            assertEquals(row["error"].asString, failure.details?.errorCode)
+            assertEquals(row["details"], failure.details?.details)
+            assertTrue(rpc.callRaw("system.status").isJsonObject)
+        }
+    }
 
     private fun waitUntil(diag: () -> String = { "" }, predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 5_000L

@@ -470,7 +470,7 @@ fn parse_args(args: &[String]) -> Result<(GlobalOptions, CommandSpec), CliError>
         }
         "trim" => parse_trim_cmd(&rest[1..])?,
         "share-mp4" => parse_share_mp4_cmd(&rest[1..])?,
-        "png" => parse_png_cmd(&rest[1..])?,
+        "png" | "export-png" => parse_png_cmd(&rest[1..])?,
         "scrub-bench" => parse_scrub_bench_cmd(&rest[1..])?,
         "mcp" => {
             if rest.len() > 1 {
@@ -715,6 +715,19 @@ fn parse_save_logs_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     })
 }
 
+fn png_output_path(raw: &str) -> Result<PathBuf, CliError> {
+    let path = Path::new(raw);
+    if let Some(details) = arb_os::rpc::png_extension_error(path) {
+        return Err(CliError {
+            rpc_code: Some(RPC_ERR_INVALID_PARAMS),
+            error_code: Some("INVALID_PARAMS".into()),
+            details: Some(details),
+            ..CliError::usage(arb_os::rpc::PNG_EXTENSION_HINT)
+        });
+    }
+    absolutize_path(path)
+}
+
 fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     let mut serial = None;
     let mut out = None;
@@ -731,7 +744,7 @@ fn parse_screenshot_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                 i += 2;
             }
             "--out" => {
-                out = Some(absolutize_path(Path::new(require_val(args, i, "--out")?))?);
+                out = Some(png_output_path(require_val(args, i, "--out")?)?);
                 i += 2;
             }
             "--out-dir" => {
@@ -1295,11 +1308,11 @@ fn parse_png_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                         "png takes either --out or --out-dir, not both",
                     ));
                 }
-                let path = absolutize_path(Path::new(require_val(args, i, flag)?))?;
+                let raw = require_val(args, i, flag)?;
                 dest = Some(if flag == "--out" {
-                    PngDest::File(path)
+                    PngDest::File(png_output_path(raw)?)
                 } else {
-                    PngDest::Dir(path)
+                    PngDest::Dir(absolutize_path(Path::new(raw))?)
                 });
                 i += 2;
             }

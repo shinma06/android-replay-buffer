@@ -82,6 +82,15 @@ pub(super) struct ResourceLink {
 }
 impl ResourceLink {
     pub(super) fn screenshot(path: &std::path::Path, uri: url::Url) -> Self {
+        Self::file(path, uri, "image/png", "保存したスクリーンショット")
+    }
+
+    pub(super) fn file(
+        path: &std::path::Path,
+        uri: url::Url,
+        mime_type: &'static str,
+        description: &str,
+    ) -> Self {
         Self {
             uri: uri.into(),
             name: path
@@ -89,8 +98,8 @@ impl ResourceLink {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            mime_type: "image/png",
-            description: "保存したスクリーンショット".into(),
+            mime_type,
+            description: description.into(),
         }
     }
 

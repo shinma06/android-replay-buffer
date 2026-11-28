@@ -197,6 +197,87 @@ impl Drop for Client {
 }
 
 #[test]
+fn pdd_contract_tables_direct_rpc_preserves_legacy_requests_with_warnings() {
+    let root = TempDir::new().unwrap();
+    let paths = ArbPaths {
+        data_dir: root.path().join("d"),
+        runtime_dir: root.path().join("r"),
+        cache_dir: root.path().join("c"),
+    };
+    let _server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut injection = fixture_log(
+        6,
+        "I",
+        "adbd",
+        "adbd service requested 'shell:input tap 1 2'",
+    );
+    injection.uid = Some(2000);
+    let bundle = seed_bundle_with_events(
+        root.path(),
+        root.path(),
+        "silent-success",
+        vec![injection],
+        vec![],
+    );
+    let mut rpc = RpcClient::connect_endpoint(&paths.ipc_endpoint()).unwrap();
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/specs/ui-feedback-contract-table.json"
+    ))
+    .unwrap();
+    for row in table["silent_success_rows"].as_array().unwrap() {
+        let mut args = row["arguments"].clone();
+        args["bundle_id"] = json!(bundle);
+        match row["tool"].as_str().unwrap() {
+            "arb_inspect_frames" => {
+                for metadata in [true, false] {
+                    args["metadata_only"] = json!(metadata);
+                    let body = rpc.call("media.inspect_frames", args.clone()).unwrap();
+                    assert_eq!(body["warnings"][0]["code"], row["warning"], "{row}");
+                    if args["mode"] == "contact_sheet" {
+                        assert_eq!(body["frame_indices_rendered"], json!([0, 4]));
+                        assert_eq!(body["dropped_frame_indices"], json!([1, 2, 3]));
+                    } else {
+                        assert_eq!(body["frame_indices_rendered"], json!([0]));
+                    }
+                }
+            }
+            "arb_query_logs" => {
+                args.as_object_mut().unwrap().remove("bundle_id");
+                args["bundle_id_or_path"] = json!(bundle);
+                let body = rpc.call("bundle.query_logs", args).unwrap();
+                assert_eq!(body["warnings"][0]["code"], row["warning"]);
+            }
+            "arb_export_trim" if row["warning"] == "no_taps_to_burn" => {
+                let method = if args["format"] == "bundle" {
+                    "export.trim"
+                } else {
+                    "export.share_mp4"
+                };
+                args.as_object_mut().unwrap().remove("format");
+                if method == "export.trim" {
+                    args.as_object_mut().unwrap().remove("bundle_id");
+                    args["bundle_id_or_path"] = json!(bundle);
+                }
+                let body = rpc.call(method, args).unwrap();
+                let detail = &body["warnings"][0];
+                assert_eq!(detail["code"], row["warning"]);
+                assert_eq!(body["burned_tap_count"], 0);
+                let capture = &detail["details"]["input_capture"];
+                assert_eq!(capture["physical"]["gestures"], 0);
+                assert_eq!(capture["injected"]["gestures"], 1);
+            }
+            _ => {}
+        }
+    }
+    // The synthetic activity transition begins at frame 2. A uniform 3-tile sheet misses it.
+    for metadata in [true, false] {
+        let args = json!({"bundle_id":bundle,"mode":"contact_sheet","end_frame":10,"max_tiles":3,"metadata_only":metadata});
+        let body = rpc.call("media.inspect_frames", args).unwrap();
+        assert_eq!(body["frame_indices_rendered"], json!([0, 2, 10]), "{body}");
+    }
+}
+
+#[test]
 fn daemon_distinguishes_missing_resources_and_an_empty_video_track() {
     let root = TempDir::new().unwrap();
     let paths = ArbPaths {
@@ -450,6 +531,12 @@ fn registry(c: &mut Client) {
         if name == "arb_export_frame_png" {
             // Exactly one destination is required (`oneOf`).
             base["output_path"] = json!("out.png");
+        }
+        if name == "arb_inspect_frames" {
+            base["frame_index"] = json!(0);
+        }
+        if name == "arb_export_trim" {
+            base["full_range"] = json!(true);
         }
         validate::normalize_integers(input, &mut base);
         validate::validate(input, &base, name).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -732,7 +819,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         );
         let saved = c.check_tool(name, r);
         if name == "arb_save_logs" {
-            let response = c.result("tools/call", json!({"name":"arb_inspect_frames","arguments":{"bundle_id":saved["bundle_id"],"mode":"single"}}));
+            let response = c.result("tools/call", json!({"name":"arb_inspect_frames","arguments":{"bundle_id":saved["bundle_id"],"mode":"single","frame_index":0}}));
             let error = &response["structuredContent"];
             assert_eq!(response["isError"], true);
             assert_eq!(error["error_code"], "NO_VIDEO");
@@ -922,7 +1009,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         for (tool, args) in [
             (
                 "arb_inspect_frames",
-                json!({"bundle_id_or_path":id,"mode":"single"}),
+                json!({"bundle_id_or_path":id,"mode":"single","frame_index":0}),
             ),
             (
                 "arb_save_and_inspect",
@@ -969,7 +1056,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     }
     c.tool(
         "arb_export_trim",
-        json!({"bundle_id":id,"output_path":root.path().join("clip.mp4")}),
+        json!({"bundle_id":id,"full_range":true,"output_path":root.path().join("clip.mp4")}),
     );
     c.tool(
         "arb_export_trim",
@@ -1125,7 +1212,7 @@ fn tasks(c: &mut Client) {
     assert_eq!(c.result("tasks/get", target)["status"], "failed");
     let missing = c.result(
         "tools/call",
-        json!({"name":"arb_export_share_mp4","arguments":{"bundle_id":"absent-bundle"},"task":{}}),
+        json!({"name":"arb_export_share_mp4","arguments":{"bundle_id":"absent-bundle","full_range":true},"task":{}}),
     );
     let missing = c.result("tasks/result", json!({"taskId":missing["task"]["taskId"]}));
     assert_eq!(missing["structuredContent"]["rpc_code"], -32001);
@@ -1170,38 +1257,37 @@ fn assert_local_time(value: &Value) {
     );
 }
 
+fn fixture_log(seq: u64, level: &str, tag: &str, message: &str) -> LogRecord {
+    let frame = i64::try_from(seq % 17).unwrap();
+    let bt = BASE_BT_NS + frame * FRAME_STEP_NS;
+    LogRecord {
+        seq,
+        boot_id: Some("boot-mcp".into()),
+        header_epoch_ns: Some(1_795_829_025_123_000_000 + i64::try_from(seq).unwrap() * 1_000_000),
+        device_read_boottime_ns: Some(bt),
+        pc_ingest_cont_ns: bt,
+        alignment: TimeAlignment::Anchored {
+            boot_id: "boot-mcp".into(),
+            boottime_ns: bt,
+            half_width_ns: 1_000_000,
+            semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+        },
+        bucket: RecordBucket::Main,
+        level: Some(level.into()),
+        tag: Some(tag.into()),
+        pid: Some(42),
+        tid: Some(42),
+        uid: None,
+        package_name: None,
+        message: message.into(),
+    }
+}
+
 /// #574: repeated non-fatal tags are suggested, never removed; fatal tags are never suggested.
 fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
-    let row = |seq: u64, level: &str, tag: &str, message: &str| {
-        let frame = i64::try_from(seq % 17).unwrap();
-        let bt = BASE_BT_NS + frame * FRAME_STEP_NS;
-        LogRecord {
-            seq,
-            boot_id: Some("boot-mcp".into()),
-            header_epoch_ns: Some(
-                1_795_829_025_123_000_000 + i64::try_from(seq).unwrap() * 1_000_000,
-            ),
-            device_read_boottime_ns: Some(bt),
-            pc_ingest_cont_ns: bt,
-            alignment: TimeAlignment::Anchored {
-                boot_id: "boot-mcp".into(),
-                boottime_ns: bt,
-                half_width_ns: 1_000_000,
-                semantics: TimestampSemantics::LogcatDeviceReadBoottime,
-            },
-            bucket: RecordBucket::Main,
-            level: Some(level.into()),
-            tag: Some(tag.into()),
-            pid: Some(42),
-            tid: Some(42),
-            uid: None,
-            package_name: None,
-            message: message.into(),
-        }
-    };
     let mut extra = Vec::new();
     for i in 0..12 {
-        extra.push(row(
+        extra.push(fixture_log(
             10 + i,
             "E",
             "VendorHal",
@@ -1213,11 +1299,11 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
         ));
     }
     for i in 0..8 {
-        extra.push(row(30 + i, "E", "AudioHal", "underrun"));
+        extra.push(fixture_log(30 + i, "E", "AudioHal", "underrun"));
     }
-    extra.push(row(40, "F", "audiohal", "fatal underrun"));
-    extra.push(row(41, "E", "MyApp", "request failed"));
-    extra.push(row(42, "E", "MyApp", "retry failed"));
+    extra.push(fixture_log(40, "F", "audiohal", "fatal underrun"));
+    extra.push(fixture_log(41, "E", "MyApp", "request failed"));
+    extra.push(fixture_log(42, "E", "MyApp", "retry failed"));
     let bundle = seed_bundle_with_events(
         work,
         &paths.data_dir.join("external-noise"),

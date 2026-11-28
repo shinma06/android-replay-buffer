@@ -144,7 +144,8 @@ fn schema_resources_serve_every_complete_output_schema() {
 /// Arguments other than the group's, enough for `tool`'s schema to pass.
 fn base_arguments(tool: &str) -> Value {
     match tool {
-        "arb_inspect_frames" => json!({"mode":"single"}),
+        "arb_inspect_frames" => json!({"mode":"single","frame_index":0}),
+        "arb_export_trim" => json!({"full_range":true}),
         "arb_export_frame_png" => json!({"frame_index":0,"output_dir":"out"}),
         _ => json!({}),
     }

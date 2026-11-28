@@ -68,6 +68,9 @@ pub enum DaemonError {
     /// Caller supplied invalid parameters.
     #[error("{0}")]
     InvalidParams(String),
+    /// An explicit PNG filename has an incompatible extension.
+    #[error("{}", arb_os::rpc::PNG_EXTENSION_HINT)]
+    PngExtension(Value),
     /// The requested bundle exists but contains no video track.
     #[error("bundle {0} has no video track")]
     NoVideo(String),
@@ -240,7 +243,8 @@ impl DaemonError {
                 Some("SAVE_FAILED"),
                 "保存に必要な内部データが見つかりません。",
             ),
-            Self::InvalidParams(_)
+            Self::PngExtension(_)
+            | Self::InvalidParams(_)
             | Self::Selection(_)
             | Self::Media(
                 MediaError::InvalidFrameRange { .. } | MediaError::FrameOutOfRange { .. },
@@ -295,6 +299,7 @@ impl DaemonError {
 
     fn diagnostics(&self) -> (Value, Option<String>) {
         let details = match self {
+            Self::PngExtension(details) => return (details.clone(), None),
             Self::OutputDirUnusable { dest_dir, kind } => {
                 return (
                     json!({"dest_dir":dest_dir,"os_error_kind":kind,"stage":"preflight"}),
@@ -357,6 +362,7 @@ impl DaemonError {
 
     fn public_message(&self, message: &str) -> String {
         match self {
+            Self::PngExtension(_) => arb_os::rpc::PNG_EXTENSION_HINT.to_owned(),
             // Parameter validation explains the rejected field/type/range to the caller.
             Self::InvalidParams(reason)
                 if !reason.is_empty()

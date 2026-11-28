@@ -976,6 +976,7 @@ data class TimelineLogsResponse(
     val hasMore: Boolean = false,
     val nextCursor: String? = null,
     val unanchoredCount: Long = 0,
+    val warnings: List<WarningDetail>? = null,
 )
 
 /**
@@ -1143,6 +1144,8 @@ data class ExportTrimResponse(
     val warning: String? = null,
     val inTimeNs: Long? = null,
     val outTimeNs: Long? = null,
+    val warnings: List<WarningDetail>? = null,
+    val burnedTapCount: Int? = null,
 )
 
 // T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
@@ -1173,6 +1176,8 @@ data class ExportShareMp4Response(
     val warning: String? = null,
     val inTimeNs: Long? = null,
     val outTimeNs: Long? = null,
+    val warnings: List<WarningDetail>? = null,
+    val burnedTapCount: Int? = null,
 )
 
 data class MediaDecodeAudioPcmParams(

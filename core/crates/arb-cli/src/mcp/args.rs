@@ -111,11 +111,51 @@ pub(super) fn normalize(
         }
     }
     validate::normalize_integers(schema, &mut args);
-    validate::validate(schema, &args, "arguments")?;
+    validate::validate(schema, &args, "arguments")
+        .map_err(|error| argument_error(name, &args, error))?;
     let Value::Object(args) = args else {
         unreachable!("tool inputs are object schemas")
     };
     Ok(args)
+}
+
+fn argument_error(name: &str, args: &Value, error: Violation) -> Violation {
+    if matches!(name, "arb_screenshot" | "arb_export_frame_png")
+        && error.details["field"] == "output_path"
+        && error.details.get("pattern").is_some()
+        && let Some(details) = args["output_path"]
+            .as_str()
+            .and_then(|p| arb_os::rpc::png_extension_error(Path::new(p)))
+    {
+        let hint = arb_os::rpc::PNG_EXTENSION_HINT;
+        return Violation::new(hint.into(), details, hint.into());
+    }
+    if error.details.get("any_of_required").is_none() {
+        return error;
+    }
+    let (choices, hint) = match name {
+        "arb_export_trim" => {
+            return Violation::new(
+                "書き出す範囲を指定してください。".into(),
+                json!({"one_of_required":["frame_range","time_range","full_range"]}),
+                "全尺を書き出す場合は `full_range: true`、区間を切る場合はフレームまたは時刻範囲を指定してください。".into(),
+            );
+        }
+        "arb_inspect_frames" if args["mode"] == "single" => (
+            json!(["frame_index", "frame_indices"]),
+            "frame_index または frame_indices を指定してください。",
+        ),
+        "arb_inspect_frames" if args.get("tap_x").is_some() && args.get("tap_y").is_some() => (
+            json!(["frame_index"]),
+            "直接座標を指定するときは対象の frame_index を指定してください。",
+        ),
+        _ => return error,
+    };
+    Violation::new(
+        "対象フレームを指定してください。".into(),
+        json!({"field":"frame_index","one_of_required":choices}),
+        hint.into(),
+    )
 }
 
 /// Aliases of one argument were supplied with different values.

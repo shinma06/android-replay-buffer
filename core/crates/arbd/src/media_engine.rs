@@ -683,6 +683,7 @@ pub fn export_trim(
 
     // Optional ready-to-share MP4 (`share.mp4` or `share-taps.mp4`) staged inside the trimmed bundle.
     let emit_share_mp4 = params.include_share_mp4 || params.burn_taps;
+    let mut burned_tap_count = 0;
     let mut burn_taps_applied = false;
     let mut _tmp_burned_guard: Option<FileCleanupGuard> = None;
     let mut _tmp_share_guard: Option<FileCleanupGuard> = None;
@@ -705,14 +706,7 @@ pub fn export_trim(
                 .iter()
                 .map(|f| frame_boottime_ns(f).unwrap_or(f.pts_device_mono_ns))
                 .collect();
-            let geom = BurnInDisplayGeometry {
-                display_width: summary.streams.video.as_ref().and_then(|v| v.display_width),
-                display_height: summary
-                    .streams
-                    .video
-                    .as_ref()
-                    .and_then(|v| v.display_height),
-            };
+            let geom = burn_geometry(summary.streams.video.as_ref());
             let tmp_burned = tmp_dir.join(format!("{trim_job_id}-burned.mp4"));
             let last_trimmed = u64::try_from(trimmed_frames.len().saturating_sub(1)).unwrap_or(0);
             _tmp_burned_guard = Some(FileCleanupGuard(tmp_burned.clone()));
@@ -745,6 +739,7 @@ pub fn export_trim(
                     ctx.backend,
                 )?
             };
+            burned_tap_count = burn_report.burned_tap_count;
             burn_taps_applied = burn_report.reencoded;
             std::borrow::Cow::Owned(tmp_burned)
         } else {
@@ -774,6 +769,10 @@ pub fn export_trim(
         });
     }
 
+    let warnings = crate::inspect_export::burn_warnings(
+        reader.as_ref(),
+        params.burn_taps.then_some(burned_tap_count),
+    )?;
     let dest_bundle_dir = dest_parent.join(&new_bundle_id);
     // R3 S8c: a trim that includes the source's last frame inherits its incomplete tail.
     let includes_source_tail = range.reaches_end;
@@ -841,6 +840,8 @@ pub fn export_trim(
     );
 
     Ok(ExportTrimResponse {
+        warnings,
+        burned_tap_count,
         in_time_ns: Some(range.start),
         out_time_ns: Some(range.end),
         bundle_id: new_bundle_id,
@@ -955,6 +956,16 @@ fn commit_trimmed_bundle(
         })?;
     let _ = ctx.catalog.forget_staging(trim_job_id, &entry.path);
     Ok((app_logs_count, warning))
+}
+
+/// Display coordinate space used to map physical gestures for either export format.
+pub(super) fn burn_geometry(
+    video: Option<&arb_core::bundle::VideoStreamMeta>,
+) -> BurnInDisplayGeometry {
+    BurnInDisplayGeometry {
+        display_width: video.and_then(|v| v.display_width),
+        display_height: video.and_then(|v| v.display_height),
+    }
 }
 
 /// Trimmed video payload and its per-frame records for [`build_trimmed_bundle_draft`].

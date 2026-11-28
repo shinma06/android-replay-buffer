@@ -19,6 +19,8 @@
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["duration_secs","window_secs","duration_sec"],"aliases":true,"allowEqual":true},
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["note","memo"],"aliases":true,"allowEqual":true},
     {"tools":["arb_query_logs"],"names":["cursor","after_seq"]},
+    {"tools":["arb_query_logs"],"names":["start_ns","start_frame"],"allowEqual":false},
+    {"tools":["arb_query_logs"],"names":["end_ns","end_frame"],"allowEqual":false},
     {"tools":["arb_query_logs"],"names":["level","min_level"]},
     {"tools":["arb_screenshot"],"names":["output_path","output_dir"]}
   ],
@@ -155,7 +157,7 @@
         "properties": {
           "include_image": {"description": "応答に PNG を添付。既定は file_uri と resource_links のみ。", "type": "boolean", "default": false},
           "output_dir": {"description": "自動命名する保存先。", "type": "string"},
-          "output_path": {"description": "出力パス。", "type": "string"},
+          "output_path": {"description": "出力パス。", "type": "string", "pattern": "[^/\\\\]+\\.[pP][nN][gG]$"},
           "serial": {"description": "ADB シリアル。省略時は自動選択。", "type": "string"},
           "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
         },
@@ -358,7 +360,8 @@
         "required": ["mode"],
         "type": "object",
         "if": {"properties": {"mode": {"const": "tap_crop"}}, "required": ["mode"]},
-        "then": {"anyOf": [{"required": ["tap_index"]}, {"required": ["tap_x", "tap_y"]}]}
+        "then": {"anyOf": [{"required": ["tap_index"]}, {"required": ["tap_x", "tap_y", "frame_index"]}]},
+        "allOf": [{"if":{"properties":{"mode":{"const":"single"}},"required":["mode"]},"then":{"anyOf":[{"required":["frame_index"]},{"required":["frame_indices"]}]}}]
       },
       "name": "arb_inspect_frames",
       "outputType": "Inspect",
@@ -373,6 +376,7 @@
           "burn_taps": {"description": "映像にタップ・スワイプを焼き込みます。", "type": "boolean", "default": false},
           "dest_dir": {"description": "保存先の親ディレクトリ。", "type": "string"},
           "format": {"description": "共有 MP4 または編集済みバンドル。", "enum": ["share_mp4", "bundle"], "type": "string", "default": "share_mp4"},
+          "full_range": {"type":"boolean","description":"範囲を省略して全尺を書き出します。"},
           "in_time_ns": {"type": "integer", "minimum": 0, "description": "先頭からの開始 ns（含む）。"},
           "out_time_ns": {"type": "integer", "minimum": 1, "description": "先頭からの終了 ns（含まない）。"},
           "in_frame_index": {"minimum": 0, "type": "integer", "description": "先頭フレーム（両端含む）。"},
@@ -382,6 +386,7 @@
           "output_path": {"description": "出力パス。", "type": "string"}
         },
         "type": "object",
+        "anyOf": [{"required":["in_frame_index"]},{"required":["out_frame_index"]},{"required":["in_time_ns"]},{"required":["out_time_ns"]},{"required":["full_range"],"properties":{"full_range":{"const":true}}}],
         "dependentRequired": {"in_time_ns": ["out_time_ns"], "out_time_ns": ["in_time_ns"]},
         "if": {"not": {"required": ["in_time_ns"]}},
         "then": {"dependentRequired": {"in_frame_index": ["out_frame_index"], "out_frame_index": ["in_frame_index"]}}
@@ -404,7 +409,7 @@
         "properties": {
           "bundle_id": {"description": "バンドル ID／パス。", "type": "string", "pattern": "\\S"},
           "frame_index": {"minimum": 0, "type": "integer", "description": "0 起点のフレーム番号。"},
-          "output_path": {"description": "出力パス。既存なら失敗します。", "type": "string"},
+          "output_path": {"description": "出力パス。既存なら失敗します。", "type": "string", "pattern": "[^/\\\\]+\\.[pP][nN][gG]$"},
           "output_dir": {"description": "自動命名する保存先。", "type": "string"}
         },
         "required": ["frame_index"],
@@ -963,6 +968,11 @@
     "ExportShareMp4Response": {
       "type": "object",
       "properties": {
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}},
+        "burned_tap_count": {"$ref": "#/$defs/UInt"},
+        "output_path": {"type": "string"},
+        "resource_links": {"$ref": "#/$defs/ResourceLinks"},
+        "info_codes": {"$ref": "#/$defs/Strings"},
         "in_time_ns": {"$ref":"#/$defs/UInt"},
         "out_time_ns": {"type": "integer", "minimum": 1},
         "share_mp4_path": {"type": "string"},
@@ -992,6 +1002,11 @@
     "ExportTrimResponse": {
       "type": "object",
       "properties": {
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}},
+        "burned_tap_count": {"$ref": "#/$defs/UInt"},
+        "output_path": {"type": "string"},
+        "resource_links": {"$ref": "#/$defs/ResourceLinks"},
+        "info_codes": {"$ref": "#/$defs/Strings"},
         "in_time_ns": {"$ref":"#/$defs/UInt"},
         "out_time_ns": {"type": "integer", "minimum": 1},
         "bundle_id": {"type": "string"},
@@ -1050,6 +1065,8 @@
     "Inspect": {
       "type": "object",
       "properties": {
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}},
+        "dropped_frame_indices": {"type": "array", "items": {"$ref": "#/$defs/UInt"}},
         "resource_links": {"$ref":"#/$defs/ResourceLinks"},
         "mode": {"$ref": "#/$defs/InspectFramesMode"},
         "bundle_id": {"type": "string"},
@@ -1561,6 +1578,7 @@
     "TimelineLogsResponse": {
       "type": "object",
       "properties": {
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/WarningDetail"}},
         "unanchored_count": {"$ref":"#/$defs/UInt"},
         "fields": {"enum": ["compact", "full"]},
         "boot_id": {"description": "compact で全行共通の boot_id。混在時は null で各行に残します。", "type": ["string", "null"]},

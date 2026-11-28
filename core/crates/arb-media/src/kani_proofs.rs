@@ -1074,3 +1074,37 @@ fn k13_quantize_durations_positive_and_drift_free() {
         "two sub-tick edges"
     );
 }
+
+/// K19: symbolic offset, range, capacity and arbitrary duplicate/out-of-range anchors.
+#[kani::proof]
+#[kani::unwind(8)]
+fn k19_contact_sheet_partitions_range_and_keeps_anchors() {
+    use crate::contact_sheet::select_contact_sheet_indices_with_anchors;
+    let start: usize = kani::any();
+    let span: usize = kani::any();
+    kani::assume(span <= 4 && start <= usize::MAX - span);
+    let end = start + span;
+    let budget: usize = kani::any();
+    kani::assume((2..=5).contains(&budget));
+    let anchors: [usize; 2] = kani::any();
+    let (kept, dropped) = select_contact_sheet_indices_with_anchors(start, end, budget, &anchors);
+    assert!(kept.first() == Some(&start) && kept.last() == Some(&end));
+    assert!(kept.len() <= budget && kept.windows(2).all(|w| w[0] < w[1]));
+    assert!(dropped.windows(2).all(|w| w[0] < w[1]));
+    let mut required = 0;
+    for i in start..=end {
+        assert!(kept.binary_search(&i).is_ok() ^ dropped.binary_search(&i).is_ok());
+        required += usize::from(i == start || i == end || anchors[0] == i || anchors[1] == i);
+    }
+    assert!(kept.len() + dropped.len() == span + 1);
+    if required <= budget {
+        for a in anchors {
+            assert!(!(start..=end).contains(&a) || kept.binary_search(&a).is_ok());
+        }
+    }
+    kani::cover!(
+        required == budget && required > 2 && !dropped.is_empty(),
+        "anchor retained while sampling"
+    );
+    kani::cover!(required > budget, "more anchors than slots");
+}

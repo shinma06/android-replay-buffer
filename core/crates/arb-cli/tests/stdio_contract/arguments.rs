@@ -135,6 +135,23 @@ pub(super) fn verify(c: &mut Client) {
             &[first, second, "だけ"],
         );
     }
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/specs/ui-feedback-contract-table.json"
+    ))
+    .unwrap();
+    for row in table["silent_success_rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["error"].is_string())
+    {
+        let tool = row["tool"].as_str().unwrap();
+        let mut args = row["arguments"].clone();
+        if tool != "arb_screenshot" {
+            args["bundle_id"] = json!("fixture");
+        }
+        rejected(c, tool, &args, &row["details"], &[], &[]);
+    }
     aliases(c);
     // #586-C: an MCP page holds at most 500 rows; the remedy is the cursor.
     for got in [0, 501, 100_000] {
@@ -271,7 +288,8 @@ fn aliases(c: &mut Client) {
         let mut args =
             json!({"bundle_id":"no-such-bundle-alias","bundle_id_or_path":"no-such-bundle-alias"});
         match tool {
-            "arb_inspect_frames" => args["mode"] = json!("single"),
+            "arb_inspect_frames" => args["mode"] = json!("contact_sheet"),
+            "arb_export_trim" => args["full_range"] = json!(true),
             "arb_export_frame_png" => {
                 args["frame_index"] = json!(0);
                 args["output_dir"] = json!("out");
