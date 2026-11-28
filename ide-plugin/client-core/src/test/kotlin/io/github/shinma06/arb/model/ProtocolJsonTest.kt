@@ -138,6 +138,8 @@ class ProtocolJsonTest {
             }
         """.trimIndent()
         val parsed = gson.fromJson(aos9Json, CaptureStatusView::class.java)
+        assertEquals(3L, parsed.inputEvents)
+        assertEquals(0L, parsed.gestureCount)
         assertEquals(AudioCaptureState.UNAVAILABLE, parsed.audioState)
         assertEquals(AudioCaptureState.UNAVAILABLE, parsed.effectiveAudioState)
         assertTrue(parsed.audioReason!!.contains("API 28"))

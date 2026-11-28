@@ -397,6 +397,28 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
         limit: Option<usize>,
     ) -> Result<Vec<LogRecord>, StorageError>;
 
+    /// Derives framework input requests without modifying the saved bundle.
+    ///
+    /// # Errors
+    /// Returns storage errors encountered reading the source logs.
+    fn visit_injected_commands(
+        &self,
+        visit: &mut dyn FnMut(arb_core::injected_input::InjectedCommandExtraction),
+    ) -> Result<(), StorageError> {
+        use arb_core::injected_input::extract_injected_commands;
+        let api = self.manifest_summary().device.as_ref().map(|d| d.api_level);
+        let mut cursor = None;
+        loop {
+            let rows = self.query_logs_after(None, TimeRange::all(), cursor, Some(1024))?;
+            visit(extract_injected_commands(&rows, api));
+            if rows.len() < 1024 {
+                break;
+            }
+            cursor = rows.last().map(|r| r.seq);
+        }
+        Ok(())
+    }
+
     /// Queries input / tap rows filtered by optional `bucket`, [`TimeRange`], and optional row `limit`.
     ///
     /// # Errors
@@ -3201,6 +3223,7 @@ fn build_legacy_summary(
             tail_may_be_incomplete: false,
         }),
         input: Some(InputStreamMeta {
+            input_events: None,
             status: if taps.is_empty() {
                 StreamStatus::Absent
             } else {
@@ -3428,6 +3451,7 @@ mod tests {
                     tail_may_be_incomplete: false,
                 }),
                 input: Some(InputStreamMeta {
+                    input_events: None,
                     status: StreamStatus::Present,
                     tail_may_be_incomplete: false,
                 }),

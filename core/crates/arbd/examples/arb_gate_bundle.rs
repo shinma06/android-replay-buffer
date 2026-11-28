@@ -365,6 +365,7 @@ fn streams_summary(frames: u64) -> StreamsSummary {
             tail_may_be_incomplete: false,
         }),
         input: Some(InputStreamMeta {
+            input_events: None,
             status: StreamStatus::Present,
             tail_may_be_incomplete: false,
         }),

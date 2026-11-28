@@ -331,10 +331,16 @@ pub(crate) fn start_selected_capture(
         heartbeat_ms: params.heartbeat_ms.unwrap_or(250),
     };
 
-    let generation = pipeline
-        .lock()
-        .map_err(|_| DaemonError::Internal("capture pipeline lock poisoned".to_owned()))?
-        .begin_live_session_with_mode(serial.clone(), capture_mode);
+    let generation = {
+        let mut capture = pipeline
+            .lock()
+            .map_err(|_| DaemonError::Internal("capture pipeline lock poisoned".to_owned()))?;
+        let generation = capture.begin_live_session_with_mode(serial.clone(), capture_mode);
+        if !cfg.input_enabled {
+            capture.disable_input();
+        }
+        generation
+    };
     let sink = LiveSink {
         pipeline: Arc::clone(pipeline),
         generation,
