@@ -234,6 +234,17 @@ pub struct CatalogSaveJob {
     pub updated_at_utc: String,
 }
 
+/// Recovery information for status and admission checks, without loading chunk ID arrays.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SaveJobCounts {
+    /// Jobs retaining ownership of ring data.
+    pub active: usize,
+    /// Jobs waiting for a recovery operation.
+    pub failed: usize,
+    /// Job with the oldest failure time.
+    pub oldest_failed_job_id: Option<String>,
+}
+
 /// Non-destructive editor state stored outside immutable Zone-2 bundles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditSession {
@@ -1806,6 +1817,30 @@ impl Catalog {
         self.query_save_jobs("ORDER BY julianday(created_at_utc), job_id")
     }
 
+    /// Reads active and failed job counts from one consistent catalog snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the counts cannot be read.
+    pub fn save_job_counts(&self) -> Result<SaveJobCounts, StorageError> {
+        self.lock_conn()?
+            .query_row(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE state='failed_retryable'),
+                    (SELECT job_id FROM save_jobs WHERE state='failed_retryable'
+                     ORDER BY julianday(updated_at_utc), job_id LIMIT 1)
+             FROM save_jobs WHERE state NOT IN ('completed','discarded')",
+                [],
+                |row| {
+                    Ok(SaveJobCounts {
+                        active: row.get(0)?,
+                        failed: row.get(1)?,
+                        oldest_failed_job_id: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|source| StorageError::sqlite("save_job_counts", source))
+    }
+
     /// Lists only failures, oldest failure first.
     ///
     /// # Errors
@@ -3111,6 +3146,35 @@ mod tests {
             parent_bundle_id: None,
             created_at_utc: "2026-11-22T10:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn status_uses_the_failure_instant_with_mixed_timestamp_precision() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let catalog = Catalog::open(tmp.path().join("db"), tmp.path().join("bundles")).unwrap();
+        for (id, at) in [
+            ("a", "2026-11-28T00:00:00.500Z"),
+            ("z", "2026-11-28T00:00:00Z"),
+        ] {
+            catalog
+                .create_pinned_job(id, tmp.path().join(id), &["chunk".to_owned()], at)
+                .unwrap();
+            catalog.mark_draining(id, at).unwrap();
+            catalog.mark_materializing(id, at).unwrap();
+            catalog.mark_failed_retryable(id, "write", at).unwrap();
+        }
+        let counts = catalog.save_job_counts().unwrap();
+        assert_eq!((counts.active, counts.failed), (2, 2));
+        assert_eq!(counts.oldest_failed_job_id.as_deref(), Some("z"));
+        catalog.discard_job("z", "2026-11-28T00:01:00Z").unwrap();
+        assert_eq!(
+            catalog
+                .save_job_counts()
+                .unwrap()
+                .oldest_failed_job_id
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[test]

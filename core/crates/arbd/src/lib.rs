@@ -654,16 +654,7 @@ impl DaemonState {
             )
         };
         let active_viewports = self.media.active_viewport_count();
-        let jobs = self.catalog.list_save_jobs()?;
-        let failed = jobs
-            .iter()
-            .filter(|j| j.job.state == arb_core::state::SaveJobState::FailedRetryable);
-        let oldest_failed_job_id = failed
-            .clone()
-            .min_by_key(|j| &j.updated_at_utc)
-            .map(|j| j.job.job_id.clone());
-        let failed_save_jobs = failed.count();
-        let active_save_jobs = jobs.iter().filter(|j| !j.job.state.is_terminal()).count();
+        let jobs = self.catalog.save_job_counts()?;
         let uptime_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut crash_autosave = self
             .lock(&self.crash_autosave_status, "crash autosave status")?
@@ -689,9 +680,9 @@ impl DaemonState {
             ring_pinned_chunk_count: ring_pinned,
             buffered_secs,
             active_viewports,
-            active_save_jobs,
-            failed_save_jobs,
-            oldest_failed_job_id,
+            active_save_jobs: jobs.active,
+            failed_save_jobs: jobs.failed,
+            oldest_failed_job_id: jobs.oldest_failed_job_id,
             recovery: RecoverySummaryView {
                 removed_staging_dirs: self.recovery.removed_staging_dirs.len(),
                 reaped_leases: self.recovery.reaped_lease_ids.len(),
@@ -2018,7 +2009,7 @@ impl DaemonState {
                 }) => Err(DaemonError::PinBudget {
                     pinned_fraction,
                     max_fraction,
-                    failed_save_jobs: self.catalog.failed_save_jobs()?.len(),
+                    failed_save_jobs: self.catalog.save_job_counts()?.failed,
                 }),
                 other => other,
             }
