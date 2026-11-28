@@ -41,6 +41,8 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K20 | クラッシュ前後の合計窓が 600 秒以内、直前区間が最小値以上、P = 0 で D を維持 | 設定が受理する全域 | `arb-core::config::crash_pre_roll_secs` |
 | K18 | `k18_stack_top_keeps_the_first_app_frame_within_the_cap`（クラッシュの `stack_top` は先頭 10 フレームを落とさず、最初のアプリ行 `first_app_frame` を必ず含み、11 行以下。アプリ行がないと報告するのは本当にないときだけ） | フレーム列は長さ 0〜13 の任意の真偽値（アプリ行か否か）。文字列の抽出は表 `crash-detail-table.json` と G9 の proptest で検査する | `core/crates/arb-core/src/kani_proofs/k18_crash_stack.rs`、`core/crates/arb-core/src/analytics/crash_detail.rs` |
 | K19 | `k19_contact_sheet_partitions_range_and_keeps_anchors` は両端、予算内の重要フレーム、厳密昇順、採用数の上限、除外集合との排反・完全被覆を検査する | 開始位置とアンカー 3 個は `usize` 全域、範囲長 1〜17、予算は 2 以上。実装と同じ選択処理が各出力へ渡す番号を検査する。重要フレームを残して間引く場合と、重要フレームが予算を超える場合に cover を置く。公開関数の 2 つの戻り値も `k19_public_selection_returns_both_buckets` で照合する。範囲と描画の対応は直接 RPC・全交渉版の stdio 試験で検査する | `arb-media/src/contact_sheet.rs`、`arb-media/src/kani_proofs.rs` |
+| K21 | `k21_tap_crop_rect_bounds_and_contains_tap`（公開既定値 `TapCropOptions::default()` の `tap_crop_rect` は、幅・高さが正の `u32` 全域の映像と画像内の任意のタップで必ず矩形を返し、幅・高さは正、矩形は画像内、タップを含み、`tap_rel` は矩形内）、`k21_place_crop_stays_in_frame_and_contains_tap`（配置関数 `place_crop` は `u32` 全域の画像長と 1〜画像長の任意の切り出し長で同じ性質を持ち、両側に余地があれば中央に置く）、`k21_tap_crop_rect_rejects_taps_outside_the_frame`（画像外のタップと 0 寸法は `None`） | 切り出し長は本番の `crop_extent`（`f32` の比率と `f64` の丸め）をそのまま通す。描画（`render_tap_crop_png`）はこの関数の矩形を切り出し、メタデータ経路（`metadata_only`）は同じ関数を呼ぶので、両経路の一致は構造上成り立つ。PNG の符号化と画素の複写は G3 と `contact_sheet.rs` の試験で確認する | `arb-media/src/contact_sheet.rs`、`arb-media/src/kani_proofs.rs` |
+| K22 | `k22_device_clock_offset_no_overflow_and_nonneg_uncertainty` は同期プローブ・triple・ホスト時計の 7 個の `i64` 全域で、端末壁時計とホスト壁時計の差、往復時間からの誤差と `i128` 中間計算を検証。`k22_trigger_parts_no_overflow` は旧バンドルのトリガー近似を検証。`k22_finish_estimate_preserves_sign_and_nonnegative_uncertainty` は両経路共通の本番の丸め、誤差の加算、範囲外の処理を全入力で実行し、ずれの符号と不確かさの非負性を検証 | 算術スタブなし。ドリフト 200 ppm・読み取りずれ 1 ms・旧バンドルの 1 秒は物理的な前提（TCB-24）。プローブ選択と公開値は単体・保存・実 stdio の試験で確認する | `arb-core/src/time.rs`、`arb-core/src/kani_proofs/k22_clock_offset.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -208,7 +210,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-23）
+## 4. TCB 公理（TCB-01〜TCB-24）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -237,6 +239,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 21 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 | TCB-22 | adbd の service requested 行を logd が付けた UID 0・2000 とタグで認証できる | 注入要求の時刻・件数 | API 37 AVD で確認。K17 の UID・座標境界と共有コマンド表 | API 28〜36 と OEM 端末の書式・出力は未検証。対話シェル内・非 ADB 注入は観測範囲外 |
 | TCB-23 | logd が付ける UID と、プロセス終了を書くシステムの書式の意味。`ActivityManager`（system_server、UID 1000）の `Force stopping <pkg> appid=… user=…: <理由>`・`Killing <pid>:<proc>/<uid> (adj N): <理由>`（新しい API は `stop <pkg> due to …`、古い API は `stop <pkg>`）・`Process <proc> (pid N) has died: <状態>`・`ANR in <proc>`（`PID:`・`Reason:` は同じレコードか直後の行）、lmkd（API 29 以降の UID 1069、タグ `lowmemorykiller`）の `Kill '<proc>' (pid), uid …, oom_score_adj …; reason: …`、events の `am_kill`（30023、`[User,PID,Process,OomAdj,Reason]`、API により末尾に数値の Rss）・`am_proc_died`（30011、API 28 は 3 項目、以降は OomAdj・ProcState が続く）・`am_anr`（30008、`[User,pid,Package,Flags,reason]`） | G9、共有表 `crash-detail-table.json` | `core/crates/arb-core/tests/crash_detail.rs` が表の全行（偽装 UID 10xxx の拒否、force-stop 2 行の統合、クラッシュ直後の has died の抑止、UID 未報告の events の採用を含む）を検査 | 合成ログで検証。実機の API 28〜37・OEM での書式差、API 28 のカーネル lowmemorykiller（kmsg のみで logcat に出ない）、UID を報告しない端末でのテキスト行（採用しない）は未検証 |
+| TCB-24 | 端末の `CLOCK_BOOTTIME` とホストの連続時計の相対ドリフトは 200 ppm 以内、端末の triple（boottime・monotonic・realtime）とホストの時計標本（連続・壁時計）はそれぞれ 1 ms 以内のずれで読まれ。旧形式では窓終端からトリガー壁時計の記録までの遅延に上限を置けず、`trigger_estimate` の半幅にはこの遅延を含めない（`trigger_delay_unbounded: true`） | K22（包含の前提） | `core/crates/arb-core/src/time.rs` の `clock_offset_tests`、`core/crates/arbd/src/clock_offset.rs` の試験、`t2b_mcp_share_audio_e2e` の `trigger_estimate`、`storage_integration` の `host_clock_anchor_is_written_to_the_manifest_only` | 実機・AVD でのホストとのずれ（#591 の約 1.7 秒）の照合、NTP の段階的な補正中の値、ホストの壁時計が保存とプローブの間に跳んだ場合の扱いは未検証 |
 
 ### S7 の Studio トリム状態機械
 

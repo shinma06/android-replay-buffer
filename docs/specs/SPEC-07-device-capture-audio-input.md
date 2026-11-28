@@ -49,7 +49,7 @@ ADB の通常接続で映像・ログ・入力を取得し、root・対象アプ
 
 ## タップ・スワイプ・焼き込み [実装済み]
 
-端末の `show_touches` 設定を変更してはならない。コンパニオンは `getevent -lt` でカーネルの入力を読み、ホストは入力デバイスごとの `getevent -lp`（プロパティ表示を含む）の最小値・最大値を用いて物理画面のピクセルへ変換する。軸／寸法が取得できない場合は生座標を利用する場合があり、映像に対応付けられない位置にマーカーを作らない。旧記録で両寸法が欠ける場合は両軸とも 0〜1 の正規化座標だけを映像に対応付ける。API 37 エミュレータでも、校正済みの軸の宣言範囲を超えた入力は最寄りの端に制限してから画面へ写す。校正前の現行形式の保存物は、正の画面寸法があれば読取時に始点・終点・全軌跡点を `[0, width−1] × [0, height−1]` に制限する。元ファイルは不変で、概要、クロップ、Studio、焼き込みが同じ座標を使う。[読取時の座標処理](../../core/crates/arb-storage/src/bundle_io.rs)・[校正](../../core/crates/arbd/src/touch_calibration.rs)・[端末入力ワーカー](../../device-agent/companion/src/io/github/shinma06/arb/agent/InputWorker.java)
+端末の `show_touches` 設定を変更してはならない。コンパニオンは `getevent -lt` でカーネルの入力を読み、ホストは入力デバイスごとの `getevent -lp`（プロパティ表示を含む）の最小値・最大値を用いて物理画面のピクセルへ変換する。軸／寸法が取得できない場合は生座標を利用する場合があり、映像に対応付けられない位置にマーカーを作らない。旧記録で両寸法が欠ける場合は両軸とも 0〜1 の正規化座標だけを映像に対応付ける。API 37 エミュレータでも、校正済みの軸の宣言範囲を超えた入力は最寄りの端に制限してから画面へ写す。校正前の現行形式の保存物は、正の画面寸法があれば読取時に始点・終点・全軌跡点を `[0, width−1] × [0, height−1]` に制限する。元ファイルは不変で、概要、クロップ、Studio、焼き込みが同じ座標を使う。応答では端末ディスプレイのピクセルを `x_display`／`y_display`、映像のピクセルを `x_video`／`y_video` と名前で区別する（[SPEC-06](SPEC-06-mcp-cli-contracts.md)）。クロップの矩形は描画せずに純関数 `tap_crop_rect`（K21）で決まり、常に画像内でタップを含む。[読取時の座標処理](../../core/crates/arb-storage/src/bundle_io.rs)・[校正](../../core/crates/arbd/src/touch_calibration.rs)・[端末入力ワーカー](../../device-agent/companion/src/io/github/shinma06/arb/agent/InputWorker.java)
 
 指の始点からの最大移動量または終点までの距離が閾値以上なら Swipe。閾値は短辺の 2.5% と 20 px の大きい方、寸法不明時は 24。1 点以下は Tap。Swipe は始点・終点を保持し最大 24 点へ間引く。Studio オーバーレイと共有 MP4 の焼き込みは同じ保存座標を使う。画素の描画はホストのメディア経路で行い、端末にタップ跡を強制表示しない。[K6／K7 の対象](../../core/crates/arb-core/src/gesture.rs)・[VER-27](../verifications/VER-27-t6i-running-devices-and-burn-taps.md)
 
@@ -76,6 +76,7 @@ ADB の通常接続で映像・ログ・入力を取得し、root・対象アプ
 | アプリ UID が `ActivityManager` の has died・Force stopping、`am_kill` を出力 | `process_events` に入れない | 他アプリの終了やクラッシュ外終了を偽装できる |
 | `am_crash` だけでアプリ側の `AndroidRuntime` ブロックがない | `stack_top`・`first_app_frame`・`caused_by` は null | 例外名からスタックを作る |
 | 軸範囲を超えたタッチを記録・閲覧 | 既知寸法では端に描く | タップを落とす、古い保存物を上書きする |
+| 概要と調査で同じタップの座標が違って見える | `x_display`（端末）と `x_video`（映像）が両方あり、映像ピクセルは両ツールで一致 | 同じ `x`／`y` の名前で別の座標系を返す（#591） |
 | Framework 注入だけを行った | タップなしでも観測制約内 | 合成のタップを物理観測として加算する |
 
 根拠は Trail #98・#105・#108・#110・#111、#141／PR #544、#143／PR #546、#148／PR #551。S3・S5、K6・K7・K11、G6・G8、KON-6、TCB-08／16／17。[VER-23](../verifications/VER-23-t6e-aos9-compat.md)・[実機スモーク](../testing/work-device-smoke-checklist.md)

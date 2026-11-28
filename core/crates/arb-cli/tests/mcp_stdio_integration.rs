@@ -304,6 +304,8 @@ fn seed_bundle_with_events(
         discontinuities: Vec::new(),
         logs,
         taps,
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: Vec::new(),
     };
 

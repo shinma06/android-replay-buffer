@@ -63,6 +63,7 @@ fn full_params() -> SaveJobMaterializeParams {
         extra_discontinuities: Vec::new(),
         uid_packages: BTreeMap::from([(10_001, "com.example".to_owned())]),
         coverage: None,
+        host_clock_anchor: None,
     }
 }
 

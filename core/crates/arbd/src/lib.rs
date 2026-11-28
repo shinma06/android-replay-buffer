@@ -11,6 +11,7 @@
 
 mod adb_resources;
 pub mod capture;
+mod clock_offset;
 pub mod error;
 pub mod inspect_export;
 pub mod live_adb;
@@ -539,6 +540,7 @@ impl DaemonState {
             protocol_version: IPC_PROTOCOL_VERSION,
             log_min_level: true,
             log_exclude_tags: true,
+            log_offset_range: true,
             gc_dry_run: true,
             screenshot_source: true,
             standalone_share_trim: true,
@@ -658,6 +660,7 @@ impl DaemonState {
             ring_pinned,
             buffered_secs,
             post_roll_until_utc,
+            clock,
         ) = {
             // Keep the configured preference stable until the capture snapshot is taken.
             let _guard = self.lock(&self.config_update_lock, "config update")?;
@@ -672,6 +675,7 @@ impl DaemonState {
                 pinned,
                 cap.buffered_secs(),
                 cap.post_roll_until_utc(),
+                cap.device_clock_offset(),
             )
         };
         let active_viewports = self.media.active_viewport_count();
@@ -722,6 +726,7 @@ impl DaemonState {
             },
             crash_autosave,
             config_warning: self.config_load_warning.clone(),
+            device_clock_offset: Some(clock),
         })?)
     }
 
@@ -1569,6 +1574,9 @@ impl DaemonState {
             height,
             sha256,
             captured_at_unix_ms,
+            captured_at_utc: arb_core::time::format_unix_ms_iso8601(
+                i64::try_from(captured_at_unix_ms).unwrap_or(i64::MAX),
+            ),
             serial,
         })?)
     }

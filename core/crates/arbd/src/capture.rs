@@ -38,9 +38,9 @@ use arb_core::analytics::{ParsedAmCrash, decode_binary_android_event, parse_am_c
 use arb_core::audio_policy::AudioModeSelection;
 use arb_core::bundle::{
     AudioStreamMeta, AvOffsetStatus, BundleKind, CarriedInFrame, CarryInEvidence, DeviceInfo,
-    EpochSpan, FrameRecord, InputStreamMeta, LogCompleteness, LogRecord, LogcatStreamMeta,
-    Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary, TapRecord,
-    UnanchoredSummary, VideoStreamMeta,
+    EpochSpan, FrameRecord, HostClockAnchor, InputStreamMeta, LogCompleteness, LogRecord,
+    LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary,
+    TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::config::{AudioCaptureMode, CaptureMode};
 use arb_core::coverage::{
@@ -357,6 +357,10 @@ struct SaveJobMaterializeParams {
     /// the ledger existed: those keep the span-based measurements and never carry a frame in.
     #[serde(default)]
     coverage: Option<CoverageSnapshot>,
+    /// Host continuous and wall clocks read together at the trigger (#591). `None` outside the
+    /// live host clock domain and on jobs pinned before it existed.
+    #[serde(default)]
+    host_clock_anchor: Option<arb_core::bundle::HostClockAnchor>,
 }
 
 /// What a closed ring chunk contains, used to pick the nearest preceding anchor chunks.
@@ -486,6 +490,7 @@ impl CrashWindow {
 struct SaveIntent {
     job_id: Option<String>,
     post_roll_ms: u64,
+    host_clock_anchor: Option<HostClockAnchor>,
     mode: SaveMode,
     trigger_kind: SaveTriggerKind,
     note: Option<String>,
@@ -671,6 +676,8 @@ pub struct CapturePipeline {
     drain_watermark_ns: Option<i64>,
     latest_heartbeat_boottime_ns: Option<i64>,
     latest_heartbeat_pc_cont_ns: Option<i64>,
+    /// Latest triple and probe for the live `device_clock_offset` (#591).
+    live_clock: crate::clock_offset::LiveClockOffset,
     latest_pc_cont_ns: Option<i64>,
     last_chunk_created_cont_ns: Option<i64>,
     host_boot_ns: i64,
@@ -769,6 +776,7 @@ impl CapturePipeline {
             drain_watermark_ns: None,
             latest_heartbeat_boottime_ns: None,
             latest_heartbeat_pc_cont_ns: None,
+            live_clock: crate::clock_offset::LiveClockOffset::default(),
             latest_pc_cont_ns: None,
             last_chunk_created_cont_ns: None,
             host_boot_ns,
@@ -1061,6 +1069,7 @@ impl CapturePipeline {
         self.screenshot_beacon = None;
         // A new generation never extends the coverage of an older one.
         self.coverage.close_all();
+        self.live_clock.reset();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.session_input_start = self.tap_records_seen;
         self.live_normalizer = TouchNormalizer::default();
@@ -1227,6 +1236,25 @@ impl CapturePipeline {
             static_hold_events: self.static_hold_seen,
             ring_write_errors: self.ring_write_errors,
         }
+    }
+
+    /// `device CLOCK_REALTIME − host wall clock` from the latest probe and triple against the
+    /// host clocks now (#591). Outside the live host clock domain it reports `replayed_clock`.
+    #[must_use]
+    pub fn device_clock_offset(&self) -> arb_core::time::DeviceClockOffset {
+        let host = (self.clock_domain == ClockDomain::HostLive)
+            .then(sample_host_clock)
+            .and_then(Result::ok)
+            .map(|s| arb_core::time::HostClockSample {
+                continuous_mono_ns: s.continuous_mono_ns,
+                wall_epoch_ns: s.wall_epoch_ns,
+            });
+        if !(self.active && self.connected) {
+            return arb_core::time::DeviceClockOffset::unavailable(
+                arb_core::time::ClockOffsetUnavailable::NotConnected,
+            );
+        }
+        self.live_clock.offset(host)
     }
 
     /// Returns `(chunk_count, total_bytes, pinned_chunk_count)` for Zone-1 ring telemetry.
@@ -1402,6 +1430,7 @@ impl CapturePipeline {
 
     fn accept_hello(&mut self, payload: &arb_adb::wire::HelloPayload) {
         self.connected = true;
+        self.live_clock.reset();
         self.device.model.clone_from(&payload.model);
         self.device.api_level = payload.api_level;
         self.device.is_emulator = payload.is_emulator;
@@ -1544,6 +1573,33 @@ impl CapturePipeline {
         }
     }
 
+    fn observe_live_heartbeat(
+        &mut self,
+        pc_cont_ns: i64,
+        boot_id: &str,
+        payload: &arb_adb::wire::HeartbeatPayload,
+    ) {
+        self.screenshot_beacon = Some(pc_cont_ns);
+        self.connected = true;
+        // Companion streams (Control, Logcat, Input) share a single ordered FIFO stream;
+        // `StreamHealthEntry::last_pts_ns` records the last emitted event (0 when idle),
+        // not a heartbeat watermark, so the heartbeat's `boottime_ns` is the watermark.
+        self.drain_watermark_ns = Some(payload.boottime_ns);
+        self.latest_heartbeat_boottime_ns = Some(payload.boottime_ns);
+        self.latest_heartbeat_pc_cont_ns = Some(pc_cont_ns);
+        let triple = DeviceClockTriple {
+            boot_id: boot_id.to_owned(),
+            boottime_ns: payload.boottime_ns,
+            monotonic_ns: payload.monotonic_ns,
+            realtime_ns: payload.realtime_ns,
+        };
+        let discs = self
+            .timeline
+            .ingest_device_triple(triple.clone(), pc_cont_ns);
+        self.live_clock.observe_triple(triple, &discs);
+        self.timeline.bound_live_history();
+    }
+
     fn apply_live_event_state(&mut self, event: &CaptureEvent) -> bool {
         // VideoSession updates the dimensions after closing the old coverage; frames are keyed
         // by the dimensions in effect when they arrive.
@@ -1560,26 +1616,12 @@ impl CapturePipeline {
                 boot_id,
                 payload,
             } => {
-                self.screenshot_beacon = Some(*pc_cont_ns);
-                self.connected = true;
-                // Companion streams (Control, Logcat, Input) share a single ordered FIFO stream;
-                // `StreamHealthEntry::last_pts_ns` records the last emitted event (0 when idle),
-                // not a heartbeat watermark, so the heartbeat's `boottime_ns` is the watermark.
-                self.drain_watermark_ns = Some(payload.boottime_ns);
-                self.latest_heartbeat_boottime_ns = Some(payload.boottime_ns);
-                self.latest_heartbeat_pc_cont_ns = Some(*pc_cont_ns);
-                let triple = DeviceClockTriple {
-                    boot_id: boot_id.clone(),
-                    boottime_ns: payload.boottime_ns,
-                    monotonic_ns: payload.monotonic_ns,
-                    realtime_ns: payload.realtime_ns,
-                };
-                let _ = self.timeline.ingest_device_triple(triple, *pc_cont_ns);
-                self.timeline.bound_live_history();
+                self.observe_live_heartbeat(*pc_cont_ns, boot_id, payload);
                 should_flush = true;
             }
             CaptureEvent::SyncProbe { probe, .. } => {
                 let _ = self.timeline.ingest_pc_sync_probe(probe.clone());
+                self.live_clock.observe_probe(probe);
                 self.timeline.bound_live_history();
             }
             CaptureEvent::VideoSession { meta, boot_id, .. } => {
@@ -1642,6 +1684,7 @@ impl CapturePipeline {
                 should_flush = true;
             }
             CaptureEvent::Shutdown { .. } => {
+                self.live_clock.reset();
                 self.connected = false;
                 should_flush = true;
             }
@@ -1663,6 +1706,7 @@ impl CapturePipeline {
         self.discontinuities_seen += 1;
         self.push_live_discontinuity(disc.clone());
         if disc.kind == DiscontinuityKind::ConnectionLost {
+            self.live_clock.reset();
             self.connected = false;
         }
     }
@@ -1802,6 +1846,7 @@ impl CapturePipeline {
             dest,
             SelectionPolicy::default(),
             SaveIntent {
+                host_clock_anchor: self.host_clock_anchor(),
                 mode,
                 job_id: Some(notice.job_id.clone()),
                 post_roll_ms,
@@ -2290,7 +2335,8 @@ impl CapturePipeline {
         trigger_kind: SaveTriggerKind,
         note: Option<String>,
     ) -> Result<PendingSave, DaemonError> {
-        let window = self.build_save_window(duration_sec, self.trigger_point());
+        let host_clock_anchor = self.host_clock_anchor();
+        let window = self.build_save_window(duration_sec, self.trigger_point(host_clock_anchor));
         self.pin_window(
             duration_sec,
             dest_parent_dir,
@@ -2298,6 +2344,7 @@ impl CapturePipeline {
             SaveIntent {
                 job_id: None,
                 post_roll_ms: 0,
+                host_clock_anchor,
                 mode,
                 trigger_kind,
                 note,
@@ -2317,6 +2364,7 @@ impl CapturePipeline {
         let SaveIntent {
             job_id,
             post_roll_ms,
+            host_clock_anchor,
             mode,
             trigger_kind,
             note,
@@ -2333,7 +2381,9 @@ impl CapturePipeline {
         self.check_pin_budget(None, &chunk_ids)?;
         let job_id = job_id.unwrap_or_else(|| next_id("job"));
         let bundle_id = next_id("bundle");
-        let now_utc = utc_now_iso8601();
+        let now_utc = host_clock_anchor.map_or_else(utc_now_iso8601, |a| {
+            arb_core::time::format_unix_ms_iso8601(a.trigger_wall_epoch_ns.div_euclid(1_000_000))
+        });
         let dest_bundle_dir = dest_parent_dir.join(&bundle_id);
 
         let mut guard = PinRollbackGuard {
@@ -2379,6 +2429,7 @@ impl CapturePipeline {
             extra_discontinuities,
             uid_packages: self.uid_packages.clone(),
             coverage: None,
+            host_clock_anchor,
         };
         let mut params = params;
         params.coverage = Some(self.coverage_snapshot_for(&params.window));
@@ -2680,15 +2731,21 @@ impl CapturePipeline {
         Ok(view)
     }
 
+    fn host_clock_anchor(&self) -> Option<HostClockAnchor> {
+        (self.clock_domain == ClockDomain::HostLive)
+            .then(sample_host_clock)?
+            .ok()
+            .map(|s| HostClockAnchor {
+                trigger_pc_cont_ns: s.continuous_mono_ns,
+                trigger_wall_epoch_ns: s.wall_epoch_ns,
+            })
+    }
+
     /// `T_trigger` (R3 S1): the latest ingest time (or, for a live session, the host clock now)
     /// and the device boottime extrapolated from the latest heartbeat to that instant.
-    fn trigger_point(&self) -> TriggerPoint {
+    fn trigger_point(&self, host: Option<HostClockAnchor>) -> TriggerPoint {
         let observed = self.latest_pc_cont_ns.unwrap_or(0);
-        let pc_cont_ns = if self.clock_domain == ClockDomain::HostLive {
-            sample_host_clock().map_or(observed, |s| s.continuous_mono_ns.max(observed))
-        } else {
-            observed
-        };
+        let pc_cont_ns = host.map_or(observed, |s| s.trigger_pc_cont_ns.max(observed));
         let boottime_ns = match (
             self.latest_heartbeat_boottime_ns,
             self.latest_heartbeat_pc_cont_ns,
@@ -4345,16 +4402,7 @@ impl ReplayCollector {
             )?
         };
 
-        let unanchored_summary = UnanchoredSummary {
-            included_count: u64::try_from(unanchored_logs.saturating_add(media.unanchored_taps))
-                .unwrap_or(u64::MAX),
-            truncated_count: u64::try_from(
-                trunc_logs
-                    .saturating_add(media.trunc_taps)
-                    .saturating_add(media.media_unanchored_excluded),
-            )
-            .unwrap_or(u64::MAX),
-        };
+        let unanchored_summary = media.unanchored_summary(unanchored_logs, trunc_logs);
 
         let frame_count = u64::try_from(media.frames.len()).unwrap_or(0);
         let (display_width, display_height) = if params.mode == SaveMode::LogsOnly {
@@ -4417,6 +4465,11 @@ impl ReplayCollector {
             discontinuities,
             logs: final_logs,
             taps: media.taps,
+            device_clock_offset: Some(crate::clock_offset::saved_device_clock_offset(
+                &self.clock_anchors,
+                params.host_clock_anchor,
+            )),
+            host_clock_anchor: params.host_clock_anchor,
             clock_anchors: self.clock_anchors,
         })
     }
@@ -4438,6 +4491,19 @@ struct SelectedMediaTracks {
 }
 
 impl SelectedMediaTracks {
+    fn unanchored_summary(&self, unanchored_logs: usize, trunc_logs: usize) -> UnanchoredSummary {
+        UnanchoredSummary {
+            included_count: u64::try_from(unanchored_logs.saturating_add(self.unanchored_taps))
+                .unwrap_or(u64::MAX),
+            truncated_count: u64::try_from(
+                trunc_logs
+                    .saturating_add(self.trunc_taps)
+                    .saturating_add(self.media_unanchored_excluded),
+            )
+            .unwrap_or(u64::MAX),
+        }
+    }
+
     const fn logs_only() -> Self {
         Self {
             bundle_kind: BundleKind::LogsOnly,
@@ -7146,6 +7212,7 @@ mod tests {
             extra_discontinuities: Vec::new(),
             uid_packages: BTreeMap::new(),
             coverage: None,
+            host_clock_anchor: None,
         }
     }
 

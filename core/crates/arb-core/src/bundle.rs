@@ -69,6 +69,34 @@ pub struct ManifestV2 {
     pub app_logs: Vec<AppLogSummary>,
     /// SHA-256 digests of all immutable payload files inside the bundle directory.
     pub files: Vec<FileDigest>,
+    /// Host continuous and wall clocks read together at the save trigger (#591). Absent from
+    /// older manifests and from saves outside the live host clock domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_clock_anchor: Option<HostClockAnchor>,
+    /// Device wall clock minus host wall clock computed at save time from the saved clock
+    /// anchors and [`Self::host_clock_anchor`]. Absent from older manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_clock_offset: Option<crate::time::DeviceClockOffset>,
+}
+
+/// Host clocks sampled together at a save trigger. Stored in `manifest.json`, never in the
+/// `clock_anchors` table, so older readers keep opening the bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HostClockAnchor {
+    /// Host `PcContinuousMono` nanoseconds at the trigger.
+    pub trigger_pc_cont_ns: i64,
+    /// Host wall clock (Unix epoch nanoseconds) read with `trigger_pc_cont_ns`.
+    pub trigger_wall_epoch_ns: i64,
+}
+
+impl HostClockAnchor {
+    /// The anchor as a host clock sample.
+    pub const fn sample(&self) -> crate::time::HostClockSample {
+        crate::time::HostClockSample {
+            continuous_mono_ns: self.trigger_pc_cont_ns,
+            wall_epoch_ns: self.trigger_wall_epoch_ns,
+        }
+    }
 }
 
 /// Origin of a v2 bundle.
@@ -1000,6 +1028,8 @@ mod tests {
                     sha256: "0123456789abcdef".repeat(4),
                 },
             ],
+            host_clock_anchor: None,
+            device_clock_offset: None,
         }
     }
 
@@ -1018,6 +1048,46 @@ mod tests {
         assert_eq!(
             parsed, manifest,
             "manifest JSON round-trip must be lossless"
+        );
+    }
+
+    /// #591: the host clock anchor and the offset live in `manifest.json` as optional fields.
+    /// Manifests without them still parse, and a manifest without them serializes exactly as
+    /// before, so older readers see no new key.
+    #[test]
+    fn host_clock_anchor_is_optional_and_roundtrips() {
+        let plain = valid_manifest();
+        let json = serde_json::to_value(&plain).expect("serialize");
+        assert!(json.get("host_clock_anchor").is_none());
+        assert!(json.get("device_clock_offset").is_none());
+        let parsed: ManifestV2 = serde_json::from_value(json).expect("older manifest");
+        assert_eq!(parsed.host_clock_anchor, None);
+
+        let mut anchored = valid_manifest();
+        anchored.host_clock_anchor = Some(super::HostClockAnchor {
+            trigger_pc_cont_ns: 5_000_000_000,
+            trigger_wall_epoch_ns: 1_795_829_025_123_000_000,
+        });
+        anchored.device_clock_offset = Some(crate::time::DeviceClockOffset::from_estimate(
+            Some(crate::time::DeviceClockOffsetEstimate {
+                offset_ms: 1_700,
+                uncertainty_ms: 3,
+                source: crate::time::ClockOffsetSource::SyncProbe,
+                sampled_at_unix_ms: 1_795_829_025_000,
+            }),
+            crate::time::ClockOffsetUnavailable::NoSyncProbe,
+        ));
+        let json = serde_json::to_value(&anchored).expect("serialize");
+        assert_eq!(json["device_clock_offset"]["offset_ms"], 1_700);
+        assert_eq!(json["device_clock_offset"]["source"], "sync_probe");
+        assert_eq!(
+            json["device_clock_offset"]["sampled_at_utc"],
+            "2026-11-28T01:23:45.000Z"
+        );
+        assert!(json["device_clock_offset"].get("reason").is_none());
+        assert_eq!(
+            serde_json::from_value::<ManifestV2>(json).expect("parse"),
+            anchored
         );
     }
 

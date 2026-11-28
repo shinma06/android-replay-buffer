@@ -7,6 +7,9 @@
 //!   descriptor with length-prefixed in-band SPS/PPS prepended at IDR splice boundaries,
 //!   and **strictly zero `edts`/`elst` boxes**.
 
+mod dimensions;
+
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -124,6 +127,7 @@ pub struct Mp4VideoTrack {
     frames: Vec<IndexedFrame>,
     keyframes: Vec<u64>,
     has_b_frames: bool,
+    gop_dimensions: std::sync::Mutex<BTreeMap<u64, (u32, u32)>>,
 }
 
 impl Mp4VideoTrack {
@@ -154,6 +158,7 @@ impl Mp4VideoTrack {
             frames: parsed.frames,
             keyframes: parsed.keyframes,
             has_b_frames: parsed.has_b_frames,
+            gop_dimensions: std::sync::Mutex::default(),
         })
     }
 

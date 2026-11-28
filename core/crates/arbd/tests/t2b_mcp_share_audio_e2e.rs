@@ -26,7 +26,9 @@ use arb_core::bundle::{
     RequestedWindow, StreamStatus, StreamsSummary, TapRecord, UnanchoredSummary, VideoStreamMeta,
 };
 use arb_core::gesture::GestureKind;
-use arb_core::time::{DiscontinuityEvent, DiscontinuityKind, TimeAlignment, TimestampSemantics};
+use arb_core::time::{
+    DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, TimeAlignment, TimestampSemantics,
+};
 use arb_media::audio::{
     AacMuxInput, AacPacket, Mp4AudioTrack, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
 };
@@ -35,7 +37,7 @@ use arb_media::codec::{DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat}
 use arb_media::mp4::{Mp4VideoTrack, inspect_mp4_atoms, mux_raw_h264_to_mp4};
 use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcStream, read_frame_line, write_frame_line};
 use arb_os::paths::ArbPaths;
-use arb_storage::bundle_io::{MediaPayload, V2BundleDraft, V2BundleWriter};
+use arb_storage::bundle_io::{ClockAnchorRecord, MediaPayload, V2BundleDraft, V2BundleWriter};
 use arbd::error::RPC_ERR_CONFLICT;
 use arbd::{DaemonConfig, DaemonServer};
 use rusty_aac::{AacEncoder, AacEncoderConfig};
@@ -418,8 +420,79 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
         discontinuities,
         logs,
         taps,
-        clock_anchors: Vec::new(),
+        host_clock_anchor: None,
+        device_clock_offset: None,
+        // The device wall clock runs 1.7 s ahead of the trigger time 2026-11-23T09:00:00Z at the
+        // window end (#591).
+        clock_anchors: vec![ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
+            boot_id: "boot-t2b".to_owned(),
+            boottime_ns: BASE_BT_NS,
+            monotonic_ns: BASE_BT_NS,
+            realtime_ns: 1_795_424_400 * SEC_NS + 1_700_000_000 - (end_bt - BASE_BT_NS),
+        })],
     }
+}
+
+#[test]
+fn rotated_tap_crop_agrees_with_rendering_for_each_gop() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let mut draft = rich_draft(tmp.path(), "rotation", false);
+    let mut packets = Vec::new();
+    for (idx, (w, h)) in [(64_u32, 96_u32), (96, 64)].into_iter().enumerate() {
+        let frame = DecodedFrame {
+            frame_index: 0,
+            width: w,
+            height: h,
+            format: PixelFormat::Yuv420p,
+            data: vec![128; usize::try_from(w * h * 3 / 2).unwrap()],
+        };
+        let mut encoded = OpenH264Backend::new()
+            .encode_yuv420p_sequence(&[frame], 1, FRAME_STEP_NS, EncodeParams::default())
+            .unwrap();
+        encoded[0].pts_ns = i64::try_from(idx).unwrap() * FRAME_STEP_NS;
+        packets.extend(encoded);
+    }
+    let src = tmp.path().join("rotation.mp4");
+    mux_raw_h264_to_mp4(&src, 96, 64, 90_000, 3_000, &packets).unwrap();
+    draft.video_mp4 = Some(MediaPayload::File(src));
+    draft.frames.truncate(2);
+    draft.frames[1].is_keyframe = true;
+    let video = draft.streams.video.as_mut().unwrap();
+    video.frame_count = 2;
+    video.display_width = Some(64);
+    video.display_height = Some(96);
+    draft.taps[0].alignment = draft.frames[0].alignment.clone();
+    draft.taps[0].x = Some(10.0);
+    draft.taps[0].y = Some(80.0);
+    let dir = paths.data_dir.join("bundles").join("rotation");
+    V2BundleWriter::write(&dir, "rotate-job", &draft).unwrap();
+    let overview = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    let recorded = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":dir, "mode":"tap_crop", "tap_index":0, "metadata_only":true}),
+    );
+    assert_eq!(overview["taps"][0]["frame_index"], 0);
+    for (axis, expected) in [("x_video", 10), ("y_video", 80)] {
+        assert_eq!(overview["taps"][0][axis], expected);
+        assert_eq!(recorded["frames"][0]["tap"][axis], expected);
+    }
+    for (idx, x, y) in [(0, 10, 80), (1, 80, 10)] {
+        let mut args =
+            json!({"bundle_id":dir, "mode":"tap_crop", "frame_index":idx, "tap_x":x, "tap_y":y});
+        let rendered = rpc.call("media.inspect_frames", &args);
+        args["metadata_only"] = json!(true);
+        let metadata = rpc.call("media.inspect_frames", &args);
+        let dims = if idx == 0 { (64, 96) } else { (96, 64) };
+        assert_eq!(metadata["width"], dims.0);
+        assert_eq!(metadata["height"], dims.1);
+        assert_eq!(metadata["tap_crop"], rendered["tap_crop"]);
+        assert_eq!(metadata["tap_crop"]["tap_x"], x);
+        assert_eq!(metadata["tap_crop"]["tap_y"], y);
+    }
+    server.shutdown();
 }
 
 /// Seeds a minimal legacy schema-4 read-only folder containing a valid video.mp4 + replay.json.
@@ -867,6 +940,99 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
     assert_eq!(logs.len(), 1, "exact 1 filtered error log in frames 5..=15");
     assert_eq!(logs[0]["tag"], "PaymentRepo", "matched tag");
 
+    // #591: `start_offset_ms` / `end_offset_ms` select rows by their own `offset_ms`.
+    let all = rpc.call(
+        "bundle.query_logs",
+        &json!({"bundle_id_or_path": bundle_id, "bucket": "main"}),
+    );
+    let offsets: Vec<i64> = all["logs"]
+        .as_array()
+        .expect("logs")
+        .iter()
+        .filter_map(|row| row["offset_ms"].as_i64())
+        .collect();
+    assert!(offsets.len() >= 2, "{offsets:?}");
+    let (lo, hi) = (offsets[1], *offsets.last().expect("last"));
+    let ranged = rpc.call(
+        "bundle.query_logs",
+        &json!({"bundle_id_or_path": bundle_id, "bucket": "main", "start_offset_ms": lo, "end_offset_ms": hi}),
+    );
+    let got: Vec<i64> = ranged["logs"]
+        .as_array()
+        .expect("logs")
+        .iter()
+        .filter_map(|row| row["offset_ms"].as_i64())
+        .collect();
+    let want: Vec<i64> = offsets
+        .iter()
+        .copied()
+        .filter(|o| (lo..=hi).contains(o))
+        .collect();
+    assert_eq!(got, want);
+    let (code, _) = rpc.call_err(
+        "bundle.query_logs",
+        &json!({"bundle_id_or_path": bundle_id, "start_offset_ms": hi, "end_offset_ms": lo - 1}),
+    );
+    assert_eq!(code, -32602, "reversed offsets are rejected");
+    // The saved triple and the trigger wall time give an honest, wide estimate.
+    let clock = &ov["device_clock_offset"];
+    assert_eq!(clock["source"], "trigger_estimate", "{clock}");
+    assert_eq!(clock["trigger_delay_unbounded"], true);
+    assert!(clock["uncertainty_ms"].as_u64().is_some_and(|u| u >= 1_000));
+    assert_eq!(clock["offset_ms"], 1_700, "{clock}");
+
+    // Old automatic saves tied the window end to the crash, but stamped host wall time at pin.
+    let external = tmp.path().join("delayed-crash");
+    fs::create_dir(&external).unwrap();
+    let mut delayed = rich_draft(&external, "delayed", false);
+    delayed.epochs[0].end_boottime_ns = BASE_BT_NS + 20 * FRAME_STEP_NS;
+    let dir = external.join("delayed");
+    V2BundleWriter::write(&dir, "job-delayed", &delayed).unwrap();
+    let old = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    assert_eq!(
+        old["device_clock_offset"]["reason"],
+        "trigger_delay_unknown"
+    );
+    assert_eq!(old["device_clock_offset"]["offset_ms"], Value::Null);
+
+    // A pre-anchor post-roll bundle ends after the trigger, even without a visible crash log.
+    let mut post_roll = rich_draft(&external, "post-roll", false);
+    let RequestedWindow::RealElapsedSec {
+        post_roll_ms,
+        actual_post_roll_ms,
+        ..
+    } = &mut post_roll.requested_window
+    else {
+        panic!("fixture needs a time window");
+    };
+    *post_roll_ms = 4000;
+    *actual_post_roll_ms = 4000;
+    let dir = external.join("post-roll");
+    V2BundleWriter::write(&dir, "job-post-roll", &post_roll).unwrap();
+    let post_roll = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    assert_eq!(
+        post_roll["device_clock_offset"]["reason"],
+        "trigger_delay_unknown"
+    );
+    assert_eq!(post_roll["device_clock_offset"]["offset_ms"], Value::Null);
+
+    // A trigger strictly between the triples of a wall-clock jump has no known wall time.
+    delayed.epochs[0].end_boottime_ns = BASE_BT_NS + FRAME_STEP_NS;
+    let ClockAnchorRecord::DeviceTriple(mut after) = delayed.clock_anchors[0].clone() else {
+        panic!("fixture needs a device clock triple");
+    };
+    after.boottime_ns += 2 * FRAME_STEP_NS;
+    after.monotonic_ns += 2 * FRAME_STEP_NS;
+    after.realtime_ns += 2 * FRAME_STEP_NS + 30 * SEC_NS;
+    delayed
+        .clock_anchors
+        .push(ClockAnchorRecord::DeviceTriple(after));
+    let dir = external.join("jump");
+    V2BundleWriter::write(&dir, "job-jump", &delayed).unwrap();
+    let jumped = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    assert_eq!(jumped["device_clock_offset"]["reason"], "wall_clock_jump");
+    assert_eq!(jumped["device_clock_offset"]["offset_ms"], Value::Null);
+
     // 3. `media.inspect_frames` — `contact_sheet` mode.
     let sheet = rpc.call(
         "media.inspect_frames",
@@ -1012,13 +1178,13 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             semantics: TimestampSemantics::InputEventTime,
         },
         bucket: RecordBucket::Main,
-        action: "TAP".to_owned(),
+        action: "SWIPE".to_owned(),
         x: Some(540.0),
         y: Some(1200.0),
         pointer_id: Some(0),
-        gesture_kind: GestureKind::Tap,
-        end_x: None,
-        end_y: None,
+        gesture_kind: GestureKind::Swipe,
+        end_x: Some(270.0),
+        end_y: Some(600.0),
         end_t_offset_ns: Some(10_000_000),
         path: Vec::new(),
     }];
@@ -1111,13 +1277,28 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             tid: None,
             uid: Some(2000),
             package_name: None,
-            message: "adbd service requested 'shell:input tap 540 1200'".into(),
+            message: "adbd service requested 'shell:input swipe 540 1200 270 600 150'".into(),
         }],
         taps,
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: Vec::new(),
     };
+    // A log row at exactly the tap's boottime: its `offset_ms` must equal the tap's (#591).
+    let mut aligned = draft.logs[0].clone();
+    aligned.seq = 8;
+    aligned.tag = Some("ARBTEST".into());
+    aligned.uid = Some(10_001);
+    aligned.message = "aligned with tap 0".into();
+    aligned.alignment = TimeAlignment::Anchored {
+        boot_id: "boot-epoch-1".into(),
+        boottime_ns: 5_000_000_000 + 3 * step,
+        half_width_ns: 0,
+        semantics: TimestampSemantics::LogcatHeaderWall,
+    };
+    draft.logs.insert(0, aligned);
     for seq in 10..110 {
-        let mut row = draft.logs[0].clone();
+        let mut row = draft.logs[1].clone();
         row.seq = seq;
         row.message = format!(
             "adbd service requested 'shell:input text {}'",
@@ -1164,6 +1345,11 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     assert_eq!(injection["offset_ms"], 100, "relative to the same boot");
     assert_eq!(injection["x_video"], 64.0);
     assert_eq!(injection["y_video"], 64.0);
+    assert_eq!(injection["end_x_display"], 270);
+    assert_eq!(injection["end_y_display"], 600);
+    assert_eq!(injection["end_x_video"], 32.0);
+    assert_eq!(injection["end_y_video"], 32.0);
+    assert_eq!(injection["end_offset_ms"], 250);
     assert_eq!(overview["input_capture"]["injected"]["gestures"], 1);
     assert_eq!(overview["input_capture"]["physical"]["gestures"], 2);
     assert_eq!(overview["taps"][0]["source"], "getevent");
@@ -1192,6 +1378,74 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
     assert_eq!(crop["frame_indices_rendered"], json!([18]));
     assert_eq!(crop["tap_crop"]["tap_x"], 64);
     assert_eq!(crop["tap_crop"]["tap_y"], 64);
+
+    // #591: both tools name the coordinate system. The overview's video pixels are exactly the
+    // inspect tool's, and display pixels are the calibrated device coordinates.
+    let tap = &overview["taps"][0];
+    assert_eq!(
+        (&tap["x_display"], &tap["y_display"]),
+        (&json!(540), &json!(1200))
+    );
+    assert_eq!((&tap["x_video"], &tap["y_video"]), (&json!(64), &json!(64)));
+    let meta = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":bid,"mode":"tap_crop","tap_index":0,"metadata_only":true}),
+    );
+    let frame_tap = &meta["frames"][0]["tap"];
+    for (key, expected) in [
+        ("end_x_display", 270),
+        ("end_y_display", 600),
+        ("end_x_video", 32),
+        ("end_y_video", 32),
+    ] {
+        assert_eq!(tap[key], expected);
+        assert_eq!(frame_tap[key], expected);
+    }
+    assert_eq!(frame_tap["x_video"], tap["x_video"]);
+    assert_eq!(frame_tap["y_video"], tap["y_video"]);
+    assert_eq!(frame_tap["x_display"], tap["x_display"]);
+    assert_eq!(frame_tap["y_display"], tap["y_display"]);
+    assert_eq!((&frame_tap["x"], &frame_tap["y"]), (&json!(64), &json!(64)));
+    // Metadata-only answers the exact rectangle the render path crops.
+    assert_eq!(meta["tap_crop"], crop["tap_crop"]);
+    let single = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":bid,"mode":"single","frame_index":18,"metadata_only":true}),
+    );
+    assert_eq!(single["frames"][0]["tap"]["x_video"], tap["x_video"]);
+    assert_eq!(single["tap_crop"], Value::Null);
+    // Explicit video pixels have no display origin.
+    let direct = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":bid,"mode":"tap_crop","frame_index":3,"tap_x":5,"tap_y":6,"metadata_only":true}),
+    );
+    assert_eq!(direct["frames"][0]["tap"]["x_display"], Value::Null);
+    assert_eq!(direct["tap_crop"]["tap_rel_x"], 5);
+    // Out-of-frame explicit pixels fail in metadata just as in rendering.
+    let outside = json!({"bundle_id":bid,"mode":"tap_crop","frame_index":3,"tap_x":500,"tap_y":6});
+    let rendered = rpc.call_err("media.inspect_frames", &outside);
+    let mut outside = outside;
+    outside["metadata_only"] = json!(true);
+    assert_eq!(rpc.call_err("media.inspect_frames", &outside), rendered);
+
+    // `offset_ms` uses the tap's own boot origin, like log rows; `t_ms` kept the first boot's.
+    assert_eq!(tap["offset_ms"], 99);
+    // The 10 ms stroke end, on the same per-boot axis (exact ns sum, then truncated).
+    assert_eq!(tap["end_offset_ms"], 109);
+    let aligned = rpc.call(
+        "bundle.query_logs",
+        &json!({"bundle_id_or_path":bid,"tag":"ARBTEST","bucket":"main"}),
+    );
+    assert_eq!(aligned["logs"][0]["offset_ms"], tap["offset_ms"]);
+    let same_offset = rpc.call(
+        "bundle.query_logs",
+        &json!({"bundle_id_or_path":bid,"start_offset_ms":99,"end_offset_ms":99}),
+    );
+    assert_eq!(same_offset["total_matched"], 1);
+    assert_eq!(same_offset["logs"][0]["seq"], aligned["logs"][0]["seq"]);
+    // No saved triple: the offset is unavailable, with its reason, never fabricated.
+    assert_eq!(overview["device_clock_offset"]["offset_ms"], Value::Null);
+    assert_eq!(overview["device_clock_offset"]["reason"], "no_clock_triple");
 
     assert_eq!(overview["taps"][1]["x"], 1079.0);
     assert_eq!(overview["taps"][1]["y"], 2399.0);

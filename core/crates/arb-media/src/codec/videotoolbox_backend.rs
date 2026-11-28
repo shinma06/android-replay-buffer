@@ -699,8 +699,7 @@ struct VtDecoder {
     active_pps: Vec<Vec<u8>>,
     /// NAL length prefix size of the *source* samples (`avcC lengthSizeMinusOne + 1`).
     src_nal_length_size: usize,
-    width: u16,
-    height: u16,
+    output_size: Option<(u16, u16)>,
 }
 
 impl Drop for VtDecoder {
@@ -722,12 +721,16 @@ impl Drop for VtDecoder {
 }
 
 impl VtDecoder {
+    fn native(track: &Mp4VideoTrack) -> Result<Self, MediaError> {
+        let avcc = track.avcc();
+        Self::new(&avcc.sps, &avcc.pps, avcc.nal_length_size, None)
+    }
+
     fn new(
         sps: &[Vec<u8>],
         pps: &[Vec<u8>],
         src_nal_length_size: usize,
-        width: u16,
-        height: u16,
+        output_size: Option<(u16, u16)>,
     ) -> Result<Self, MediaError> {
         if !(1..=4).contains(&src_nal_length_size) || src_nal_length_size == 3 {
             return Err(MediaError::UnsupportedFeature(format!(
@@ -775,17 +778,21 @@ impl VtDecoder {
 
         let mut dst_attrs = OwnedCfMutableDict::new(3)?;
         let num_fmt = cf_number_i32(K_CV_PIXEL_FORMAT_420V)?;
-        let num_w = cf_number_i32(i32::from(width))?;
-        let num_h = cf_number_i32(i32::from(height))?;
-        // SAFETY: `kCVPixelBufferPixelFormatTypeKey` is a CoreVideo process-lifetime constant.
-        let fmt_key = unsafe { kCVPixelBufferPixelFormatTypeKey };
-        // SAFETY: `kCVPixelBufferWidthKey` is a CoreVideo process-lifetime constant.
-        let w_key = unsafe { kCVPixelBufferWidthKey };
-        // SAFETY: `kCVPixelBufferHeightKey` is a CoreVideo process-lifetime constant.
-        let h_key = unsafe { kCVPixelBufferHeightKey };
-        dst_attrs.set_value(fmt_key, num_fmt.as_ptr());
-        dst_attrs.set_value(w_key, num_w.as_ptr());
-        dst_attrs.set_value(h_key, num_h.as_ptr());
+        // SAFETY: the pixel format key is a CoreVideo process-lifetime constant.
+        dst_attrs.set_value(
+            unsafe { kCVPixelBufferPixelFormatTypeKey },
+            num_fmt.as_ptr(),
+        );
+        // For frame inspection/playback, let the active SPS choose the native dimensions.
+        // Re-encoding can request a fixed output canvas across configuration changes.
+        if let Some((width, height)) = output_size {
+            let num_w = cf_number_i32(i32::from(width))?;
+            let num_h = cf_number_i32(i32::from(height))?;
+            // SAFETY: the size keys are CoreVideo process-lifetime constants.
+            let (w_key, h_key) = unsafe { (kCVPixelBufferWidthKey, kCVPixelBufferHeightKey) };
+            dst_attrs.set_value(w_key, num_w.as_ptr());
+            dst_attrs.set_value(h_key, num_h.as_ptr());
+        }
 
         let state = NonNull::from(Box::leak(Box::new(DecodeState {
             last_buf: None,
@@ -830,8 +837,7 @@ impl VtDecoder {
             active_sps: sps.to_vec(),
             active_pps: pps.to_vec(),
             src_nal_length_size,
-            width,
-            height,
+            output_size,
         })
     }
 
@@ -865,8 +871,7 @@ impl VtDecoder {
                 &seq_sets,
                 &pic_sets,
                 self.src_nal_length_size,
-                self.width,
-                self.height,
+                self.output_size,
             )?;
         }
 
@@ -1338,14 +1343,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         _: u64,
         _: u64,
     ) -> Result<Box<dyn super::SequentialDecoder>, MediaError> {
-        let avcc = track.avcc();
-        let decoder = VtDecoder::new(
-            &avcc.sps,
-            &avcc.pps,
-            avcc.nal_length_size,
-            track.width(),
-            track.height(),
-        )?;
+        let decoder = VtDecoder::native(track)?;
         Ok(Box::new(VtGopDecoder {
             decoder,
             sample: Vec::new(),
@@ -1363,14 +1361,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         output_format: PixelFormat,
     ) -> Result<DecodedFrame, MediaError> {
         let gop_start = track.decodable_gop_start(frame_index)?;
-        let avcc = track.avcc();
-        let mut dec = VtDecoder::new(
-            &avcc.sps,
-            &avcc.pps,
-            avcc.nal_length_size,
-            track.width(),
-            track.height(),
-        )?;
+        let mut dec = VtDecoder::native(track)?;
         let mut raw = Vec::new();
 
         for idx in gop_start..=frame_index {
@@ -1398,14 +1389,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         output_format: PixelFormat,
     ) -> Result<Vec<DecodedFrame>, MediaError> {
         let (gop_start, gop_end) = track.decodable_gop_range(gop_id)?;
-        let avcc = track.avcc();
-        let mut dec = VtDecoder::new(
-            &avcc.sps,
-            &avcc.pps,
-            avcc.nal_length_size,
-            track.width(),
-            track.height(),
-        )?;
+        let mut dec = VtDecoder::native(track)?;
         let mut raw = Vec::new();
         let capacity = usize::try_from(gop_end - gop_start + 1).unwrap_or(0);
         let mut out = Vec::with_capacity(capacity);
@@ -1465,8 +1449,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
                             &avcc.sps,
                             &avcc.pps,
                             avcc.nal_length_size,
-                            track.width(),
-                            track.height(),
+                            Some((track.width(), track.height())),
                         )?;
                         let mut raw = Vec::new();
                         let mut local = Vec::with_capacity(chunk.len());
@@ -1522,8 +1505,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
             &avcc.sps,
             &avcc.pps,
             avcc.nal_length_size,
-            track.width(),
-            track.height(),
+            Some((track.width(), track.height())),
         )?;
         let mut enc = VtEncoder::new(track.width(), track.height(), params.bitrate_bps)?;
         let mut raw = Vec::new();
@@ -1624,8 +1606,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
             &avcc.sps,
             &avcc.pps,
             avcc.nal_length_size,
-            track.width(),
-            track.height(),
+            Some((track.width(), track.height())),
         )?;
         let mut enc = VtEncoder::new(track.width(), track.height(), params.bitrate_bps)?;
         let mut raw = Vec::new();

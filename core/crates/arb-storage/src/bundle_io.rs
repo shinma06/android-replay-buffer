@@ -440,6 +440,15 @@ pub trait BundleReader: fmt::Debug + Send + Sync {
     /// Returns `true` for legacy schema 3 / schema 4 read-only bundles, `false` for v2.
     fn is_legacy(&self) -> bool;
 
+    /// Saved clock anchors (device triples and sync probes). Legacy bundles have none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the anchor rows cannot be read.
+    fn saved_clock_anchors(&self) -> Result<Vec<ClockAnchorRecord>, StorageError> {
+        Ok(Vec::new())
+    }
+
     /// Returns structured crash markers detected in this bundle's logcat.
     ///
     /// # Errors
@@ -525,6 +534,10 @@ pub struct V2BundleDraft {
     pub taps: Vec<TapRecord>,
     /// Clock anchor observations (`device_triple` and `pc_sync_probe`).
     pub clock_anchors: Vec<ClockAnchorRecord>,
+    /// Host clocks read at the trigger, written to `manifest.json` (never to `clock_anchors`).
+    pub host_clock_anchor: Option<arb_core::bundle::HostClockAnchor>,
+    /// Device clock offset computed at save time, written to `manifest.json`.
+    pub device_clock_offset: Option<arb_core::time::DeviceClockOffset>,
 }
 
 /// Atomic WORM v2 bundle writer backed by [`AtomicStagingDir`].
@@ -721,6 +734,8 @@ impl V2BundleWriter {
             unanchored_summary: draft.unanchored_summary,
             app_logs,
             files,
+            host_clock_anchor: draft.host_clock_anchor,
+            device_clock_offset: draft.device_clock_offset.clone(),
         };
         manifest.validate()?;
 
@@ -1411,6 +1426,10 @@ impl BundleReader for V2BundleReader {
 
     fn is_legacy(&self) -> bool {
         false
+    }
+
+    fn saved_clock_anchors(&self) -> Result<Vec<ClockAnchorRecord>, StorageError> {
+        Self::clock_anchors(self)
     }
 
     fn crashes(&self) -> Result<Vec<CrashMarker>, StorageError> {
@@ -3558,6 +3577,8 @@ mod tests {
                     ],
                 },
             ],
+            host_clock_anchor: None,
+            device_clock_offset: None,
             clock_anchors: vec![ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
                 boot_id: "boot-1".to_owned(),
                 boottime_ns: 1_500,

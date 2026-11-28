@@ -46,9 +46,9 @@ pub use crate::burn_in::{
     composite_touch_overlays_rgb24,
 };
 pub use crate::contact_sheet::{
-    ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions, TapCropResult,
-    render_contact_sheet_png, render_single_frame_png, render_tap_crop_png,
-    select_contact_sheet_indices,
+    ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions, TapCropRect,
+    TapCropResult, render_contact_sheet_png, render_single_frame_png, render_tap_crop_png,
+    select_contact_sheet_indices, tap_crop_rect,
 };
 pub use crate::error::MediaError;
 pub use crate::mux_av::{AvMuxReport, mux_share_mp4};

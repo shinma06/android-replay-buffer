@@ -443,24 +443,10 @@ pub fn build_timeline_overview(
 
     let frames = reader.display_frames()?;
     let frame_count = frames.len();
-    let (width, height, video_duration_ns) = match reader.video_path() {
-        Some(video_path) => match Mp4VideoTrack::open(&video_path) {
-            Ok(track) => {
-                let ts = u128::from(track.timescale().max(1));
-                let dur_ns = u64::try_from(
-                    u128::from(track.duration_ticks()).saturating_mul(1_000_000_000) / ts,
-                )
-                .unwrap_or(u64::MAX);
-                (
-                    Some(u32::from(track.width())),
-                    Some(u32::from(track.height())),
-                    Some(dur_ns),
-                )
-            }
-            Err(_) => (None, None, None),
-        },
-        None => (None, None, None),
-    };
+    let track = reader
+        .video_path()
+        .and_then(|path| Mp4VideoTrack::open(path).ok());
+    let (width, height, video_duration_ns) = overview_video_geometry(track.as_ref());
 
     let base_boottime_ns = first_bundle_boottime_ns(&frames, &summary.epochs);
     let duration_ms = if frames.is_empty() {
@@ -472,8 +458,18 @@ pub fn build_timeline_overview(
 
     let discontinuities = reader.discontinuities()?;
 
+    let video = summary.streams.video.as_ref();
+    let display_width = video.and_then(|v| v.display_width);
+    let display_height = video.and_then(|v| v.display_height);
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let taps = build_overview_taps(&main_taps, &frames, base_boottime_ns);
+    let taps = build_overview_taps(
+        &main_taps,
+        &frames,
+        base_boottime_ns,
+        &LogCoordinates::new(&frames, &summary.epochs),
+        track.as_ref(),
+        (display_width, display_height),
+    );
 
     let annotated = annotated_overview(reader.as_ref(), &frames, params, (&main_taps, taps))?;
 
@@ -484,16 +480,13 @@ pub fn build_timeline_overview(
         .map_or(StreamStatus::Absent, |a| a.status);
     let av_offset_ms = summary.streams.audio.as_ref().map_or(0, |a| a.av_offset_ms);
     let logcat_completeness = summary.streams.logcat.as_ref().map(|l| l.completeness);
-    let video = summary.streams.video.as_ref();
-    let display_width = video.and_then(|v| v.display_width);
-    let display_height = video.and_then(|v| v.display_height);
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
     let (input_capture, injected_inputs) = overview_inputs(
         reader.as_ref(),
         &frames,
         &main_taps,
-        width.zip(height),
+        track.as_ref(),
         display_width.zip(display_height),
     )?;
     Ok(TimelineOverviewResponse {
@@ -502,11 +495,21 @@ pub fn build_timeline_overview(
                 - input_capture.injected.counts.unparsed_commands,
         input_capture,
         injected_inputs,
-        carried_in: summary
-            .streams
-            .video
-            .as_ref()
-            .and_then(|v| v.carried_in.clone()),
+        carried_in: video.and_then(|v| v.carried_in.clone()),
+        device_clock_offset: Some(
+            match summary
+                .manifest_v2
+                .as_ref()
+                .and_then(|m| m.device_clock_offset.as_ref())
+            {
+                Some(saved) => saved.clone(),
+                None => crate::clock_offset::estimate_bundle_clock_offset(
+                    summary,
+                    &reader.saved_clock_anchors()?,
+                    &annotated.rows.crashes,
+                ),
+            },
+        ),
         bundle_id,
         kind: summary.bundle_kind,
         legacy_read_only: reader.is_legacy(),
@@ -538,6 +541,21 @@ pub fn build_timeline_overview(
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
         app_logs: annotated.rows.app_logs,
     })
+}
+
+fn overview_video_geometry(
+    track: Option<&Mp4VideoTrack>,
+) -> (Option<u32>, Option<u32>, Option<u64>) {
+    let Some(track) = track else {
+        return (None, None, None);
+    };
+    let duration =
+        u128::from(track.duration_ticks()) * 1_000_000_000 / u128::from(track.timescale().max(1));
+    (
+        Some(u32::from(track.width())),
+        Some(u32::from(track.height())),
+        u64::try_from(duration).ok(),
+    )
 }
 
 /// A blank `package` is no filter, and surrounding whitespace is not part of a package name.
@@ -670,7 +688,7 @@ fn overview_inputs(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
     taps: &[TapRecord],
-    video: Option<(u32, u32)>,
+    track: Option<&Mp4VideoTrack>,
     display: Option<(u32, u32)>,
 ) -> Result<
     (
@@ -684,7 +702,7 @@ fn overview_inputs(
     let mut remaining = 256 * 1024;
     let capture = bundle_input_capture(reader, taps, |input| {
         if remaining > 0 {
-            let row = coordinates.project_input(input, video, display);
+            let row = coordinates.project_input(input, track, display);
             let bytes =
                 serde_json::to_vec(&row).map_or(usize::MAX, |json| json.len().saturating_add(1));
             if bytes <= remaining {
@@ -788,8 +806,7 @@ pub(super) fn inspect_metadata(
     let manifest = reader.manifest_summary();
     let id = source_id.unwrap_or(&manifest.bundle_id);
     let track = inspect_video_track(reader.as_ref(), id)?;
-    let width = u32::from(track.width());
-    let height = u32::from(track.height());
+    let (mut width, mut height) = (u32::from(track.width()), u32::from(track.height()));
     let display = manifest.streams.video.as_ref();
     let dims = (
         params
@@ -799,8 +816,9 @@ pub(super) fn inspect_metadata(
             .display_height
             .or_else(|| display.and_then(|v| v.display_height)),
     );
-    let mut taps = build_frame_tap_map(reader.as_ref(), width, height, dims)?;
+    let mut taps = build_frame_tap_map(reader.as_ref(), &track, dims)?;
     let mut dropped = Vec::new();
+    let mut tap_crop = None;
     let indices = match params.mode {
         InspectFramesMode::ContactSheet => {
             let (indices, omitted) = contact_indices(reader.as_ref(), params, track.frame_count())?;
@@ -809,8 +827,11 @@ pub(super) fn inspect_metadata(
         }
         InspectFramesMode::Single => vec![single_index(params)],
         InspectFramesMode::TapCrop => {
-            let (i, x, y) = tap_target(reader.as_ref(), params, width, height, dims)?;
-            taps.insert(i, (x, y));
+            let (i, gesture) = tap_target(reader.as_ref(), params, &track, dims)?;
+            (width, height) = track.frame_dimensions(i)?;
+            let (x, y) = gesture.video;
+            tap_crop = Some(tap_crop_meta(width, height, x, y)?);
+            taps.insert(i, gesture);
             vec![i]
         }
     };
@@ -831,11 +852,12 @@ pub(super) fn inspect_metadata(
         frames.push(
             json!({"frame_index":i,"timestamp_ms":info.pts_ns/1_000_000,"screen":screen,
             "offset_ns":offset_ns,"offset_ms":offset_ns.map(|ns| ns / 1_000_000),
-            "tap":taps.get(&i).map(|(x,y)|json!({"x":x,"y":y}))}),
+            "tap":taps.get(&i).map(|p| p.json())}),
         );
     }
     Ok(
         json!({"bundle_id":id,"mode":params.mode,"width":width,"height":height,"frame_indices_rendered":indices,"frames":frames,
+            "tap_crop":tap_crop,
             "dropped_frame_indices":dropped,"warnings":inspection_warnings(params, indices.len(), dropped.len())}),
     )
 }
@@ -861,8 +883,6 @@ pub fn inspect_frames(
 
     let track = inspect_video_track(reader.as_ref(), &bundle_id)?;
 
-    let video_w = u32::from(track.width());
-    let video_h = u32::from(track.height());
     let effective_display_w = params
         .display_width
         .or_else(|| summary.streams.video.as_ref().and_then(|v| v.display_width));
@@ -888,8 +908,6 @@ pub fn inspect_frames(
                 &mut gop_cache,
                 ctx.backend,
                 params,
-                video_w,
-                video_h,
                 display_dims,
             )?
         }
@@ -899,8 +917,6 @@ pub fn inspect_frames(
             &mut gop_cache,
             ctx.backend,
             params,
-            video_w,
-            video_h,
             display_dims,
         )?,
         InspectFramesMode::TapCrop => render_inspect_tap_crop(
@@ -909,8 +925,6 @@ pub fn inspect_frames(
             &mut gop_cache,
             ctx.backend,
             params,
-            video_w,
-            video_h,
             display_dims,
         )?,
     };
@@ -967,13 +981,24 @@ pub(super) fn query_log_response(
         .into_iter()
         .map(|record| coordinates.query_row(record))
         .collect::<Vec<_>>();
-    let intersected = (params.start_ns.is_some() && params.start_frame.is_some())
-        || (params.end_ns.is_some() && params.end_frame.is_some());
+    let bounds = |a: bool, b: bool, c: bool| u8::from(a) + u8::from(b) + u8::from(c);
+    let intersected = bounds(
+        params.start_ns.is_some(),
+        params.start_frame.is_some(),
+        params.start_offset_ms.is_some(),
+    ) > 1
+        || bounds(
+            params.end_ns.is_some(),
+            params.end_frame.is_some(),
+            params.end_offset_ms.is_some(),
+        ) > 1;
     Ok(crate::protocol::TimelineLogsResponse {
         warnings: if intersected {
             vec![WarningDetail {
                 code: "range_intersected".into(),
-                message: "時刻とフレーム番号の共通範囲を検索しました。".into(),
+                message:
+                    "指定した複数の範囲（時刻・フレーム番号・オフセット）の共通部分を検索しました。"
+                        .into(),
                 details: None,
             }]
         } else {
@@ -1046,6 +1071,7 @@ struct LogCountKey {
     bundle: BundleLogCacheKey,
     bucket: Option<RecordBucket>,
     range: TimeRange,
+    offset_bounds: (Option<i64>, Option<i64>),
     filters: [Option<String>; 5],
     exclude_tags: Vec<String>,
     whole_word: bool,
@@ -1066,7 +1092,10 @@ fn query_logs_with_total(
         &params.package,
     ];
     let exclude_tags = params.exclude_tags.clone().unwrap_or_default();
-    let cacheable = (filters.iter().any(|v| v.is_some()) || !exclude_tags.is_empty())
+    let cacheable = (filters.iter().any(|v| v.is_some())
+        || !exclude_tags.is_empty()
+        || params.start_offset_ms.is_some()
+        || params.end_offset_ms.is_some())
         && filters
             .iter()
             .filter_map(|v| v.as_ref())
@@ -1079,6 +1108,7 @@ fn query_logs_with_total(
             bundle,
             bucket,
             range: resolve_log_query_time_range(reader, params)?,
+            offset_bounds: (params.start_offset_ms, params.end_offset_ms),
             filters: filters.map(Clone::clone),
             exclude_tags,
             whole_word: params.whole_word,
@@ -1263,6 +1293,13 @@ fn resolve_log_query_time_range(
     reader: &dyn BundleReader,
     params: &TimelineQueryParams,
 ) -> Result<TimeRange, DaemonError> {
+    if let (Some(lo), Some(hi)) = (params.start_offset_ms, params.end_offset_ms)
+        && lo > hi
+    {
+        return Err(DaemonError::InvalidParams(format!(
+            "start_offset_ms ({lo}) は end_offset_ms ({hi}) 以下にしてください。"
+        )));
+    }
     let mut range = TimeRange {
         start_ns: params.start_ns,
         end_ns: params.end_ns,
@@ -1360,6 +1397,34 @@ fn query_levels(
     Ok(Some(level))
 }
 
+fn unfiltered_log_page(
+    reader: &dyn BundleReader,
+    bucket: Option<RecordBucket>,
+    range: TimeRange,
+    after_seq: Option<u64>,
+    limit: usize,
+    count: CountMatches,
+) -> Result<FilteredLogPage, DaemonError> {
+    let fetch = limit.saturating_add(1);
+    let mut logs = reader.query_logs_after(bucket, range, after_seq, Some(fetch))?;
+    let candidate_rows_scanned = logs.len();
+    let has_more = logs.len() > limit;
+    logs.truncate(limit);
+    let next_after_seq = logs.last().map(|r| r.seq);
+    Ok(FilteredLogPage {
+        logs,
+        has_more,
+        next_after_seq,
+        candidate_rows_scanned,
+        total_matched: if count == CountMatches::EntireQuery {
+            reader.count_logs(bucket, range)?
+        } else {
+            candidate_rows_scanned
+        },
+        resolver_cache_hit: false,
+    })
+}
+
 fn scan_logs(
     reader: &dyn BundleReader,
     bucket: Option<RecordBucket>,
@@ -1383,25 +1448,20 @@ fn scan_logs(
         || params.keyword.is_some()
         || package_filter.is_some();
 
-    if !has_text_filter && !params.tail {
-        let fetch = limit.saturating_add(1);
-        let mut logs = reader.query_logs_after(bucket, range, params.after_seq, Some(fetch))?;
-        let candidate_rows_scanned = logs.len();
-        let has_more = logs.len() > limit;
-        logs.truncate(limit);
-        let next_after_seq = logs.last().map(|r| r.seq);
-        return Ok(FilteredLogPage {
-            logs,
-            has_more,
-            next_after_seq,
-            candidate_rows_scanned,
-            total_matched: if count_all {
-                reader.count_logs(bucket, range)?
-            } else {
-                candidate_rows_scanned
-            },
-            resolver_cache_hit: false,
-        });
+    let offset_bounds = (params.start_offset_ms, params.end_offset_ms);
+    let records;
+    let coordinates = if offset_bounds == (None, None) {
+        None
+    } else {
+        records = reader.display_frames()?;
+        Some(LogCoordinates::new(
+            &records,
+            &reader.manifest_summary().epochs,
+        ))
+    };
+
+    if !has_text_filter && coordinates.is_none() && !params.tail {
+        return unfiltered_log_page(reader, bucket, range, params.after_seq, limit, count);
     }
 
     let (package, resolver_cache_hit) = if let Some(target_pkg) = package_filter {
@@ -1438,6 +1498,14 @@ fn scan_logs(
         }
         for log in batch {
             cursor_seq = Some(log.seq);
+            if let Some(coords) = &coordinates
+                && !coords.log_offset_ms(&log).is_some_and(|ms| {
+                    offset_bounds.0.is_none_or(|lo| ms >= lo)
+                        && offset_bounds.1.is_none_or(|hi| ms <= hi)
+                })
+            {
+                continue;
+            }
             if filter.matches(&log) {
                 total_matched += 1;
                 if params.after_seq.is_some_and(|after| log.seq <= after) {
@@ -1492,10 +1560,6 @@ pub fn query_logs_filtered(
 
 type InspectRenderOutput = (Vec<u8>, Vec<u64>, Option<TapCropMeta>);
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_contact_sheet(
     indices: Vec<u64>,
     reader: &dyn BundleReader,
@@ -1503,12 +1567,10 @@ fn render_inspect_contact_sheet(
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let tap_map = if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h, display_dims)?
+        frame_tap_markers(reader, track, display_dims)?
     } else {
         BTreeMap::new()
     };
@@ -1542,18 +1604,12 @@ fn render_inspect_contact_sheet(
     Ok((png, indices, None))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_single(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
@@ -1569,7 +1625,7 @@ fn render_inspect_single(
     let tap_point = if let (Some(tx), Some(ty)) = (params.tap_x, params.tap_y) {
         Some((tx, ty))
     } else if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h, display_dims)?
+        frame_tap_markers(reader, track, display_dims)?
             .get(&idx)
             .copied()
     } else {
@@ -1579,22 +1635,17 @@ fn render_inspect_single(
     Ok((png, vec![idx], None))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_tap_crop(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let (idx, tx, ty) = tap_target(reader, params, video_w, video_h, display_dims)?;
+    let (idx, gesture) = tap_target(reader, params, track, display_dims)?;
+    let (tx, ty) = gesture.video;
     if idx >= frame_count {
         return Err(MediaError::FrameOutOfRange {
             frame_index: idx,
@@ -1612,16 +1663,12 @@ fn render_inspect_tap_crop(
         ty,
         &TapCropOptions::default(),
     )?;
-    let meta = TapCropMeta {
-        crop_x: crop.crop_x,
-        crop_y: crop.crop_y,
-        crop_width: crop.crop_width,
-        crop_height: crop.crop_height,
-        tap_x: tx,
-        tap_y: ty,
-        tap_rel_x: crop.tap_rel_x,
-        tap_rel_y: crop.tap_rel_y,
-    };
+    let meta = tap_crop_meta(decoded.width, decoded.height, tx, ty)?;
+    debug_assert_eq!(
+        (meta.crop_x, meta.crop_y, meta.crop_width, meta.crop_height),
+        (crop.crop_x, crop.crop_y, crop.crop_width, crop.crop_height),
+        "the rendered crop is `tap_crop_rect`'s rectangle (K21)"
+    );
     Ok((crop.png_bytes, vec![idx], Some(meta)))
 }
 
@@ -1737,13 +1784,20 @@ fn single_index(params: &MediaInspectFramesParams) -> u64 {
         .unwrap_or(0)
 }
 
+/// The selected gesture on an inspected frame. Explicit video pixels have no display origin.
+#[derive(Clone, Copy)]
+struct FrameTap {
+    video: (u32, u32),
+    display: Option<(i32, i32)>,
+    end: Option<TapPoint>,
+}
+
 fn tap_target(
     reader: &dyn BundleReader,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
+    track: &Mp4VideoTrack,
     display_dims: (Option<u32>, Option<u32>),
-) -> Result<(u64, u32, u32), DaemonError> {
+) -> Result<(u64, FrameTap), DaemonError> {
     Ok(if let Some(tap_idx) = params.tap_index {
         let frames = reader.display_frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -1777,7 +1831,12 @@ fn tap_target(
                  (device display size) or explicit tap_x/tap_y in video pixels"
             ))
         };
-        let mapped = mapped_tap(raw_x, raw_y, display_dims, video_w, video_h);
+        let geometry = TapGeometry {
+            video: Some(track.frame_dimensions(frame_idx)?),
+            display: display_dims,
+        };
+        let point = geometry.point(raw_x, raw_y);
+        let mapped = point.video;
         let x = params
             .tap_x
             .or_else(|| mapped.map(|p| p.0))
@@ -1786,7 +1845,15 @@ fn tap_target(
             .tap_y
             .or_else(|| mapped.map(|p| p.1))
             .ok_or_else(unmapped)?;
-        (frame_idx, x, y)
+        let overridden = params.tap_x.is_some() || params.tap_y.is_some();
+        (
+            frame_idx,
+            FrameTap {
+                video: (x, y),
+                display: point.display.filter(|_| !overridden),
+                end: geometry.endpoint(tap).filter(|_| !overridden),
+            },
+        )
     } else {
         let tx = params.tap_x.ok_or_else(|| {
             DaemonError::InvalidParams(
@@ -1799,16 +1866,45 @@ fn tap_target(
             )
         })?;
         let frame_idx = params.frame_index.unwrap_or(0);
-        (frame_idx, tx, ty)
+        (
+            frame_idx,
+            FrameTap {
+                video: (tx, ty),
+                display: None,
+                end: None,
+            },
+        )
     })
 }
 
+/// The `tap_crop` rectangle of both inspect paths: [`arb_media::tap_crop_rect`] with the
+/// default options, so metadata-only answers equal the rendered crop (K21).
+fn tap_crop_meta(video_w: u32, video_h: u32, tx: u32, ty: u32) -> Result<TapCropMeta, DaemonError> {
+    let rect = arb_media::tap_crop_rect(video_w, video_h, tx, ty, &TapCropOptions::default())
+        .ok_or_else(|| {
+            MediaError::InvalidArgument(format!(
+                "tap point ({tx}, {ty}) is outside the {video_w}x{video_h} frame"
+            ))
+        })?;
+    Ok(TapCropMeta {
+        crop_x: rect.crop_x,
+        crop_y: rect.crop_y,
+        crop_width: rect.crop_width,
+        crop_height: rect.crop_height,
+        tap_x: tx,
+        tap_y: ty,
+        tap_rel_x: rect.tap_rel_x,
+        tap_rel_y: rect.tap_rel_y,
+    })
+}
+
+/// Overview taps placed on their nearest frame; the first mappable tap wins per frame. Points
+/// come from [`TapGeometry::point`], the overview's own mapping (#591).
 fn build_frame_tap_map(
     reader: &dyn BundleReader,
-    video_w: u32,
-    video_h: u32,
+    track: &Mp4VideoTrack,
     display_dims: (Option<u32>, Option<u32>),
-) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
+) -> Result<BTreeMap<u64, FrameTap>, DaemonError> {
     let frames = reader.display_frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
@@ -1816,13 +1912,33 @@ fn build_frame_tap_map(
         if let (Some(rx), Some(ry), Some(bt)) = (tap.x, tap.y, tap_boottime_ns(tap))
             && let Some(fi) = nearest_frame_index_for_epoch(&frames, tap_boot_id(tap), bt)
         {
-            let mapped = mapped_tap(rx, ry, display_dims, video_w, video_h);
-            if let Some(point) = mapped {
-                map.entry(fi).or_insert(point);
+            let geometry = TapGeometry {
+                video: track.frame_dimensions(fi).ok(),
+                display: display_dims,
+            };
+            let point = geometry.point(rx, ry);
+            if let Some(video) = point.video {
+                map.entry(fi).or_insert_with(|| FrameTap {
+                    video,
+                    display: point.display,
+                    end: geometry.endpoint(tap),
+                });
             }
         }
     }
     Ok(map)
+}
+
+/// Video-pixel marker positions of [`build_frame_tap_map`].
+fn frame_tap_markers(
+    reader: &dyn BundleReader,
+    track: &Mp4VideoTrack,
+    display_dims: (Option<u32>, Option<u32>),
+) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
+    Ok(build_frame_tap_map(reader, track, display_dims)?
+        .into_iter()
+        .map(|(frame, point)| (frame, point.video))
+        .collect())
 }
 
 fn select_overview_taps(main_taps: &[TapRecord]) -> Vec<&TapRecord> {
@@ -1841,24 +1957,128 @@ fn select_overview_taps(main_taps: &[TapRecord]) -> Vec<&TapRecord> {
     main_taps.iter().take(MAX_OVERVIEW_TAPS).collect()
 }
 
+/// Use the indexed GOP when a tap has a video frame. Without one, preserve the track-level
+/// geometry for undated taps in existing bundles.
+fn frame_video_dimensions(track: Option<&Mp4VideoTrack>, index: Option<u64>) -> Option<(u32, u32)> {
+    let track = track?;
+    match index {
+        Some(index) => track.frame_dimensions(index).ok(),
+        None => Some((u32::from(track.width()), u32::from(track.height()))),
+    }
+}
+
+/// Video and display geometry used to place a recorded tap in both coordinate systems.
+#[derive(Debug, Clone, Copy)]
+struct TapGeometry {
+    /// Video frame size, when a track is present.
+    video: Option<(u32, u32)>,
+    /// Device display size from the manifest (or the caller's override).
+    display: (Option<u32>, Option<u32>),
+}
+
+/// One recorded touch point in video pixels (K6 `mapped_tap`) and in device display pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TapPoint {
+    video: Option<(u32, u32)>,
+    display: Option<(i32, i32)>,
+}
+
+impl TapGeometry {
+    /// [`Self::point`] of an optional coordinate pair (both systems `None` without one).
+    fn point_of(self, xy: Option<(f64, f64)>) -> TapPoint {
+        xy.map_or(
+            TapPoint {
+                video: None,
+                display: None,
+            },
+            |(x, y)| self.point(x, y),
+        )
+    }
+
+    fn endpoint(self, tap: &TapRecord) -> Option<TapPoint> {
+        tap.end_x.zip(tap.end_y).map(|(x, y)| self.point(x, y))
+    }
+
+    /// Both coordinate systems of `(x, y)`. Display pixels need a known display size: without
+    /// it the stored coordinates are legacy normalized values and are not reported as pixels.
+    fn point(self, x: f64, y: f64) -> TapPoint {
+        let video = self
+            .video
+            .and_then(|(w, h)| mapped_tap(x, y, self.display, w, h));
+        let display = match self.display {
+            (Some(w), Some(h)) if w > 0 && h > 0 => display_px(x).zip(display_px(y)),
+            _ => None,
+        };
+        TapPoint { video, display }
+    }
+}
+
+impl FrameTap {
+    /// `{x, y}` keep their video-pixel meaning; `x_video`/`y_video` and `x_display`/`y_display`
+    /// name each coordinate system explicitly.
+    fn json(self) -> serde_json::Value {
+        let (vx, vy) = self.video;
+        let (dx, dy) = self.display.unzip();
+        let mut tap = serde_json::json!({"x":vx,"y":vy,"x_video":vx,"y_video":vy,"x_display":dx,"y_display":dy});
+        if let Some(end) = self.end {
+            let (vx, vy) = end.video.unzip();
+            let (dx, dy) = end.display.unzip();
+            tap["end_x_video"] = vx.into();
+            tap["end_y_video"] = vy.into();
+            tap["end_x_display"] = dx.into();
+            tap["end_y_display"] = dy.into();
+        }
+        tap
+    }
+}
+
+/// A finite display coordinate rounded to the nearest integer pixel.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "finite, rounded and range-checked against i32 before the cast"
+)]
+fn display_px(value: f64) -> Option<i32> {
+    let rounded = value.round();
+    (rounded.is_finite() && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&rounded))
+        .then_some(rounded as i32)
+}
+
 fn build_overview_taps(
     main_taps: &[TapRecord],
     frames: &[FrameRecord],
     base_boottime_ns: Option<i64>,
+    coordinates: &LogCoordinates<'_>,
+    track: Option<&Mp4VideoTrack>,
+    display: (Option<u32>, Option<u32>),
 ) -> Vec<OverviewTapItem> {
     select_overview_taps(main_taps)
         .into_iter()
         .enumerate()
         .map(|(tap_index, tap)| {
             let bt = tap_boottime_ns(tap);
-            let frame_index =
-                bt.and_then(|t| nearest_frame_index_for_epoch(frames, tap_boot_id(tap), t));
+            let boot = tap_boot_id(tap);
+            let frame_index = bt.and_then(|t| nearest_frame_index_for_epoch(frames, boot, t));
             let t_ms =
                 bt.and_then(|t| base_boottime_ns.map(|base| t.saturating_sub(base) / 1_000_000));
             let end_t_ms = tap
                 .end_t_offset_ns
                 .zip(t_ms)
                 .map(|(off, base)| base.saturating_add(off / 1_000_000));
+            // The same per-boot origin as log rows (`LogCoordinates::locate`).
+            let offset_ms = bt
+                .zip(boot)
+                .and_then(|(t, b)| coordinates.offset_ms_at(b, t));
+            let end_offset_ms = bt
+                .zip(boot)
+                .zip(tap.end_t_offset_ns)
+                .and_then(|((t, b), off)| coordinates.offset_ms_at(b, t.saturating_add(off)));
+            let geometry = TapGeometry {
+                video: frame_video_dimensions(track, frame_index),
+                display,
+            };
+            let start = geometry.point_of(tap.x.zip(tap.y));
+            let end = geometry.point_of(tap.end_x.zip(tap.end_y));
             OverviewTapItem {
                 source: arb_core::injected_input::InputEventSource::Getevent,
                 injected: false,
@@ -1866,13 +2086,23 @@ fn build_overview_taps(
                 seq: tap.seq,
                 frame_index,
                 t_ms,
+                offset_ms,
                 x: tap.x,
                 y: tap.y,
+                x_display: start.display.map(|p| p.0),
+                y_display: start.display.map(|p| p.1),
+                x_video: start.video.map(|p| p.0),
+                y_video: start.video.map(|p| p.1),
                 kind: tap.action.clone(),
                 gesture_kind: tap.gesture_kind,
                 end_x: tap.end_x,
                 end_y: tap.end_y,
                 end_t_ms,
+                end_offset_ms,
+                end_x_display: end.display.map(|p| p.0),
+                end_y_display: end.display.map(|p| p.1),
+                end_x_video: end.video.map(|p| p.0),
+                end_y_video: end.video.map(|p| p.1),
                 foreground_package: None,
             }
         })
@@ -1897,45 +2127,78 @@ impl<'a> LogCoordinates<'a> {
         Self { frames, epochs }
     }
 
+    /// Origin of a boot on the bundle timeline: its first displayed frame, else the epoch start.
+    fn origin(&self, boot_id: &str) -> Option<i64> {
+        self.frames
+            .get(boot_id)
+            .and_then(|(pts, _)| pts.first().copied())
+            .or_else(|| {
+                self.epochs
+                    .iter()
+                    .find(|e| e.boot_id == boot_id)
+                    .map(|e| e.start_boottime_ns)
+            })
+    }
+
+    /// Milliseconds from the boot's origin, the `offset_ms` of logs, taps and process events.
+    fn offset_ms_at(&self, boot_id: &str, boottime_ns: i64) -> Option<i64> {
+        self.origin(boot_id)
+            .map(|start| boottime_ns.saturating_sub(start) / 1_000_000)
+    }
+
     fn project_input(
         &self,
         input: arb_core::injected_input::InjectedInput,
-        video: Option<(u32, u32)>,
+        track: Option<&Mp4VideoTrack>,
         display: Option<(u32, u32)>,
     ) -> crate::protocol::OverviewInjectedInput {
         let table = input
             .boot_id
             .as_ref()
             .and_then(|id| self.frames.get(id.as_str()));
-        let origin = table.and_then(|(pts, _)| pts.first().copied()).or_else(|| {
-            self.epochs
-                .iter()
-                .find(|e| Some(&e.boot_id) == input.boot_id.as_ref())
-                .map(|e| e.start_boottime_ns)
-        });
         let offset_ms = input
             .boottime_ns
-            .zip(origin)
-            .map(|(t, start)| t.saturating_sub(start) / 1_000_000);
+            .zip(input.boot_id.as_deref())
+            .and_then(|(t, boot)| self.offset_ms_at(boot, t));
         let frame_index_hint = input.boottime_ns.and_then(|t| {
             table.and_then(|(pts, indices)| indices.get(pts.partition_point(|p| *p < t)).copied())
         });
-        let point = input
+        let video = input
             .command
             .position()
-            .zip(display)
-            .zip(video)
-            .filter(|_| input.display_id.unwrap_or(0) == 0)
-            .and_then(|(((x, y), (dw, dh)), (w, h))| {
-                arb_core::gesture::map_touch_to_frame(x, y, Some(dw), Some(dh), w, h)
+            .and_then(|_| frame_video_dimensions(track, frame_index_hint));
+        let to_video = |point: Option<(f64, f64)>| {
+            point
+                .zip(display)
+                .zip(video)
+                .filter(|_| input.display_id.unwrap_or(0) == 0)
+                .and_then(|(((x, y), (dw, dh)), (w, h))| {
+                    arb_core::gesture::map_touch_to_frame(x, y, Some(dw), Some(dh), w, h)
+                })
+        };
+        let (x_video, y_video) = to_video(input.command.position()).unzip();
+        let end = to_video(input.command.end_position());
+        let duration = match &input.command {
+            arb_core::injected_input::InputCommand::Swipe(stroke)
+            | arb_core::injected_input::InputCommand::Draganddrop(stroke) => stroke.duration_ms,
+            _ => None,
+        };
+        let end_offset_ms = input
+            .boottime_ns
+            .zip(input.boot_id.as_deref())
+            .zip(duration)
+            .and_then(|((bt, boot), ms)| {
+                self.offset_ms_at(boot, bt.checked_add(i64::from(ms) * 1_000_000)?)
             });
-        let (x_video, y_video) = point.unzip();
         crate::protocol::OverviewInjectedInput {
             input,
             offset_ms,
+            end_offset_ms,
             frame_index_hint,
             x_video,
             y_video,
+            end_x_video: end.map(|p| p.0),
+            end_y_video: end.map(|p| p.1),
         }
     }
 
@@ -1952,6 +2215,21 @@ impl<'a> LogCoordinates<'a> {
         }
     }
 
+    fn log_offset_ms(&self, log: &LogRecord) -> Option<i64> {
+        let (
+            TimeAlignment::Anchored {
+                boot_id,
+                boottime_ns,
+                ..
+            },
+            RecordBucket::Main,
+        ) = (&log.alignment, log.bucket)
+        else {
+            return None;
+        };
+        self.offset_ms_at(boot_id, *boottime_ns)
+    }
+
     fn locate(&self, log: &LogRecord) -> (Option<i64>, Option<u64>) {
         let (
             TimeAlignment::Anchored {
@@ -1965,12 +2243,7 @@ impl<'a> LogCoordinates<'a> {
             return (None, None);
         };
         let table = self.frames.get(boot_id.as_str());
-        let start = table.and_then(|(p, _)| p.first().copied()).or_else(|| {
-            self.epochs
-                .iter()
-                .find(|e| e.boot_id == *boot_id)
-                .map(|e| e.start_boottime_ns)
-        });
+        let offset_ms = self.offset_ms_at(boot_id, *boottime_ns);
         // Before the first frame's display start nothing is on screen yet: no frame is
         // fabricated (the offset stays negative relative to the video start).
         let frame = table.and_then(|(p, ids)| {
@@ -1979,10 +2252,7 @@ impl<'a> LogCoordinates<'a> {
                 .then(|| arb_media::timeline::frame_at_time_ns(p, *boottime_ns).map(|i| ids[i]))
                 .flatten()
         });
-        (
-            start.map(|s| boottime_ns.saturating_sub(s) / 1_000_000),
-            frame,
-        )
+        (offset_ms, frame)
     }
 }
 

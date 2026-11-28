@@ -125,6 +125,18 @@ pub(super) fn verify(c: &mut Client) {
             "after_seq",
             json!({"bundle_id":"fixture","cursor":"1","after_seq":1}),
         ),
+        (
+            "arb_query_logs",
+            "start_ns",
+            "start_offset_ms",
+            json!({"bundle_id":"fixture","start_ns":0,"start_offset_ms":0}),
+        ),
+        (
+            "arb_query_logs",
+            "end_frame",
+            "end_offset_ms",
+            json!({"bundle_id":"fixture","end_frame":3,"end_offset_ms":3}),
+        ),
     ] {
         rejected(
             c,
@@ -135,6 +147,15 @@ pub(super) fn verify(c: &mut Client) {
             &[first, second, "だけ"],
         );
     }
+    // #591: the three range forms exclude each other; all three name every key.
+    rejected(
+        c,
+        "arb_query_logs",
+        &json!({"bundle_id":"fixture","start_ns":0,"start_frame":0,"start_offset_ms":0}),
+        &json!({"conflicts":["start_ns","start_frame","start_offset_ms"]}),
+        &["start_ns", "start_frame", "start_offset_ms"],
+        &["1 つ"],
+    );
     let table: Value = serde_json::from_str(include_str!(
         "../../../../../docs/specs/ui-feedback-contract-table.json"
     ))

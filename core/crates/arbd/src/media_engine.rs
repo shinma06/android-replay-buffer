@@ -1161,6 +1161,15 @@ fn build_trimmed_bundle_draft(
         discontinuities: trimmed_discs,
         logs: trimmed_logs,
         taps: trimmed_taps,
+        // A trim covers part of the same boot: the parent's trigger clocks still describe it.
+        host_clock_anchor: summary
+            .manifest_v2
+            .as_ref()
+            .and_then(|m| m.host_clock_anchor),
+        device_clock_offset: summary
+            .manifest_v2
+            .as_ref()
+            .and_then(|m| m.device_clock_offset.clone()),
         clock_anchors,
     }
 }

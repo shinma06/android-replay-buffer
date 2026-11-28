@@ -50,12 +50,19 @@ pub(in crate::mcp) fn project(overview: &mut Value, version: ProtocolVersion, zo
         obj.entry("warnings").or_insert_with(|| json!([]));
     }
     screen_offsets(&mut overview["screens"]);
+    // Older daemons name only `t_ms` and the stored `x`/`y`; the explicit axes stay published.
+    for tap in overview["taps"].as_array_mut().into_iter().flatten() {
+        super::fill_null(
+            tap,
+            &["offset_ms", "x_display", "y_display", "x_video", "y_video"],
+        );
+    }
     for row in overview["error_log_highlights"]
         .as_array_mut()
         .into_iter()
         .flatten()
     {
-        zone.localize(row, "timestamp_utc", "timestamp_local");
+        zone.localize_row(row, "timestamp_utc", "timestamp_local");
     }
 }
 

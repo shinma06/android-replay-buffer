@@ -40,6 +40,25 @@ impl Zone {
         self.insert(row, ms, local_key);
     }
 
+    /// For log rows: with `time_zone: "host"` the row carries `local_key` *instead of* `utc_key`.
+    /// The local text has an explicit numeric offset, so it names the same instant and converts
+    /// back to UTC exactly (#591). Unknown instants stay null. A missing host zone uses +00:00. The default
+    /// zone leaves the row untouched.
+    pub(in crate::mcp) fn localize_row(self, row: &mut Value, utc_key: &str, local_key: &str) {
+        if self.0.is_none() {
+            return;
+        }
+        self.localize(row, utc_key, local_key);
+        if let Some(obj) = row.as_object_mut() {
+            let utc = obj.remove(utc_key);
+            if obj.get(local_key).is_none_or(Value::is_null)
+                && let Some(ms) = utc.as_ref().and_then(Value::as_str).and_then(parse_ms)
+            {
+                obj.insert(local_key.into(), Value::String(format_local(ms, 0)));
+            }
+        }
+    }
+
     /// Adds `local_key` rendered from the Unix milliseconds at `ms_key`.
     pub(in crate::mcp) fn localize_unix_ms(self, row: &mut Value, ms_key: &str, local_key: &str) {
         let ms = row.get(ms_key).and_then(Value::as_i64);
@@ -174,6 +193,25 @@ mod tests {
         let mut broken = json!({"timestamp_utc":null});
         Zone::fixed(TOKYO).localize(&mut broken, "timestamp_utc", "timestamp_local");
         assert_eq!(broken["timestamp_local"], json!(null));
+    }
+
+    #[test]
+    fn host_log_rows_replace_utc_with_a_reversible_local_time() {
+        let mut row = json!({"timestamp_utc":"2026-11-28T01:23:45.123Z","seq":1});
+        Zone::fixed(TOKYO).localize_row(&mut row, "timestamp_utc", "timestamp_local");
+        assert!(row.get("timestamp_utc").is_none());
+        assert_eq!(row["timestamp_local"], "2026-11-28T10:23:45.123+09:00");
+        assert_eq!(
+            parse_ms(row["timestamp_local"].as_str().unwrap()),
+            parse_ms("2026-11-28T01:23:45.123Z")
+        );
+        // An unknown timestamp stays unknown on the requested axis.
+        let mut unknown = json!({"timestamp_utc":null});
+        Zone::fixed(TOKYO).localize_row(&mut unknown, "timestamp_utc", "timestamp_local");
+        assert_eq!(unknown, json!({"timestamp_local":null}));
+        let mut plain = json!({"timestamp_utc":"2026-11-28T01:23:45.123Z"});
+        Zone::UTC.localize_row(&mut plain, "timestamp_utc", "timestamp_local");
+        assert_eq!(plain, json!({"timestamp_utc":"2026-11-28T01:23:45.123Z"}));
     }
 
     #[test]

@@ -622,16 +622,8 @@ impl RpcClient {
         Ok(hello)
     }
 
-    /// Invokes a JSON-RPC 2.0 method and returns its decoded `result` JSON [`Value`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
-    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
-        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
-            && !params["min_level"].is_null()
-            && self.verify_hello()?["log_min_level"] != true
-        {
+    fn verify_log_query_options(&mut self, params: &Value) -> Result<(), RpcClientError> {
+        if !params["min_level"].is_null() && self.verify_hello()?["log_min_level"] != true {
             return Err(RpcClientError::Rpc {
                 details: None,
                 error_code: None,
@@ -641,8 +633,7 @@ impl RpcClient {
         }
         // Older daemons ignore unknown query fields and would return the excluded tags. An
         // empty list excludes nothing, which they already do.
-        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
-            && !params["exclude_tags"].is_null()
+        if !params["exclude_tags"].is_null()
             && params["exclude_tags"]
                 .as_array()
                 .is_none_or(|tags| !tags.is_empty())
@@ -654,6 +645,29 @@ impl RpcClient {
                 code: -32601,
                 message: "ログのタグ除外には arbd の更新が必要です".into(),
             });
+        }
+        // Older daemons ignore unknown range fields and would return every row.
+        if (!params["start_offset_ms"].is_null() || !params["end_offset_ms"].is_null())
+            && self.verify_hello()?["log_offset_range"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                details: None,
+                error_code: None,
+                code: -32601,
+                message: "バンドル先頭からの ms で範囲を指定するには arbd の更新が必要です".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Invokes a JSON-RPC 2.0 method and returns its decoded `result` JSON [`Value`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcClientError`] on transport, serialization, or server-reported RPC errors.
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcClientError> {
+        if matches!(method, "bundle.query_logs" | "timeline.query_logs") {
+            self.verify_log_query_options(&params)?;
         }
         // An old daemon silently ignores source and would return a different image.
         if method == "save.screenshot"
