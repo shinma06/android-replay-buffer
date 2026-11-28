@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::{Failure, McpServer, take_png};
+use super::{Failure, McpServer, catalog, take_png};
 
 const RESOURCES: &[(&str, &str)] = &[("status", "録画状態"), ("bundles", "保存バンドル一覧")];
 const TEMPLATES: &[(&str, &str)] = &[
@@ -14,6 +14,11 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("logs", "ログの先頭100件"),
     ("frame/{frame_index}", "指定フレームの PNG"),
 ];
+
+/// Each listed tool's complete `outputSchema` for the negotiated version, read on demand.
+const SCHEMA_TEMPLATE: &str = "arb://schemas/{tool}";
+const SCHEMA_PREFIX: &str = "arb://schemas/";
+const SCHEMA_MIME: &str = "application/schema+json";
 
 fn mime(kind: &str) -> &'static str {
     if kind.starts_with("frame/") {
@@ -198,9 +203,11 @@ impl McpServer {
             "resources/list" => Ok(
                 json!({"resources":RESOURCES.iter().map(|(key,label)|json!({"uri":format!("arb://{key}"),"name":key,"description":label,"mimeType":"application/json"})).collect::<Vec<_>>()}),
             ),
-            "resources/templates/list" => Ok(
-                json!({"resourceTemplates":TEMPLATES.iter().map(|(key,label)|json!({"uriTemplate":format!("arb://bundles/{{bundle_id}}/{key}"),"name":key,"description":label,"mimeType":mime(key)})).collect::<Vec<_>>()}),
-            ),
+            "resources/templates/list" => {
+                let mut templates: Vec<_> = TEMPLATES.iter().map(|(key,label)|json!({"uriTemplate":format!("arb://bundles/{{bundle_id}}/{key}"),"name":key,"description":label,"mimeType":mime(key)})).collect();
+                templates.push(json!({"uriTemplate":SCHEMA_TEMPLATE,"name":"schema","description":"ツールの outputSchema（交渉した版）","mimeType":SCHEMA_MIME}));
+                Ok(json!({ "resourceTemplates": templates }))
+            }
             "resources/read" => self.read_resource(p["uri"].as_str().ok_or("uri が必要です")?),
             "prompts/list" => Ok(json!({"prompts":prompts()})),
             "prompts/get" => prompt_get(p),
@@ -227,6 +234,18 @@ impl McpServer {
                 def["arguments"]
                     .as_array()
                     .is_some_and(|a| a.iter().any(|d| d["name"] == arg))
+            }
+            Some("ref/resource") if r["uri"] == SCHEMA_TEMPLATE => {
+                if arg != "tool" {
+                    return Err(Failure::invalid("未知の補完引数です"));
+                }
+                let names: Vec<_> = self
+                    .tool_names()
+                    .filter(|name| name.starts_with(prefix))
+                    .map(str::to_owned)
+                    .collect();
+                let total = names.len();
+                return Ok(json!({"completion":{"values":names,"total":total,"hasMore":false}}));
             }
             Some("ref/resource") => {
                 let path = r["uri"]
@@ -287,7 +306,30 @@ impl McpServer {
         self.screenshots.push_back((uri.clone(), digest.to_owned()));
     }
 
+    fn tool_names(&self) -> impl Iterator<Item = &'static str> {
+        catalog::listed(self.version)
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+    }
+
+    /// `arb://schemas/<tool>` names exactly one listed tool; anything else is invalid.
+    fn read_schema(&self, uri: &str, name: &str) -> Result<Value, Failure> {
+        let schema = self
+            .tool_names()
+            .find(|known| *known == name)
+            .and_then(|known| catalog::tool_output_schema(self.version, known))
+            .ok_or_else(|| {
+                Failure::invalid(format!(
+                    "{SCHEMA_PREFIX}<tool> には tools/list のツール名を指定してください: {uri}"
+                ))
+            })?;
+        Ok(json!({"contents":[{"uri":uri,"mimeType":SCHEMA_MIME,"text":schema.to_string()}]}))
+    }
+
     fn read_resource(&mut self, uri: &str) -> Result<Value, Failure> {
+        if let Some(name) = uri.strip_prefix(SCHEMA_PREFIX) {
+            return self.read_schema(uri, name);
+        }
         let response = match uri {
             uri if uri.starts_with("file:") => {
                 // Only URLs returned by save.screenshot in this session can reach the filesystem.

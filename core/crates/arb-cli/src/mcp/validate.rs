@@ -22,12 +22,13 @@ impl Violation {
             hint,
         }
     }
+    /// Names that exclude each other were supplied together.
     pub(super) fn conflicts(names: &[&str]) -> Self {
         let fields = names.join(" と ");
         Self::new(
             format!("{fields} は併用できません。"),
             json!({"conflicts":names}),
-            format!("{fields} のうち片方だけ指定してください。"),
+            format!("{fields} のうち{}だけ指定してください。", one_of(names)),
         )
     }
     fn missing(field: &str) -> Self {
@@ -64,6 +65,11 @@ impl Violation {
             format!("{field} は {range}{joiner}の範囲で指定してください。"),
         )
     }
+}
+
+/// How many of `names` may be supplied, as a phrase.
+pub(super) fn one_of(names: &[&str]) -> &'static str {
+    if names.len() > 2 { "1 つ" } else { "片方" }
 }
 
 fn value_type(v: &Value) -> &'static str {

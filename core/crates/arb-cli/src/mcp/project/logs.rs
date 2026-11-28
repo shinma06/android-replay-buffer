@@ -1,9 +1,16 @@
 //! `arb_query_logs` rows: `full` keeps every daemon field, `compact` keeps what an agent reads.
+//!
+//! A page also fits a byte budget: when the projected body would exceed [`MAX_BODY_BYTES`], the
+//! trailing rows move to the next page through the same exclusive `seq` cursor the daemon uses.
 use super::time::Zone;
-use crate::mcp::version::ProtocolVersion;
 use serde_json::{Map, Value, json};
 
-/// Row shape requested with `fields`.
+/// Largest `limit` an MCP page accepts. The daemon RPC keeps its own 100,000 cap for the IDE/CLI.
+pub(in crate::mcp) const MAX_PAGE_ROWS: u64 = 500;
+/// Largest serialized `arb_query_logs` body (48 KiB). The first row is always kept.
+pub(in crate::mcp) const MAX_BODY_BYTES: usize = 49_152;
+
+/// Row shape requested with `fields`. Every protocol version defaults to `compact`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::mcp) enum Fields {
     Compact,
@@ -11,12 +18,10 @@ pub(in crate::mcp) enum Fields {
 }
 
 impl Fields {
-    pub(in crate::mcp) fn from_args(args: &Map<String, Value>, version: ProtocolVersion) -> Self {
+    pub(in crate::mcp) fn from_args(args: &Map<String, Value>) -> Self {
         match args.get("fields").and_then(Value::as_str) {
             Some("full") => Self::Full,
-            Some(_) => Self::Compact,
-            None if version.default_compact_logs() => Self::Compact,
-            None => Self::Full,
+            _ => Self::Compact,
         }
     }
     const fn as_str(self) -> &'static str {
@@ -25,6 +30,16 @@ impl Fields {
             Self::Full => "full",
         }
     }
+}
+
+/// The paging remedy added to an out-of-range `limit`.
+pub(in crate::mcp) fn limit_hint(hint: &mut String) {
+    use std::fmt::Write as _;
+    write!(
+        hint,
+        "{MAX_PAGE_ROWS} 行を超える分は、応答の next_cursor を cursor に渡して次のページで取得してください。"
+    )
+    .expect("writing to String");
 }
 
 /// Always present in a compact row (null when unknown), in this order.
@@ -38,8 +53,13 @@ const COMPACT_REQUIRED: [&str; 7] = [
     "message",
 ];
 
-/// Projects a `bundle.query_logs` page. Rows, their order and the paging fields are unchanged.
-pub(in crate::mcp) fn project(mut page: Value, fields: Fields, zone: Zone) -> Value {
+/// Projects a `bundle.query_logs` page into at most [`MAX_BODY_BYTES`]. Rows and their order are
+/// unchanged; rows beyond the budget are left to the next page.
+pub(in crate::mcp) fn project(page: Value, fields: Fields, zone: Zone) -> Value {
+    fit_byte_budget(shape(page, fields, zone), MAX_BODY_BYTES)
+}
+
+fn shape(mut page: Value, fields: Fields, zone: Zone) -> Value {
     let rows = page["logs"].as_array_mut().map(std::mem::take);
     let mut rows = rows.unwrap_or_default();
     for row in &mut rows {
@@ -55,6 +75,51 @@ pub(in crate::mcp) fn project(mut page: Value, fields: Fields, zone: Zone) -> Va
         page["boot_id"] = shared.map_or(Value::Null, Value::String);
     }
     page["logs"] = Value::Array(rows);
+    page
+}
+
+/// Keeps the longest row prefix whose body fits `budget` bytes (at least one row, so paging always
+/// advances) and resumes after the last kept row's `seq`, exactly like a daemon page of that size.
+fn fit_byte_budget(mut page: Value, budget: usize) -> Value {
+    page["truncated_by_byte_budget"] = json!(false);
+    let size = |v: &Value| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    if size(&page) <= budget {
+        return page;
+    }
+    let Some(rows) = page["logs"].as_array_mut().map(std::mem::take) else {
+        return page;
+    };
+    // The envelope as a truncated page: longest cursor, final counts and flags.
+    let mut envelope = page.clone();
+    envelope["has_more"] = json!(true);
+    envelope["truncated_by_byte_budget"] = json!(true);
+    envelope["next_cursor"] = json!(u64::MAX.to_string());
+    envelope["returned_count"] = json!(rows.len());
+    let mut used = size(&envelope);
+    let mut keep: usize = 0;
+    for row in &rows {
+        // Each row costs its bytes plus a separating comma.
+        let cost = size(row) + usize::from(keep > 0);
+        if keep > 0 && used + cost > budget {
+            break;
+        }
+        used += cost;
+        keep += 1;
+    }
+    let cursor = rows
+        .get(keep.saturating_sub(1))
+        .and_then(|r| r["seq"].as_u64());
+    let Some(cursor) = cursor.filter(|_| keep < rows.len()) else {
+        page["logs"] = Value::Array(rows);
+        return page;
+    };
+    let mut rows = rows;
+    rows.truncate(keep);
+    page["logs"] = Value::Array(rows);
+    page["returned_count"] = json!(keep);
+    page["has_more"] = json!(true);
+    page["next_cursor"] = json!(cursor.to_string());
+    page["truncated_by_byte_budget"] = json!(true);
     page
 }
 
@@ -91,10 +156,11 @@ fn compact_row(row: Value, shared_boot: Option<&str>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fields, project};
+    use super::{Fields, MAX_BODY_BYTES, fit_byte_budget, project, shape};
     use crate::mcp::{ToolOutput, project::time::Zone, version::ProtocolVersion};
     use arb_core::bundle::{LogRecord, RecordBucket};
     use arb_core::time::{TimeAlignment, TimestampSemantics};
+    use proptest::prelude::*;
     use serde_json::{Value, json};
 
     /// A daemon page built from the production row type.
@@ -187,33 +253,135 @@ mod tests {
     }
 
     #[test]
-    fn version_selects_the_default_and_explicit_fields_win() {
-        use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
+    fn compact_is_the_default_and_explicit_fields_win() {
         let none = serde_json::Map::new();
-        for (version, expected) in [
-            (V2024_11_05, Fields::Full),
-            (V2025_03_26, Fields::Full),
-            (V2025_06_18, Fields::Compact),
-            (V2025_11_25, Fields::Compact),
-        ] {
-            assert_eq!(Fields::from_args(&none, version), expected);
-            for (arg, want) in [("full", Fields::Full), ("compact", Fields::Compact)] {
-                let args = json!({"fields":arg});
-                assert_eq!(Fields::from_args(args.as_object().unwrap(), version), want);
+        assert_eq!(Fields::from_args(&none), Fields::Compact);
+        for (arg, want) in [("full", Fields::Full), ("compact", Fields::Compact)] {
+            let args = json!({"fields":arg});
+            assert_eq!(Fields::from_args(args.as_object().unwrap()), want);
+        }
+    }
+
+    /// Replays `bundle.query_logs` paging over `rows`: matches after the exclusive cursor, up to
+    /// `limit`, with the daemon's `has_more` / `next_cursor`.
+    fn daemon_page(rows: &[Value], after: Option<u64>, limit: usize) -> Value {
+        let rest: Vec<_> = rows
+            .iter()
+            .filter(|r| after.is_none_or(|a| r["seq"].as_u64().unwrap() > a))
+            .collect();
+        let logs: Vec<_> = rest.iter().take(limit).map(|r| (*r).clone()).collect();
+        let has_more = rest.len() > logs.len();
+        let next = logs
+            .last()
+            .filter(|_| has_more)
+            .map(|r| r["seq"].to_string());
+        json!({"logs":logs,"total_matched":rows.len(),"returned_count":logs.len(),"has_more":has_more,"next_cursor":next,"unanchored_count":0})
+    }
+
+    /// Follows `next_cursor` to the end and returns every row seen, checking each page's shape.
+    fn drain(rows: &[Value], limit: usize, budget: usize, fields: Fields) -> Vec<Value> {
+        let mut seen = Vec::new();
+        let mut after = None;
+        for _ in 0..=rows.len() {
+            let page = fit_byte_budget(
+                shape(daemon_page(rows, after, limit), fields, Zone::UTC),
+                budget,
+            );
+            let logs = page["logs"].as_array().unwrap();
+            assert_eq!(page["returned_count"], logs.len());
+            let truncated = page["truncated_by_byte_budget"] == true;
+            assert!(
+                logs.len() == 1 || page.to_string().len() <= budget,
+                "only a single oversized row may exceed the budget"
+            );
+            if truncated {
+                assert_eq!(page["has_more"], true);
+                assert!(!logs.is_empty() && logs.len() < limit);
             }
+            seen.extend(logs.iter().map(|r| r["seq"].clone()));
+            if page["has_more"] == false {
+                assert!(page["next_cursor"].is_null());
+                return seen;
+            }
+            let cursor = page["next_cursor"].as_str().unwrap();
+            assert_eq!(cursor, logs.last().unwrap()["seq"].to_string());
+            after = Some(cursor.parse().unwrap());
+        }
+        panic!("paging did not finish within one page per row");
+    }
+
+    fn rows_with_messages(sizes: &[usize]) -> Vec<Value> {
+        let base = page(sizes.len(), &["boot-a"]);
+        base["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(sizes)
+            .enumerate()
+            .map(|(i, (row, size))| {
+                let mut row = row.clone();
+                // Sparse sequence numbers, as after filtering.
+                row["seq"] = json!(i * 3 + 7);
+                row["message"] = json!("é".repeat(*size));
+                row
+            })
+            .collect()
+    }
+
+    /// A page within budget is returned untouched apart from the flag.
+    #[test]
+    fn small_pages_are_unchanged() {
+        let body = shape(page(3, &["boot-a"]), Fields::Compact, Zone::UTC);
+        let fitted = fit_byte_budget(body.clone(), MAX_BODY_BYTES);
+        assert_eq!(fitted["truncated_by_byte_budget"], false);
+        assert_eq!(fitted["logs"], body["logs"]);
+        assert_eq!(fitted["has_more"], false);
+    }
+
+    /// 500 long rows split at 48 KB; one 200 KB row still advances by itself.
+    #[test]
+    fn full_pages_split_at_the_byte_budget() {
+        let rows = rows_with_messages(&[400; 500]);
+        let first = project(daemon_page(&rows, None, 500), Fields::Full, Zone::UTC);
+        assert_eq!(first["truncated_by_byte_budget"], true);
+        assert!(first.to_string().len() <= MAX_BODY_BYTES);
+        assert_eq!(first["total_matched"], 500);
+        let all = drain(&rows, 500, MAX_BODY_BYTES, Fields::Full);
+        let expected: Vec<_> = rows.iter().map(|r| r["seq"].clone()).collect();
+        assert_eq!(all, expected);
+        let giant = rows_with_messages(&[10, 100_000, 10]);
+        let page = project(daemon_page(&giant, None, 100), Fields::Compact, Zone::UTC);
+        assert_eq!(page["returned_count"], 1);
+        assert_eq!(page["next_cursor"], "7");
+        assert_eq!(drain(&giant, 100, MAX_BODY_BYTES, Fields::Compact).len(), 3);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// Byte-budget paging never drops, repeats or reorders a matching row.
+        #[test]
+        fn byte_budget_paging_returns_every_row_once(
+            sizes in proptest::collection::vec(0usize..6_000, 0..60),
+            limit in 1usize..40,
+            budget in 1_000usize..20_000,
+            full in any::<bool>(),
+        ) {
+            let rows = rows_with_messages(&sizes);
+            let fields = if full { Fields::Full } else { Fields::Compact };
+            let all = drain(&rows, limit, budget, fields);
+            let expected: Vec<_> = rows.iter().map(|r| r["seq"].clone()).collect();
+            prop_assert_eq!(all, expected);
         }
     }
 
     /// #571: a default 100-row page. The body (`structuredContent`) shrinks into the 20-35 KB
-    /// range; the wire also repeats it as a JSON text block for older clients.
+    /// range; the wire also repeats it as a JSON text block for older clients. Before the byte
+    /// budget, full rows are at least twice as large; with it, the full page moves its tail on.
     #[test]
     fn hundred_row_page_is_measured_on_the_wire() {
+        let rows = || page(100, &["3f2a9c1e-7d4b-4e8a-9b61-0c5d2e8f4a17"]);
         let measure = |fields| {
-            let body = project(
-                page(100, &["3f2a9c1e-7d4b-4e8a-9b61-0c5d2e8f4a17"]),
-                fields,
-                Zone::UTC,
-            );
+            let body = shape(rows(), fields, Zone::UTC);
             let size = body.to_string().len();
             let wire = ToolOutput::new(body)
                 .result(ProtocolVersion::V2025_11_25)
@@ -232,5 +400,13 @@ mod tests {
             full_wire >= compact_wire * 2,
             "{full_wire} vs {compact_wire}"
         );
+        let compact = project(rows(), Fields::Compact, Zone::UTC);
+        assert_eq!(compact["truncated_by_byte_budget"], false);
+        assert_eq!(compact["returned_count"], 100);
+        let full = project(rows(), Fields::Full, Zone::UTC);
+        assert_eq!(full["truncated_by_byte_budget"], true);
+        assert!(full.to_string().len() <= MAX_BODY_BYTES);
+        let kept = full["logs"].as_array().unwrap();
+        assert_eq!(full["next_cursor"], kept.last().unwrap()["seq"].to_string());
     }
 }

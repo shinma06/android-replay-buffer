@@ -9,15 +9,28 @@ pub(crate) enum ProtocolVersion {
 }
 
 impl ProtocolVersion {
+    /// Every supported revision, in [`Self::index`] order.
+    pub(super) const ALL: [Self; 4] = [
+        Self::V2024_11_05,
+        Self::V2025_03_26,
+        Self::V2025_06_18,
+        Self::V2025_11_25,
+    ];
+
     pub(super) fn parse(value: &str) -> Option<Self> {
-        [
-            Self::V2024_11_05,
-            Self::V2025_03_26,
-            Self::V2025_06_18,
-            Self::V2025_11_25,
-        ]
-        .into_iter()
-        .find(|version| version.as_str() == value)
+        Self::ALL
+            .into_iter()
+            .find(|version| version.as_str() == value)
+    }
+
+    /// Position in [`Self::ALL`], for per-version caches.
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::V2024_11_05 => 0,
+            Self::V2025_03_26 => 1,
+            Self::V2025_06_18 => 2,
+            Self::V2025_11_25 => 3,
+        }
     }
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -35,10 +48,6 @@ impl ProtocolVersion {
     pub(super) fn supports_resource_link_block(self) -> bool {
         self >= Self::V2025_06_18
     }
-    /// Structured-content clients get the screenshot's `file_uri` beside its `resource_link`.
-    pub(super) fn screenshot_file_uri(self) -> bool {
-        self.supports_structured_content()
-    }
     pub(super) fn supports_tasks(self) -> bool {
         self >= Self::V2025_11_25
     }
@@ -47,14 +56,6 @@ impl ProtocolVersion {
     }
     pub(super) fn allows_legacy_screenshot_overwrite(self) -> bool {
         self <= Self::V2025_06_18
-    }
-    /// Before structured content, screenshots returned their PNG inline by default.
-    pub(super) fn legacy_screenshot_inline(self) -> bool {
-        self <= Self::V2025_03_26
-    }
-    /// Structured-content clients get light log rows unless they ask for `fields: "full"`.
-    pub(super) fn default_compact_logs(self) -> bool {
-        self >= Self::V2025_06_18
     }
     pub(super) fn legacy_result_fields(self) -> bool {
         self <= Self::V2025_06_18

@@ -39,7 +39,7 @@ impl McpServer {
         params.entry("limit").or_insert(json!(100));
         params.entry("bucket").or_insert(json!("main"));
         let page = self.call_daemon("bundle.query_logs", &Value::Object(params))?;
-        let fields = Fields::from_args(args, self.version);
+        let fields = Fields::from_args(args);
         Ok(ToolOutput::new(project::logs::project(
             page,
             fields,

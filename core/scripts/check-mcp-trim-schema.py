@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Check the live stdio catalog and real trim results with python-jsonschema (Draft 2020-12)."""
+"""Check the live stdio catalog and real trim results with python-jsonschema (Draft 2020-12).
+
+`tools/list` carries each tool's `inputSchema` only (at most 30,000 bytes per version). The complete
+`outputSchema` of every tool is read from `resources/read arb://schemas/{tool}` and checked too.
+"""
 import argparse
 import json
 import runpy
@@ -13,6 +17,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 
 VERSIONS = runpy.run_path(str(Path(__file__).with_name("mcp_versions.py")))["VERSIONS"]
+TOOLS_LIST_BUDGET = 30_000
 
 
 def check_refs(node, root):
@@ -35,35 +40,51 @@ def check_version(cli, flags, fixture, version):
     ) as proc:
         seq = 0
 
-        def call(method, params):
+        def request(method, params):
             nonlocal seq
             seq += 1
-            request = {"jsonrpc": "2.0", "id": seq, "method": method, "params": params}
-            proc.stdin.write(json.dumps(request) + "\n")
+            message = {"jsonrpc": "2.0", "id": seq, "method": method, "params": params}
+            proc.stdin.write(json.dumps(message) + "\n")
             proc.stdin.flush()
             for line in proc.stdout:
                 response = json.loads(line)
                 if response.get("id") == seq:
-                    assert "error" not in response, response
-                    return response["result"], len(line.encode("utf-8"))
+                    return response, len(line.encode("utf-8"))
             raise RuntimeError(f"stdio ended during {method}")
+
+        def call(method, params):
+            response, size = request(method, params)
+            assert "error" not in response, response
+            return response["result"], size
 
         try:
             hello, _ = call("initialize", {"protocolVersion": version, "capabilities": {},
                                            "clientInfo": {"name": "schema-check", "version": "1"}})
             assert hello["protocolVersion"] == version
             result, size = call("tools/list", {})
-            assert size < 87_000, size
+            assert size <= TOOLS_LIST_BUDGET, size
             tools = result["tools"]
             assert len(tools) == 20 and "nextCursor" not in result
+            outputs_by_tool = {}
             for tool in tools:
-                for key in ("inputSchema", "outputSchema"):
-                    schema = tool[key]
+                assert "outputSchema" not in tool, tool["name"]
+                uri = f"arb://schemas/{tool['name']}"
+                read, _ = call("resources/read", {"uri": uri})
+                content = read["contents"][0]
+                assert content["uri"] == uri and content["mimeType"] == "application/schema+json"
+                output = json.loads(content["text"])
+                assert output["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+                outputs_by_tool[tool["name"]] = output
+                for schema in (tool["inputSchema"], output):
                     check_refs(schema, schema)
                     Draft202012Validator.check_schema(schema)
+            for uri in ("arb://schemas/arb_unknown", "arb://schemas/../arb_status",
+                        "arb://schemas/%2e%2e", "arb://schemas/"):
+                response, _ = request("resources/read", {"uri": uri})
+                assert response["error"]["code"] == -32602, response
             trim = next(t for t in tools if t["name"] == "arb_export_trim")
             inputs = Draft202012Validator(trim["inputSchema"], registry=Registry())
-            outputs = Draft202012Validator(trim["outputSchema"], registry=Registry())
+            outputs = Draft202012Validator(outputs_by_tool[trim["name"]], registry=Registry())
             for format_name in ("bundle", "share_mp4"):
                 args = {"bundle_id": str(fixture), "format": format_name,
                         "in_time_ns": 5_000_001, "out_time_ns": 20_000_007}
@@ -77,7 +98,8 @@ def check_version(cli, flags, fixture, version):
                 for key in ("in_time_ns", "out_time_ns"):
                     assert body[key] == args[key]
             assert not inputs.is_valid({"bundle_id": str(fixture), "in_time_ns": 1})
-            print(f"{version}: 20 tools, 40 schemas, 2 real exports, {size} bytes")
+            print(f"{version}: 20 tools, 20 inputSchema + 20 outputSchema (arb://schemas), "
+                  f"2 real exports, tools/list {size} bytes")
         finally:
             proc.stdin.close()
 

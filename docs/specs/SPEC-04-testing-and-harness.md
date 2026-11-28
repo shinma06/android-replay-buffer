@@ -34,7 +34,7 @@ K1・K2 は時間窓と選別、K3 は時計、K4 はリング、K5 は状態遷
 
 条件を取り除くなどの変異を入れ、期待する反例が出ることを確認する。S6 では到着フレーム時刻の書き戻し、失効した失敗応答の受理、再取得中の reader 解放漏れが対象。全状態数だけで非空虚性の証拠としない。Kani の到達性・変異は実施した個々のハーネスの範囲で評価する。[S6 モデル](../../core/crates/arbd/tests/pdd_stateright_playback_s6.rs)・[共有トレース](playback-s6-traces.json)
 
-`check-mcp-trim-schema.py` は実 stdio で 4 版を交渉し、各版の 20 ツール・40 入出力スキーマ、外部参照なしの Draft 2020-12、2 形式の実時間書き出しを検査する。`ArbBrandingGuardTest` は IDE の表示・メタデータに加え `docs/*.md` と `docs/specs/` 以下の全 Markdown を走査する。[スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt)
+`check-mcp-trim-schema.py` は実 stdio で 4 版を交渉し、各版の `tools/list`（30,000 バイト以下、`outputSchema` なし）の 20 `inputSchema` と、`resources/read arb://schemas/{tool}` で取得した 20 `outputSchema`（4 版で 80 件）、外部参照なしの Draft 2020-12、未知名・パストラバーサルの `-32602`、2 形式の実時間書き出しを検査する。`ArbBrandingGuardTest` は IDE の表示・メタデータに加え `docs/*.md` と `docs/specs/` 以下の全 Markdown を走査する。[スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt)
 
 通常の単体テストは実装の入口、過去データの回帰、OS・IPC・FS 障害注入に使う。実 SQLite、実 IPC、外部プレイヤー、デバイスの動作をモデルだけで代用してはならない。[統合試験](../../core/crates/arbd/tests)・[端末スモーク](../testing/work-device-smoke-checklist.md)
 

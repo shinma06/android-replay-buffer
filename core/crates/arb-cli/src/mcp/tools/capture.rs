@@ -71,7 +71,7 @@ impl McpServer {
         let include_image = args
             .get("include_image")
             .and_then(Value::as_bool)
-            .unwrap_or(self.version.legacy_screenshot_inline());
+            .unwrap_or(false);
         let mut params = Map::new();
         if let Some(serial) = args.get("serial") {
             params.insert("serial".to_owned(), serial.clone());
@@ -103,9 +103,7 @@ impl McpServer {
         };
         let link = crate::mcp::resources::ResourceLink::screenshot(path, uri.clone());
         self.remember_screenshot(&uri, digest);
-        if self.version.screenshot_file_uri() {
-            resp["file_uri"] = json!(uri.as_str());
-        }
+        resp["file_uri"] = json!(uri.as_str());
         Zone::from_args(args).localize_unix_ms(
             &mut resp,
             "captured_at_unix_ms",

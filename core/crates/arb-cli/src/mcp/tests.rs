@@ -31,69 +31,297 @@ fn tool_registry_matches_known_tools_with_valid_schemas() {
     }
 }
 
-/// One `tools/list` frame stays below 87,000 bytes on every negotiated version.
+/// One `tools/list` frame stays at or below 30,000 bytes on every negotiated version (#586-A).
+/// Output schemas are served separately by `arb://schemas/{tool}`.
 #[test]
 fn tools_list_frame_fits_the_budget_on_every_version() {
-    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
-    for version in [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25] {
-        let frame = super::rpc_ok(&json!(2), &json!({"tools":catalog::for_version(version)}));
+    for version in ProtocolVersion::ALL {
+        let listed = catalog::listed(version);
+        let frame = super::rpc_ok(&json!(2), &json!({ "tools": listed }));
         let bytes = frame.to_string().len() + 1;
-        assert!(bytes < 87_000, "{version:?}: {bytes} bytes");
+        eprintln!("tools/list {}: {bytes} bytes", version.as_str());
+        assert!(bytes <= 30_000, "{version:?}: {bytes} bytes");
+        assert_eq!(listed.len(), 20);
+        for (tool, full) in listed.iter().zip(catalog::for_version(version)) {
+            assert!(tool.get("outputSchema").is_none(), "{}", tool["name"]);
+            let mut expected = full.clone();
+            expected.as_object_mut().unwrap().remove("outputSchema");
+            assert_eq!(tool, &expected, "only outputSchema is left out");
+        }
     }
 }
 
+/// Every reference in `node` resolves inside `root`.
+fn assert_local_refs(node: &Value, root: &Value) {
+    if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
+        let pointer = reference.strip_prefix('#').expect("local reference");
+        assert!(root.pointer(pointer).is_some(), "{reference}");
+    }
+    match node {
+        Value::Object(fields) => fields.values().for_each(|v| assert_local_refs(v, root)),
+        Value::Array(items) => items.iter().for_each(|v| assert_local_refs(v, root)),
+        _ => (),
+    }
+}
+
+fn unit_paths(tag: &str) -> ArbPaths {
+    ArbPaths {
+        data_dir: std::env::temp_dir().join(format!("arb-mcp-unit-{tag}-d")),
+        cache_dir: std::env::temp_dir().join(format!("arb-mcp-unit-{tag}-c")),
+        runtime_dir: std::env::temp_dir().join(format!("arb-mcp-unit-{tag}-r")),
+    }
+}
+
+/// `arb://schemas/{tool}` returns the same complete schema execution is checked against.
 #[test]
-fn only_equal_bundle_aliases_normalize_to_one_target() {
-    for tool in catalog::for_version(ProtocolVersion::default()) {
-        let schema = &tool["inputSchema"];
-        if schema["properties"].get("bundle_id_or_path").is_none() {
-            continue;
+fn schema_resources_serve_every_complete_output_schema() {
+    let mut srv = McpServer::new(unit_paths("schemas"));
+    for version in ProtocolVersion::ALL {
+        srv.version = version;
+        let templates = srv
+            .resource_request("resources/templates/list", &json!({}))
+            .unwrap();
+        assert!(
+            templates["resourceTemplates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["uriTemplate"] == "arb://schemas/{tool}"
+                    && t["mimeType"] == "application/schema+json")
+        );
+        for tool in catalog::for_version(version) {
+            let name = tool["name"].as_str().unwrap();
+            let uri = format!("arb://schemas/{name}");
+            let read = srv
+                .resource_request("resources/read", &json!({ "uri": uri }))
+                .unwrap();
+            let content = &read["contents"][0];
+            assert_eq!(content["uri"], uri);
+            assert_eq!(content["mimeType"], "application/schema+json");
+            let mut schema: Value =
+                serde_json::from_str(content["text"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                schema["$schema"],
+                "https://json-schema.org/draft/2020-12/schema"
+            );
+            assert_local_refs(&schema, &schema);
+            schema.as_object_mut().unwrap().remove("$schema");
+            assert_eq!(schema, tool["outputSchema"], "{version:?} {name}");
         }
-        let mut args = json!({"bundle_id":"b","bundle_id_or_path":"b"});
-        let name = tool["name"].as_str().unwrap();
-        match name {
-            "arb_inspect_frames" => args["mode"] = json!("single"),
-            "arb_export_frame_png" => {
-                args["frame_index"] = json!(0);
-                args["output_dir"] = json!("out");
-            }
-            _ => (),
+        for uri in [
+            "arb://schemas/",
+            "arb://schemas/arb_unknown",
+            "arb://schemas/../arb_status",
+            "arb://schemas/%2e%2e",
+            "arb://schemas/arb_status/extra",
+            "arb://schemas/arb_export_share_mp4",
+        ] {
+            let error = srv
+                .resource_request("resources/read", &json!({ "uri": uri }))
+                .unwrap_err();
+            assert_eq!(error.rpc_code, -32_602, "{uri}");
+            assert_eq!(error.label, "INVALID_PARAMS", "{uri}");
         }
-        let normalized = super::args::normalize(name, schema, args.clone()).unwrap();
-        assert_eq!(normalized["bundle_id"], "b");
-        assert!(!normalized.contains_key("bundle_id_or_path"));
-        args["bundle_id_or_path"] = json!("other");
+        let complete = |srv: &mut McpServer, arg: &str, value: &str| {
+            srv.resource_request(
+                "completion/complete",
+                &json!({"ref":{"type":"ref/resource","uri":"arb://schemas/{tool}"},"argument":{"name":arg,"value":value}}),
+            )
+        };
+        let names = complete(&mut srv, "tool", "arb_save").unwrap();
         assert_eq!(
-            super::args::normalize(name, schema, args)
-                .unwrap_err()
-                .details,
-            json!({"conflicts":["bundle_id","bundle_id_or_path"]})
+            names["completion"],
+            json!({"values":["arb_save","arb_save_logs","arb_save_and_inspect"],"total":3,"hasMore":false})
+        );
+        assert_eq!(
+            complete(&mut srv, "tool", "").unwrap()["completion"]["total"],
+            20
+        );
+        assert!(complete(&mut srv, "bundle_id", "").is_err());
+    }
+}
+
+/// Arguments other than the group's, enough for `tool`'s schema to pass.
+fn base_arguments(tool: &str) -> Value {
+    match tool {
+        "arb_inspect_frames" => json!({"mode":"single"}),
+        "arb_export_frame_png" => json!({"frame_index":0,"output_dir":"out"}),
+        _ => json!({}),
+    }
+}
+
+/// The alias groups of the shared table as (tools, names), canonical name first.
+fn alias_groups() -> Vec<(Vec<String>, Vec<String>)> {
+    let table: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/specs/mcp-tools-table.json"
+    ))
+    .unwrap();
+    let strings = |group: &Value, key: &str| -> Vec<String> {
+        group[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let groups: Vec<_> = table["argumentGroups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["aliases"] == true)
+        .inspect(|g| {
+            assert_eq!(
+                g["allowEqual"], true,
+                "every alias group allows equal values"
+            );
+        })
+        .map(|g| (strings(g, "tools"), strings(g, "names")))
+        .collect();
+    assert_eq!(groups.len(), 3);
+    for g in table["argumentGroups"].as_array().unwrap() {
+        if g["aliases"] != true {
+            assert_ne!(g["allowEqual"], true, "exclusive groups always conflict");
+        }
+    }
+    groups
+}
+
+/// A valid value for the group's canonical argument; `k` picks one of three distinct values.
+fn group_value(canonical: &str, k: u8) -> Value {
+    match canonical {
+        "duration_secs" => json!(5 + u64::from(k) * 7),
+        _ => json!(format!("value-{k}")),
+    }
+}
+
+fn input_schema(version: ProtocolVersion, tool: &str) -> &'static Value {
+    &catalog::for_version(version)
+        .iter()
+        .find(|t| t["name"] == tool)
+        .unwrap()["inputSchema"]
+}
+
+/// Aliases are accepted at run time but not listed; the exclusive groups stay listed.
+#[test]
+fn deprecated_aliases_are_hidden_but_accepted() {
+    for version in ProtocolVersion::ALL {
+        for (tools, names) in alias_groups() {
+            for tool in &tools {
+                let schema = input_schema(version, tool);
+                assert!(schema["properties"].get(&names[0]).is_some(), "{tool}");
+                for alias in &names[1..] {
+                    assert!(
+                        schema["properties"].get(alias).is_none(),
+                        "{version:?} {tool}.{alias}"
+                    );
+                    let mut args = base_arguments(tool);
+                    args[alias] = group_value(&names[0], 1);
+                    let normalized = super::args::normalize(tool, schema, args).unwrap();
+                    assert_eq!(normalized[&names[0]], group_value(&names[0], 1));
+                    assert!(!normalized.contains_key(alias));
+                    // A wrongly typed alias is reported under the name the caller used.
+                    let mut args = base_arguments(tool);
+                    args[alias] = json!({"wrong":"type"});
+                    let error = super::args::normalize(tool, schema, args).unwrap_err();
+                    assert_eq!(error.details["field"], alias.as_str(), "{tool}");
+                }
+            }
+        }
+        let logs = input_schema(version, "arb_query_logs");
+        for exclusive in ["cursor", "after_seq", "level", "min_level"] {
+            assert!(logs["properties"].get(exclusive).is_some());
+        }
+        // The bundle target is required under its canonical name only.
+        assert!(
+            logs["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("bundle_id"))
         );
     }
+    // 10, 10.0 and 1e1 are the same integer once normalized.
+    let save = input_schema(ProtocolVersion::default(), "arb_save");
+    let args = json!({"duration_secs":10,"window_secs":10.0,"duration_sec":1e1});
+    assert_eq!(
+        super::args::normalize("arb_save", save, args).unwrap()["duration_secs"],
+        10
+    );
+    // Three names with one different value: every supplied name is reported.
+    let args = json!({"duration_secs":10,"window_secs":10,"duration_sec":20});
+    assert_eq!(
+        super::args::normalize("arb_save", save, args)
+            .unwrap_err()
+            .details,
+        json!({"conflicts":["duration_secs","window_secs","duration_sec"]})
+    );
 }
 
-/// Only the version predicates choose defaults: inline screenshots end with the March release,
-/// and compact log rows begin with structured content.
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
+    /// #587: for every alias group, any 2-3 supplied names are accepted exactly when all values
+    /// are equal (and normalize to that value); otherwise every supplied name is reported.
+    #[test]
+    fn alias_groups_accept_only_equal_values(
+        picks in proptest::collection::vec(0u8..3, 3),
+        mask in 3u8..8,
+        version in 0usize..4,
+    ) {
+        let version = ProtocolVersion::ALL[version];
+        for (tools, names) in alias_groups() {
+            let chosen: Vec<(usize, &String)> = names
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .collect();
+            if chosen.len() < 2 {
+                continue;
+            }
+            for tool in &tools {
+                let mut args = base_arguments(tool);
+                for (i, name) in &chosen {
+                    args[name.as_str()] = group_value(&names[0], picks[*i]);
+                }
+                let first = picks[chosen[0].0];
+                let equal = chosen.iter().all(|(i, _)| picks[*i] == first);
+                let result = super::args::normalize(tool, input_schema(version, tool), args);
+                if equal {
+                    let normalized = result.unwrap();
+                    proptest::prop_assert_eq!(&normalized[&names[0]], &group_value(&names[0], first));
+                    for alias in &names[1..] {
+                        proptest::prop_assert!(!normalized.contains_key(alias));
+                    }
+                } else {
+                    let error = result.unwrap_err();
+                    let supplied: Vec<_> = chosen.iter().map(|(_, n)| n.as_str()).collect();
+                    proptest::prop_assert_eq!(&error.details, &json!({"conflicts":supplied}));
+                }
+            }
+        }
+    }
+}
+
+/// Every version shares one set of light defaults (#586-B), and the advertised `default` is the
+/// value execution uses.
 #[test]
-fn defaults_follow_the_version_predicates() {
-    use ProtocolVersion::{V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25};
-    for (version, inline, compact) in [
-        (V2024_11_05, true, false),
-        (V2025_03_26, true, false),
-        (V2025_06_18, false, true),
-        (V2025_11_25, false, true),
-    ] {
+fn light_defaults_are_the_same_on_every_version() {
+    for version in ProtocolVersion::ALL {
         let tools = catalog::for_version(version);
         let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
-        assert_eq!(version.legacy_screenshot_inline(), inline);
-        assert_eq!(version.default_compact_logs(), compact);
         assert_eq!(
             tool("arb_screenshot")["inputSchema"]["properties"]["include_image"]["default"],
-            inline
+            false
         );
+        let logs = &tool("arb_query_logs")["inputSchema"]["properties"];
+        assert_eq!(logs["fields"]["default"], "compact");
         assert_eq!(
-            tool("arb_query_logs")["inputSchema"]["properties"]["fields"]["default"],
-            if compact { "compact" } else { "full" }
+            super::project::logs::Fields::from_args(&serde_json::Map::new()),
+            super::project::logs::Fields::Compact
+        );
+        assert_eq!(logs["limit"]["default"], 100);
+        assert_eq!(logs["limit"]["minimum"], 1);
+        assert_eq!(
+            logs["limit"]["maximum"],
+            super::project::logs::MAX_PAGE_ROWS
         );
         // The same ErrorGroups contract and filters on every version (#563).
         let save = tool("arb_save_and_inspect");
@@ -111,6 +339,40 @@ fn defaults_follow_the_version_predicates() {
             200
         );
     }
+}
+
+/// #586-C: MCP pages stop at 500 rows with a paging remedy; the daemon RPC keeps 100,000.
+#[test]
+fn query_logs_limit_is_capped_for_mcp_only() {
+    let schema = input_schema(ProtocolVersion::default(), "arb_query_logs");
+    for ok in [1, 100, 500] {
+        super::args::normalize(
+            "arb_query_logs",
+            schema,
+            json!({"bundle_id":"b","limit":ok}),
+        )
+        .unwrap();
+    }
+    for got in [0, 501, 100_000] {
+        let violation = super::args::normalize(
+            "arb_query_logs",
+            schema,
+            json!({"bundle_id":"b","limit":got}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            violation.details,
+            json!({"field":"limit","min":1,"max":500,"got":got})
+        );
+        let failure = super::Failure::from_violation("arb_query_logs", violation);
+        let body = failure.result(ProtocolVersion::default());
+        let hint = body["structuredContent"]["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("1..=500") && hint.contains("next_cursor"),
+            "{hint}"
+        );
+    }
+    assert_eq!(arbd::protocol::MAX_QUERY_LIMIT, 100_000);
 }
 
 /// #563: the parity table pairs each `arb_save_and_inspect` filter with the overview argument of

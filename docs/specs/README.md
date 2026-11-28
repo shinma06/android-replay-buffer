@@ -18,7 +18,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答（87,000 バイト未満）で列挙し、別名衝突の details と本文の resource_links を共有。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補の proptest、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 20 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -60,7 +60,7 @@
 | [音声方針](audio-policy-table.json) | API・方式・端末側の結果から起動引数、状態、原因、表示分類を引く |
 | [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化、再起動後の候補選択（S3） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
-| [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの別名・排他・入力・出力型・注釈・タスク対応 |
+| [MCP ツール](mcp-tools-table.json) | 公開 20 ツールの別名（全組 `allowEqual`）・排他・入力・出力型・注釈・タスク対応 |
 | [再生トレース](playback-s6-traces.json) | S6 の時計、遅延応答、再取得、タブの解放 |
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 20 ツールと実書き出し、IDE と仕様書の表示名 |
@@ -119,7 +119,7 @@
 | 保存して調査の `error_logs` と同じ条件の概要でエラーの集約・件数が違う | バグ | 4 版とも同じ `timeline.overview` を同じ条件で読む。続きは `continuation`、生行は `raw_query` の呼び出しで読む。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | `exclude_tags` 付きの保存して調査が返した `raw_query` を実行すると除外したタグが返る | バグ | `raw_query` は同じ `exclude_tags` を引き継ぎ、`arb_query_logs` は概要と同じ規則（完全一致・大小無視）で除外する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | `noise_candidates` に出たタグのエラーが代表行や件数から消えた | バグ | 推薦は除外を適用しない。除外は `exclude_tags` の明示指定だけ。F 行・クラッシュのタグは推薦しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
-| 既定のログ検索に `alignment` や行ごとの `boot_id` がない | 仕様 | 2025-06-18 以降の既定は `fields: compact`。全項目は `fields: full`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 既定のログ検索に `alignment` や行ごとの `boot_id` がない | 仕様 | 全 4 版の既定は `fields: compact`。全項目は `fields: full`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 既定の応答に `timestamp_local` がない | 仕様 | ローカル時刻は `time_zone: host` の指定時だけ。既定は UTC のみでホストに依存しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | `arb_export_frame_png` が既存の PNG を置き換えた | バグ | 明示パスの衝突は `-32002`。`output_dir` は一意名。`overwrite` 引数はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 概要のエラー件数と代表行数が違う | 仕様 | フィルタ一致の生行総数とグループ数を区別し、代表行に回数・初回／最終オフセットを表示する。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |

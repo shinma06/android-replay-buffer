@@ -49,7 +49,10 @@ impl Failure {
             _ => Self::unavailable(e.to_string()),
         }
     }
-    pub(super) fn from_violation(tool: &str, violation: Violation) -> Self {
+    pub(super) fn from_violation(tool: &str, mut violation: Violation) -> Self {
+        if tool == "arb_query_logs" && violation.details["field"] == "limit" {
+            super::project::logs::limit_hint(&mut violation.hint);
+        }
         let hint = match (tool, violation.details["unknown"].as_str()) {
             ("arb_screenshot", Some("overwrite")) => "別の output_path を指定してください。".into(),
             ("arb_export_frame_png", Some("overwrite")) => EXPORT_PNG_CONFLICT.into(),

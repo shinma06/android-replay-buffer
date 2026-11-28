@@ -40,7 +40,7 @@ const JSONRPC_INVALID_REQUEST: i32 = -32_600;
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32_601;
 const JSONRPC_INVALID_PARAMS: i32 = -32_602;
 
-const SERVER_INSTRUCTIONS: &str = "不具合の記録には arb_save_and_inspect を使います。arb_query_logs は limit と cursor でページ送りし、whole_word で単語を絞れます。画像は必要な resource_link のみ resources/read で取得してください。整理の前には arb_gc_bundles の dry_run: true で候補を確認してください。";
+const SERVER_INSTRUCTIONS: &str = "不具合の記録には arb_save_and_inspect を使います。arb_query_logs は既定 fields: \"compact\"（全項目は \"full\"）で、limit（最大 500）と cursor でページ送りし、whole_word で単語を絞れます。arb_screenshot は既定で画像を含まず file_uri と resource_links を返します（インライン画像は include_image: true）。画像は必要な resource_link のみ resources/read で取得してください。各ツールの outputSchema は arb://schemas/{tool} で読めます。整理の前には arb_gc_bundles の dry_run: true で候補を確認してください。";
 
 /// Runs the blocking stdio MCP JSON-RPC 2.0 loop until stdin reaches EOF.
 ///
@@ -222,7 +222,7 @@ impl McpServer {
             "ping" => Some(rpc_ok(&req_id, &json!({}))),
             "tools/list" => Some(rpc_ok(
                 &req_id,
-                &json!({"tools":catalog::for_version(self.version)}),
+                &json!({"tools":catalog::listed(self.version)}),
             )),
             "resources/list"
             | "resources/templates/list"
