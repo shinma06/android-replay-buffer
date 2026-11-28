@@ -28,6 +28,7 @@ use super::{SaveJobMaterializeParams, SaveMode, decode_ring_chunk, encode_ring_c
 
 fn full_params() -> SaveJobMaterializeParams {
     SaveJobMaterializeParams {
+        input_channel: None,
         note: None,
         bundle_id: "01JPDDG5000000000000000001".to_owned(),
         mode: SaveMode::Full,
