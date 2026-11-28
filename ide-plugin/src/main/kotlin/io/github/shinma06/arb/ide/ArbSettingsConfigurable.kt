@@ -97,6 +97,7 @@ class ArbSettingsFormModel(
     var audioEnabled by mutableStateOf(true)
     var captureMode by mutableStateOf(CaptureMode.VIDEO_AND_LOGS)
     var crashAutosaveEnabled by mutableStateOf(true)
+    val crashPostRollText = TextFieldState(ArbConfig.DEFAULT_CRASH_AUTOSAVE_POST_ROLL_MS.toString())
     val crashCooldownText = TextFieldState(ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS.toString())
 
     val outputDirText = TextFieldState("")
@@ -184,6 +185,7 @@ class ArbSettingsFormModel(
         passthroughDeviceSerial = draft.deviceSerial
         passthroughScreenshotDirOverride = draft.screenshotDirOverride
         crashAutosaveEnabled = draft.crashAutosaveEnabled
+        crashPostRollText.setTextAndPlaceCursorAtEnd(draft.crashAutosavePostRollMs.toString())
         crashCooldownText.setTextAndPlaceCursorAtEnd(
             draft.crashAutosaveCooldownSecs.coerceIn(
                 ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS,
@@ -212,6 +214,7 @@ class ArbSettingsFormModel(
             audioCaptureMode = audioCaptureMode,
             audioEnabled = audioEnabled,
             crashAutosaveEnabled = crashAutosaveEnabled,
+            crashAutosavePostRollMs = crashPostRollText.text.toString().trim().toLongOrNull() ?: -1L,
             crashAutosaveCooldownSecs = cooldownSecs,
             outputDirOverride = outputDirText.text.toString().trim(),
             ideDefaultSaveAction = ideDefaultSaveAction,
@@ -879,6 +882,14 @@ internal fun ArbSettingsContent(
                 onCheckedChange = { form.crashAutosaveEnabled = it },
                 enabled = daemonEnabled,
             )
+            SettingsFormRow("クラッシュ後の記録時間") {
+                TextField(
+                    state = form.crashPostRollText,
+                    enabled = daemonEnabled,
+                    modifier = Modifier.width(88.dp),
+                )
+                Text("ミリ秒", style = ArbJewelPalette.bodyStyle(11.5f, color = ArbJewelPalette.mutedText()))
+            }
             SettingsFormRow("自動保存クールダウン:") {
                 TextField(
                     state = form.crashCooldownText,

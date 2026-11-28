@@ -863,6 +863,12 @@ fn parse_config_set_flags(args: &[String]) -> Result<CommandSpec, CliError> {
                     json!(parse_bool(val, flag)?),
                 );
             }
+            "--crash-autosave-post-roll-ms" => {
+                patch.insert(
+                    "crash_autosave_post_roll_ms".to_owned(),
+                    json!(parse_u64(val, flag)?),
+                );
+            }
             "--crash-autosave-cooldown-secs" => {
                 patch.insert(
                     "crash_autosave_cooldown_secs".to_owned(),
@@ -1985,7 +1991,7 @@ COMMANDS:\n  \
   save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   save-logs [--window-secs <N>] [--note <TEXT>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   screenshot [--source auto|capture|screencap] [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
-  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
+  config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--crash-autosave-post-roll-ms <0..10000>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> [--dest <DIR>] | discard <JOB_ID>\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \

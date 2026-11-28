@@ -235,7 +235,7 @@ class PddContractTablesTest {
     fun saveEvidenceDecodesFromSharedRows() {
         val doc = table("ui-feedback-contract-table.json")
         val base = doc.rows("save_rows", 7).first()["response"].asJsonObject
-        for (row in doc.rows("capture_evidence_rows", 8)) {
+        for (row in doc.rows("capture_evidence_rows", 9)) {
             val wire = base.deepCopy()
             for ((name, value) in row.entrySet()) wire.add(name, value)
             val res = ProtocolJson.gson.fromJson(wire, SaveOutcomeResponse::class.java)
@@ -253,6 +253,9 @@ class PddContractTablesTest {
             assertEquals(row["actual_log_duration_ms"].asLong, res.actualLogDurationMs)
             assertEquals(row["actual_video_duration_ms"].takeUnless { it.isJsonNull }?.asLong, res.actualVideoDurationMs)
             assertEquals(row["requested_duration_secs"].asLong, res.requestedDurationSecs)
+            assertEquals(row["post_roll_ms"]?.asLong ?: 0L, res.postRollMs)
+            assertEquals(row["actual_post_roll_ms"]?.asLong ?: 0L, res.actualPostRollMs)
+            assertEquals(row["post_roll_truncated"]?.asBoolean ?: false, res.postRollTruncated)
             // #570: warnings and warning_codes are the same-length, same-order projection of warning_details.
             val id = row["id"].asString
             val details = res.warningDetails.orEmpty()

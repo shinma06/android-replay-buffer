@@ -304,6 +304,7 @@ class ArbToolWindowController(
         get() = when {
             !captureState.daemonConnected -> "未接続"
             captureState.capture?.storagePressureStopped == true -> "容量停止"
+            captureState.postRollUntilUtc != null -> "クラッシュ直後を記録中"
             captureToggleState == CaptureToggleState.RECORDING -> when {
                 isLogsOnlyMode -> "ON・REC (ログのみ)"
                 else -> "ON・REC"
