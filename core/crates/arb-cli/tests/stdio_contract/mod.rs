@@ -380,7 +380,7 @@ fn registry(c: &mut Client) {
             version >= ProtocolVersion::V2025_11_25.as_str()
         );
         let tools = c.result("tools/list", json!({}));
-        assert_eq!(tools["tools"].as_array().unwrap().len(), 20);
+        assert_eq!(tools["tools"].as_array().unwrap().len(), 21);
         for (name, flag) in [
             ("arb_export_trim", "trash_original"),
             ("arb_screenshot", "overwrite"),
@@ -436,6 +436,7 @@ fn registry(c: &mut Client) {
                 "output_path" => json!("out.png"),
                 "frame_index" => json!(0),
                 "mode" => json!("single"),
+                "action" => json!("list"),
                 _ => panic!("unexpected required {name}.{k}"),
             };
         }

@@ -47,6 +47,7 @@ use arb_core::coverage::{
     coverage_duration_in_window, covering_end, select_carry_in,
 };
 use arb_core::gesture::{GestureKind, TouchPoint, classify_stroke, touch_slop};
+use arb_core::save_failure::{SaveFailureClass, SaveFailureStage};
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
 use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
 use arb_core::time::{
@@ -134,6 +135,8 @@ impl DiskSpaceProvider for SharedDiskSpaceProvider {
 /// provoked portably through the filesystem (R3 M1).
 #[derive(Debug, Default)]
 pub struct FaultInjection {
+    /// Simulates an external destination losing write access after a successful probe.
+    pub deny_output_after_pin_once: AtomicBool,
     /// After a successful bundle commit, report `OsError::CommittedParentSyncFailed`
     /// (the bundle is published, only the parent-directory `fsync` "failed").
     pub fail_parent_sync_once: AtomicBool,
@@ -471,6 +474,7 @@ impl PendingSave {
 /// lock can be released before any chunk is read, muxed or written (R3 M2).
 #[derive(Debug, Clone)]
 pub struct Phase2Plan {
+    rescue_after_secs: u64,
     data_dir: PathBuf,
     pin_journal: PinJournal,
     chunks: Vec<(String, Option<RingChunkDescriptor>)>,
@@ -569,6 +573,8 @@ impl TouchNormalizer {
 /// Single-owner live capture state and Zone-1 ring buffer manager.
 #[derive(Debug)]
 pub struct CapturePipeline {
+    max_pinned_fraction: f64,
+    rescue_after_secs: u64,
     data_dir: PathBuf,
     ring: RingStore<SharedDiskSpaceProvider>,
     faults: Arc<FaultInjection>,
@@ -654,6 +660,8 @@ impl CapturePipeline {
             data_dir,
             ring,
             faults: Arc::new(FaultInjection::default()),
+            max_pinned_fraction: arb_core::config::ArbConfig::new().max_pinned_ring_fraction,
+            rescue_after_secs: arb_core::config::ArbConfig::new().failed_job_rescue_after_secs,
             active: false,
             connected: false,
             storage_pressure_stopped: false,
@@ -1857,6 +1865,7 @@ impl CapturePipeline {
             ));
         }
 
+        self.check_pin_budget(&chunk_ids)?;
         let job_id = next_id("job");
         let bundle_id = next_id("bundle");
         let now_utc = utc_now_iso8601();
@@ -1959,6 +1968,7 @@ impl CapturePipeline {
         }
         let job_id = pending.guard.job_id.clone();
         if chunk_ids.len() != pending.pinned_chunk_ids.len() {
+            self.check_pin_budget(&chunk_ids)?;
             let _ = self.ring.pin_chunks(
                 &job_id,
                 &pending.dest_bundle_dir,
@@ -2002,6 +2012,30 @@ impl CapturePipeline {
         self.phase1_commit(catalog, pending, tail_completeness)
     }
 
+    pub(super) fn set_save_policy(&mut self, config: &arb_core::config::ArbConfig) {
+        self.max_pinned_fraction = config.max_pinned_ring_fraction;
+        self.rescue_after_secs = config.failed_job_rescue_after_secs;
+    }
+
+    /// Invoked under the capture lock before both the initial pin and its drain extension.
+    fn check_pin_budget(&self, selected: &[String]) -> Result<(), DaemonError> {
+        let mut protected = self.ring.pinned_chunk_ids()?;
+        protected.extend(selected.iter().cloned());
+        let bytes = protected
+            .iter()
+            .filter_map(|id| self.ring.descriptor(id))
+            .fold(0u64, |sum, c| sum.saturating_add(c.bytes));
+        let fraction = bytes as f64 / self.ring.policy().max_ring_bytes.max(1) as f64;
+        if fraction > self.max_pinned_fraction {
+            return Err(DaemonError::PinBudget {
+                pinned_fraction: fraction,
+                max_fraction: self.max_pinned_fraction,
+                failed_save_jobs: 0,
+            });
+        }
+        Ok(())
+    }
+
     /// Builds the immutable [`Phase2Plan`] for already-pinned `chunk_ids`.
     ///
     /// # Errors
@@ -2013,6 +2047,7 @@ impl CapturePipeline {
             .map(|id| (id.clone(), self.ring.descriptor(id).cloned()))
             .collect();
         Ok(Phase2Plan {
+            rescue_after_secs: self.rescue_after_secs,
             data_dir: self.data_dir.clone(),
             pin_journal: self.ring.pin_journal().clone(),
             chunks,
@@ -2074,6 +2109,33 @@ impl CapturePipeline {
         Ok(plan)
     }
 
+    pub(super) fn prepare_rescue(
+        &self,
+        catalog: &Catalog,
+        job: &CatalogSaveJob,
+    ) -> Result<Phase2Plan, DaemonError> {
+        let id = &job.job.job_id;
+        let mut params = read_job_params(&self.data_dir, id)?;
+        let original = Path::new(&job.job.destination_path);
+        // A catalog-only failure already has an immutable publication. Finish registering it.
+        if arb_storage::bundle_io::existing_committed_manifest(original, &params.bundle_id)
+            .is_some()
+        {
+            return self.prepare_retry(catalog, id);
+        }
+        let message = format!(
+            "自動救出: 元の保存先 {}",
+            original.parent().unwrap_or(original).display()
+        );
+        params.note = Some(
+            params
+                .note
+                .map_or_else(|| message.clone(), |n| format!("{n}\n{message}")),
+        );
+        write_job_params(&self.data_dir, id, &params)?;
+        self.prepare_retarget(catalog, id, catalog.managed_bundles_root())
+    }
+
     /// Discards a `Pinned`, `Draining`, or `FailedRetryable` save job and releases its pins.
     ///
     /// # Errors
@@ -2089,7 +2151,7 @@ impl CapturePipeline {
         catalog.clean_tracked_staging(job_id, Path::new(&discarded.job.destination_path));
         let _ = self.ring.unpin_job(job_id);
         let _ = remove_job_params(&self.data_dir, job_id);
-        Ok(save_job_to_view(&discarded))
+        Ok(save_job_to_view(&discarded, self.rescue_after_secs))
     }
 
     /// `T_trigger` (R3 S1): the latest ingest time (or, for a live session, the host clock now)
@@ -2600,17 +2662,30 @@ pub fn phase2_materialize(
     let dest_path = PathBuf::from(&job_record.job.destination_path);
     let params = match read_job_params(&plan.data_dir, job_id) {
         Ok(params) => params,
-        Err(err @ DaemonError::SaveFailed(_)) => {
-            // Leave pins and a discardable job for recovery while reporting the permanent failure.
-            catalog.mark_failed_retryable(job_id, &err.to_string(), &now_utc)?;
-            return Err(err);
+        Err(err) => {
+            return fail_job(
+                catalog,
+                job_id,
+                &err.to_string(),
+                crate::save_policy::failure_class(SaveFailureStage::Pin, &err),
+                plan.rescue_after_secs,
+                None,
+                None,
+            );
         }
-        Err(err) => return fail_job(catalog, job_id, &err.to_string(), None, None),
     };
     let materialized = match materialize_from_chunks(plan, job_id, &dest_path, &params) {
         Ok(m) => m,
-        Err(err) => {
-            return fail_job(catalog, job_id, &err.to_string(), Some(&params), None);
+        Err((stage, err)) => {
+            return fail_job(
+                catalog,
+                job_id,
+                &err.to_string(),
+                crate::save_policy::failure_class(stage, &err),
+                plan.rescue_after_secs,
+                Some(&params),
+                None,
+            );
         }
     };
 
@@ -2644,7 +2719,7 @@ pub fn phase2_materialize(
             Ok(SaveOutcomeResponse {
                 evidence: materialized.evidence,
                 requested_duration_secs: Some(params.duration_sec),
-                job: save_job_to_view(&completed),
+                job: save_job_to_view(&completed, plan.rescue_after_secs),
                 bundle_id: Some(materialized.bundle_id),
                 bundle_path: Some(dest_path),
                 tail_may_be_incomplete: params.tail_may_be_incomplete,
@@ -2660,6 +2735,8 @@ pub fn phase2_materialize(
                 materialized.bundle_id,
                 dest_path.display()
             ),
+            crate::save_policy::failure_class(SaveFailureStage::CatalogRegister, &err),
+            plan.rescue_after_secs,
             Some(&params),
             materialized.warning,
         ).map(|mut outcome| { outcome.evidence = materialized.evidence; outcome }),
@@ -2670,17 +2747,19 @@ fn fail_job(
     catalog: &Catalog,
     job_id: &str,
     message: &str,
+    class: SaveFailureClass,
+    rescue_after_secs: u64,
     params: Option<&SaveJobMaterializeParams>,
     warning: Option<String>,
 ) -> Result<SaveOutcomeResponse, DaemonError> {
-    let failed = catalog.mark_failed_retryable(job_id, message, &utc_now_iso8601())?;
+    let failed = catalog.mark_failed_classified(job_id, message, class, &utc_now_iso8601())?;
     Ok(SaveOutcomeResponse {
         evidence: crate::protocol::SaveEvidence {
             note: params.and_then(|p| p.note.clone()),
             ..Default::default()
         },
         requested_duration_secs: params.map(|p| p.duration_sec),
-        job: save_job_to_view(&failed),
+        job: save_job_to_view(&failed, rescue_after_secs),
         bundle_id: None,
         bundle_path: None,
         tail_may_be_incomplete: params.is_some_and(|p| p.tail_may_be_incomplete),
@@ -2694,7 +2773,7 @@ fn materialize_from_chunks(
     job_id: &str,
     dest_bundle_dir: &Path,
     params: &SaveJobMaterializeParams,
-) -> Result<Materialized, DaemonError> {
+) -> Result<Materialized, (SaveFailureStage, DaemonError)> {
     if let Some(manifest) =
         arb_storage::bundle_io::existing_committed_manifest(dest_bundle_dir, &params.bundle_id)
     {
@@ -2707,19 +2786,27 @@ fn materialize_from_chunks(
             warning: None,
         });
     }
+    if FaultInjection::fire(&plan.faults.deny_output_after_pin_once) {
+        return Err((
+            SaveFailureStage::Materialize,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+        ));
+    }
     let mut replayed = ReplayCollector::new(params);
     let ring_dir = plan.data_dir.join("ring");
+    let mut readable = false;
     for (id, desc) in &plan.chunks {
         let events = match desc.as_ref().map(|chunk| chunk.read_verified(&ring_dir)) {
             Some(Ok(bytes)) => decode_ring_chunk(&bytes).ok(),
             Some(Err(StorageError::Io { source, .. }))
                 if source.kind() != std::io::ErrorKind::NotFound =>
             {
-                return Err(source.into());
+                return Err((SaveFailureStage::Pin, source.into()));
             }
             _ => None,
         };
         if let Some(events) = events {
+            readable = true;
             for event in events {
                 if let CaptureEvent::LogOverflowStats { payload, .. } = &event
                     && !(params.window.start_boottime_ns()..=params.window.end_boottime_ns())
@@ -2747,7 +2834,15 @@ fn materialize_from_chunks(
             ));
         }
     }
-    let draft = replayed.build_draft(job_id, params, &plan.data_dir)?;
+    if !readable {
+        return Err((
+            SaveFailureStage::Pin,
+            DaemonError::SaveFailed("保存に必要な全チャンクが欠損または破損しています。".into()),
+        ));
+    }
+    let draft = replayed
+        .build_draft(job_id, params, &plan.data_dir)
+        .map_err(|err| (SaveFailureStage::Pin, err))?;
     let unanchored_summary = draft.unanchored_summary;
     let bundle_id = draft.bundle_id.clone();
 
@@ -2760,7 +2855,7 @@ fn materialize_from_chunks(
         Err(err) if err.committed_bundle_path_on_parent_sync_error().is_some() => Some(format!(
             "bundle committed but its parent directory could not be fsynced; it may need to be re-saved after a power loss: {err}"
         )),
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err((SaveFailureStage::Materialize, err.into())),
     };
     let (evidence, summary) = saved_evidence(dest_bundle_dir, params);
     Ok(Materialized {
@@ -4356,13 +4451,21 @@ fn mux_selected_audio(
 
 /// Converts a [`CatalogSaveJob`] into its JSON-RPC [`SaveJobView`].
 #[must_use]
-pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
+pub fn save_job_to_view(record: &CatalogSaveJob, rescue_after_secs: u64) -> SaveJobView {
     SaveJobView {
         job_id: record.job.job_id.clone(),
         state: record.job.state,
         trigger: record.trigger_kind,
         destination_path: PathBuf::from(&record.job.destination_path),
         pinned_chunk_ids: record.job.pinned_chunk_ids.clone(),
+        pinned_chunk_count: record.job.pinned_chunk_ids.len(),
+        failure_class: record.failure_class,
+        recommended_action: record
+            .failure_class
+            .map(SaveFailureClass::recommended_action),
+        rescue_attempted: record.rescue_attempted,
+        rescue_eligible_at_utc: crate::save_policy::eligible_ms(record, rescue_after_secs)
+            .map(arb_core::time::format_unix_ms_iso8601),
         last_error: record.job.last_error.clone(),
         created_at_utc: record.created_at_utc.clone(),
         updated_at_utc: record.updated_at_utc.clone(),
@@ -5536,8 +5639,13 @@ mod tests {
             .unwrap();
         let id = &job.job.job_id;
         super::remove_job_params(tmp.path(), id).unwrap();
+        let failed = super::phase2_materialize(&plan, &catalog, id).unwrap();
+        assert_eq!(
+            failed.job.failure_class,
+            Some(arb_core::save_failure::SaveFailureClass::Integrity)
+        );
+        assert!(failed.job.rescue_eligible_at_utc.is_none());
         let errors = [
-            super::phase2_materialize(&plan, &catalog, id).unwrap_err(),
             cap.prepare_retarget(&catalog, id, &out).unwrap_err(),
             cap.ring.read_chunk("missing-chunk").unwrap_err().into(),
             plan.pin_journal.load("missing-journal").unwrap_err().into(),
@@ -5619,6 +5727,135 @@ mod tests {
                 .any(|d| d.kind == DiscontinuityKind::StreamGap && d.pc_cont_start_ns == 100)
         );
         assert_eq!(pins.list_all().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn failed_jobs_rescue_at_900_seconds_once_and_respect_pin_capacity() {
+        use serde_json::json;
+        use std::sync::atomic::Ordering;
+        let tmp = TempDir::new().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let server = crate::DaemonServer::start(crate::DaemonConfig::new(paths)).unwrap();
+        let state = &server.state;
+        {
+            let mut cap = state.lock_capture().unwrap();
+            cap.begin_session("A");
+            cap.ingest_event(heartbeat_at(100)).unwrap();
+        }
+        let external = tmp.path().join("external");
+        let trigger = || {
+            state
+                .dispatch(
+                    "save.logs",
+                    json!({"dest_dir": external,"note":"元メモ","drain_timeout_ms":0}),
+                )
+                .unwrap()
+        };
+        for fail_rescue in [true, false] {
+            state
+                .faults
+                .deny_output_after_pin_once
+                .store(true, Ordering::Release);
+            let job = trigger()["job"].clone();
+            let id = job["job_id"].as_str().unwrap();
+            assert_eq!(job["failure_class"], "permanent_destination");
+            assert_eq!(job["recommended_action"], "retarget");
+            let eligible = arb_storage::catalog::parse_utc_timestamp_ns(
+                job["rescue_eligible_at_utc"].as_str().unwrap(),
+            )
+            .unwrap()
+                / 1_000_000;
+            let failed = arb_storage::catalog::parse_utc_timestamp_ns(
+                job["updated_at_utc"].as_str().unwrap(),
+            )
+            .unwrap()
+                / 1_000_000;
+            assert_eq!(eligible - failed, 900_000);
+            let at = i64::try_from(eligible).unwrap();
+            state.rescue_failed_jobs(at - 1).unwrap();
+            assert!(
+                !state
+                    .catalog
+                    .save_job(id)
+                    .unwrap()
+                    .unwrap()
+                    .rescue_attempted
+            );
+            if fail_rescue {
+                state
+                    .dispatch("config.update", json!({"failed_job_rescue_after_secs":0}))
+                    .unwrap();
+                state.rescue_failed_jobs(at).unwrap();
+                assert!(
+                    !state
+                        .catalog
+                        .save_job(id)
+                        .unwrap()
+                        .unwrap()
+                        .rescue_attempted
+                );
+                state
+                    .dispatch("config.update", json!({"failed_job_rescue_after_secs":900}))
+                    .unwrap();
+                state
+                    .faults
+                    .deny_output_after_pin_once
+                    .store(true, Ordering::Release);
+            }
+            state.rescue_failed_jobs(at).unwrap();
+            let record = state.catalog.save_job(id).unwrap().unwrap();
+            assert!(record.rescue_attempted);
+            assert!(
+                Path::new(&record.job.destination_path)
+                    .starts_with(state.catalog.managed_bundles_root())
+            );
+            if fail_rescue {
+                assert!(!record.job.pinned_chunk_ids.is_empty());
+                state.rescue_failed_jobs(at + 900_000).unwrap();
+                assert_eq!(state.catalog.save_job(id).unwrap().unwrap(), record);
+                let mut cap = state.lock_capture().unwrap();
+                let bytes = cap.ring_stats().unwrap().1;
+                let mut policy = cap.ring.policy();
+                policy.max_ring_bytes = bytes * 2;
+                cap.set_ring_policy(policy);
+                assert!(cap.check_pin_budget(&record.job.pinned_chunk_ids).is_ok()); // shared pins counted once
+                policy.max_ring_bytes -= 1;
+                cap.set_ring_policy(policy);
+                drop(cap);
+                let error = state
+                    .dispatch_guarded("save.logs", json!({"drain_timeout_ms":0}))
+                    .unwrap_err()
+                    .into_response(1.into())
+                    .error
+                    .unwrap()
+                    .data
+                    .unwrap();
+                assert_eq!(error["error_code"], "STORAGE_PRESSURE");
+                assert_eq!(error["details"]["failed_save_jobs"], 1);
+                assert_eq!(error["details"]["max_fraction"], 0.5);
+                assert_eq!(state.catalog.list_save_jobs().unwrap().len(), 1);
+                state
+                    .dispatch("save.discard", json!({"job_id":id}))
+                    .unwrap();
+                state
+                    .lock_capture()
+                    .unwrap()
+                    .set_ring_policy(RingBudgetPolicy::default());
+            } else {
+                assert!(record.job.pinned_chunk_ids.is_empty());
+                assert_eq!(state.lock_capture().unwrap().ring_stats().unwrap().2, 0);
+                let manifest = arb_storage::bundle_io::read_bundle_manifest(Path::new(
+                    &record.job.destination_path,
+                ))
+                .unwrap();
+                assert!(manifest.to_string().contains("元メモ"));
+                assert!(manifest.to_string().contains("自動救出"));
+            }
+        }
     }
 
     #[test]

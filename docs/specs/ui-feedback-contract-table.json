@@ -825,6 +825,44 @@
         "ide_recovery_lists_job": false,
         "mcp_error_code": "FAILED_RETRYABLE"
       }
+    },
+    {
+      "id": "SV-08",
+      "description": "事前検査で拒否した要求はジョブを作らない。pin 後に失敗した保存を管理域へ自動救出したときの完了応答。",
+      "response": {
+        "job": {
+          "job_id": "job-42",
+          "state": "completed",
+          "trigger": "manual",
+          "destination_path": "/data/bundles/b-42",
+          "pinned_chunk_ids": [],
+          "last_error": null,
+          "created_at_utc": "2026-11-25T00:00:00Z",
+          "updated_at_utc": "2026-11-25T00:00:05Z",
+          "pinned_chunk_count": 0
+        },
+        "bundle_id": "b-42",
+        "bundle_path": "/data/bundles/b-42",
+        "tail_may_be_incomplete": false,
+        "unanchored_summary": {
+          "included_count": 0,
+          "truncated_count": 0
+        }
+      },
+      "expected": {
+        "cli_exit_code": 0,
+        "mcp_is_error": false,
+        "mcp_preserves_job_id": true,
+        "ide_feedback": "success",
+        "ide_daemon_connected": true,
+        "ide_recovery_lists_job": false,
+        "mcp_error_code": null
+      },
+      "preflight": {
+        "error_code": "OUTPUT_DIR_UNUSABLE",
+        "jobs_created": 0,
+        "pins_created": 0
+      }
     }
   ],
   "disk_state_rows": [
@@ -1176,6 +1214,60 @@
         "ide_stale_daemon_banner": false,
         "ide_action_error_notified": true,
         "mcp_error_code": "NO_VIDEO",
+        "retryable": false
+      }
+    },
+    {
+      "id": "ER-S1",
+      "description": "保存前に書き込めない保存先を検出",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32602,
+        "error_code": "OUTPUT_DIR_UNUSABLE"
+      },
+      "expected": {
+        "cli_exit_code": 2,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "OUTPUT_DIR_UNUSABLE",
+        "retryable": false
+      }
+    },
+    {
+      "id": "ER-S2",
+      "description": "保存先の変更または破棄が必要",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32006,
+        "error_code": "SAVE_NEEDS_RETARGET"
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "SAVE_NEEDS_RETARGET",
+        "retryable": false
+      }
+    },
+    {
+      "id": "ER-S3",
+      "description": "pin 予算超過",
+      "failure": {
+        "kind": "rpc_error",
+        "code": -32003,
+        "error_code": "STORAGE_PRESSURE"
+      },
+      "expected": {
+        "cli_exit_code": 1,
+        "is_transport": false,
+        "ide_daemon_connected": true,
+        "ide_stale_daemon_banner": false,
+        "ide_action_error_notified": true,
+        "mcp_error_code": "STORAGE_PRESSURE",
         "retryable": false
       }
     }

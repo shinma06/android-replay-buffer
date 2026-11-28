@@ -96,6 +96,24 @@ pub enum DaemonError {
     /// A required packaged artifact is missing.
     #[error("{0}")]
     InstallationIncomplete(String),
+    /// An explicit output root failed its write probe before a job was created.
+    #[error("保存先に書き込めません: {dest_dir}")]
+    OutputDirUnusable {
+        /// Rejected directory.
+        dest_dir: std::path::PathBuf,
+        /// Normalized cause of rejection.
+        kind: arb_core::save_failure::SaveFailureIoKind,
+    },
+    /// The union of protected chunks would exceed the configured ring byte budget.
+    #[error("保存ジョブの pin がリング予算を超えます")]
+    PinBudget {
+        /// Projected fraction including the requested window.
+        pinned_fraction: f64,
+        /// Configured maximum.
+        max_fraction: f64,
+        /// Jobs holding evidence for recovery.
+        failed_save_jobs: usize,
+    },
     /// Required materialization data is missing.
     #[error("{0}")]
     SaveFailed(String),
@@ -143,6 +161,16 @@ impl DaemonError {
     pub fn classify(&self) -> ClassifiedError {
         use arb_core::state::{BundleLifecycleState, StateTransitionError};
         let (rpc_code, label, message) = match self {
+            Self::OutputDirUnusable { .. } => (
+                RPC_ERR_INVALID_PARAMS,
+                Some("OUTPUT_DIR_UNUSABLE"),
+                "保存先ディレクトリに書き込めません。",
+            ),
+            Self::PinBudget { .. } => (
+                RPC_ERR_STORAGE,
+                Some("STORAGE_PRESSURE"),
+                "保存ジョブの pin がリング予算を超えます。",
+            ),
             Self::DeviceNotFound(_) => (
                 RPC_ERR_NOT_FOUND,
                 Some("DEVICE_NOT_FOUND"),
@@ -240,6 +268,22 @@ impl DaemonError {
 
     fn diagnostics(&self) -> (Value, Option<String>) {
         let details = match self {
+            Self::OutputDirUnusable { dest_dir, kind } => {
+                return (
+                    json!({"dest_dir":dest_dir,"os_error_kind":kind,"stage":"preflight"}),
+                    None,
+                );
+            }
+            Self::PinBudget {
+                pinned_fraction,
+                max_fraction,
+                failed_save_jobs,
+            } => {
+                return (
+                    json!({"pinned_fraction":pinned_fraction,"max_fraction":max_fraction,"failed_save_jobs":failed_save_jobs}),
+                    None,
+                );
+            }
             Self::DeviceNotFound(serial) => return (json!({"serial": serial}), None),
             Self::NoVideo(id) => return (json!({"bundle_id": id}), None),
             Self::OutputExists(path) => {

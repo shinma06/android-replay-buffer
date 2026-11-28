@@ -83,9 +83,43 @@ pub const fn error_label(rpc_code: i32) -> &'static str {
     }
 }
 
+fn save_guidance(label: &str) -> Option<(&'static str, &'static str, bool)> {
+    Some(match label {
+        "OUTPUT_DIR_UNUSABLE" => (
+            "invalid_params",
+            "書き込める dest_dir を指定してください。",
+            false,
+        ),
+        "SAVE_NEEDS_RETARGET" => (
+            "save_needs_retarget",
+            "arb_jobs で retarget または discard してください。",
+            false,
+        ),
+        "STORAGE_PRESSURE" => (
+            "storage_pressure",
+            "arb_jobs で失敗ジョブを retarget または discard してください。",
+            false,
+        ),
+        "SAVE_FAILED" => (
+            "save_failed",
+            "arb_jobs で対象の保存ジョブを discard してください。",
+            false,
+        ),
+        "FAILED_RETRYABLE" => (
+            "save_failed",
+            "保存ジョブを確認し、原因を解消して再試行してください。",
+            true,
+        ),
+        _ => return None,
+    })
+}
+
 /// Stable category, recovery hint and retry policy for a tool error code.
 #[must_use]
 pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
+    if let Some(guidance) = save_guidance(label) {
+        return guidance;
+    }
     match label {
         "NO_VIDEO" => (
             "invalid_params",
@@ -142,20 +176,10 @@ pub fn error_guidance(label: &str) -> (&'static str, &'static str, bool) {
             "ARB のインストール構成が不完全です。再インストールしてください。",
             false,
         ),
-        "SAVE_FAILED" => (
-            "save_failed",
-            "保存ジョブの状態と不足しているデータを確認してください。",
-            false,
-        ),
         "BUNDLE_NOT_FOUND" => (
             "not_found",
             "対象のバンドル ID またはパスを確認してください。",
             false,
-        ),
-        "FAILED_RETRYABLE" => (
-            "save_failed",
-            "保存ジョブを確認し、原因を解消して再試行してください。",
-            true,
         ),
         "DAEMON_UNAVAILABLE" => (
             "daemon_unavailable",

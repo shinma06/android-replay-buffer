@@ -144,3 +144,5 @@
 | [#155](https://entire.com/gh/shinma06/-/trails/155)・[#156](https://entire.com/gh/shinma06/-/trails/156) | Item #18。[メディアと K13](https://github.com/shinma06/android-replay-buffer/pull/558)、[Studio と S7](https://github.com/shinma06/android-replay-buffer/pull/560)、[実時間編集・四ストリームと書き出し](https://github.com/shinma06/android-replay-buffer/pull/561)を統合 |
 
 各規範の根拠は対応する SPEC の実装リンク、[要件](../requirements)、[検証記録](../verifications)で確認できる。履歴の時点と基準版で値が異なる例は、実ファイルの拡張子（SPEC-07）、現行ツール数と過去 AVD 試験・通常 Kani 集合の本数（SPEC-04）で個別に示した。
+
+保存先の事前検査・pin 予算・救出は [SPEC-02](SPEC-02-time-selection-bundle.md) に従う。失敗分類は arb-core（K16）、永続状態は catalog、表示は [共有契約表](ui-feedback-contract-table.json) が所有する。

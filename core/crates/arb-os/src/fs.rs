@@ -973,6 +973,39 @@ pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()>
     }
 }
 
+/// Normalizes native filesystem errors before applying save recovery policy.
+#[must_use]
+pub fn save_failure_io_kind(error: &std::io::Error) -> arb_core::save_failure::SaveFailureIoKind {
+    use arb_core::save_failure::SaveFailureIoKind as Io;
+    use std::io::ErrorKind as E;
+    #[cfg(windows)]
+    if let Some(code) = error.raw_os_error().and_then(|n| u32::try_from(n).ok()) {
+        use windows_sys::Win32::Foundation::{
+            ERROR_INVALID_DRIVE, ERROR_INVALID_NAME, ERROR_LOCK_VIOLATION, ERROR_PATH_NOT_FOUND,
+            ERROR_SHARING_VIOLATION,
+        };
+        match code {
+            ERROR_INVALID_DRIVE | ERROR_PATH_NOT_FOUND => return Io::NotFound,
+            ERROR_INVALID_NAME => return Io::InvalidFilename,
+            ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION => return Io::Busy,
+            _ => {}
+        }
+    }
+    match error.kind() {
+        E::NotFound => Io::NotFound,
+        E::PermissionDenied => Io::PermissionDenied,
+        E::NotADirectory | E::AlreadyExists | E::IsADirectory => Io::NotADirectory,
+        E::ReadOnlyFilesystem => Io::ReadOnlyFilesystem,
+        E::InvalidFilename | E::InvalidInput => Io::InvalidFilename,
+        E::StorageFull => Io::StorageFull,
+        E::QuotaExceeded => Io::QuotaExceeded,
+        E::Interrupted => Io::Interrupted,
+        E::WouldBlock => Io::WouldBlock,
+        E::ResourceBusy | E::ExecutableFileBusy => Io::Busy,
+        _ => Io::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

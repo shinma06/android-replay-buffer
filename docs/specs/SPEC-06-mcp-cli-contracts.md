@@ -17,7 +17,7 @@ satisfies:
 
 `arb-cli mcp` は stdin／stdout の改行区切り JSON-RPC 2.0 サーバー。`initialize` で指定された `2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25` を返す。省略・未知版には `2025-11-25` を提示する。`2025-06-18` 以降のバッチ要求は `-32600`。応答と通知は stdout 上で行を混ぜてはならない。`initialize` の `instructions` は、`arb_query_logs` が既定 `compact`（全項目は `fields: "full"`）で `limit` 最大 500、`arb_screenshot` が既定で画像を含まず `file_uri`／`resource_links` を返すこと（インライン画像は `include_image: true`）、`outputSchema` を `arb://schemas/{tool}` で読めることを短く案内する。
 
-`tools/list` は `initialize` で交渉した版に従い、全 20 ツールを 1 応答で返す（`nextCursor` なし）。一覧は `name`・`description`・`inputSchema`・`annotations`（2025-11-25 は `execution` も）だけを載せ、任意項目の `outputSchema` は 4 版とも載せない。1 応答は 4 版とも 30,000 バイト以下（実測約 20.8 KB）を維持する。各ツールの完全な `outputSchema` は `resources/read` の `arb://schemas/{tool}`（`mimeType: application/schema+json`）で交渉版のものを取得でき、`completion/complete` は `tool` 名を前方一致で補完する。tools/list のツール名以外（未知名、`..`、区切り文字、呼び出し別名）は `-32602`。実行時の検証と契約試験はこの完全なスキーマ（`additionalProperties: false`）を使い、2025-06-18 以降の `structuredContent` は変わらない。入力・出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
+`tools/list` は `initialize` で交渉した版に従い、全 21 ツールを 1 応答で返す（`nextCursor` なし）。一覧は `name`・`description`・`inputSchema`・`annotations`（2025-11-25 は `execution` も）だけを載せ、任意項目の `outputSchema` は 4 版とも載せない。1 応答は 4 版とも 30,000 バイト以下（実測約 20.8 KB）を維持する。各ツールの完全な `outputSchema` は `resources/read` の `arb://schemas/{tool}`（`mimeType: application/schema+json`）で交渉版のものを取得でき、`completion/complete` は `tool` 名を前方一致で補完する。tools/list のツール名以外（未知名、`..`、区切り文字、呼び出し別名）は `-32602`。実行時の検証と契約試験はこの完全なスキーマ（`additionalProperties: false`）を使い、2025-06-18 以降の `structuredContent` は変わらない。入力・出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
 
 公開ツールの `inputSchema`、成功型・エラー型から組み立てる `outputSchema`、`ToolAnnotations` は同じツール表に従う。版による既定値・受理範囲の違いは [`version.rs`](../../core/crates/arb-cli/src/mcp/version.rs) の能力述語だけが決め、ほかのファイルは版文字列を持たない。デーモン RPC の形は IDE・CLI と共通のまま保ち、MCP だけの整形（軽量行、画面の参照、任意のローカル時刻、続きの呼び出し）は [投影層](../../core/crates/arb-cli/src/mcp/project) の純関数が行う。投影は繰り返しを省くか派生項目を足すだけで、証跡の行を落とさない。`tools/call` の本体は全版で JSON テキストに入り、2025-06-18 以降は同じ値を `structuredContent` にも載せる。追加の画像・リンクは別の content ブロック。`isError`、`error_code`、`rpc_code`、`message` を用いて操作失敗を報告する。CLI の構造化エラーと MCP は `kind`・`hint`・`retryable` の判定を共有し、二重退避 `ALREADY_TRASHED` と二重復元 `ALREADY_ACTIVE`、映像トラックのない入力 `NO_VIDEO` を識別する。CLI の JSON と MCP のエラー本体はデーモンの `error.data.details` を任意の `details` オブジェクトとして保持する。引数検証やメソッド未定義のプロトコル応答と、実行済みツールの失敗を区別する。ヒント（読み取り専用・破壊性・冪等性・外部作用）は各ツールの表の値を使う。[正本 JSON](mcp-tools-table.json)・[版別スキーマ生成](../../core/crates/arb-cli/src/mcp/catalog.rs)・[MCP Tools 原仕様](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
@@ -25,11 +25,11 @@ satisfies:
 
 `arb_inspect_frames` は映像のないバンドルと 0 フレームの映像をメタデータ・描画とも `NO_VIDEO`（`-32602`）で返す。`tap_crop` の `tap_index` が概要タップの範囲外なら `INVALID_PARAMS`（`-32602`）とし、`details` に `field`、指定値 `got`、件数 `overview_tap_count`、上限 `allowed_max`（0 件は null）、診断文 `cause` を入れる。`hint` は件数に応じて有効範囲、または `tap_index` を外して映像ピクセル座標 `tap_x`・`tap_y` を指定する方法を案内する。
 
-| 用途 | `tools/list` の公開名（20 件） |
+| 用途 | `tools/list` の公開名（21 件） |
 | --- | --- |
 | 状態・端末・設定 | `arb_status`、`arb_devices`、`arb_config_get`、`arb_config_update` |
 | キャプチャ制御 | `arb_capture_start`、`arb_capture_stop` |
-| 保存・調査開始 | `arb_save`、`arb_save_logs`、`arb_screenshot`、`arb_save_and_inspect` |
+| 保存・調査開始 | `arb_save`、`arb_save_logs`、`arb_screenshot`、`arb_save_and_inspect`、`arb_jobs` |
 | ライブラリ | `arb_list_bundles`、`arb_trash_bundle`、`arb_restore_bundle`、`arb_gc_bundles`、`arb_forget_bundle` |
 | 保存物の調査 | `arb_timeline_overview`、`arb_query_logs`、`arb_inspect_frames` |
 | 書き出し | `arb_export_trim`、`arb_export_frame_png`（4 版とも `output_path` か自動命名の `output_dir` のどちらか一方が必須。どちらも既存ファイルを上書きせず、`overwrite` 引数はない。明示パスの衝突は `-32002`） |
@@ -81,3 +81,5 @@ satisfies:
 | Tasks のキャンセル | 以後の段階を停止、発行済み成果物は残り得る | 自動ロールバック済みと断定する |
 
 根拠は Trail #101・#133／PR #538、#151／PR #554、#153／PR #556、TCB-19／21。[実 stdio 契約試験](../../core/crates/arb-cli/tests/stdio_contract)・[エラー・保存結果表](ui-feedback-contract-table.json)
+
+保存ジョブを arb_jobs の list で確認し、retry、retarget（保存先省略で管理域）、discard で操作できる。MCP は pin 件数を返し、daemon RPC は IDE 用の ID 配列も返す。arb_status の failed_save_jobs と oldest_failed_job_id で滞留を確認できる。

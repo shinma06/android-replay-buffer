@@ -16,6 +16,7 @@ pub mod coverage;
 pub mod device;
 pub mod gesture;
 pub mod legacy;
+pub mod save_failure;
 pub mod selection;
 pub mod state;
 pub mod time;

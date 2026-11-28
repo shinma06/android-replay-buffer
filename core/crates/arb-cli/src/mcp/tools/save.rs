@@ -7,6 +7,44 @@ use crate::mcp::{
 };
 use serde_json::{Map, Value, json};
 impl McpServer {
+    pub(super) fn tool_jobs(&mut self, args: &Map<String, Value>) -> Result<ToolOutput, Failure> {
+        let action = args["action"]
+            .as_str()
+            .ok_or_else(|| Failure::invalid("action を指定してください。"))?;
+        if action == "list" {
+            let mut result = self.call_daemon("save.list_jobs", &json!({}))?;
+            for job in result["jobs"]
+                .as_array_mut()
+                .ok_or_else(|| Failure::unavailable("ジョブ一覧を取得できません。"))?
+            {
+                *job = project_job(job);
+            }
+            return Ok(ToolOutput::new(result));
+        }
+        let id = args
+            .get("job_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| Failure::invalid("job_id を指定してください。"))?;
+        let mut params = json!({"job_id":id});
+        let method = match action {
+            "retarget" => {
+                if let Some(dest) = crate::mcp::args::optional_abs_path(args, "dest_dir")? {
+                    params["dest_dir"] = json!(dest);
+                }
+                "save.retarget"
+            }
+            "retry" => "save.retry",
+            "discard" => "save.discard",
+            _ => return Err(Failure::invalid("未知のジョブ操作です。")),
+        };
+        let result = self.call_daemon(method, &params)?;
+        if action == "discard" {
+            Ok(ToolOutput::new(json!({"job":project_job(&result)})))
+        } else {
+            save_content(result)
+        }
+    }
     pub(super) fn tool_save(
         &mut self,
         method: &str,
@@ -91,8 +129,22 @@ fn legacy_warning_details(obj: &serde_json::Map<String, Value>) -> Value {
     )
 }
 
+fn project_job(job: &Value) -> Value {
+    let count = job["pinned_chunk_count"].as_u64().unwrap_or_else(|| {
+        job["pinned_chunk_ids"]
+            .as_array()
+            .map_or(0, |ids| ids.len() as u64)
+    });
+    json!({"job_id":job["job_id"],"state":job["state"],"failure_class":job["failure_class"],
+        "recommended_action":job["recommended_action"],"last_error":job["last_error"],
+        "pinned_chunk_count":count,"destination_path":job["destination_path"]})
+}
+
 pub(crate) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
     if let Some(obj) = response.as_object_mut() {
+        if let Some(job) = obj.get_mut("job") {
+            *job = project_job(job);
+        }
         obj.entry("warning_codes").or_insert_with(|| json!([]));
         if !obj.contains_key("warning_details") {
             let details = legacy_warning_details(obj);
@@ -120,7 +172,11 @@ pub(crate) fn save_content(mut response: Value) -> Result<ToolOutput, Failure> {
     if crate::save_outcome_failed(&response) {
         return Err(Failure {
             rpc_code: -32006,
-            label: "FAILED_RETRYABLE",
+            label: match response["job"]["failure_class"].as_str() {
+                Some("permanent_destination") => "SAVE_NEEDS_RETARGET",
+                Some("integrity") => "SAVE_FAILED",
+                _ => "FAILED_RETRYABLE",
+            },
             message: "保存に失敗しました。ジョブの状態を確認してください。".into(),
             detail: Some(response),
             hint: None,

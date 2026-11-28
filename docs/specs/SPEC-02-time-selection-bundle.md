@@ -88,9 +88,12 @@ satisfies:
 ## リング・二相保存・回復 [実装済み]
 
 1. リングは既定 10 分・1.5 GiB。退避対象は古い未 pin の閉じたチャンク。空き容量が既定 3 GiB 未満のときは新規取得を安全停止する。確定バンドルや再試行用 pin を空き確保に流用してはならない（REQ-04）。
-2. 保存時は対象チャンクの pin、ジョブ ID、出力先・保存窓・トリガーなど再構成に必要な情報を永続化する。`pinned` → `draining` → `materializing` と進む。
-3. 同じファイルシステムのステージングに動画・ログ・読み取り専用の `timeline.sqlite` 等を書き、SHA-256 を含む `manifest.json` を確定して原子的に公開する。確定後の内容は WORM（一度書き込んだ内容を変更しない）。編集状態・リース・論理削除は外部の `catalog.sqlite` に保存する。
-4. 正常完了は `completed`。`failed_retryable` は pin を維持し、`save.retry` で再試行、`save.retarget` で出力先を変えて再試行できる。明示破棄は `save.discard`。起動回復は残存 pin とジョブを照合し、所有を確認できた未確定作業領域を回収する。別のディレクトリを名前の類似だけで消してはならない。
+2. 指定先では親を作成し、一時ファイルを作成・削除してから pin する。恒久的に書けない場合は OUTPUT_DIR_UNUSABLE を返し、ジョブと pin の増加は 0。新規に保護するチャンクと既存 pin の和集合のバイト数がリング容量予算の max_pinned_ring_fraction（既定 0.5）を超える場合も拒否する。
+3. 保存時は対象チャンクの pin、ジョブ ID、出力先・保存窓・トリガーなど再構成に必要な情報を永続化する。`pinned` → `draining` → `materializing` と進む。
+4. 同じファイルシステムのステージングに動画・ログ・読み取り専用の `timeline.sqlite` 等を書き、SHA-256 を含む `manifest.json` を確定して原子的に公開する。確定後の内容は WORM（一度書き込んだ内容を変更しない）。編集状態・リース・論理削除は外部の `catalog.sqlite` に保存する。
+5. 正常完了は `completed`。`failed_retryable` は pin を維持し、`save.retry` で再試行、`save.retarget` で出力先を変えて再試行できる。明示破棄は `save.discard`。起動回復は残存 pin とジョブを照合し、所有を確認できた未確定作業領域を回収する。別のディレクトリを名前の類似だけで消してはならない。
+
+失敗原因が保存先なら retarget、一時障害なら retry、内部データの破損なら discard を案内する。失敗から既定 900 秒後に管理域へ一度だけ自動救出する。設定 failed_job_rescue_after_secs が 0 なら無効。救出失敗時と破損時は pin を保持し、ユーザーの操作を待つ。
 
 [状態遷移](../../core/crates/arb-core/src/state.rs)・[リング](../../core/crates/arb-storage/src/ring.rs)・[バンドル公開](../../core/crates/arb-storage/src/bundle_io.rs)・[VER-05](../verifications/VER-05-arb-storage.md)
 
