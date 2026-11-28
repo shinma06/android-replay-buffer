@@ -20,7 +20,7 @@
 //!    outcome ends in `Completed` or `FailedRetryable`; a bundle committed with only a failed
 //!    parent-directory `fsync` is treated as published.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1865,7 +1865,7 @@ impl CapturePipeline {
             ));
         }
 
-        self.check_pin_budget(&chunk_ids)?;
+        self.check_pin_budget(None, &chunk_ids)?;
         let job_id = next_id("job");
         let bundle_id = next_id("bundle");
         let now_utc = utc_now_iso8601();
@@ -1968,7 +1968,7 @@ impl CapturePipeline {
         }
         let job_id = pending.guard.job_id.clone();
         if chunk_ids.len() != pending.pinned_chunk_ids.len() {
-            self.check_pin_budget(&chunk_ids)?;
+            self.check_pin_budget(Some(&job_id), &chunk_ids)?;
             let _ = self.ring.pin_chunks(
                 &job_id,
                 &pending.dest_bundle_dir,
@@ -2018,8 +2018,27 @@ impl CapturePipeline {
     }
 
     /// Invoked under the capture lock before both the initial pin and its drain extension.
-    fn check_pin_budget(&self, selected: &[String]) -> Result<(), DaemonError> {
-        let mut protected = self.ring.pinned_chunk_ids()?;
+    /// Only pins held by other jobs count against a save, so a save is never refused by
+    /// its own selection.
+    fn check_pin_budget(
+        &self,
+        own_job: Option<&str>,
+        selected: &[String],
+    ) -> Result<(), DaemonError> {
+        if self.ring.pinned_chunk_ids()?.is_empty() {
+            return Ok(());
+        }
+        let mut protected: BTreeSet<String> = self
+            .ring
+            .pin_journal()
+            .list_all()?
+            .into_iter()
+            .filter(|record| Some(record.job_id.as_str()) != own_job)
+            .flat_map(|record| record.pinned_chunk_ids)
+            .collect();
+        if protected.is_empty() {
+            return Ok(());
+        }
         protected.extend(selected.iter().cloned());
         let bytes = protected
             .iter()
@@ -5759,7 +5778,10 @@ mod tests {
         let mut policy = cap.ring.policy();
         policy.max_ring_bytes = bytes * 2;
         cap.set_ring_policy(policy);
-        assert!(cap.check_pin_budget(&record.job.pinned_chunk_ids).is_ok()); // shared pins counted once
+        assert!(
+            cap.check_pin_budget(None, &record.job.pinned_chunk_ids)
+                .is_ok()
+        ); // shared pins counted once
         policy.max_ring_bytes -= 1;
         cap.set_ring_policy(policy);
         drop(cap);
@@ -5810,6 +5832,33 @@ mod tests {
                 .rescue_attempted
         );
         at
+    }
+
+    #[test]
+    fn pin_budget_never_blocks_a_save_when_no_other_job_holds_pins() {
+        use serde_json::json;
+        let tmp = TempDir::new().unwrap();
+        let paths = arb_os::paths::ArbPaths {
+            data_dir: tmp.path().join("data"),
+            cache_dir: tmp.path().join("cache"),
+            runtime_dir: tmp.path().join("run"),
+        };
+        let server = crate::DaemonServer::start(crate::DaemonConfig::new(paths)).unwrap();
+        let state = &server.state;
+        {
+            let mut cap = state.lock_capture().unwrap();
+            cap.begin_session("A");
+            cap.ingest_event(heartbeat_at(100)).unwrap();
+            let bytes = cap.ring_stats().unwrap().1;
+            let mut policy = cap.ring.policy();
+            policy.max_ring_bytes = bytes;
+            cap.set_ring_policy(policy);
+            // The selection alone is 100% of the ring budget.
+        }
+        let saved = state
+            .dispatch_guarded("save.logs", json!({"drain_timeout_ms":0}))
+            .unwrap();
+        assert_eq!(saved["job"]["state"], "completed");
     }
 
     #[test]

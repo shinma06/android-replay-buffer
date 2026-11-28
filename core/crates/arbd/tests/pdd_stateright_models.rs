@@ -992,9 +992,11 @@ impl Model for S2Model {
                     .flatten()
                     .filter(|c| c.pinned || c.boot == s.boot)
                     .count();
-                if !usable || projected > 1 {
+                // Two equal slots, budget 50%; only pins held by other jobs count.
+                let held = s.chunks.iter().flatten().any(|c| c.pinned);
+                if !usable || (held && projected > 1) {
                     return None;
-                } // two equal slots, budget 50%
+                }
                 if s.job.is_some_and(|j| !j.terminal()) {
                     return None;
                 }
@@ -1294,10 +1296,18 @@ impl Model for S2Model {
                 },
             ),
             Property::always(
-                "S2 pin budget bounds protected slots",
-                |_: &S2Model, s: &S2State| {
-                    s.chunks.iter().flatten().filter(|c| c.pinned).count() <= 1
+                "S2 pin budget never blocks a save without other pins",
+                |m: &S2Model, s: &S2State| {
+                    !s.has_writer()
+                        || s.job.is_some_and(|j| !j.terminal())
+                        || s.chunks.iter().flatten().any(|c| c.pinned)
+                        || m.next_state(s, S2Action::Phase1PinAndParams { usable: true })
+                            .is_some()
                 },
+            ),
+            Property::sometimes(
+                "S2 fresh save pins the whole ring",
+                |_: &S2Model, s: &S2State| s.chunks.iter().all(|c| c.is_some_and(|c| c.pinned)),
             ),
             Property::always(
                 "S2 transient retry and managed rescue complete and release pins",
