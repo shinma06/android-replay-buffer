@@ -142,7 +142,7 @@ K15 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani
 
 K18 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani -p arb-core -Z stubbing --harness k18_` は 1/1 成功（検証 2.0 秒）。3 個の cover（深いアプリ行の追加、先頭 10 行内のアプリ行、長いスタックでアプリ行なし）はすべて SATISFIED。最初の形（`Vec` に位置を集めて `contains` で照合）は 15 分たっても SAT 段が終わらなかったため、選択を割り当てのない `StackTopPlan`（先頭数・最初のアプリ位置・追加位置）に分け、本番の `enrich_crash_marker` はこの計画どおりに `0..head` と追加位置の行を並べる。
 
-K23 の macOS arm64 実測（2026-11-29、Kani 0.68 / CBMC 6.11）。`core/scripts/pdd-kani.sh arb-media --harness k23_fit_within_bounds_without_overflow` は 1/1 成功（検証 0.93 秒、実時間 2.6 秒）。4 個の cover（収まる画像、横長の縮小、縦長の縮小、短辺の 1 px への切り上げ）はすべて SATISFIED。最初の形（記号的な箱の辺と、最も近い整数への丸めを同じハーネスで表明）は `u128` 積で 9 分、`u64` 積・箱の辺 1,024 固定でも 5 分を超えて終わらなかったため、丸めの性質を拡張集合へ分けた。
+K23 の macOS arm64 実測（2026-11-29、Kani 0.68 / CBMC 6.11）。`core/scripts/pdd-kani.sh arb-media --harness k23_fit_within_bounds_without_overflow` は 1/1 成功（検証 0.93 秒、実時間 2.6 秒）。4 個の cover（収まる画像、横長の縮小、縦長の縮小、短辺の 1 px への切り上げ）はすべて SATISFIED。最初の形（記号的な箱の辺と、最も近い整数への丸めを同じハーネスで表明）は `u128` 積で 9 分、`u64` 積・箱の辺 1,024 固定でも 5 分を超えて終わらなかったため、丸めの性質を拡張集合へ分けた。拡張集合の `k23_fit_within_rounds_to_the_nearest_ratio` は `--features kani-extended` で 15 分の打ち切りに達した（未証明。proptest で標本検査）。
 
 K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10・K11 追加前の比較記録。
 
