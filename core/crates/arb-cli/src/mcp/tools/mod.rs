@@ -14,6 +14,7 @@ impl McpServer {
     ) -> Result<ToolOutput, Failure> {
         match name {
             "arb_status" => self.tool_status(),
+            "arb_jobs" => self.tool_jobs(args),
             "arb_devices" => {
                 let resp = self.call_daemon("device.list", &json!({}))?;
                 Ok(ToolOutput::new(resp))

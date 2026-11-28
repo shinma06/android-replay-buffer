@@ -225,7 +225,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-18 | viewport の ns 値が Rust・JSON・JVM 間で同じフレームと終端を表し、Studio が単調時計から得た共通のメディア時刻を描画・操作に使う | K10、G3、Kotlin 決定論的時計 | `pdd_g3_media_props.rs` と `PlaybackControllerTest` が同じ 11 秒・61 枚のベクトルを読み、`ArbUiComponentsTest.vfrTimelineLayersAndGesturesUseOnePixelCoordinate` が各層の画素を検査 | Kani の有界証明は JVM・JBR・Compose の実装を含まない。旧 daemon・10 万枚超の CFR フォールバックは中間 PTS を推定する。10 万枚超で最終サンプル長が 0 の MP4 では、daemon は平均間隔を最終保持長として `timeline_duration_ns` を返すが、Studio は末尾長が不明なため epoch からの推定に戻り、両者の終端は一致しない。実画面の描画周期と入力遅延は Studio 受け入れで確認する |
 | TCB-19 | CLI/MCP の `save_outcome_failed` と IDE の `SaveOutcomeResponse.savedBundleId` が同じ wire 応答を保存成功と判定する | 共有契約表、KON-7 | `ui-feedback-contract-table.json` の save_rows を arb-cli、PddContractTablesTest、PddUiFeedbackContractTest で検査 | 表にある状態と ID の組合せを検証。実 IDE での通知描画は受け入れ対象 |
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
-| TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 20 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
+| TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 21 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
 | TCB-22 | adbd の service requested 行を logd が付けた UID 0・2000 とタグで認証できる | 注入要求の時刻・件数 | API 37 AVD で確認。K17 の UID・座標境界と共有コマンド表 | API 28〜36 と OEM 端末の書式・出力は未検証。対話シェル内・非 ADB 注入は観測範囲外 |
 
 ### S7 の Studio トリム状態機械
@@ -243,3 +243,5 @@ S7 はフレーム開始位置 0・2、終端 3、最小選択幅 1 の有限軸
 ### 停止・再開時の同一性と証跡尺
 
 ホストの連続時計と端末が報告する boot ID を同一性判定に使う。端末のフォールバック UUID が再接続ごとに変わった場合は、前回との同一性を証明できないため、別の保存範囲として扱う。ホスト起動を跨ぐ未退避リングにも同じ時間軸を仮定しない。静止画面で新しい VFR サンプルが来ない期間や、容量上限で回転したチャンクの映像は再構築できない。実機での上限・入力イベント・MP4 測定値の照合は実機受入で行う。
+
+K16 は macOS arm64 の Kani で 1/1 成功、cover は 3/3 到達。全保存段階と I/O 原因に対する推奨操作を証明する。S2 は事前検査・容量予算による拒否、救出での pin 解放、一時障害後の再試行を検査する。実際の書き込み権限と OS のエラー分類は事前検査のファイル試験で確認する。

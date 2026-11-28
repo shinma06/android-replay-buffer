@@ -673,6 +673,7 @@ enum Staging {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Job {
+    rescue_attempted: bool,
     phase: JobPhase,
     pins: u8,
     boot: u8,
@@ -743,7 +744,9 @@ enum S2Action {
     AcquireDataLock(usize),
     WriteChunk,
     DiskLevelChange(Disk),
-    Phase1PinAndParams,
+    Phase1PinAndParams {
+        usable: bool,
+    },
     Phase1SqlCommit,
     Phase2StageWrite,
     Phase2AtomicRename {
@@ -753,6 +756,7 @@ enum S2Action {
     Phase2CompleteJob,
     Retry,
     Retarget,
+    Rescue,
     Discard,
     TrashBundle,
     RestoreBundle,
@@ -888,7 +892,8 @@ impl Model for S2Model {
             S2Action::DiskLevelChange(Disk::Ok),
             S2Action::DiskLevelChange(Disk::Low),
             S2Action::DiskLevelChange(Disk::Full),
-            S2Action::Phase1PinAndParams,
+            S2Action::Phase1PinAndParams { usable: false },
+            S2Action::Phase1PinAndParams { usable: true },
             S2Action::Phase1SqlCommit,
             S2Action::Phase2StageWrite,
             S2Action::Phase2AtomicRename {
@@ -901,6 +906,7 @@ impl Model for S2Model {
             S2Action::Phase2CompleteJob,
             S2Action::Retry,
             S2Action::Retarget,
+            S2Action::Rescue,
             S2Action::Discard,
             S2Action::TrashBundle,
             S2Action::RestoreBundle,
@@ -979,7 +985,18 @@ impl Model for S2Model {
                 }
                 n.disk = d;
             }
-            S2Action::Phase1PinAndParams => {
+            S2Action::Phase1PinAndParams { usable } => {
+                let projected = s
+                    .chunks
+                    .iter()
+                    .flatten()
+                    .filter(|c| c.pinned || c.boot == s.boot)
+                    .count();
+                // Two equal slots, budget 50%; only pins held by other jobs count.
+                let held = s.chunks.iter().flatten().any(|c| c.pinned);
+                if !usable || (held && projected > 1) {
+                    return None;
+                }
                 if s.job.is_some_and(|j| !j.terminal()) {
                     return None;
                 }
@@ -996,6 +1013,7 @@ impl Model for S2Model {
                     n.boot_blackout = true;
                 }
                 n.job = Some(Job {
+                    rescue_attempted: false,
                     phase: JobPhase::Pinned,
                     pins,
                     boot: s.boot,
@@ -1073,12 +1091,18 @@ impl Model for S2Model {
                 j.pins = 0;
                 n.job = Some(j);
             }
-            S2Action::Retry | S2Action::Retarget => {
+            S2Action::Retry | S2Action::Retarget | S2Action::Rescue => {
                 let mut j = s.job?;
                 if j.phase != JobPhase::FailedRetryable {
                     return None;
                 }
-                if matches!(a, S2Action::Retarget) {
+                if matches!(a, S2Action::Rescue) {
+                    if j.rescue_attempted {
+                        return None;
+                    }
+                    j.rescue_attempted = true;
+                    j.managed = true;
+                } else if matches!(a, S2Action::Retarget) {
                     j.managed = !j.managed;
                 }
                 j.phase = JobPhase::Committed;
@@ -1265,32 +1289,63 @@ impl Model for S2Model {
                 },
             ),
             Property::always(
-                "S2 FailedRetryable completes once disk is Ok",
+                "S2 rejected preflight creates no job or pins",
+                |m: &S2Model, s: &S2State| {
+                    m.next_state(s, S2Action::Phase1PinAndParams { usable: false })
+                        .is_none()
+                },
+            ),
+            Property::always(
+                "S2 pin budget never blocks a save without other pins",
+                |m: &S2Model, s: &S2State| {
+                    !s.has_writer()
+                        || s.job.is_some_and(|j| !j.terminal())
+                        || s.chunks.iter().flatten().any(|c| c.pinned)
+                        || m.next_state(s, S2Action::Phase1PinAndParams { usable: true })
+                            .is_some()
+                },
+            ),
+            Property::sometimes(
+                "S2 fresh save pins the whole ring",
+                |_: &S2Model, s: &S2State| s.chunks.iter().all(|c| c.is_some_and(|c| c.pinned)),
+            ),
+            Property::always(
+                "S2 transient retry and managed rescue complete and release pins",
                 |m: &S2Model, s: &S2State| {
                     if !s.job.is_some_and(|j| j.phase == JobPhase::FailedRetryable) {
                         return true;
                     }
-                    let mut cur = s.clone();
-                    cur.disk = Disk::Ok;
-                    if !cur.has_writer() {
-                        cur.writers[0] = true;
-                    }
-                    for step in [
-                        S2Action::Retry,
-                        S2Action::Phase2StageWrite,
-                        S2Action::Phase2AtomicRename {
-                            parent_sync_ok: true,
-                        },
-                        S2Action::Phase2CatalogRegister,
-                        S2Action::Phase2CompleteJob,
-                    ] {
-                        match m.next_state(&cur, step) {
-                            Some(n) => cur = n,
-                            None => return false,
-                        }
-                    }
-                    cur.job.is_some_and(|j| j.phase == JobPhase::Completed)
-                        && cur.chunks.iter().flatten().all(|c| !c.pinned)
+                    [S2Action::Retry, S2Action::Rescue]
+                        .into_iter()
+                        .all(|first| {
+                            let rescue = matches!(first, S2Action::Rescue);
+                            if rescue && s.job.is_some_and(|j| j.rescue_attempted) {
+                                return m.next_state(s, first).is_none();
+                            }
+                            let mut cur = s.clone();
+                            cur.disk = Disk::Ok;
+                            if !cur.has_writer() {
+                                cur.writers[0] = true;
+                            }
+                            for step in [
+                                first,
+                                S2Action::Phase2StageWrite,
+                                S2Action::Phase2AtomicRename {
+                                    parent_sync_ok: true,
+                                },
+                                S2Action::Phase2CatalogRegister,
+                                S2Action::Phase2CompleteJob,
+                            ] {
+                                match m.next_state(&cur, step) {
+                                    Some(n) => cur = n,
+                                    None => return false,
+                                }
+                            }
+                            cur.job.is_some_and(|j| {
+                                j.phase == JobPhase::Completed
+                                    && (!rescue || (j.managed && j.rescue_attempted))
+                            }) && cur.chunks.iter().flatten().all(|c| !c.pinned)
+                        })
                 },
             ),
             Property::sometimes(

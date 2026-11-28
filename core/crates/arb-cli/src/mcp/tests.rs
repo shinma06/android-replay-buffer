@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 #[test]
 fn tool_registry_matches_known_tools_with_valid_schemas() {
     let defs = catalog::for_version(ProtocolVersion::default());
-    assert_eq!(defs.len(), 20);
+    assert_eq!(defs.len(), 21);
     let mut names = BTreeSet::new();
     for def in defs {
         let name = def["name"].as_str().expect("tool must have string name");
@@ -41,7 +41,7 @@ fn tools_list_frame_fits_the_budget_on_every_version() {
         let bytes = frame.to_string().len() + 1;
         eprintln!("tools/list {}: {bytes} bytes", version.as_str());
         assert!(bytes <= 30_000, "{version:?}: {bytes} bytes");
-        assert_eq!(listed.len(), 20);
+        assert_eq!(listed.len(), 21);
         for (tool, full) in listed.iter().zip(catalog::for_version(version)) {
             assert!(tool.get("outputSchema").is_none(), "{}", tool["name"]);
             let mut expected = full.clone();
@@ -135,7 +135,7 @@ fn schema_resources_serve_every_complete_output_schema() {
         );
         assert_eq!(
             complete(&mut srv, "tool", "").unwrap()["completion"]["total"],
-            20
+            21
         );
         assert!(complete(&mut srv, "bundle_id", "").is_err());
     }

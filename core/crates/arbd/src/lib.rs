@@ -16,6 +16,7 @@ pub mod inspect_export;
 pub mod live_adb;
 pub mod media_engine;
 pub mod protocol;
+mod save_policy;
 pub mod screenshot;
 pub mod time_util;
 mod touch_calibration;
@@ -653,12 +654,7 @@ impl DaemonState {
             )
         };
         let active_viewports = self.media.active_viewport_count();
-        let active_save_jobs = self
-            .catalog
-            .list_save_jobs()?
-            .into_iter()
-            .filter(|j| !j.job.state.is_terminal())
-            .count();
+        let jobs = self.catalog.save_job_counts()?;
         let uptime_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut crash_autosave = self
             .lock(&self.crash_autosave_status, "crash autosave status")?
@@ -684,7 +680,9 @@ impl DaemonState {
             ring_pinned_chunk_count: ring_pinned,
             buffered_secs,
             active_viewports,
-            active_save_jobs,
+            active_save_jobs: jobs.active,
+            failed_save_jobs: jobs.failed,
+            oldest_failed_job_id: jobs.oldest_failed_job_id,
             recovery: RecoverySummaryView {
                 removed_staging_dirs: self.recovery.removed_staging_dirs.len(),
                 reaped_leases: self.recovery.reaped_lease_ids.len(),
@@ -744,6 +742,7 @@ impl DaemonState {
             let mut cap = self.lock_capture()?;
             cap.select_audio_mode(candidate.audio_capture_mode);
             cap.set_ring_policy(candidate.to_ring_budget_policy());
+            cap.set_save_policy(&candidate);
             if patch.capture_enabled == Some(true) {
                 cap.clear_storage_pressure_stop();
             }
@@ -1315,11 +1314,14 @@ impl DaemonState {
     }
 
     fn handle_save_list_jobs(&self) -> Result<Value, DaemonError> {
+        let rescue_after = self
+            .lock(&self.user_config, "user config")?
+            .failed_job_rescue_after_secs;
         let jobs = self
             .catalog
             .list_save_jobs()?
             .iter()
-            .map(save_job_to_view)
+            .map(|j| save_job_to_view(j, rescue_after))
             .collect();
         Ok(serde_json::to_value(SaveListJobsResponse { jobs })?)
     }
@@ -1335,12 +1337,15 @@ impl DaemonState {
 
     fn handle_save_retarget(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: SaveRetargetParams = parse_params(params)?;
-        self.validate_output_location(&parsed.dest_dir, "dest_dir", None)?;
-        let plan = self.lock_capture()?.prepare_retarget(
-            &self.catalog,
-            &parsed.job_id,
-            &parsed.dest_dir,
+        let dest = self.resolve_output_dir(
+            parsed.dest_dir.as_deref(),
+            None,
+            self.catalog.managed_bundles_root(),
+            None,
         )?;
+        let plan = self
+            .lock_capture()?
+            .prepare_retarget(&self.catalog, &parsed.job_id, &dest)?;
         let outcome = phase2_materialize(&plan, &self.catalog, &parsed.job_id)?;
         Ok(serde_json::to_value(outcome)?)
     }
@@ -1758,7 +1763,24 @@ impl DaemonState {
             .map(|p| (p, "dest_dir"))
             .or_else(|| configured.map(|p| (p, "output_dir_override")))
         {
-            self.validate_output_location(dir, name, source)?;
+            self.validate_output_location(dir, name, source)
+                .map_err(|err| match err {
+                    DaemonError::InvalidParams(_)
+                        if dir.is_absolute()
+                            && !dir
+                                .components()
+                                .any(|c| matches!(c, std::path::Component::ParentDir)) =>
+                    {
+                        DaemonError::OutputDirUnusable {
+                            dest_dir: dir.into(),
+                            kind: arb_core::save_failure::SaveFailureIoKind::PrivateDirConflict,
+                        }
+                    }
+                    other => other,
+                })?;
+            if dir != self.catalog.managed_bundles_root() {
+                save_policy::probe_output_root(dir)?;
+            }
             Ok(dir.to_path_buf())
         } else {
             Ok(fallback.to_path_buf())
@@ -1812,6 +1834,19 @@ impl DaemonState {
             parsed.output_dir.as_deref(),
             Some(&path),
         )?;
+        if parsed
+            .output_path
+            .as_deref()
+            .is_none_or(|p| p.as_os_str().is_empty())
+            && let Some(dir) = parsed
+                .output_dir
+                .as_deref()
+                .or(config.screenshot_dir_override.as_deref())
+                .or(config.output_dir_override.as_deref())
+            && dir != self.catalog.managed_bundles_root()
+        {
+            save_policy::probe_output_root(dir)?;
+        }
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
         let backend = default_codec_backend();
         let ctx = ExportContext {
@@ -1831,12 +1866,16 @@ impl DaemonState {
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
 
-        let dest_parent = self.resolve_output_dir(
-            parsed.dest_dir.as_deref(),
-            user_cfg.output_dir_override.as_deref(),
-            self.catalog.managed_bundles_root(),
-            Some(&path),
-        )?;
+        let dest_parent = if parsed.keep_bundle {
+            self.resolve_output_dir(
+                parsed.dest_dir.as_deref(),
+                user_cfg.output_dir_override.as_deref(),
+                self.catalog.managed_bundles_root(),
+                Some(&path),
+            )?
+        } else {
+            self.catalog.managed_bundles_root().to_owned()
+        };
         let share_mp4_path = if let Some(explicit) = &parsed.output_path {
             self.validate_output_location(explicit, "output_path", Some(&path))?;
             self.reject_data_dir_state_file(explicit, "output_path")?;
@@ -1962,7 +2001,18 @@ impl DaemonState {
         params: Value,
     ) -> Result<Value, DaemonError> {
         if let Ok(result) = catch_unwind(AssertUnwindSafe(|| self.dispatch(method, params))) {
-            result
+            match result {
+                Err(DaemonError::PinBudget {
+                    pinned_fraction,
+                    max_fraction,
+                    ..
+                }) => Err(DaemonError::PinBudget {
+                    pinned_fraction,
+                    max_fraction,
+                    failed_save_jobs: self.catalog.save_job_counts()?.failed,
+                }),
+                other => other,
+            }
         } else {
             self.trigger_shutdown();
             Err(DaemonError::Internal(format!(
@@ -2033,6 +2083,7 @@ impl DaemonServer {
             effective_ring_policy,
             config.disk_provider,
         )?;
+        capture.set_save_policy(&user_config);
         capture.select_audio_mode(user_config.audio_capture_mode);
         capture.set_fault_injection(Arc::clone(&config.faults));
 
@@ -2386,7 +2437,16 @@ fn spawn_crash_worker(
 }
 
 fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
-    while let Ok(pending) = rx.recv() {
+    loop {
+        let pending = match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(pending) => pending,
+            Err(mpsc::RecvTimeoutError::Timeout) if !state.is_shutting_down() => {
+                let _ = state
+                    .rescue_failed_jobs(i64::try_from(current_unix_millis()).unwrap_or(i64::MAX));
+                continue;
+            }
+            Err(_) => break,
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             state.finish_pinned_save(
                 pending,
@@ -2482,7 +2542,12 @@ fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &Cra
 
     let result = (|| {
         if cfg.output_dir_override.is_some() {
-            state.validate_output_location(&save_target, "dest_dir", None)?;
+            state.resolve_output_dir(
+                Some(&save_target),
+                None,
+                state.catalog.managed_bundles_root(),
+                None,
+            )?;
         }
         let pending = cap.pin_crash(notice, u64::from(cfg.save_window_secs), &save_target)?;
         state

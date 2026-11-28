@@ -14,7 +14,7 @@ Sections (each one is reported separately, a crash in one never hides the others
                         plugin.xml metadata, byte-identical host binaries)
   2  launchers          start-arb.sh / start-arb-tray.command / start-arb.ps1
   3  cold-start-ipc     arbd cold start, `status`, `config get` / `config set`, `bundles list`
-  4  mcp                `arb-cli mcp`: initialize, 20 tools, stderr 0 B, real-bundle overview + contact sheet
+  4  mcp                `arb-cli mcp`: initialize, 21 tools, stderr 0 B, real-bundle overview + contact sheet
   5  legacy-read-only   schema 3 / schema 4 bundles: every file SHA-256 identical before and after
   6  suite-b            devin_verify_player_matrix.py 17/17 for 1 s GOP and 5 s GOP FHD30 `[47..=647]`
                         mid-GOP trims + open / seek / trim timings
@@ -81,6 +81,7 @@ EXPECTED_MCP_TOOLS = (
     "arb_config_update",
     "arb_save",
     "arb_screenshot",
+    "arb_jobs",
     "arb_save_logs",
     "arb_save_and_inspect",
     "arb_list_bundles",
@@ -972,7 +973,7 @@ def section_cold_start(report: Report, ctx: dict[str, Any], iso: Isolated) -> No
 # --------------------------------------------------------------------------------------------
 
 def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Path, meta: dict[str, Any]) -> None:
-    with report.section("mcp", "MCP 20 ツールと実バンドル") as sec:
+    with report.section("mcp", "MCP 21 ツールと実バンドル") as sec:
         cfg_cli = (iso.cli("config", "get").data or {}).get("config", {})
         client = McpClient([iso.bin("arb-cli"), "mcp"], iso.env)
         try:
@@ -983,7 +984,7 @@ def section_mcp(report: Report, ctx: dict[str, Any], iso: Isolated, fixture: Pat
             sec.check("notifications/initialized emitted no stray frame", ping.get("id") is not None and not client.stray_frames, client.stray_frames)
             tools = client.request("tools/list", {})["result"]["tools"]
             names = [t["name"] for t in tools]
-            sec.check("tools/list returns exactly the 20 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
+            sec.check("tools/list returns exactly the 21 tools", sorted(names) == sorted(EXPECTED_MCP_TOOLS), f"{len(names)} tools: {sorted(set(EXPECTED_MCP_TOOLS) ^ set(names))}")
             status = client.call_tool("arb_status", {})
             sec.check("arb_status isError=false", status["result"]["isError"] is False)
             cfg_mcp = tool_text(client.call_tool("arb_config_get", {}))
@@ -1875,7 +1876,7 @@ def self_test() -> int:
     png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1020, 588) + b"\x08\x06\x00\x00\x00"
     require("png dims", png_dimensions(png) == (1020, 588) and png_dimensions(b"nope") is None)
     require("snapshot diff", diff_snapshots({"a": "1", "b": "2"}, {"a": "1", "b": "3", "c": "4"}) == ["modified: b", "added: c"])
-    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 20)
+    require("tool names", len(set(EXPECTED_MCP_TOOLS)) == 21)
     require("gesture probes", [p["label"] for p in gesture_probe_points({"gestures": [
         {"kind": "tap", "parent_frame": 20, "in_trim_range": False, "trim_frame": -27, "x": 1, "y": 1},
         {"kind": "tap", "parent_frame": 120, "in_trim_range": True, "trim_frame": 73, "x": 960.0, "y": 540.0},

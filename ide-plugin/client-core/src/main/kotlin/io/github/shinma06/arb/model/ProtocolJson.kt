@@ -363,6 +363,8 @@ object ProtocolJson {
     }
 
     fun toConfigPatchJson(src: ArbConfigPatch): JsonObject = JsonObject().apply {
+        src.failedJobRescueAfterSecs?.let { addProperty("failed_job_rescue_after_secs", it) }
+        src.maxPinnedRingFraction?.let { addProperty("max_pinned_ring_fraction", it) }
         src.saveWindowSecs?.let { addProperty("save_window_secs", it) }
         src.ringBudgetBytes?.let { addProperty("ring_budget_bytes", it) }
         src.minFreeDiskBytes?.let { addProperty("min_free_disk_bytes", it) }

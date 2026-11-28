@@ -56,7 +56,7 @@ K1・K2 は時間窓と選別、K3 は時計、K4 はリング、K5 は状態遷
 
 実 AVD を起動し、外部クライアントの `arb-cli mcp` から初期化・ツール列挙 → 端末選択と録画開始 → 画面変化・ログ発生 → 保存と調査 → フレーム照合 → 共有動画・GC プレビューの順に操作する。エージェントが受け取った ID・尺・件数・エラーを、保存ファイルの再生尺、実画素、カタログ行と比較する。タッチはカーネルに届く操作かを記録する。観測した差は仕様番号・前提・再現入力とともに記録し、修正後に同じ入力で再実行する。
 
-過去の API 37 AVD 実走は当時の 17 ツール構成での記録。現行の全 20 ツールに対する実 stdio の合成データ試験や、API 28／33 の USB 実機・OEM・IDE 受け入れとは対象が異なる。[VER-31](../verifications/VER-31-pre-develop-acceptance-e2e.md)・[複数 OS 試験手順](../testing/devin-multi-os-test-plan.md)
+過去の API 37 AVD 実走は当時の 17 ツール構成での記録。現行の全 21 ツールに対する実 stdio の合成データ試験や、API 28／33 の USB 実機・OEM・IDE 受け入れとは対象が異なる。[VER-31](../verifications/VER-31-pre-develop-acceptance-e2e.md)・[複数 OS 試験手順](../testing/devin-multi-os-test-plan.md)
 
 ## 仕様 vs バグ
 
