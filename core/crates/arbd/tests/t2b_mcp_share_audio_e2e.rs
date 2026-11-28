@@ -430,6 +430,68 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
     }
 }
 
+#[test]
+fn rotated_tap_crop_agrees_with_rendering_for_each_gop() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+    let mut rpc = RpcClient::connect(server.endpoint());
+    let mut draft = rich_draft(tmp.path(), "rotation", false);
+    let mut packets = Vec::new();
+    for (idx, (w, h)) in [(64_u32, 96_u32), (96, 64)].into_iter().enumerate() {
+        let frame = DecodedFrame {
+            frame_index: 0,
+            width: w,
+            height: h,
+            format: PixelFormat::Yuv420p,
+            data: vec![128; usize::try_from(w * h * 3 / 2).unwrap()],
+        };
+        let mut encoded = OpenH264Backend::new()
+            .encode_yuv420p_sequence(&[frame], 1, FRAME_STEP_NS, EncodeParams::default())
+            .unwrap();
+        encoded[0].pts_ns = i64::try_from(idx).unwrap() * FRAME_STEP_NS;
+        packets.extend(encoded);
+    }
+    let src = tmp.path().join("rotation.mp4");
+    mux_raw_h264_to_mp4(&src, 96, 64, 90_000, 3_000, &packets).unwrap();
+    draft.video_mp4 = Some(MediaPayload::File(src));
+    draft.frames.truncate(2);
+    draft.frames[1].is_keyframe = true;
+    let video = draft.streams.video.as_mut().unwrap();
+    video.frame_count = 2;
+    video.display_width = Some(64);
+    video.display_height = Some(96);
+    draft.taps[0].alignment = draft.frames[0].alignment.clone();
+    draft.taps[0].x = Some(10.0);
+    draft.taps[0].y = Some(80.0);
+    let dir = paths.data_dir.join("bundles").join("rotation");
+    V2BundleWriter::write(&dir, "rotate-job", &draft).unwrap();
+    let overview = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    let recorded = rpc.call(
+        "media.inspect_frames",
+        &json!({"bundle_id":dir, "mode":"tap_crop", "tap_index":0, "metadata_only":true}),
+    );
+    assert_eq!(overview["taps"][0]["frame_index"], 0);
+    for (axis, expected) in [("x_video", 10), ("y_video", 80)] {
+        assert_eq!(overview["taps"][0][axis], expected);
+        assert_eq!(recorded["frames"][0]["tap"][axis], expected);
+    }
+    for (idx, x, y) in [(0, 10, 80), (1, 80, 10)] {
+        let mut args =
+            json!({"bundle_id":dir, "mode":"tap_crop", "frame_index":idx, "tap_x":x, "tap_y":y});
+        let rendered = rpc.call("media.inspect_frames", &args);
+        args["metadata_only"] = json!(true);
+        let metadata = rpc.call("media.inspect_frames", &args);
+        let dims = if idx == 0 { (64, 96) } else { (96, 64) };
+        assert_eq!(metadata["width"], dims.0);
+        assert_eq!(metadata["height"], dims.1);
+        assert_eq!(metadata["tap_crop"], rendered["tap_crop"]);
+        assert_eq!(metadata["tap_crop"]["tap_x"], x);
+        assert_eq!(metadata["tap_crop"]["tap_y"], y);
+    }
+    server.shutdown();
+}
+
 /// Seeds a minimal legacy schema-4 read-only folder containing a valid video.mp4 + replay.json.
 fn seed_legacy_ro_bundle(work_tmp: &Path, dir: &Path) {
     fs::create_dir_all(dir).expect("create legacy dir");
@@ -929,6 +991,23 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
         "trigger_delay_unknown"
     );
     assert_eq!(old["device_clock_offset"]["offset_ms"], Value::Null);
+
+    // A trigger strictly between the triples of a wall-clock jump has no known wall time.
+    delayed.epochs[0].end_boottime_ns = BASE_BT_NS + FRAME_STEP_NS;
+    let ClockAnchorRecord::DeviceTriple(mut after) = delayed.clock_anchors[0].clone() else {
+        panic!("fixture needs a device clock triple");
+    };
+    after.boottime_ns += 2 * FRAME_STEP_NS;
+    after.monotonic_ns += 2 * FRAME_STEP_NS;
+    after.realtime_ns += 2 * FRAME_STEP_NS + 30 * SEC_NS;
+    delayed
+        .clock_anchors
+        .push(ClockAnchorRecord::DeviceTriple(after));
+    let dir = external.join("jump");
+    V2BundleWriter::write(&dir, "job-jump", &delayed).unwrap();
+    let jumped = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    assert_eq!(jumped["device_clock_offset"]["reason"], "wall_clock_jump");
+    assert_eq!(jumped["device_clock_offset"]["offset_ms"], Value::Null);
 
     // 3. `media.inspect_frames` — `contact_sheet` mode.
     let sheet = rpc.call(

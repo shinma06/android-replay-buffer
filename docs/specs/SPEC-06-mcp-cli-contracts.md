@@ -23,7 +23,7 @@ satisfies:
 
 対象を特定できない旧デーモンの `-32001` は `NOT_FOUND` と読む。現行デーモンはバンドル・保存ジョブ・リース・ビューポートにそれぞれ `BUNDLE_NOT_FOUND`・`JOB_NOT_FOUND`・`LEASE_NOT_FOUND`・`VIEWPORT_NOT_FOUND` を付ける。対象端末なしは `DEVICE_NOT_FOUND`、端末用 JAR の欠落は `INSTALLATION_INCOMPLETE`、保存に必要なパラメータ・チャンク・ジャーナルの欠落は `SAVE_FAILED` とし、いずれも従来の数値コード `-32001` を維持する。このうち再試行可能なのは端末未接続だけで、IDE は接続を維持する。
 
-`arb_inspect_frames` は映像のないバンドルと 0 フレームの映像をメタデータ・描画とも `NO_VIDEO`（`-32602`）で返す。`mode: "tap_crop"` の `tap_crop` は `include_images` に関わらず非 null で、描画と同じ純関数 `arb-media::tap_crop_rect`（K21）の矩形・`tap_rel` を返す。画像外の `tap_x`／`tap_y` はメタデータでも描画と同じエラーになる。`tap_crop` の `tap_index` が概要タップの範囲外なら `INVALID_PARAMS`（`-32602`）とし、`details` に `field`、指定値 `got`、件数 `overview_tap_count`、上限 `allowed_max`（0 件は null）、診断文 `cause` を入れる。`hint` は件数に応じて有効範囲、または `tap_index` を外して映像ピクセル座標 `tap_x`・`tap_y` を指定する方法を案内する。
+`arb_inspect_frames` は映像のないバンドルと 0 フレームの映像をメタデータ・描画とも `NO_VIDEO`（`-32602`）で返す。`mode: "tap_crop"` の `tap_crop` は `include_images` に関わらず非 null で、描画と同じ純関数 `arb-media::tap_crop_rect`（K21）の矩形・`tap_rel` を返す。回転を含む映像では、各 GOP の H.264 ヘッダーから対象フレームの寸法を読み、画像を復号せずに概要と調査の座標を求める。画像外の `tap_x`／`tap_y` はメタデータでも描画と同じエラーになる。`tap_crop` の `tap_index` が概要タップの範囲外なら `INVALID_PARAMS`（`-32602`）とし、`details` に `field`、指定値 `got`、件数 `overview_tap_count`、上限 `allowed_max`（0 件は null）、診断文 `cause` を入れる。`hint` は件数に応じて有効範囲、または `tap_index` を外して映像ピクセル座標 `tap_x`・`tap_y` を指定する方法を案内する。
 
 | 用途 | `tools/list` の公開名（21 件） |
 | --- | --- |

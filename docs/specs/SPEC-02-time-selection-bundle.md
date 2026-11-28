@@ -29,7 +29,7 @@ satisfies:
 | --- | --- | --- |
 | `arb_status`（`system.status`） | 誤差半幅 50 ms 以内の最新の同期プローブ、同じ boot の最新の triple、その時点のホスト時計の組。壁時計ジャンプを検出した triple の後は、同じ区間の次の triple と新しいプローブが揃うまで null（`wall_clock_jump`）。再生ドメインでは `replayed_clock` | `sync_probe` |
 | 新規バンドルの `manifest.json` | 保存トリガーで同時に読んだホストの連続時計と壁時計 `host_clock_anchor`（`trigger_pc_cont_ns`・`trigger_wall_epoch_ns`）と、保存した clock anchor のうち不確かさが最小のプローブ・triple の組。トリムは親の値を引き継ぐ | `sync_probe` |
-| 既存バンドル（manifest にアンカーも判定結果もない） | `requested_window.trigger_pc_wall_utc` を窓終端の boottime とみなし、同じ boot の最寄りの triple の壁時計と比べる。`uncertainty_ms` は時計の読み取り・丸めと 1 秒の余裕を含む。旧形式では窓終端から保存処理までの待ち時間を測れず、窓終端がクラッシュの時刻に一致すれば自動保存の可能性があるため `trigger_delay_unknown` で推定を見送る。それ以外も遅延したクラッシュ保存などはこの幅を超えうるため、`trigger_delay_unbounded: true` も必ず返す | `trigger_estimate` |
+| 既存バンドル（manifest にアンカーも判定結果もない） | `requested_window.trigger_pc_wall_utc` を窓終端の boottime とみなし、同じ boot の最寄りの triple の壁時計と比べる。窓終端が壁時計ジャンプを挟む 2 個の triple の間にあれば、どちらの時計だったか確定できないため `wall_clock_jump` を返す。`uncertainty_ms` は時計の読み取り・丸めと 1 秒の余裕を含む。旧形式では窓終端から保存処理までの待ち時間を測れず、窓終端がクラッシュの時刻に一致すれば自動保存の可能性があるため `trigger_delay_unknown` で推定を見送る。それ以外も遅延したクラッシュ保存などはこの幅を超えうるため、`trigger_delay_unbounded: true` も必ず返す | `trigger_estimate` |
 
 ずれの中間計算は `i128` で溢れず、不確かさにはプローブの往復時間の半分（切り上げ）、各時計の組の読み取りずれ 1 ms ずつ、外挿した区間の 200 ppm、ミリ秒への丸め誤差を足す。外挿が 1 時間を超える組は使わない（K22）。`host_clock_anchor` と `device_clock_offset` は `manifest.json` の省略可能な項目で、旧形式のマニフェストはそのまま読める。`timeline.sqlite` の `clock_anchors` 表に新しい `kind` を足してはならない（旧 `arbd` は未知の `kind` で読取に失敗する）。[ずれの計算](../../core/crates/arb-core/src/time.rs)・[開示](../../core/crates/arbd/src/clock_offset.rs)
 

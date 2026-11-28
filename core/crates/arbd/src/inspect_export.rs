@@ -443,7 +443,10 @@ pub fn build_timeline_overview(
 
     let frames = reader.display_frames()?;
     let frame_count = frames.len();
-    let (width, height, video_duration_ns) = overview_video_geometry(reader.as_ref());
+    let track = reader
+        .video_path()
+        .and_then(|path| Mp4VideoTrack::open(path).ok());
+    let (width, height, video_duration_ns) = overview_video_geometry(track.as_ref());
 
     let base_boottime_ns = first_bundle_boottime_ns(&frames, &summary.epochs);
     let duration_ms = if frames.is_empty() {
@@ -455,13 +458,17 @@ pub fn build_timeline_overview(
 
     let discontinuities = reader.discontinuities()?;
 
+    let video = summary.streams.video.as_ref();
+    let display_width = video.and_then(|v| v.display_width);
+    let display_height = video.and_then(|v| v.display_height);
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let taps = build_overview_taps(
         &main_taps,
         &frames,
         base_boottime_ns,
         &LogCoordinates::new(&frames, &summary.epochs),
-        TapGeometry::of(summary, width.zip(height)),
+        track.as_ref(),
+        (display_width, display_height),
     );
 
     let annotated = annotated_overview(reader.as_ref(), &frames, params, (&main_taps, taps))?;
@@ -473,16 +480,13 @@ pub fn build_timeline_overview(
         .map_or(StreamStatus::Absent, |a| a.status);
     let av_offset_ms = summary.streams.audio.as_ref().map_or(0, |a| a.av_offset_ms);
     let logcat_completeness = summary.streams.logcat.as_ref().map(|l| l.completeness);
-    let video = summary.streams.video.as_ref();
-    let display_width = video.and_then(|v| v.display_width);
-    let display_height = video.and_then(|v| v.display_height);
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
     let (input_capture, injected_inputs) = overview_inputs(
         reader.as_ref(),
         &frames,
         &main_taps,
-        width.zip(height),
+        track.as_ref(),
         display_width.zip(display_height),
     )?;
     Ok(TimelineOverviewResponse {
@@ -491,11 +495,7 @@ pub fn build_timeline_overview(
                 - input_capture.injected.counts.unparsed_commands,
         input_capture,
         injected_inputs,
-        carried_in: summary
-            .streams
-            .video
-            .as_ref()
-            .and_then(|v| v.carried_in.clone()),
+        carried_in: video.and_then(|v| v.carried_in.clone()),
         device_clock_offset: Some(
             match summary
                 .manifest_v2
@@ -543,22 +543,18 @@ pub fn build_timeline_overview(
     })
 }
 
-/// Video width, height and duration of the bundle's track (`None`s without a readable one).
-fn overview_video_geometry(reader: &dyn BundleReader) -> (Option<u32>, Option<u32>, Option<u64>) {
-    let Some(track) = reader
-        .video_path()
-        .and_then(|path| Mp4VideoTrack::open(&path).ok())
-    else {
+fn overview_video_geometry(
+    track: Option<&Mp4VideoTrack>,
+) -> (Option<u32>, Option<u32>, Option<u64>) {
+    let Some(track) = track else {
         return (None, None, None);
     };
-    let ts = u128::from(track.timescale().max(1));
-    let dur_ns =
-        u64::try_from(u128::from(track.duration_ticks()).saturating_mul(1_000_000_000) / ts)
-            .unwrap_or(u64::MAX);
+    let duration =
+        u128::from(track.duration_ticks()) * 1_000_000_000 / u128::from(track.timescale().max(1));
     (
         Some(u32::from(track.width())),
         Some(u32::from(track.height())),
-        Some(dur_ns),
+        u64::try_from(duration).ok(),
     )
 }
 
@@ -692,7 +688,7 @@ fn overview_inputs(
     reader: &dyn BundleReader,
     frames: &[FrameRecord],
     taps: &[TapRecord],
-    video: Option<(u32, u32)>,
+    track: Option<&Mp4VideoTrack>,
     display: Option<(u32, u32)>,
 ) -> Result<
     (
@@ -706,7 +702,7 @@ fn overview_inputs(
     let mut remaining = 256 * 1024;
     let capture = bundle_input_capture(reader, taps, |input| {
         if remaining > 0 {
-            let row = coordinates.project_input(input, video, display);
+            let row = coordinates.project_input(input, track, display);
             let bytes =
                 serde_json::to_vec(&row).map_or(usize::MAX, |json| json.len().saturating_add(1));
             if bytes <= remaining {
@@ -810,8 +806,7 @@ pub(super) fn inspect_metadata(
     let manifest = reader.manifest_summary();
     let id = source_id.unwrap_or(&manifest.bundle_id);
     let track = inspect_video_track(reader.as_ref(), id)?;
-    let width = u32::from(track.width());
-    let height = u32::from(track.height());
+    let (mut width, mut height) = (u32::from(track.width()), u32::from(track.height()));
     let display = manifest.streams.video.as_ref();
     let dims = (
         params
@@ -821,7 +816,7 @@ pub(super) fn inspect_metadata(
             .display_height
             .or_else(|| display.and_then(|v| v.display_height)),
     );
-    let mut taps = build_frame_tap_map(reader.as_ref(), width, height, dims)?;
+    let mut taps = build_frame_tap_map(reader.as_ref(), &track, dims)?;
     let mut dropped = Vec::new();
     let mut tap_crop = None;
     let indices = match params.mode {
@@ -832,14 +827,8 @@ pub(super) fn inspect_metadata(
         }
         InspectFramesMode::Single => vec![single_index(params)],
         InspectFramesMode::TapCrop => {
-            let (i, gesture) = tap_target(reader.as_ref(), params, width, height, dims)?;
-            if i >= track.frame_count() {
-                return Err(MediaError::FrameOutOfRange {
-                    frame_index: i,
-                    frame_count: track.frame_count(),
-                }
-                .into());
-            }
+            let (i, gesture) = tap_target(reader.as_ref(), params, &track, dims)?;
+            (width, height) = track.frame_dimensions(i)?;
             let (x, y) = gesture.video;
             tap_crop = Some(tap_crop_meta(width, height, x, y)?);
             taps.insert(i, gesture);
@@ -894,8 +883,6 @@ pub fn inspect_frames(
 
     let track = inspect_video_track(reader.as_ref(), &bundle_id)?;
 
-    let video_w = u32::from(track.width());
-    let video_h = u32::from(track.height());
     let effective_display_w = params
         .display_width
         .or_else(|| summary.streams.video.as_ref().and_then(|v| v.display_width));
@@ -921,8 +908,6 @@ pub fn inspect_frames(
                 &mut gop_cache,
                 ctx.backend,
                 params,
-                video_w,
-                video_h,
                 display_dims,
             )?
         }
@@ -932,8 +917,6 @@ pub fn inspect_frames(
             &mut gop_cache,
             ctx.backend,
             params,
-            video_w,
-            video_h,
             display_dims,
         )?,
         InspectFramesMode::TapCrop => render_inspect_tap_crop(
@@ -942,8 +925,6 @@ pub fn inspect_frames(
             &mut gop_cache,
             ctx.backend,
             params,
-            video_w,
-            video_h,
             display_dims,
         )?,
     };
@@ -1579,10 +1560,6 @@ pub fn query_logs_filtered(
 
 type InspectRenderOutput = (Vec<u8>, Vec<u64>, Option<TapCropMeta>);
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_contact_sheet(
     indices: Vec<u64>,
     reader: &dyn BundleReader,
@@ -1590,12 +1567,10 @@ fn render_inspect_contact_sheet(
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let tap_map = if params.include_tap_marker {
-        frame_tap_markers(reader, video_w, video_h, display_dims)?
+        frame_tap_markers(reader, track, display_dims)?
     } else {
         BTreeMap::new()
     };
@@ -1629,18 +1604,12 @@ fn render_inspect_contact_sheet(
     Ok((png, indices, None))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_single(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
@@ -1656,7 +1625,7 @@ fn render_inspect_single(
     let tap_point = if let (Some(tx), Some(ty)) = (params.tap_x, params.tap_y) {
         Some((tx, ty))
     } else if params.include_tap_marker {
-        frame_tap_markers(reader, video_w, video_h, display_dims)?
+        frame_tap_markers(reader, track, display_dims)?
             .get(&idx)
             .copied()
     } else {
@@ -1666,22 +1635,16 @@ fn render_inspect_single(
     Ok((png, vec![idx], None))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
-)]
 fn render_inspect_tap_crop(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
     gop_cache: &mut GopLruCache,
     backend: &dyn arb_media::codec::VideoCodecBackend,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let (idx, gesture) = tap_target(reader, params, video_w, video_h, display_dims)?;
+    let (idx, gesture) = tap_target(reader, params, track, display_dims)?;
     let (tx, ty) = gesture.video;
     if idx >= frame_count {
         return Err(MediaError::FrameOutOfRange {
@@ -1832,8 +1795,7 @@ struct FrameTap {
 fn tap_target(
     reader: &dyn BundleReader,
     params: &MediaInspectFramesParams,
-    video_w: u32,
-    video_h: u32,
+    track: &Mp4VideoTrack,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<(u64, FrameTap), DaemonError> {
     Ok(if let Some(tap_idx) = params.tap_index {
@@ -1870,7 +1832,7 @@ fn tap_target(
             ))
         };
         let geometry = TapGeometry {
-            video: Some((video_w, video_h)),
+            video: Some(track.frame_dimensions(frame_idx)?),
             display: display_dims,
         };
         let point = geometry.point(raw_x, raw_y);
@@ -1940,21 +1902,20 @@ fn tap_crop_meta(video_w: u32, video_h: u32, tx: u32, ty: u32) -> Result<TapCrop
 /// come from [`TapGeometry::point`], the overview's own mapping (#591).
 fn build_frame_tap_map(
     reader: &dyn BundleReader,
-    video_w: u32,
-    video_h: u32,
+    track: &Mp4VideoTrack,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, FrameTap>, DaemonError> {
     let frames = reader.display_frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
-    let geometry = TapGeometry {
-        video: Some((video_w, video_h)),
-        display: display_dims,
-    };
     let mut map = BTreeMap::new();
     for tap in select_overview_taps(&main_taps) {
         if let (Some(rx), Some(ry), Some(bt)) = (tap.x, tap.y, tap_boottime_ns(tap))
             && let Some(fi) = nearest_frame_index_for_epoch(&frames, tap_boot_id(tap), bt)
         {
+            let geometry = TapGeometry {
+                video: track.frame_dimensions(fi).ok(),
+                display: display_dims,
+            };
             let point = geometry.point(rx, ry);
             if let Some(video) = point.video {
                 map.entry(fi).or_insert_with(|| FrameTap {
@@ -1971,11 +1932,10 @@ fn build_frame_tap_map(
 /// Video-pixel marker positions of [`build_frame_tap_map`].
 fn frame_tap_markers(
     reader: &dyn BundleReader,
-    video_w: u32,
-    video_h: u32,
+    track: &Mp4VideoTrack,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
-    Ok(build_frame_tap_map(reader, video_w, video_h, display_dims)?
+    Ok(build_frame_tap_map(reader, track, display_dims)?
         .into_iter()
         .map(|(frame, point)| (frame, point.video))
         .collect())
@@ -1997,6 +1957,16 @@ fn select_overview_taps(main_taps: &[TapRecord]) -> Vec<&TapRecord> {
     main_taps.iter().take(MAX_OVERVIEW_TAPS).collect()
 }
 
+/// Use the indexed GOP when a tap has a video frame. Without one, preserve the track-level
+/// geometry for undated taps in existing bundles.
+fn frame_video_dimensions(track: Option<&Mp4VideoTrack>, index: Option<u64>) -> Option<(u32, u32)> {
+    let track = track?;
+    match index {
+        Some(index) => track.frame_dimensions(index).ok(),
+        None => Some((u32::from(track.width()), u32::from(track.height()))),
+    }
+}
+
 /// Video and display geometry used to place a recorded tap in both coordinate systems.
 #[derive(Debug, Clone, Copy)]
 struct TapGeometry {
@@ -2014,21 +1984,6 @@ struct TapPoint {
 }
 
 impl TapGeometry {
-    /// The bundle's own geometry: the video track size and the manifest display size.
-    fn of(
-        summary: &arb_storage::bundle_io::BundleManifestSummary,
-        video: Option<(u32, u32)>,
-    ) -> Self {
-        let meta = summary.streams.video.as_ref();
-        Self {
-            video,
-            display: (
-                meta.and_then(|v| v.display_width),
-                meta.and_then(|v| v.display_height),
-            ),
-        }
-    }
-
     /// [`Self::point`] of an optional coordinate pair (both systems `None` without one).
     fn point_of(self, xy: Option<(f64, f64)>) -> TapPoint {
         xy.map_or(
@@ -2094,7 +2049,8 @@ fn build_overview_taps(
     frames: &[FrameRecord],
     base_boottime_ns: Option<i64>,
     coordinates: &LogCoordinates<'_>,
-    geometry: TapGeometry,
+    track: Option<&Mp4VideoTrack>,
+    display: (Option<u32>, Option<u32>),
 ) -> Vec<OverviewTapItem> {
     select_overview_taps(main_taps)
         .into_iter()
@@ -2117,6 +2073,10 @@ fn build_overview_taps(
                 .zip(boot)
                 .zip(tap.end_t_offset_ns)
                 .and_then(|((t, b), off)| coordinates.offset_ms_at(b, t.saturating_add(off)));
+            let geometry = TapGeometry {
+                video: frame_video_dimensions(track, frame_index),
+                display,
+            };
             let start = geometry.point_of(tap.x.zip(tap.y));
             let end = geometry.point_of(tap.end_x.zip(tap.end_y));
             OverviewTapItem {
@@ -2189,7 +2149,7 @@ impl<'a> LogCoordinates<'a> {
     fn project_input(
         &self,
         input: arb_core::injected_input::InjectedInput,
-        video: Option<(u32, u32)>,
+        track: Option<&Mp4VideoTrack>,
         display: Option<(u32, u32)>,
     ) -> crate::protocol::OverviewInjectedInput {
         let table = input
@@ -2203,6 +2163,10 @@ impl<'a> LogCoordinates<'a> {
         let frame_index_hint = input.boottime_ns.and_then(|t| {
             table.and_then(|(pts, indices)| indices.get(pts.partition_point(|p| *p < t)).copied())
         });
+        let video = input
+            .command
+            .position()
+            .and_then(|_| frame_video_dimensions(track, frame_index_hint));
         let to_video = |point: Option<(f64, f64)>| {
             point
                 .zip(display)

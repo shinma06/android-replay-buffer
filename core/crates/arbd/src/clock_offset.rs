@@ -4,9 +4,10 @@
 //! The offset is only disclosed: no stored or returned timestamp is ever corrected with it.
 use arb_core::bundle::{HostClockAnchor, RequestedWindow};
 use arb_core::time::{
-    ClockOffsetUnavailable, DEFAULT_MAX_HALF_WIDTH_NS, DeviceClockOffset, DeviceClockTriple,
-    DiscontinuityEvent, DiscontinuityKind, HostClockSample, PcSyncProbe, best_sync_probe_offset,
-    estimate_device_clock_offset_at_trigger, parse_utc_iso8601_ms,
+    ClockOffsetUnavailable, DEFAULT_DISCONTINUITY_THRESHOLD_NS, DEFAULT_MAX_HALF_WIDTH_NS,
+    DeviceClockOffset, DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, HostClockSample,
+    PcSyncProbe, best_sync_probe_offset, estimate_device_clock_offset_at_trigger,
+    parse_utc_iso8601_ms,
 };
 use arb_storage::bundle_io::{BundleManifestSummary, ClockAnchorRecord};
 
@@ -76,10 +77,24 @@ pub(crate) fn estimate_bundle_clock_offset(
         return DeviceClockOffset::unavailable(ClockOffsetUnavailable::TriggerDelayUnknown);
     }
     let (triples, _) = split(anchors);
-    let Some(triple) = triples
-        .iter()
-        .filter(|t| t.boot_id == epoch.boot_id)
-        .min_by_key(|t| (i128::from(t.boottime_ns) - i128::from(trigger_bt)).abs())
+    let same_boot = triples.iter().filter(|t| t.boot_id == epoch.boot_id);
+    let before = same_boot
+        .clone()
+        .filter(|t| t.boottime_ns <= trigger_bt)
+        .max_by_key(|t| t.boottime_ns);
+    let after = same_boot
+        .filter(|t| t.boottime_ns >= trigger_bt)
+        .min_by_key(|t| t.boottime_ns);
+    if let (Some(a), Some(b)) = (before, after)
+        && a.wall_offset_ns().abs_diff(b.wall_offset_ns())
+            > u128::from(DEFAULT_DISCONTINUITY_THRESHOLD_NS)
+    {
+        return DeviceClockOffset::unavailable(ClockOffsetUnavailable::WallClockJump);
+    }
+    let Some(triple) = before
+        .into_iter()
+        .chain(after)
+        .min_by_key(|t| t.boottime_ns.abs_diff(trigger_bt))
     else {
         return DeviceClockOffset::unavailable(ClockOffsetUnavailable::NoClockTriple);
     };

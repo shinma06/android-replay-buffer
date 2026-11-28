@@ -10,6 +10,7 @@ Android Replay Buffer（ARB）本体は `MIT OR Apache-2.0` のデュアルラ�
 | scrcpy-server（Genymobile / Romain Vimont） | v5.0.1 | Apache-2.0 | 端末側の画面・音声取得。未改変のバイナリを `third-party/scrcpy/scrcpy-server-v5.0.1` に置き、`device-agent/build.sh --with-scrcpy-audio` が `replay-scrcpy-audio.dex.jar` に取り込みます。ライセンス全文は [`third-party/scrcpy/LICENSE.txt`](third-party/scrcpy/LICENSE.txt)。 |
 | 修正版 `AudioRecordReader.java` | scrcpy v5.0.1 由来 | Apache-2.0 | 音声バッファの PTS 計算の修正（[`third-party/scrcpy/AudioRecordReader.java`](third-party/scrcpy/AudioRecordReader.java)）。修正内容は [`device-agent/NOTICE.md`](device-agent/NOTICE.md)。 |
 | OpenH264（Cisco）／ Rust クレート `openh264`・`openh264-sys2` | クレート 0.9.x | BSD-2-Clause | H.264 のデコードとエンコード（トリム・共有 MP4・タップ焼き込みの再エンコード）。ソースからビルドして静的リンクします。 |
+| `h264-reader` | 0.9.x | MIT OR Apache-2.0 | フレームを復号せず、各 GOP の H.264 パラメータセットから映像寸法を取得。 |
 | `rusty_aac` | 2.x | Apache-2.0 | AAC の処理（音声付き保存・書き出し）。 |
 | SQLite（`rusqlite` / `libsqlite3-sys` の bundled ビルド） | rusqlite 0.35 | SQLite 本体はパブリックドメイン、`rusqlite` は MIT | 保存バンドル・カタログのメタデータ。 |
 | `serde_path_to_error` | 0.1.x | MIT OR Apache-2.0 | RPC 引数のデコードエラーにフィールド名を付与。 |
