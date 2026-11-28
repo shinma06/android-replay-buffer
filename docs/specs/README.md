@@ -17,7 +17,7 @@
 | Studio・再生 | `PlaybackController` の時計、選択リデューサの Selection、`ArbStudioController` の TrimPreview | 再生位置／範囲／一時的な境界画像 | 範囲編集は再生位置を動かさず、tick は選択を動かさない。リリースした ns を保持し、中断でプレビューを解放。再生中の編集は次の開始に適用 | K8・K10・K12、S6・S7 と Kotlin リプレイ、Miri M1（SHM） |
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
-| 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08 |
+| 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08、注入要求の K17・TCB-22 |
 | RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
@@ -59,6 +59,7 @@
 | 正本・台帳 | 照合するデータ |
 | --- | --- |
 | [音声方針](audio-policy-table.json) | API・方式・端末側の結果から起動引数、状態、原因、表示分類を引く |
+| [注入要求](injected-command-table.json) | adbd の UID、コマンド解析、未解析件数。K17・TCB-22 |
 | [端末選択](device-selection-policy-table.json) | serial の検証、開始・停止時の録画意図と端末の永続化、再起動後の候補選択（S3） |
 | [操作結果](ui-feedback-contract-table.json) | GC・登録解除・保存・実体状態・RPC エラー等の期待値 |
 | [MCP ツール](mcp-tools-table.json) | 公開 21 ツールの別名（全組 `allowEqual`）・排他・入力・出力型・注釈・タスク対応 |

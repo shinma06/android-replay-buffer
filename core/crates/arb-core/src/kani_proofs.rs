@@ -2294,3 +2294,56 @@ fn k7_touch_slop_finite_positive() {
     let s2 = touch_slop(None, Some(h));
     assert!(s2.is_finite() && s2 > 0.0);
 }
+
+#[kani::proof]
+fn k17_sender_and_display_coordinate_boundaries() {
+    let uid: Option<u32> = kani::any();
+    let trusted = crate::injected_input::trusted_adbd(Some("adbd"), uid);
+    assert_eq!(
+        trusted,
+        matches!(uid, Some(0 | 2000)),
+        "only root and shell are eligible"
+    );
+    kani::cover!(trusted, "trusted source reachable");
+    kani::cover!(!trusted, "other UID rejected");
+    let x: i32 = kani::any();
+    let y: i32 = kani::any();
+    let mapped = map_touch_to_frame(
+        f64::from(x),
+        f64::from(y),
+        Some(1024),
+        Some(2048),
+        512,
+        1024,
+    );
+    assert_eq!(
+        mapped.is_some(),
+        (0..=1024).contains(&x) && (0..=2048).contains(&y),
+        "integer coordinates must be on the display"
+    );
+    if let Some((vx, vy)) = mapped {
+        assert!(
+            (0.0..=511.0).contains(&vx) && (0.0..=1023.0).contains(&vy),
+            "mapped point is a video pixel"
+        );
+    }
+    kani::cover!(mapped.is_some(), "visible pixel reachable");
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn k17_untrusted_sender_emits_no_commands() {
+    let uid: Option<u32> = kani::any();
+    kani::assume(!matches!(uid, Some(0 | 2000)));
+    let bad = crate::injected_input::visit_commands(
+        Some("adbd"),
+        uid,
+        "adbd service requested 'shell:input tap 1 1'",
+        |_, _| assert!(false, "untrusted input emitted"),
+    );
+    assert_eq!(
+        bad, 0,
+        "forged requests cannot alter even the unknown-command count"
+    );
+    kani::cover!(uid == Some(10126), "application sender reaches rejection");
+}

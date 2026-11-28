@@ -488,15 +488,24 @@ pub fn build_timeline_overview(
         .map_or(StreamStatus::Absent, |a| a.status);
     let av_offset_ms = summary.streams.audio.as_ref().map_or(0, |a| a.av_offset_ms);
     let logcat_completeness = summary.streams.logcat.as_ref().map(|l| l.completeness);
-    let display_width = summary.streams.video.as_ref().and_then(|v| v.display_width);
-    let display_height = summary
-        .streams
-        .video
-        .as_ref()
-        .and_then(|v| v.display_height);
+    let video = summary.streams.video.as_ref();
+    let display_width = video.and_then(|v| v.display_width);
+    let display_height = video.and_then(|v| v.display_height);
     let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
+    let (input_capture, injected_inputs) = overview_inputs(
+        reader.as_ref(),
+        &frames,
+        &main_taps,
+        width.zip(height),
+        display_width.zip(display_height),
+    )?;
     Ok(TimelineOverviewResponse {
+        injected_inputs_truncated: u64::try_from(injected_inputs.len()).unwrap_or(u64::MAX)
+            < input_capture.injected.counts.commands
+                - input_capture.injected.counts.unparsed_commands,
+        input_capture,
+        injected_inputs,
         carried_in: summary
             .streams
             .video
@@ -530,6 +539,78 @@ pub fn build_timeline_overview(
         unanchored_truncated_count: summary.unanchored_summary.truncated_count,
         app_logs: summary.app_logs.clone(),
     })
+}
+
+fn overview_inputs(
+    reader: &dyn BundleReader,
+    frames: &[FrameRecord],
+    taps: &[TapRecord],
+    video: Option<(u32, u32)>,
+    display: Option<(u32, u32)>,
+) -> Result<
+    (
+        arb_core::input_capture::InputCapture,
+        Vec<crate::protocol::OverviewInjectedInput>,
+    ),
+    DaemonError,
+> {
+    use arb_core::input_capture::{CommandCounts, InputCapture, PhysicalStatus};
+    let summary = reader.manifest_summary();
+    let coordinates = LogCoordinates::new(frames, &summary.epochs);
+    let mut counts = CommandCounts::default();
+    let mut inputs = Vec::new();
+    // Keep room for screens and error highlights in the single IPC frame. Stop retaining
+    // detail at the first overflow, but continue counting every request across every page.
+    let mut remaining = 256 * 1024;
+    reader.visit_injected_commands(&mut |page| {
+        let unparsed = u64::try_from(page.unparsed_count).unwrap_or(u64::MAX);
+        counts.unparsed_commands += unparsed;
+        counts.commands += unparsed;
+        for input in page.inputs {
+            counts.commands += 1;
+            counts.gestures += u64::from(input.command.is_gesture());
+            if remaining == 0 {
+                continue;
+            }
+            let row = coordinates.project_input(input, video, display);
+            let bytes =
+                serde_json::to_vec(&row).map_or(usize::MAX, |json| json.len().saturating_add(1));
+            if bytes <= remaining {
+                remaining -= bytes;
+                inputs.push(row);
+            } else {
+                remaining = 0;
+            }
+        }
+    })?;
+    let meta = summary.streams.input.as_ref();
+    let raw = meta.and_then(|s| s.input_events);
+    let physical = if !taps.is_empty()
+        || raw.is_some_and(|n| n > 0)
+        || meta.is_some_and(|s| s.status == StreamStatus::Present)
+    {
+        PhysicalStatus::Recorded
+    } else if summary.bundle_kind == arb_core::bundle::BundleKind::LogsOnly
+        || meta.is_some_and(|s| s.status == StreamStatus::Excluded)
+    {
+        PhysicalStatus::Disabled
+    } else if meta.is_none_or(|s| s.status == StreamStatus::Partial) {
+        PhysicalStatus::Unavailable
+    } else {
+        PhysicalStatus::Absent
+    };
+    let capture = InputCapture::new(
+        physical,
+        raw,
+        u64::try_from(
+            taps.iter()
+                .filter(|t| matches!(t.action.as_str(), "TAP" | "SWIPE"))
+                .count(),
+        )
+        .unwrap_or(u64::MAX),
+        counts,
+    );
+    Ok((capture, inputs))
 }
 
 fn inspect_video_track(
@@ -1539,6 +1620,8 @@ fn build_overview_taps(
                 .zip(t_ms)
                 .map(|(off, base)| base.saturating_add(off / 1_000_000));
             OverviewTapItem {
+                source: arb_core::injected_input::InputEventSource::Getevent,
+                injected: false,
                 tap_index,
                 seq: tap.seq,
                 frame_index,
@@ -1571,6 +1654,48 @@ impl<'a> LogCoordinates<'a> {
             }
         }
         Self { frames, epochs }
+    }
+
+    fn project_input(
+        &self,
+        input: arb_core::injected_input::InjectedInput,
+        video: Option<(u32, u32)>,
+        display: Option<(u32, u32)>,
+    ) -> crate::protocol::OverviewInjectedInput {
+        let table = input
+            .boot_id
+            .as_ref()
+            .and_then(|id| self.frames.get(id.as_str()));
+        let origin = table.and_then(|(pts, _)| pts.first().copied()).or_else(|| {
+            self.epochs
+                .iter()
+                .find(|e| Some(&e.boot_id) == input.boot_id.as_ref())
+                .map(|e| e.start_boottime_ns)
+        });
+        let offset_ms = input
+            .boottime_ns
+            .zip(origin)
+            .map(|(t, start)| t.saturating_sub(start) / 1_000_000);
+        let frame_index_hint = input.boottime_ns.and_then(|t| {
+            table.and_then(|(pts, indices)| indices.get(pts.partition_point(|p| *p < t)).copied())
+        });
+        let point = input
+            .command
+            .position()
+            .zip(display)
+            .zip(video)
+            .filter(|_| input.display_id.unwrap_or(0) == 0)
+            .and_then(|(((x, y), (dw, dh)), (w, h))| {
+                arb_core::gesture::map_touch_to_frame(x, y, Some(dw), Some(dh), w, h)
+            });
+        let (x_video, y_video) = point.unzip();
+        crate::protocol::OverviewInjectedInput {
+            input,
+            offset_ms,
+            frame_index_hint,
+            x_video,
+            y_video,
+        }
     }
 
     fn query_row(&self, record: LogRecord) -> crate::protocol::QueryLogRow {

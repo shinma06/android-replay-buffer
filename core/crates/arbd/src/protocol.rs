@@ -182,7 +182,16 @@ pub struct CaptureStatusView {
     /// Count of captured log records currently buffered.
     pub log_records: usize,
     /// Count of captured tap records currently buffered.
-    pub tap_records: usize,
+    pub tap_records: u64,
+    /// Raw getevent rows received.
+    #[serde(default)]
+    pub input_events: u64,
+    /// Completed physical gestures.
+    #[serde(default)]
+    pub gesture_count: u64,
+    /// Machine-readable live observation channels.
+    #[serde(default)]
+    pub input_capture: arb_core::input_capture::InputCapture,
     /// Count of recorded discontinuities in the live session.
     pub discontinuities: usize,
     /// Count of `StaticHold` detections in the live session.
@@ -1528,6 +1537,10 @@ pub struct TimelineOverviewParams {
 /// Compact tap summary entry returned inside [`TimelineOverviewResponse`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverviewTapItem {
+    /// Kernel input source.
+    pub source: arb_core::injected_input::InputEventSource,
+    /// False for kernel gestures.
+    pub injected: bool,
     /// Zero-based tap index matching `media.inspect_frames` `tap_index`.
     pub tap_index: usize,
     /// Source `TapRecord::seq` in `timeline.sqlite`.
@@ -1602,9 +1615,31 @@ pub struct NoiseCandidate {
     pub sample_message: String,
 }
 
+/// Injection observation projected onto the saved timeline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverviewInjectedInput {
+    /// Parsed command and its source.
+    #[serde(flatten)]
+    pub input: arb_core::injected_input::InjectedInput,
+    /// Milliseconds relative to the start of the same boot segment.
+    pub offset_ms: Option<i64>,
+    /// First displayed frame at or after receipt in this boot.
+    pub frame_index_hint: Option<u64>,
+    /// Starting X in video pixels.
+    pub x_video: Option<f64>,
+    /// Starting Y in video pixels.
+    pub y_video: Option<f64>,
+}
+
 /// One-shot structured bundle overview returned by `timeline.overview` for AI triage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineOverviewResponse {
+    /// Machine-readable capture evidence.
+    pub input_capture: arb_core::input_capture::InputCapture,
+    /// Input requests derived from authenticated adbd logs.
+    pub injected_inputs: Vec<OverviewInjectedInput>,
+    /// More parsed commands exist than fit in the overview detail budget.
+    pub injected_inputs_truncated: bool,
     /// Manifest evidence for a frame carried across the start of the saved window.
     pub carried_in: Option<arb_core::bundle::CarriedInFrame>,
     /// Resolved bundle identifier.

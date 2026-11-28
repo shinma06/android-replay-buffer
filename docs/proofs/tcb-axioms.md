@@ -37,6 +37,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K13 | 実時間トリムの範囲と正長、ns 総尺保存、任意の相対時刻での表示フレーム同値、不正範囲の拒否、ティックの正長と総和 | VFR 3 枚の各間隔 1〜65536 ns と全有効区間。量子化は各 1〜256 ns の 3 枚、8 ns/tick で丸め・予約・表現不能の各分岐を検証する。MP4 の復号結果と timescale 切替は G3 とバーコード試験で検査する | `arb-media/src/timeline.rs`、`arb-media/src/kani_proofs.rs` |
 | K14 | `k14_carry_in_none_without_coverage`（同じキーの 1 本の被覆区間が `[f_prev, W0]` を含まなければ必ず `None`、含めば必ず `f_prev` を選ぶ）、`k14_carry_in_selects_latest_valid_pre_window_frame`（選ぶのは `W0` より前で位置・時刻とも最も遅いフレームだけで、後続に窓前フレームがない）、`k14_carry_in_rejects_boot_session_or_dims_mismatch`（boot・セッション・寸法のキーが一致する被覆区間なしでは選ばず、最遅フレームが不一致なら古い一致フレームに戻らない）、`k14_coverage_duration_bounded_and_monotone`（`0 ≤ 被覆 ≤ 窓長`、区間の追加で減らない、1 区間は切り取り長に一致、窓全体を覆えば窓長）、`k14_ledger_beacon_extends_only_within_gap`（ビーコンだけでは開かず、途絶前のビーコンだけが区間を延ばし、遅れたビーコンは閉じる） | フレーム 3 枚（時刻は `i16` 全域、受信順で非減少）・被覆区間 2 本・キー 3 種・`W0` と窓端は `i16` 全域、途絶判定の幅は `u8` 全域。本番の `select_carry_in`・`coverage_duration_in_window`・`StreamCoverage` を直接実行する。保存経路の時刻軸の対応、MP4 の書き出し、端末のビーコン・切断の意味は保存の端から端までの試験（`capture_coverage_tests.rs`）と G3 で確認する | `arb-core/src/coverage.rs`、`arb-core/src/kani_proofs/k14_coverage.rs` |
 | K15 | `k15_decodable_start_is_the_first_decodable_frame`（参照のある先頭は 0、それ以外は最初のキーフレームを選び、それより前は孤立フレームだけ。復号できるフレームがなければ `None`）、`k15_saved_track_always_passes_the_commit_check`（書けなかった映像・0 枚は `absent`、先頭を落とせば `partial`、落とさなければ `present`。結果は必ず確定前検査を通る）、`k15_commit_check_matches_the_oracle`（`video.mp4` のない映像宣言、0 枚の宣言、行数の不一致、宣言のない映像ファイル・行をすべて拒否） | キーフレーム列は長さ 0〜4 の任意値、枚数・行数・バイト数は `u8` 全域、状態は 4 種と宣言なし。本番の `decodable_start`・`saved_video_track`・`check_video_commit` を直接実行する。H.264 の実際の復号可否・MP4 化・バンドル確定前の検査は保存の端から端までの試験（`capture_coverage_tests.rs` の W3B 再現 A・B）とストレージ試験で確認する | `arb-core/src/video_commit.rs`、`arb-core/src/kani_proofs/k15_video_commit.rs` |
+| K17 | 任意 UID による偽装拒否、入力の i32 座標境界と K6 の写像 | 1024 × 2048 の表示から 512 × 1024 の映像に写す。任意の座標・UID で 2 本成功、4 つの cover が到達 | arb-core の kani_proofs.rs と injected_input.rs |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -198,7 +199,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | 構造ガード | `check-architecture.py` は RS-1〜RS-5 違反 0、RPC 41 件がクライアントと一致 |
 | ライセンス | `check-licenses.py` は 351 パッケージで GPL/AGPL 違反 0 |
 
-## 4. TCB 公理（TCB-01〜TCB-21）
+## 4. TCB 公理（TCB-01〜TCB-22）
 
 各公理について、(a) 依存する形式層、(b) 公理を実環境で固定する自動テスト、(c) 未検証の境界を記す。
 
@@ -225,6 +226,7 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 | TCB-19 | CLI/MCP の `save_outcome_failed` と IDE の `SaveOutcomeResponse.savedBundleId` が同じ wire 応答を保存成功と判定する | 共有契約表、KON-7 | `ui-feedback-contract-table.json` の save_rows を arb-cli、PddContractTablesTest、PddUiFeedbackContractTest で検査 | 表にある状態と ID の組合せを検証。実 IDE での通知描画は受け入れ対象 |
 | TCB-20 | `std::collections::VecDeque` の `front` / `get` / `push_back` / `pop_front` は FIFO の意味どおりに振る舞い、`GopLruCache` では GOP 全体のキャッシュ（`entries`）と前進窓（`cursor`）が同時に存在しない（全 GOP 経路は `cursor` を、窓の再起動は `clear()` で `entries` を捨てる）。`filmstrip.bin` の指紋は元トラックの SHA-256 で、`sha2` が正しく計算する | K12 | `core/crates/arb-media/tests/media_pipeline.rs::gop_lru_cache_hits_on_backward_and_forward_step_and_evicts_bounded`、`core/crates/arb-media/tests/media_pipeline.rs::filmstrip_cache_writes_externally_and_reloads_without_touching_source` | K12 は窓を固定長配列の FIFO モデルで、`fetch_forward` の再利用・再起動の分岐を `ForwardModel` で写して検証し、`VecDeque` 本体・`fetch_frame` 全体・実デコーダ・ファイル I/O・SHA-256 の計算は通さない。`entries` と `cursor` の排他は手で読んで確かめたもので、機械検証していない |
 | TCB-21 | MCP の公開入出力契約と stdio 応答が一致する | mcp-tools-table.json | 実デーモンと arb-cli の全 21 ツール、型・必須・列挙値、Resources・Prompts・Tasks の終了状態を stdio_contract で検査 | 合成データで検証。実端末と外部エージェントの操作は受け入れ対象 |
+| TCB-22 | adbd の service requested 行を logd が付けた UID 0・2000 とタグで認証できる | 注入要求の時刻・件数 | API 37 AVD で確認。K17 の UID・座標境界と共有コマンド表 | API 28〜36 と OEM 端末の書式・出力は未検証。対話シェル内・非 ADB 注入は観測範囲外 |
 
 ### S7 の Studio トリム状態機械
 

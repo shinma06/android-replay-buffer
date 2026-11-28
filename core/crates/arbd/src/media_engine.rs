@@ -1133,6 +1133,11 @@ fn build_trimmed_bundle_draft(
                 stream
             }),
             input: summary.streams.input.clone().map(|mut stream| {
+                // The source count cannot be apportioned to a trim without the raw events.
+                stream.input_events = None;
+                if trimmed_taps.is_empty() && stream.status == StreamStatus::Present {
+                    stream.status = StreamStatus::Absent;
+                }
                 stream.tail_may_be_incomplete &= video.includes_source_tail;
                 stream
             }),

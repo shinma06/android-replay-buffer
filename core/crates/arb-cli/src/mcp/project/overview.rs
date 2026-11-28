@@ -39,6 +39,9 @@ pub(in crate::mcp) fn project(overview: &mut Value, version: ProtocolVersion, zo
         {
             obj.insert("logcat_completeness".into(), detail);
         }
+        obj.entry("input_capture")
+            .or_insert_with(|| json!(arb_core::input_capture::InputCapture::default()));
+        obj.entry("injected_inputs").or_insert_with(|| json!([]));
         obj.entry("carried_in").or_insert(Value::Null);
         obj.entry("noise_candidates").or_insert_with(|| json!([]));
     }

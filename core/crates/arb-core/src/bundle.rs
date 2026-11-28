@@ -346,6 +346,9 @@ pub struct LogcatStreamMeta {
 /// Input / tap stream summary metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InputStreamMeta {
+    /// Raw getevent rows observed inside the saved window, when counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_events: Option<u64>,
     /// Presence state of the input stream.
     pub status: StreamStatus,
     /// `true` if boundary drain timed out before confirming a post-trigger heartbeat.
@@ -929,6 +932,7 @@ mod tests {
                     tail_may_be_incomplete: false,
                 }),
                 input: Some(InputStreamMeta {
+                    input_events: None,
                     status: StreamStatus::Present,
                     tail_may_be_incomplete: false,
                 }),

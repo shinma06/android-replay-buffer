@@ -143,7 +143,11 @@ data class CaptureStatusView(
     /** Detected Android API level of the capturing device, once known. */
     val deviceApiLevel: Long? = null,
     val deviceApiWarning: String? = null,
+    val gestureCount: Long = 0L,
 ) {
+    /** Raw event rows. Older daemons publish the same count under tap_records only. */
+    val inputEvents: Long get() = tapRecords
+
     val effectiveAudioState: AudioCaptureState
         get() = audioState ?: AudioCaptureState.UNKNOWN
 }

@@ -83,3 +83,7 @@ satisfies:
 根拠は Trail #101・#133／PR #538、#151／PR #554、#153／PR #556、TCB-19／21。[実 stdio 契約試験](../../core/crates/arb-cli/tests/stdio_contract)・[エラー・保存結果表](ui-feedback-contract-table.json)
 
 保存ジョブを arb_jobs の list で確認し、retry、retarget（保存先省略で管理域）、discard で操作できる。MCP は pin 件数を返し、daemon RPC は IDE 用の ID 配列も返す。arb_status の failed_save_jobs と oldest_failed_job_id で滞留を確認できる。
+
+## 入力の観測範囲
+
+状態・概要・保存して調査は input_capture を返す。physical.input_events は生入力行、gestures は認識済み操作数。生行数を保存していない既存バンドルは null。tap_records はライブの生行数の互換名。概要の taps は物理入力で、注入要求は injected_inputs に格納する。injected.commands は未知の要求も含み、gestures は tap・swipe・draganddrop の要求数。抽出件数は全件を数え、概要の注入明細は JSON 換算 256 KiB までを収録する。injected_inputs_truncated が true の場合、後続の元ログは arb_query_logs でタグ adbd を指定して確認できる。

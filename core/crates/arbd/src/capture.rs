@@ -47,6 +47,7 @@ use arb_core::coverage::{
     coverage_duration_in_window, covering_end, select_carry_in,
 };
 use arb_core::gesture::{GestureKind, TouchPoint, classify_stroke, touch_slop};
+use arb_core::input_capture::PhysicalStatus;
 use arb_core::save_failure::{SaveFailureClass, SaveFailureStage};
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_records};
 use arb_core::state::{RingBudgetPolicy, SaveJobState, SaveTriggerKind};
@@ -304,6 +305,8 @@ pub struct CrashAutoSaveNotice {
 /// so `save.retry` / `save.retarget` can rematerialize identically even across restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SaveJobMaterializeParams {
+    #[serde(default)]
+    input_channel: Option<PhysicalStatus>,
     bundle_id: String,
     #[serde(default)]
     note: Option<String>,
@@ -604,7 +607,13 @@ pub struct CapturePipeline {
     video_frames_seen: usize,
     audio_frames_seen: usize,
     log_records_seen: usize,
-    tap_records_seen: usize,
+    tap_records_seen: u64,
+    live_normalizer: TouchNormalizer,
+    gesture_count: u64,
+    command_counts: arb_core::input_capture::CommandCounts,
+    physical_channel: PhysicalStatus,
+    session_input_start: u64,
+    session_gesture_start: u64,
     discontinuities_seen: usize,
     static_hold_seen: usize,
     ring_write_errors: usize,
@@ -694,6 +703,12 @@ impl CapturePipeline {
             audio_frames_seen: 0,
             log_records_seen: 0,
             tap_records_seen: 0,
+            live_normalizer: TouchNormalizer::default(),
+            gesture_count: 0,
+            command_counts: arb_core::input_capture::CommandCounts::default(),
+            physical_channel: PhysicalStatus::Unavailable,
+            session_input_start: 0,
+            session_gesture_start: 0,
             discontinuities_seen: 0,
             static_hold_seen: 0,
             ring_write_errors: 0,
@@ -988,6 +1003,15 @@ impl CapturePipeline {
         // A new generation never extends the coverage of an older one.
         self.coverage.close_all();
         self.session_generation = self.session_generation.wrapping_add(1);
+        self.session_input_start = self.tap_records_seen;
+        self.live_normalizer = TouchNormalizer::default();
+        self.session_gesture_start = self.gesture_count;
+        self.command_counts = arb_core::input_capture::CommandCounts::default();
+        self.physical_channel = if capture_mode == CaptureMode::VideoAndLogs {
+            PhysicalStatus::Absent
+        } else {
+            PhysicalStatus::Disabled
+        };
         self.active = true;
         self.connected = false;
         self.storage_pressure_stopped = false;
@@ -1087,6 +1111,14 @@ impl CapturePipeline {
             audio_frames: self.audio_frames_seen,
             log_records: self.log_records_seen,
             tap_records: self.tap_records_seen,
+            input_events: self.tap_records_seen,
+            gesture_count: self.gesture_count,
+            input_capture: arb_core::input_capture::InputCapture::new(
+                self.physical_status(),
+                Some(self.tap_records_seen - self.session_input_start),
+                self.gesture_count - self.session_gesture_start,
+                self.command_counts,
+            ),
             discontinuities: self.discontinuities_seen,
             static_hold_events: self.static_hold_seen,
             ring_write_errors: self.ring_write_errors,
@@ -1198,6 +1230,7 @@ impl CapturePipeline {
                 self.chunk_contents.clear();
                 self.coverage.close_all();
                 self.timeline = ClockTimeline::new(ClockTimelineConfig::new());
+                self.live_normalizer = TouchNormalizer::default();
                 self.latest_heartbeat_boottime_ns = None;
                 self.latest_heartbeat_pc_cont_ns = None;
                 self.drain_watermark_ns = None;
@@ -1319,10 +1352,84 @@ impl CapturePipeline {
         }
     }
 
+    pub(super) fn disable_input(&mut self) {
+        self.physical_channel = PhysicalStatus::Disabled;
+    }
+
+    fn physical_status(&self) -> PhysicalStatus {
+        if self.physical_channel == PhysicalStatus::Disabled {
+            PhysicalStatus::Disabled
+        } else if self.tap_records_seen > self.session_input_start {
+            PhysicalStatus::Recorded
+        } else if !self.active || !self.connected {
+            PhysicalStatus::Unavailable
+        } else {
+            self.physical_channel
+        }
+    }
+
+    fn observe_input(&mut self, event: &CaptureEvent) {
+        match event {
+            CaptureEvent::LogRecord { payload, .. } => {
+                self.log_records_seen += 1;
+                if matches!(payload.uid, 0 | 2000) {
+                    let (tag, message) = decode_log_tag_and_message(payload);
+                    let bad = u64::try_from(arb_core::injected_input::visit_commands(
+                        Some(&tag),
+                        Some(payload.uid),
+                        &message,
+                        |_, command| {
+                            self.command_counts.commands += 1;
+                            self.command_counts.gestures += u64::from(command.is_gesture());
+                        },
+                    ))
+                    .unwrap_or(u64::MAX);
+                    self.command_counts.commands += bad;
+                    self.command_counts.unparsed_commands += bad;
+                }
+            }
+            CaptureEvent::TouchEvent {
+                payload,
+                normalized,
+                ..
+            } => {
+                self.tap_records_seen += 1;
+                let completed = |sample: &NormalizedTouchEvent| {
+                    matches!(sample.action, TouchAction::Up | TouchAction::Cancel)
+                };
+                if let Some(sample) = normalized {
+                    self.gesture_count += u64::from(completed(sample));
+                } else {
+                    self.gesture_count += u64::try_from(
+                        self.live_normalizer
+                            .ingest(payload, None)
+                            .iter()
+                            .filter(|t| completed(t))
+                            .count(),
+                    )
+                    .unwrap_or(u64::MAX);
+                }
+            }
+            CaptureEvent::StreamState { payload, .. }
+                if payload.target_stream_id == StreamId::Input
+                    && self.physical_channel != PhysicalStatus::Disabled =>
+            {
+                self.physical_channel = match payload.state {
+                    StreamLifecycleState::Error
+                    | StreamLifecycleState::Stopped
+                    | StreamLifecycleState::Restarting => PhysicalStatus::Unavailable,
+                    _ => PhysicalStatus::Absent,
+                };
+            }
+            _ => {}
+        }
+    }
+
     fn apply_live_event_state(&mut self, event: &CaptureEvent) -> bool {
         // VideoSession updates the dimensions after closing the old coverage; frames are keyed
         // by the dimensions in effect when they arrive.
         self.apply_coverage_event(event);
+        self.observe_input(event);
         let mut should_flush = false;
         match event {
             CaptureEvent::Hello { payload, .. } => {
@@ -1396,12 +1503,6 @@ impl CapturePipeline {
                         self.active_audio_mode,
                     ));
                 }
-            }
-            CaptureEvent::LogRecord { .. } => {
-                self.log_records_seen += 1;
-            }
-            CaptureEvent::TouchEvent { .. } => {
-                self.tap_records_seen += 1;
             }
             CaptureEvent::StaticHold { .. } => {
                 self.static_hold_seen += 1;
@@ -1886,6 +1987,7 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
+            input_channel: Some(self.physical_channel),
             note,
             bundle_id,
             mode,
@@ -2908,6 +3010,8 @@ fn materialize_from_chunks(
 /// Replays pinned [`CaptureEvent`] records through [`ClockTimeline`] and the
 /// 3-valued [`arb_core::selection`] engine to build a [`V2BundleDraft`].
 struct ReplayCollector {
+    raw_input_window: std::ops::RangeInclusive<i64>,
+    raw_input_events: u64,
     timeline: ClockTimeline,
     clock_anchors: Vec<ClockAnchorRecord>,
     video_width: u16,
@@ -3234,6 +3338,8 @@ impl ReplayCollector {
             log_completeness: LogCompleteness::Unverified,
             log_overflow_events: 0,
             dropped_count: Some(0),
+            raw_input_window: params.window.start_boottime_ns()..=params.window.end_boottime_ns(),
+            raw_input_events: 0,
             touch_normalizer: TouchNormalizer::default(),
             active_strokes: BTreeMap::new(),
             touch_slop_px: touch_slop(
@@ -3377,6 +3483,12 @@ impl ReplayCollector {
                 normalized,
                 ..
             } => {
+                if self
+                    .raw_input_window
+                    .contains(&payload.device_read_boottime_ns)
+                {
+                    self.raw_input_events += 1;
+                }
                 let viewport = Some((u32::from(self.video_width), u32::from(self.video_height)));
                 if let Some(t) = normalized {
                     self.ingest_touch_sample(boot_id, pc_cont_ns, &t);
@@ -3821,6 +3933,10 @@ impl ReplayCollector {
             log_completeness,
             log_overflow_events: self.log_overflow_events,
             dropped_count,
+            input_channel: params.input_channel,
+            raw_input_events: (params.mode != SaveMode::LogsOnly
+                && params.input_channel != Some(PhysicalStatus::Disabled))
+            .then_some(self.raw_input_events),
             taps_count: media.taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
             av_lead_in_offset_ns: media.av_lead_in_offset_ns,
@@ -4060,6 +4176,8 @@ struct StreamSummaryCounts {
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
     dropped_count: Option<u64>,
+    raw_input_events: Option<u64>,
+    input_channel: Option<PhysicalStatus>,
     taps_count: usize,
     tail_may_be_incomplete: bool,
     av_lead_in_offset_ns: i64,
@@ -4134,8 +4252,15 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             tail_may_be_incomplete,
         }),
         input: Some(InputStreamMeta {
-            status: if counts.taps_count == 0 {
-                StreamStatus::Absent
+            input_events: counts.raw_input_events,
+            status: if counts.raw_input_events.is_none() && counts.taps_count == 0 {
+                StreamStatus::Excluded
+            } else if counts.taps_count == 0 && counts.raw_input_events == Some(0) {
+                if counts.input_channel == Some(PhysicalStatus::Unavailable) {
+                    StreamStatus::Partial
+                } else {
+                    StreamStatus::Absent
+                }
             } else {
                 StreamStatus::Present
             },
@@ -6525,6 +6650,7 @@ mod tests {
         display_height: Option<u32>,
     ) -> SaveJobMaterializeParams {
         SaveJobMaterializeParams {
+            input_channel: None,
             note: None,
             bundle_id: "01JT6HGESTURE00000000000001".to_owned(),
             mode: SaveMode::Full,
