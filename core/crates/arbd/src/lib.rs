@@ -782,11 +782,16 @@ impl DaemonState {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let wait = Duration::from_millis(request.wait_timeout_ms.unwrap_or(5000).min(30_000));
-        let deadline = request.wait_connected.then(|| Instant::now() + wait);
         // A reservation is a single discovery (auto-attach) or another caller's bounded wait;
         // queue behind it instead of cancelling it, and report a conflict if it never ends.
-        let reservation_deadline =
-            Instant::now() + START_RESERVATION_WAIT.max(deadline.map_or(Duration::ZERO, |_| wait));
+        let reservation_deadline = Instant::now()
+            + START_RESERVATION_WAIT.max(if request.wait_connected {
+                wait
+            } else {
+                Duration::ZERO
+            });
+        // The connection wait starts once this call holds the slot, so queuing never uses it up.
+        let deadline_from_now = || request.wait_connected.then(|| Instant::now() + wait);
         let epoch = self.lock(&self.live_capture, "live capture")?.stop_epoch;
         let (reservation, parsed, mut response) = loop {
             match self.admit_capture_start(&request, explicit.as_deref(), epoch)? {
@@ -797,7 +802,7 @@ impl DaemonState {
                     return self.wait_for_connection(
                         serde_json::to_value(*response)?,
                         Some(generation),
-                        deadline,
+                        deadline_from_now(),
                     );
                 }
                 StartAdmission::Busy if Instant::now() < reservation_deadline => {
@@ -812,13 +817,14 @@ impl DaemonState {
                 }
             }
         };
+        let deadline = deadline_from_now();
         let observed = Mutex::new(None);
-        let outcome = match deadline {
-            Some(end) if end > Instant::now() => {
-                self.attach_with_deadline(&reservation, parsed, end, &observed, epoch)?
-            }
-            // No wait, or the queue above used it up: still make exactly one discovery.
-            _ => Some(self.attach_reserved(&reservation, &parsed, deadline, Some(&observed))?),
+        // A deadline always goes through the bounded worker, even `wait_timeout_ms = 0`, so a
+        // hung `adb devices` can never hold the reply past it.
+        let outcome = if let Some(end) = deadline {
+            self.attach_with_deadline(&reservation, parsed, end, &observed, epoch)?
+        } else {
+            Some(self.attach_reserved(&reservation, &parsed, None, Some(&observed))?)
         };
         let (selection, generation) = outcome.unwrap_or_else(|| {
             let seen = observed

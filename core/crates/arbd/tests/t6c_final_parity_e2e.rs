@@ -1115,6 +1115,28 @@ fn stop_cancels_queued_and_waiting_starts_without_resuming_recording() {
     let cfg = rpc.call("config.get", &json!({}))["config"].clone();
     assert_eq!(cfg["capture_enabled"], false);
     assert_eq!(cfg["device_serial"], Value::Null);
+
+    // `wait_timeout_ms = 0` is still a deadline: a hung `adb devices` cannot hold the reply,
+    // and the abandoned discovery never commits the tentative serial afterwards.
+    fs::remove_file(dir.join("discovery-entered")).unwrap();
+    fs::write(dir.join("block"), []).unwrap();
+    let started = Instant::now();
+    let zero = rpc.send_raw(
+        "capture.start",
+        &json!({"serial":"A","wait_connected":true,"wait_timeout_ms":0}),
+    );
+    assert!(started.elapsed() < Duration::from_secs(2), "{zero}");
+    assert_eq!(
+        zero["error"]["data"]["error_code"], "DEVICE_NOT_FOUND",
+        "{zero}"
+    );
+    assert_eq!(zero["error"]["data"]["details"]["wait_timed_out"], true);
+    await_condition(|| dir.join("discovery-entered").exists());
+    fs::remove_file(dir.join("block")).unwrap();
+    thread::sleep(Duration::from_millis(500));
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["active"], false, "{status}");
+    assert_eq!(status["configured_device_serial"], Value::Null);
 }
 
 #[test]
