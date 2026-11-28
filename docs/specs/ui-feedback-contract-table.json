@@ -633,6 +633,9 @@
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": {
           "included_count": 0,
@@ -673,6 +676,9 @@
         },
         "bundle_id": null,
         "bundle_path": null,
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -710,6 +716,9 @@
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -747,6 +756,9 @@
         },
         "bundle_id": null,
         "bundle_path": null,
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -784,6 +796,9 @@
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null,
         "warning": "parent directory fsync failed"
@@ -822,6 +837,9 @@
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": true,
         "unanchored_summary": {
           "included_count": 3,
@@ -862,6 +880,9 @@
         },
         "bundle_id": null,
         "bundle_path": null,
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -896,6 +917,9 @@
         },
         "bundle_id": "b-42",
         "bundle_path": "/data/bundles/b-42",
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": {
           "included_count": 0,
@@ -941,6 +965,9 @@
         },
         "bundle_id": null,
         "bundle_path": null,
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -978,6 +1005,9 @@
         },
         "bundle_id": null,
         "bundle_path": null,
+        "post_roll_ms": 0,
+        "actual_post_roll_ms": 0,
+        "post_roll_truncated": false,
         "tail_may_be_incomplete": false,
         "unanchored_summary": null
       },
@@ -1400,6 +1430,39 @@
     }
   ],
   "capture_evidence_rows": [
+    {
+      "id": "CE-09",
+      "issue": "クラッシュ前のログは完全で、直後の要求分が欠けた",
+      "requested_duration_secs": 60,
+      "actual_video_duration_ms": null,
+      "actual_log_duration_ms": 60750,
+      "log_coverage_ms": 60750,
+      "logs_only": true,
+      "window_shortfall": true,
+      "video_shortfall": false,
+      "log_shortfall": true,
+      "warning_codes": [
+        "log_shortfall",
+        "window_shortfall"
+      ],
+      "warnings": [
+        "ログが要求した保存時間に達していません",
+        "要求した保存時間に達していない記録があります"
+      ],
+      "warning_details": [
+        {
+          "code": "log_shortfall",
+          "message": "ログが要求した保存時間に達していません"
+        },
+        {
+          "code": "window_shortfall",
+          "message": "要求した保存時間に達していない記録があります"
+        }
+      ],
+      "post_roll_ms": 3000,
+      "actual_post_roll_ms": 750,
+      "post_roll_truncated": true
+    },
     {
       "id": "CE-01",
       "issue": "映像だけが要求に満たない",

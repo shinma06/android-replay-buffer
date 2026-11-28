@@ -379,6 +379,7 @@ object ProtocolJson {
             is StringPatch.Set -> addProperty("device_serial", serial.value)
         }
         src.crashAutosaveEnabled?.let { addProperty("crash_autosave_enabled", it) }
+        src.crashAutosavePostRollMs?.let { addProperty("crash_autosave_post_roll_ms", it) }
         src.crashAutosaveCooldownSecs?.let { addProperty("crash_autosave_cooldown_secs", it) }
         when (val dir = src.outputDirOverride) {
             OutputDirPatch.Unchanged -> Unit

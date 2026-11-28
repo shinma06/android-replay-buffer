@@ -1868,6 +1868,22 @@ fn swipe_direction_label(tap: &TapRecord) -> Option<&'static str> {
     }
 }
 
+fn draft_crashes(draft: &V2BundleDraft) -> Vec<CrashMarker> {
+    let trigger = match draft.requested_window {
+        RequestedWindow::RealElapsedSec {
+            duration_sec,
+            post_roll_ms,
+            ..
+        } if post_roll_ms > 0 => draft.epochs.first().map(|e| {
+            e.start_boottime_ns.saturating_add(
+                i64::try_from(duration_sec.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX),
+            )
+        }),
+        _ => None,
+    };
+    arb_core::analytics::extract_crash_markers_for_window(&draft.logs, &draft.frames, trigger)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "serializes taps, screen spans, crashes, and discontinuities into one chronologically sorted events.jsonl"
@@ -1878,7 +1894,7 @@ fn stage_events_jsonl(
     clock: Option<&arb_core::bundle::FrameMediaClock>,
 ) -> Result<FileDigest, StorageError> {
     let screens = extract_screen_spans(&draft.logs, &draft.frames);
-    let crashes = extract_crash_markers(&draft.logs, &draft.frames);
+    let crashes = draft_crashes(draft);
 
     let total = draft.taps.len() + screens.len() + crashes.len() + draft.discontinuities.len();
 
@@ -2185,7 +2201,7 @@ fn write_timeline_sqlite(path: &Path, draft: &V2BundleDraft) -> Result<(), Stora
     insert_logs(&tx, &draft.logs)?;
     insert_taps(&tx, &draft.taps)?;
     insert_clock_anchors(&tx, &draft.clock_anchors)?;
-    let crashes = extract_crash_markers(&draft.logs, &draft.frames);
+    let crashes = draft_crashes(draft);
     insert_crashes(&tx, &crashes)?;
 
     tx.commit()
@@ -3424,6 +3440,9 @@ mod tests {
                 is_emulator: true,
             },
             requested_window: RequestedWindow::RealElapsedSec {
+                post_roll_ms: 0,
+                actual_post_roll_ms: 0,
+                post_roll_truncated: false,
                 duration_sec: 30,
                 trigger_pc_wall_utc: "2026-11-22T12:00:00Z".to_owned(),
             },

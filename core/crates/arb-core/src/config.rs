@@ -55,6 +55,22 @@ pub const MIN_CRASH_AUTOSAVE_COOLDOWN_SECS: u32 = 1;
 /// Maximum allowed crash auto-save cooldown in seconds (`1 hour`).
 pub const MAX_CRASH_AUTOSAVE_COOLDOWN_SECS: u32 = 3_600;
 
+/// Maximum delay from a fatal crash to the end of its capture window.
+pub const MAX_CRASH_AUTOSAVE_POST_ROLL_MS: u64 = 10_000;
+
+const fn default_crash_autosave_post_roll_ms() -> u64 {
+    4_000
+}
+
+/// Whole seconds of pre-crash history that fit beside the configured post-roll.
+#[must_use]
+pub fn crash_pre_roll_secs(duration_secs: u32, post_roll_ms: u64) -> u64 {
+    let available = u64::from(MAX_SAVE_WINDOW_SECS).saturating_sub(post_roll_ms.div_ceil(1000));
+    u64::from(duration_secs)
+        .min(available)
+        .max(u64::from(MIN_SAVE_WINDOW_SECS))
+}
+
 /// Device audio routing. Only explicitly selecting output capture may mute the device.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -275,6 +291,9 @@ pub struct ArbConfig {
     pub crash_autosave_enabled: bool,
     /// Minimum cooldown in seconds between crash-triggered auto-saves (default `15`).
     pub crash_autosave_cooldown_secs: u32,
+    /// Milliseconds to capture after an accepted fatal crash.
+    #[serde(default = "default_crash_autosave_post_roll_ms")]
+    pub crash_autosave_post_roll_ms: u64,
     /// Optional absolute output directory override for saved bundles and screenshots.
     pub output_dir_override: Option<PathBuf>,
     /// Optional absolute output directory override exclusively for `save.screenshot`
@@ -305,6 +324,7 @@ impl ArbConfig {
             audio_capture_mode: AudioCaptureMode::PlaybackDup,
             crash_autosave_enabled: true,
             crash_autosave_cooldown_secs: DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
+            crash_autosave_post_roll_ms: default_crash_autosave_post_roll_ms(),
             output_dir_override: None,
             screenshot_dir_override: None,
             ide_default_save_action: IdeDefaultSaveAction::SaveAndOpen,
@@ -368,6 +388,12 @@ impl ArbConfig {
             MIN_CRASH_AUTOSAVE_COOLDOWN_SECS,
             MAX_CRASH_AUTOSAVE_COOLDOWN_SECS,
         )?;
+        check_range_u64(
+            "crash_autosave_post_roll_ms",
+            self.crash_autosave_post_roll_ms,
+            0,
+            MAX_CRASH_AUTOSAVE_POST_ROLL_MS,
+        )?;
         if let Some(dir) = &self.output_dir_override {
             validate_override_dir("output_dir_override", dir)?;
         }
@@ -427,6 +453,9 @@ impl ArbConfig {
         }
         if let Some(v) = patch.crash_autosave_enabled {
             next.crash_autosave_enabled = v;
+        }
+        if let Some(v) = patch.crash_autosave_post_roll_ms {
+            next.crash_autosave_post_roll_ms = v;
         }
         if let Some(v) = patch.crash_autosave_cooldown_secs {
             next.crash_autosave_cooldown_secs = v;
@@ -604,6 +633,9 @@ pub struct ArbConfigPatch {
     /// Updated crash auto-save debounce cooldown in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crash_autosave_cooldown_secs: Option<u32>,
+    /// Updated capture delay after a crash, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash_autosave_post_roll_ms: Option<u64>,
     /// Updated output directory override (`Unchanged`, `Clear`, or `Set(path)`).
     #[serde(
         default,

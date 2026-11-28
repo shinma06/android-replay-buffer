@@ -777,6 +777,188 @@ fn build_crash_and_screen_events() -> Vec<CaptureEvent> {
     events
 }
 
+fn wait_for_crash_bundle(client: &mut RpcClient) -> String {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let status = client.call("system.status", &json!({}));
+        let crash = &status["crash_autosave"];
+        if crash["in_flight"] == false {
+            return crash["last_bundle_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("crash save: {crash}"))
+                .into();
+        }
+        assert!(Instant::now() < deadline, "crash save: {crash}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn post_roll_keeps_the_crash_frame_and_cuts_off_at_disconnect_or_deadline() {
+    const BOOT: &str = "boot-post";
+    // The next frame at 12 s is closer than the visible frame at 11 s.
+    let trigger = 11 * SEC_NS + 800_000_000;
+    let mut legacy_hint = None;
+    for (delay, disconnect) in [(0, false), (3000, false), (3000, true)] {
+        let tmp = TempDir::new().unwrap();
+        let paths = isolated_paths(&tmp);
+        let server = DaemonServer::start(DaemonConfig::new(paths.clone())).unwrap();
+        let mut client = RpcClient::connect(server.endpoint());
+        client.call(
+            "config.update",
+            &json!({"crash_autosave_post_roll_ms":delay}),
+        );
+        let crash =
+            binary_am_crash_event(BOOT, trigger, trigger, 42, "example", "Exception", "test");
+        let mut events = hello_and_heartbeat_events(BOOT, 10 * SEC_NS, 10 * SEC_NS);
+        for event in small_encoded_h264_events(BOOT, 10 * SEC_NS, 10 * SEC_NS) {
+            if let CaptureEvent::VideoFrame { pc_cont_ns, .. } = &event {
+                let t = *pc_cont_ns;
+                events.push(heartbeat_event(BOOT, t, t));
+                if t == 12 * SEC_NS {
+                    events.insert(events.len() - 1, crash.clone());
+                }
+                if disconnect && t == 13 * SEC_NS {
+                    events.push(CaptureEvent::Discontinuity(
+                        arb_core::time::DiscontinuityEvent {
+                            kind: arb_core::time::DiscontinuityKind::ConnectionLost,
+                            stream: None,
+                            boot_id: Some(BOOT.into()),
+                            start_boottime_ns: Some(t),
+                            end_boottime_ns: None,
+                            pc_cont_start_ns: t,
+                            pc_cont_end_ns: None,
+                            delta_ns: None,
+                            detail: None,
+                        },
+                    ));
+                }
+            }
+            events.push(event);
+        }
+        server
+            .ingest_device_source(&mut VecEventSource::new("emu", events))
+            .unwrap();
+        let bundle = wait_for_crash_bundle(&mut client);
+        let path = paths.data_dir.join("bundles").join(bundle);
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
+        let window = &manifest["requested_window"];
+        assert_eq!(window["post_roll_ms"], delay);
+        assert_eq!(window["post_roll_truncated"], disconnect);
+        assert_eq!(
+            manifest["streams"]["video"]["tail_may_be_incomplete"],
+            disconnect
+        );
+        let reader = arb_storage::bundle_io::open_bundle(&path).unwrap();
+        let frames = reader.frames().unwrap();
+        let end = frames.last().unwrap().pts_device_mono_ns;
+        let marker = reader.crashes().unwrap().pop().unwrap();
+        let hint = marker.frame_index_hint.unwrap();
+        if delay == 0 {
+            assert!(end <= trigger);
+            legacy_hint = Some(hint);
+        } else {
+            assert_eq!(legacy_hint, Some(hint));
+            assert!((trigger..=trigger + i64::from(delay) * 1_000_000).contains(&end));
+            let actual = window["actual_post_roll_ms"].as_u64().unwrap();
+            assert!(actual > 0 && actual <= 3000, "{window}");
+            assert_eq!(end, if disconnect { 12 } else { 14 } * SEC_NS);
+        }
+        drop(client);
+        server.shutdown();
+        if disconnect {
+            let server = DaemonServer::start(DaemonConfig::new(paths)).unwrap();
+            let mut client = RpcClient::connect(server.endpoint());
+            server
+                .ingest_device_source(&mut VecEventSource::new("emu", vec![crash]))
+                .unwrap();
+            assert_eq!(
+                client.call("save.list_jobs", &json!({}))["jobs"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                client.call("system.status", &json!({}))["crash_autosave"]["triggered_saves"],
+                0
+            );
+            drop(client);
+            server.shutdown();
+        }
+    }
+}
+
+#[test]
+fn shutdown_during_post_roll_recovers_once_with_early_params() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let config = DaemonConfig::new(paths.clone());
+    let server = DaemonServer::start(config.clone()).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let result = client.call("config.get", &json!({}));
+    assert_eq!(result["config"]["crash_autosave_post_roll_ms"], 4000);
+    assert_eq!(
+        client
+            .call_err(
+                "config.update",
+                &json!({"crash_autosave_post_roll_ms":10_001})
+            )
+            .0,
+        -32602
+    );
+    client.call(
+        "config.update",
+        &json!({"crash_autosave_post_roll_ms":10_000}),
+    );
+    let mut events = hello_and_heartbeat_events("boot", SEC_NS, SEC_NS);
+    events.push(binary_am_crash_event(
+        "boot",
+        SEC_NS,
+        SEC_NS,
+        42,
+        "example",
+        "Exception",
+        "shutdown",
+    ));
+    server
+        .ingest_device_source_with_mode(
+            &mut VecEventSource::new("emu", events),
+            arb_core::config::CaptureMode::LogsOnly,
+        )
+        .unwrap();
+    let status = client.call("system.status", &json!({}));
+    assert_eq!(status["crash_autosave"]["in_flight"], true);
+    assert!(status["crash_autosave"]["post_roll_until_utc"].is_string());
+    drop(client);
+    server.shutdown();
+    let server = DaemonServer::start(config.clone()).unwrap();
+    let mut client = RpcClient::connect(server.endpoint());
+    let id = wait_for_crash_bundle(&mut client);
+    let m: Value = serde_json::from_slice(
+        &fs::read(
+            paths
+                .data_dir
+                .join("bundles")
+                .join(id)
+                .join("manifest.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(m["requested_window"]["post_roll_truncated"], true);
+    assert_eq!(m["requested_window"]["actual_post_roll_ms"], 0);
+    drop(client);
+    server.shutdown();
+    let server = DaemonServer::start(config).unwrap();
+    assert_eq!(
+        server.recovery_report().recovered_job_ids,
+        Vec::<String>::new()
+    );
+    server.shutdown();
+}
+
 #[test]
 fn t1_crash_autosave_debounce_and_timeline_crashes_screens() {
     let tmp = TempDir::new().expect("tempdir");

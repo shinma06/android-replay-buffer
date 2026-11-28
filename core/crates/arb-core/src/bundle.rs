@@ -113,6 +113,15 @@ pub enum RequestedWindow {
         duration_sec: u64,
         /// Host PC wall-clock UTC timestamp of the trigger for display.
         trigger_pc_wall_utc: String,
+        /// Requested post-crash interval in milliseconds.
+        #[serde(default)]
+        post_roll_ms: u64,
+        /// Post-crash time covered by video or logcat evidence.
+        #[serde(default)]
+        actual_post_roll_ms: u64,
+        /// The requested post-crash boundary could not be confirmed.
+        #[serde(default)]
+        post_roll_truncated: bool,
     },
     /// Exact integer frame range requested during trim.
     TrimFrameRange {
@@ -685,6 +694,7 @@ impl ManifestV2 {
             RequestedWindow::RealElapsedSec {
                 duration_sec,
                 trigger_pc_wall_utc,
+                ..
             } => {
                 if *duration_sec == 0 {
                     return Err(ValidationError::ZeroRequestedDuration);
@@ -884,6 +894,25 @@ mod tests {
     };
     use crate::time::TimestampSemantics;
 
+    #[test]
+    fn g5_manifest_before_crash_post_roll_defaults_to_zero() {
+        let mut old = serde_json::to_value(valid_manifest()).unwrap();
+        let window = old["requested_window"].as_object_mut().unwrap();
+        for field in ["post_roll_ms", "actual_post_roll_ms", "post_roll_truncated"] {
+            window.remove(field);
+        }
+        let manifest: ManifestV2 = serde_json::from_value(old).unwrap();
+        assert!(matches!(
+            manifest.requested_window,
+            RequestedWindow::RealElapsedSec {
+                post_roll_ms: 0,
+                actual_post_roll_ms: 0,
+                post_roll_truncated: false,
+                ..
+            }
+        ));
+    }
+
     fn valid_manifest() -> ManifestV2 {
         ManifestV2 {
             memo: None,
@@ -899,6 +928,9 @@ mod tests {
                 is_emulator: true,
             },
             requested_window: RequestedWindow::RealElapsedSec {
+                post_roll_ms: 0,
+                actual_post_roll_ms: 0,
+                post_roll_truncated: false,
                 duration_sec: 30,
                 trigger_pc_wall_utc: "2026-11-22T12:00:00Z".into(),
             },

@@ -28,7 +28,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -52,8 +52,8 @@ use arb_os::paths::ArbPaths;
 use arb_storage::StorageError;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
 use arb_storage::catalog::{
-    BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
-    PinReconcileReport, RecoveryReport,
+    BundleEntry, Catalog, CatalogFormatVersion, CatalogSaveJob, EditSession, LeaseHolderKind,
+    NewBundleEntry, PinReconcileReport, RecoveryReport,
 };
 use arb_storage::config::ConfigStore;
 use arb_storage::ring::{DiskSpaceProvider, PinJournal};
@@ -62,8 +62,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::capture::{
-    CapturePipeline, CrashAutoSaveNotice, FaultInjection, PendingSave, SharedDiskSpaceProvider,
-    TailCompleteness, phase2_materialize, save_job_to_view,
+    CapturePipeline, CrashAutoSaveNotice, FaultInjection, PendingSave, Phase2Plan,
+    SharedDiskSpaceProvider, TailCompleteness, phase2_materialize, save_job_to_view,
 };
 use crate::error::{
     DaemonError, NotFoundEntity, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE, RPC_ERR_RESPONSE_TOO_LARGE,
@@ -231,7 +231,9 @@ struct DaemonState {
     crash_autosave_gate: Mutex<CrashAutoSaveGate>,
     handover_gate: RwLock<()>,
     crash_jobs: std::sync::atomic::AtomicUsize,
-    crash_tx: Mutex<Option<mpsc::Sender<PendingSave>>>,
+    crash_tx: Mutex<Option<mpsc::Sender<CrashWork>>>,
+    crash_window_changed: Condvar,
+    crash_outcome_changed: Condvar,
     faults: Arc<FaultInjection>,
     shutdown_flag: Arc<AtomicBool>,
     endpoint: PathBuf,
@@ -319,6 +321,11 @@ fn is_bundle_directory(dir: &Path) -> bool {
 /// `true` when `raw` is clearly meant as a filesystem path rather than a bundle ID.
 fn looks_like_path(raw: &str) -> bool {
     raw.contains('/') || raw.contains('\\') || raw.starts_with('.') || Path::new(raw).is_absolute()
+}
+
+enum CrashWork {
+    AtTrigger(Box<PendingSave>),
+    Committed(String, Box<Phase2Plan>),
 }
 
 impl DaemonState {
@@ -642,7 +649,15 @@ impl DaemonState {
     }
 
     fn handle_system_status(&self) -> Result<Value, DaemonError> {
-        let (cfg, capture_view, ring_chunks, ring_bytes, ring_pinned, buffered_secs) = {
+        let (
+            cfg,
+            capture_view,
+            ring_chunks,
+            ring_bytes,
+            ring_pinned,
+            buffered_secs,
+            post_roll_until_utc,
+        ) = {
             // Keep the configured preference stable until the capture snapshot is taken.
             let _guard = self.lock(&self.config_update_lock, "config update")?;
             let config = self.lock(&self.user_config, "user config")?.clone();
@@ -655,6 +670,7 @@ impl DaemonState {
                 bytes,
                 pinned,
                 cap.buffered_secs(),
+                cap.post_roll_until_utc(),
             )
         };
         let active_viewports = self.media.active_viewport_count();
@@ -663,6 +679,7 @@ impl DaemonState {
         let mut crash_autosave = self
             .lock(&self.crash_autosave_status, "crash autosave status")?
             .clone();
+        crash_autosave.post_roll_until_utc = post_roll_until_utc;
         crash_autosave.enabled = cfg.crash_autosave_enabled;
         crash_autosave.cooldown_secs = cfg.crash_autosave_cooldown_secs;
 
@@ -1538,6 +1555,21 @@ impl DaemonState {
         }
     }
 
+    fn queue_committed_crash(&self, result: Result<(CatalogSaveJob, Phase2Plan), DaemonError>) {
+        let sent = result.and_then(|(job, plan)| {
+            self.lock(&self.crash_tx, "crash queue")?
+                .as_ref()
+                .ok_or_else(|| {
+                    DaemonError::Conflict("クラッシュ保存を起動回復へ引き継ぎました".into())
+                })?
+                .send(CrashWork::Committed(job.job.job_id, Box::new(plan)))
+                .map_err(|_| DaemonError::Internal("crash worker unavailable".into()))
+        });
+        if let Err(error) = sent {
+            record_crash_outcome(self, Err(error));
+        }
+    }
+
     fn handle_save_list_jobs(&self) -> Result<Value, DaemonError> {
         let rescue_after = self
             .lock(&self.user_config, "user config")?
@@ -2317,16 +2349,9 @@ impl DaemonServer {
         let endpoint = config.paths.ipc_endpoint();
         let listener = LocalIpcListener::bind(&endpoint)?;
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let recovered_crashes: Vec<_> = catalog
-            .list_save_jobs()?
-            .into_iter()
-            .filter(|job| {
-                job.trigger_kind == SaveTriggerKind::CrashAutoSave
-                    && recovery.recovered_job_ids.contains(&job.job.job_id)
-            })
-            .map(|job| job.job.job_id)
-            .collect();
+        let recovered_crashes = recovered_crash_jobs(&catalog, &recovery)?;
         let initial_crash_status = CrashAutoSaveStatusView {
+            in_flight: !recovered_crashes.is_empty(),
             enabled: user_config.crash_autosave_enabled,
             cooldown_secs: user_config.crash_autosave_cooldown_secs,
             ..CrashAutoSaveStatusView::default()
@@ -2355,6 +2380,8 @@ impl DaemonServer {
             handover_gate: RwLock::new(()),
             crash_jobs: std::sync::atomic::AtomicUsize::new(recovered_crashes.len()),
             crash_tx: Mutex::new(Some(crash_tx)),
+            crash_window_changed: Condvar::new(),
+            crash_outcome_changed: Condvar::new(),
             faults: config.faults,
             shutdown_flag: Arc::clone(&shutdown_flag),
             endpoint,
@@ -2540,6 +2567,8 @@ impl DaemonServer {
                 .capture
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            cap.finish_crash_windows(capture::DrainEvent::Interrupted);
+            self.state.crash_window_changed.notify_all();
             cap.crash_daemon = std::sync::Weak::new();
             self.state
                 .crash_tx
@@ -2642,26 +2671,68 @@ fn spawn_auto_attach(attach_state: Arc<DaemonState>) -> std::io::Result<thread::
         })
 }
 
+fn recovered_crash_jobs(
+    catalog: &Catalog,
+    recovery: &RecoveryReport,
+) -> Result<Vec<String>, DaemonError> {
+    Ok(catalog
+        .list_save_jobs()?
+        .into_iter()
+        .filter(|job| {
+            job.trigger_kind == SaveTriggerKind::CrashAutoSave
+                && recovery.recovered_job_ids.contains(&job.job.job_id)
+        })
+        .map(|job| job.job.job_id)
+        .collect())
+}
+
 fn spawn_crash_worker(
     crash_state: Arc<DaemonState>,
-    crash_rx: mpsc::Receiver<PendingSave>,
+    crash_rx: mpsc::Receiver<CrashWork>,
     recovered_crashes: Vec<String>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("arbd-crash-autosave".to_owned())
         .spawn(move || {
-            for id in recovered_crashes {
-                let result = crash_state
-                    .lock_capture()
-                    .and_then(|cap| cap.prepare_retry(&crash_state.catalog, &id))
-                    .and_then(|plan| phase2_materialize(&plan, &crash_state.catalog, &id));
-                record_crash_outcome(&crash_state, result);
-            }
-            run_crash_autosave_worker(&crash_state, &crash_rx);
+            thread::scope(|scope| {
+                scope.spawn(|| wait_for_crash_boundary_drain(&crash_state));
+                for id in recovered_crashes {
+                    let result = crash_state
+                        .lock_capture()
+                        .and_then(|cap| cap.prepare_retry(&crash_state.catalog, &id))
+                        .and_then(|plan| phase2_materialize(&plan, &crash_state.catalog, &id));
+                    record_crash_outcome(&crash_state, result);
+                }
+                run_crash_autosave_worker(&crash_state, &crash_rx);
+            });
         })
 }
 
-fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
+/// Device events close windows under the ingest lock. This thread handles quiet devices
+/// independently of the (potentially slow) bundle writer. Admission and shutdown signal it.
+fn wait_for_crash_boundary_drain(state: &DaemonState) {
+    let mut cap = state.capture.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        cap.finish_crash_windows(capture::DrainEvent::Progress);
+        if state.is_shutting_down() {
+            break;
+        }
+        cap = if let Some(deadline) = cap.next_crash_timeout() {
+            state
+                .crash_window_changed
+                .wait_timeout(cap, deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0
+        } else {
+            state
+                .crash_window_changed
+                .wait(cap)
+                .unwrap_or_else(PoisonError::into_inner)
+        };
+    }
+}
+
+fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<CrashWork>) {
     loop {
         let pending = match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(pending) => pending,
@@ -2672,12 +2743,18 @@ fn run_crash_autosave_worker(state: &DaemonState, rx: &Receiver<PendingSave>) {
             }
             Err(_) => break,
         };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            state.finish_pinned_save(
-                pending,
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match pending {
+            CrashWork::AtTrigger(pending) => state.finish_pinned_save(
+                *pending,
                 SelectionPolicy::default(),
                 SaveTriggerKind::CrashAutoSave,
-            )
+            ),
+            CrashWork::Committed(job_id, plan) if !state.is_shutting_down() => {
+                phase2_materialize(&plan, &state.catalog, &job_id)
+            }
+            CrashWork::Committed(..) => Err(DaemonError::Conflict(
+                "クラッシュ保存を起動回復へ引き継ぎました".into(),
+            )),
         }))
         .unwrap_or_else(|_| {
             Err(DaemonError::Internal(
@@ -2702,12 +2779,15 @@ fn record_crash_outcome(state: &DaemonState, result: Result<SaveOutcomeResponse,
         }
         Err(e) => status.last_error = Some(e.to_string()),
     }
+    state.crash_outcome_changed.notify_all();
 }
 
 fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &CrashAutoSaveNotice) {
     if state.is_shutting_down() {
         return;
     }
+    let now = Instant::now();
+    let now_ms = current_unix_millis();
     let cfg = state
         .user_config
         .lock()
@@ -2719,6 +2799,20 @@ fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &Cra
         .unwrap_or_else(|| state.catalog.managed_bundles_root().to_path_buf());
     let storage_pressure_active = notice.storage_pressure_stopped
         || state.host_free_below_floor(&save_target, cap.min_free_disk_bytes());
+    // The capture lock serializes admission with the durable pin. A completed job keeps
+    // its id in the catalog after the pin is released, including across daemon restart.
+    match cap.crash_admitted(&state.catalog, &notice.job_id) {
+        Ok(true) => return,
+        Err(error) => {
+            state
+                .crash_autosave_status
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .last_error = Some(error.to_string());
+            return;
+        }
+        Ok(false) => {}
+    }
     let decision = {
         let mut gate = state
             .crash_autosave_gate
@@ -2765,23 +2859,7 @@ fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &Cra
         }
     }
 
-    let result = (|| {
-        if cfg.output_dir_override.is_some() {
-            state.resolve_output_dir(
-                Some(&save_target),
-                None,
-                state.catalog.managed_bundles_root(),
-                None,
-            )?;
-        }
-        let pending = cap.pin_crash(notice, u64::from(cfg.save_window_secs), &save_target)?;
-        state
-            .lock(&state.crash_tx, "crash queue")?
-            .as_ref()
-            .ok_or_else(|| DaemonError::Conflict("daemon is shutting down".into()))?
-            .send(pending)
-            .map_err(|_| DaemonError::Internal("crash worker unavailable".into()))
-    })();
+    let result = schedule_crash_save(state, cap, notice, &cfg, &save_target, (now, now_ms));
     if let Err(err) = result {
         state
             .crash_autosave_gate
@@ -2795,6 +2873,41 @@ fn pin_crash_notice(state: &DaemonState, cap: &mut CapturePipeline, notice: &Cra
         status.in_flight = state.crash_jobs.fetch_sub(1, Ordering::AcqRel) > 1;
         status.last_error = Some(err.to_string());
     }
+}
+
+fn schedule_crash_save(
+    state: &DaemonState,
+    cap: &mut CapturePipeline,
+    notice: &CrashAutoSaveNotice,
+    cfg: &ArbConfig,
+    save_target: &Path,
+    detected_at: (Instant, u64),
+) -> Result<(), DaemonError> {
+    if cfg.output_dir_override.is_some() {
+        state.resolve_output_dir(
+            Some(save_target),
+            None,
+            state.catalog.managed_bundles_root(),
+            None,
+        )?;
+    }
+    let pending = cap.pin_crash(
+        notice,
+        cfg.save_window_secs,
+        cfg.crash_autosave_post_roll_ms,
+        save_target,
+    )?;
+    if cfg.crash_autosave_post_roll_ms > 0 {
+        cap.start_crash_window(pending, detected_at.0, detected_at.1);
+        state.crash_window_changed.notify_one();
+        return Ok(());
+    }
+    state
+        .lock(&state.crash_tx, "crash queue")?
+        .as_ref()
+        .ok_or_else(|| DaemonError::Conflict("daemon is shutting down".into()))?
+        .send(CrashWork::AtTrigger(Box::new(pending)))
+        .map_err(|_| DaemonError::Internal("crash worker unavailable".into()))
 }
 
 fn run_accept_loop(listener: &LocalIpcListener, state: &Arc<DaemonState>) {

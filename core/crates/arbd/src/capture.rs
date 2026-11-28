@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
 use arb_adb::scrcpy::{AudioTunnelStatus, VideoPacketKind, unsupported_android_api_warning};
@@ -285,6 +286,8 @@ fn decode_ring_chunk(bytes: &[u8]) -> Result<Vec<CaptureEvent>, DaemonError> {
 /// Notification emitted by [`CapturePipeline::ingest_event`] when a live fatal `am_crash` arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashAutoSaveNotice {
+    /// Durable identity of the original logd record (independent of replay time).
+    pub job_id: String,
     /// Capture generation that owns this crash.
     pub generation: u64,
     /// Device boot epoch of the triggering log.
@@ -305,6 +308,14 @@ pub struct CrashAutoSaveNotice {
 /// so `save.retry` / `save.retarget` can rematerialize identically even across restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SaveJobMaterializeParams {
+    #[serde(default)]
+    post_roll_ms: u64,
+    #[serde(default)]
+    post_roll_deadline_boottime_ns: Option<i64>,
+    #[serde(default)]
+    post_roll_trigger_cont_ns: Option<i64>,
+    #[serde(default)]
+    post_roll_truncated: bool,
     #[serde(default)]
     input_channel: Option<PhysicalStatus>,
     bundle_id: String,
@@ -435,7 +446,29 @@ pub struct PendingSave {
     must_drain: bool,
 }
 
+fn post_roll_ns(ms: u64) -> i64 {
+    i64::try_from(ms.saturating_mul(1_000_000)).unwrap_or(i64::MAX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DrainEvent {
+    Progress,
+    Interrupted,
+}
+
+/// Owned by the capture generation until the exact input event or host timeout closes it.
+#[derive(Debug)]
+struct CrashWindow {
+    pending: PendingSave,
+    timeout: Instant,
+    until_utc: String,
+    watermark: i64,
+    observed_end: i64,
+}
+
 struct SaveIntent {
+    job_id: Option<String>,
+    post_roll_ms: u64,
     mode: SaveMode,
     trigger_kind: SaveTriggerKind,
     note: Option<String>,
@@ -634,6 +667,7 @@ pub struct CapturePipeline {
     /// Continuous video / logcat coverage evidence of the current device (#564 / #570).
     coverage: CoverageLedger,
     crash_notifier: Option<Sender<CrashAutoSaveNotice>>,
+    crash_windows: Vec<CrashWindow>,
     pub(super) crash_daemon: std::sync::Weak<super::DaemonState>,
 }
 
@@ -728,6 +762,7 @@ impl CapturePipeline {
             chunk_contents: BTreeMap::new(),
             coverage: CoverageLedger::new(arb_adb::adb::DEFAULT_BEACON_TIMEOUT_NS),
             crash_notifier: None,
+            crash_windows: Vec::new(),
             crash_daemon: std::sync::Weak::new(),
         };
         pipeline.restore_capture(now.continuous_mono_ns);
@@ -976,6 +1011,7 @@ impl CapturePipeline {
         clock_domain: ClockDomain,
         capture_mode: CaptureMode,
     ) -> u64 {
+        self.finish_crash_windows(DrainEvent::Interrupted);
         self.resume_from_ns = self.latest_pc_cont_ns;
         if self.serial.as_deref().is_some_and(|old| old != serial) {
             self.resume_from_ns = None;
@@ -1046,6 +1082,7 @@ impl CapturePipeline {
 
     /// Marks the active capture session as stopped and flushes buffered events to Zone-1 ring.
     pub fn mark_stopped(&mut self) {
+        self.finish_crash_windows(DrainEvent::Interrupted);
         self.active = false;
         self.connected = false;
         self.coverage.close_all();
@@ -1208,7 +1245,8 @@ impl CapturePipeline {
     /// Returns [`DaemonError::Storage`] for non-pressure storage errors (already recorded as
     /// a `StreamGap` discontinuity, see [`Self::flush_pending_chunk`]).
     pub fn ingest_event(&mut self, event: CaptureEvent) -> Result<(), DaemonError> {
-        let detected_crash = detect_crash_from_event(&event);
+        self.finish_crash_windows(DrainEvent::Progress);
+        let detected_crash = self.detect_crash_from_event(&event);
         if self.storage_pressure_stopped {
             self.notify_detected_crash(detected_crash);
             return Ok(());
@@ -1226,6 +1264,7 @@ impl CapturePipeline {
                 .or(self.recovered_boot_id.as_deref())
                 .is_some_and(|old| old != boot)
             {
+                self.finish_crash_windows(DrainEvent::Interrupted);
                 self.flush_pending_chunk()?;
                 self.chunk_contents.clear();
                 self.coverage.close_all();
@@ -1270,6 +1309,7 @@ impl CapturePipeline {
         }
 
         self.pending_bytes = self.pending_bytes.saturating_add(approx_bytes);
+        self.observe_crash_watermark(&event);
         self.pending_events.push(event);
 
         let flushed = if should_flush
@@ -1281,6 +1321,7 @@ impl CapturePipeline {
             Ok(())
         };
 
+        self.finish_crash_windows(DrainEvent::Progress);
         // Notify even when the flush failed: a crash must still be counted and may auto-save.
         self.notify_detected_crash(detected_crash);
         flushed
@@ -1592,19 +1633,46 @@ impl CapturePipeline {
         }
     }
 
-    fn notify_detected_crash(&mut self, detected: Option<(i64, String, i64, ParsedAmCrash)>) {
-        let Some((pc_cont_ns, boot_id, boottime_ns, crash)) = detected else {
+    fn detect_crash_from_event(&self, event: &CaptureEvent) -> Option<CrashAutoSaveNotice> {
+        let CaptureEvent::LogRecord {
+            pc_cont_ns,
+            boot_id,
+            payload,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let parsed = detect_live_fatal_am_crash(payload)?;
+        // logd's original header, payload and boot survive redelivery. The device read and
+        // host ingest timestamps change, so neither participates in the identity.
+        let identity = format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            boot_id.len(),
+            boot_id,
+            payload.log_sec,
+            payload.log_nsec,
+            payload.pid,
+            payload.tid,
+            arb_storage::sha256_hex(&payload.payload)
+        );
+        Some(CrashAutoSaveNotice {
+            job_id: format!("crash-{}", arb_storage::sha256_hex(identity.as_bytes())),
+            generation: self.session_generation,
+            boot_id: boot_id.clone(),
+            boottime_ns: payload.device_read_boottime_ns,
+            pc_cont_ns: *pc_cont_ns,
+            process_name: parsed.process_name,
+            exception_class: parsed.exception_class,
+            storage_pressure_stopped: self.storage_pressure_stopped,
+        })
+    }
+
+    fn notify_detected_crash(&mut self, notice: Option<CrashAutoSaveNotice>) {
+        let Some(mut notice) = notice else {
             return;
         };
-        let notice = CrashAutoSaveNotice {
-            generation: self.session_generation,
-            boot_id,
-            boottime_ns,
-            pc_cont_ns,
-            process_name: crash.process_name,
-            exception_class: crash.exception_class,
-            storage_pressure_stopped: self.storage_pressure_stopped,
-        };
+        notice.storage_pressure_stopped = self.storage_pressure_stopped;
         if let Some(tx) = &self.crash_notifier {
             let _ = tx.send(notice.clone());
         }
@@ -1616,7 +1684,8 @@ impl CapturePipeline {
     pub(super) fn pin_crash(
         &mut self,
         notice: &CrashAutoSaveNotice,
-        secs: u64,
+        duration_secs: u32,
+        post_roll_ms: u64,
         dest: &Path,
     ) -> Result<PendingSave, DaemonError> {
         if notice.generation != self.session_generation {
@@ -1624,6 +1693,7 @@ impl CapturePipeline {
                 "crash belongs to an earlier capture session".into(),
             ));
         }
+        let secs = arb_core::config::crash_pre_roll_secs(duration_secs, post_roll_ms);
         let mut window = self.build_save_window(
             secs,
             TriggerPoint {
@@ -1645,11 +1715,144 @@ impl CapturePipeline {
             SelectionPolicy::default(),
             SaveIntent {
                 mode,
+                job_id: Some(notice.job_id.clone()),
+                post_roll_ms,
                 trigger_kind: SaveTriggerKind::CrashAutoSave,
                 note: None,
             },
             window,
         )
+    }
+
+    pub(super) fn start_crash_window(&mut self, pending: PendingSave, now: Instant, now_ms: u64) {
+        let post_ms = pending.params.post_roll_ms;
+        self.crash_windows.push(CrashWindow {
+            timeout: now + Duration::from_millis(post_ms + pending.params.policy.drain_timeout_ms),
+            until_utc: arb_core::time::format_unix_ms_iso8601(
+                i64::try_from(now_ms.saturating_add(post_ms)).unwrap_or(i64::MAX),
+            ),
+            watermark: pending.params.window.end_boottime_ns(),
+            observed_end: pending.params.window.end_boottime_ns(),
+            pending,
+        });
+    }
+
+    pub(super) fn post_roll_until_utc(&self) -> Option<String> {
+        self.crash_windows
+            .iter()
+            .map(|w| &w.until_utc)
+            .max()
+            .cloned()
+    }
+
+    pub(super) fn next_crash_timeout(&self) -> Option<Instant> {
+        self.crash_windows.iter().map(|w| w.timeout).min()
+    }
+
+    /// Close under the ingest lock: a reconnect or device switch cannot race the final pin.
+    pub(super) fn finish_crash_windows(&mut self, event: DrainEvent) {
+        if self.crash_windows.is_empty() {
+            return;
+        }
+        let Some(state) = self.crash_daemon.upgrade() else {
+            return;
+        };
+        let stop = event == DrainEvent::Interrupted
+            || !self.is_active()
+            || !self.is_connected()
+            || state.is_shutting_down();
+        let now = Instant::now();
+        let mut i = 0;
+        while i < self.crash_windows.len() {
+            let w = &self.crash_windows[i];
+            let deadline = w
+                .pending
+                .params
+                .post_roll_deadline_boottime_ns
+                .unwrap_or(w.watermark);
+            let reached = w.watermark >= deadline;
+            if !stop && !reached && now < w.timeout {
+                i += 1;
+                continue;
+            }
+            let mut w = self.crash_windows.remove(i);
+            let end = w.observed_end.min(deadline);
+            if let WindowSpec::RealElapsed {
+                end_boottime_ns,
+                ingest_end_cont_ns,
+                ..
+            } = &mut w.pending.params.window
+            {
+                *ingest_end_cont_ns =
+                    ingest_end_cont_ns.saturating_add(end.saturating_sub(*end_boottime_ns));
+                *end_boottime_ns = end;
+            }
+            w.pending.params.post_roll_truncated = !reached;
+            let tail = if reached {
+                TailCompleteness::Complete
+            } else {
+                TailCompleteness::MayBeIncomplete
+            };
+            let result = self.phase1_commit(&state.catalog, w.pending, tail);
+            state.queue_committed_crash(result);
+        }
+    }
+
+    fn observe_crash_watermark(&mut self, event: &CaptureEvent) {
+        if self.crash_windows.is_empty() {
+            return;
+        }
+        let Some(boot) = event_boot_id(event) else {
+            return;
+        };
+        let mapped_pts = |pts, semantics, pc| {
+            aligned_boottime_ns(&self.timeline.map_device_monotonic(boot, pts, semantics, pc))
+        };
+        let stamp = match event {
+            CaptureEvent::Heartbeat { payload, .. } => Some(payload.boottime_ns),
+            CaptureEvent::VideoFrame {
+                pc_cont_ns, packet, ..
+            } if !packet.is_config() => packet.pts_monotonic_ns().and_then(|pts| {
+                mapped_pts(
+                    pts,
+                    TimestampSemantics::VideoEncoderInputEstimate,
+                    *pc_cont_ns,
+                )
+            }),
+            CaptureEvent::AudioFrame {
+                pc_cont_ns, packet, ..
+            } => packet.pts_monotonic_ns().and_then(|pts| {
+                mapped_pts(
+                    pts,
+                    TimestampSemantics::AudioCapturePtsUncalibrated,
+                    *pc_cont_ns,
+                )
+            }),
+            CaptureEvent::LogRecord { payload, .. } => Some(payload.device_read_boottime_ns),
+            CaptureEvent::TouchEvent { payload, .. } => Some(payload.device_read_boottime_ns),
+            CaptureEvent::Discontinuity(d) => d.start_boottime_ns,
+            CaptureEvent::Shutdown { payload, .. } => Some(payload.boottime_ns),
+            _ => None,
+        };
+        let Some(stamp) = stamp else {
+            return;
+        };
+        for w in &mut self.crash_windows {
+            if w.pending.params.window.boot_id() == boot {
+                w.observed_end = w.observed_end.max(stamp);
+                if matches!(
+                    event,
+                    CaptureEvent::VideoFrame { .. } | CaptureEvent::Heartbeat { .. }
+                ) {
+                    w.watermark = w.watermark.max(stamp);
+                }
+            }
+        }
+    }
+
+    pub(super) fn crash_admitted(&self, catalog: &Catalog, id: &str) -> Result<bool, DaemonError> {
+        Ok(self.ring.pin_journal().journal_path(id)?.try_exists()?
+            || catalog.save_job(id)?.is_some())
     }
 
     fn push_live_discontinuity(&mut self, event: DiscontinuityEvent) {
@@ -1936,6 +2139,8 @@ impl CapturePipeline {
             dest_parent_dir,
             policy,
             SaveIntent {
+                job_id: None,
+                post_roll_ms: 0,
                 mode,
                 trigger_kind,
                 note,
@@ -1953,6 +2158,8 @@ impl CapturePipeline {
         window: WindowSpec,
     ) -> Result<PendingSave, DaemonError> {
         let SaveIntent {
+            job_id,
+            post_roll_ms,
             mode,
             trigger_kind,
             note,
@@ -1967,7 +2174,7 @@ impl CapturePipeline {
         }
 
         self.check_pin_budget(None, &chunk_ids)?;
-        let job_id = next_id("job");
+        let job_id = job_id.unwrap_or_else(|| next_id("job"));
         let bundle_id = next_id("bundle");
         let now_utc = utc_now_iso8601();
         let dest_bundle_dir = dest_parent_dir.join(&bundle_id);
@@ -1987,6 +2194,14 @@ impl CapturePipeline {
         let extra_discontinuities = self.carried_discontinuities_for(&window, &policy);
         let drain_trigger_boottime_ns = window.end_boottime_ns();
         let params = SaveJobMaterializeParams {
+            post_roll_ms,
+            post_roll_deadline_boottime_ns: (post_roll_ms > 0).then(|| {
+                window
+                    .end_boottime_ns()
+                    .saturating_add(post_roll_ns(post_roll_ms))
+            }),
+            post_roll_trigger_cont_ns: (post_roll_ms > 0).then(|| window.ingest_end_cont_ns()),
+            post_roll_truncated: post_roll_ms > 0,
             input_channel: Some(self.physical_channel),
             note,
             bundle_id,
@@ -2045,6 +2260,11 @@ impl CapturePipeline {
         mut pending: PendingSave,
         tail: TailCompleteness,
     ) -> Result<(CatalogSaveJob, Phase2Plan), DaemonError> {
+        // A crash job's initial params and pin are a durable recovery point. Even a failed
+        // catalog write during finalization must leave them available to startup recovery.
+        if pending.params.post_roll_ms > 0 {
+            pending.guard.armed = false;
+        }
         let mut chunk_ids = pending.pinned_chunk_ids.clone();
         let mut flush_failed = false;
         if pending.generation == self.session_generation {
@@ -2070,8 +2290,19 @@ impl CapturePipeline {
         }
         let job_id = pending.guard.job_id.clone();
         if chunk_ids.len() != pending.pinned_chunk_ids.len() {
-            self.check_pin_budget(Some(&job_id), &chunk_ids)?;
-            let _ = self.ring.pin_chunks(
+            match self.check_pin_budget(Some(&job_id), &chunk_ids) {
+                Err(DaemonError::PinBudget { .. }) if pending.params.post_roll_ms > 0 => {
+                    pending.params = read_job_params(&self.data_dir, &job_id)?;
+                    chunk_ids.clone_from(&pending.pinned_chunk_ids);
+                    flush_failed = true;
+                }
+                other => {
+                    other?;
+                }
+            }
+        }
+        if chunk_ids.len() != pending.pinned_chunk_ids.len() {
+            self.ring.pin_chunks(
                 &job_id,
                 &pending.dest_bundle_dir,
                 chunk_ids.clone(),
@@ -2083,6 +2314,8 @@ impl CapturePipeline {
             || flush_failed
             || tail.may_be_incomplete()
             || self.session_generation != pending.generation;
+        pending.params.post_roll_truncated |=
+            pending.params.post_roll_ms > 0 && pending.params.tail_may_be_incomplete;
         write_job_params(&self.data_dir, &job_id, &pending.params)?;
 
         let created = catalog.create_pinned_job_with_trigger(
@@ -2500,13 +2733,12 @@ struct Materialized {
 /// therefore not short, while a stream that started late or broke is.
 fn stream_shortfalls(
     mode: SaveMode,
-    requested_secs: u64,
+    requested_ms: u64,
     video_ms: Option<u64>,
     logs_ms: u64,
     log_coverage_ms: Option<u64>,
 ) -> (bool, bool) {
-    let short =
-        |actual_ms: u64| actual_ms.saturating_add(1000) < requested_secs.saturating_mul(1000);
+    let short = |actual_ms: u64| actual_ms.saturating_add(1000) < requested_ms;
     (
         mode == SaveMode::Full && short(video_ms.unwrap_or(0)),
         short(log_coverage_ms.unwrap_or(logs_ms)),
@@ -2613,6 +2845,40 @@ fn window_coverage_ms(
     )
 }
 
+/// Union of the saved boot's active stream intervals on the K14 ingest axis.
+fn actual_post_roll_ms(params: &SaveJobMaterializeParams) -> u64 {
+    use arb_core::coverage::CoverageInterval;
+    let (Some(start), Some(snapshot)) = (params.post_roll_trigger_cont_ns, &params.coverage) else {
+        return 0;
+    };
+    let boot = params.window.boot_id();
+    let mut intervals: Vec<_> = snapshot
+        .logcat
+        .iter()
+        .filter(|c| c.key == boot)
+        .map(|c| (c.start_ns, c.end_ns))
+        .collect();
+    if params.mode == SaveMode::Full {
+        intervals.extend(
+            snapshot
+                .video
+                .iter()
+                .filter(|c| c.key.boot_id == boot)
+                .map(|c| (c.start_ns, c.end_ns)),
+        );
+    }
+    intervals.sort_unstable();
+    let coverage: Vec<_> = intervals
+        .into_iter()
+        .map(|(start_ns, end_ns)| CoverageInterval {
+            key: (),
+            start_ns,
+            end_ns,
+        })
+        .collect();
+    coverage_duration_in_window(&coverage, start, params.window.ingest_end_cont_ns()) / 1_000_000
+}
+
 /// Held display time at the window edges: the carried-in first sample (when later frames
 /// follow) plus the last sample's display length.
 fn saved_static_hold_ms(
@@ -2672,7 +2938,10 @@ fn measure_saved_evidence(
     let (video_coverage_ms, log_coverage_ms) = window_coverage_ms(params, video_from);
     let (video_shortfall, log_shortfall) = stream_shortfalls(
         params.mode,
-        params.duration_sec,
+        params
+            .duration_sec
+            .saturating_mul(1000)
+            .saturating_add(params.post_roll_ms),
         video,
         logs.duration_ms,
         log_coverage_ms,
@@ -2858,6 +3127,9 @@ pub fn phase2_materialize(
             let _ = remove_job_params(&plan.data_dir, job_id);
             Ok(SaveOutcomeResponse {
                 evidence: materialized.evidence,
+                post_roll_ms: params.post_roll_ms,
+                actual_post_roll_ms: actual_post_roll_ms(&params),
+                post_roll_truncated: params.post_roll_truncated,
                 requested_duration_secs: Some(params.duration_sec),
                 job: save_job_to_view(&completed, plan.rescue_after_secs),
                 bundle_id: Some(materialized.bundle_id),
@@ -2898,6 +3170,9 @@ fn fail_job(
             note: params.and_then(|p| p.note.clone()),
             ..Default::default()
         },
+        post_roll_ms: params.map_or(0, |p| p.post_roll_ms),
+        actual_post_roll_ms: params.map_or(0, actual_post_roll_ms),
+        post_roll_truncated: params.is_some_and(|p| p.post_roll_truncated),
         requested_duration_secs: params.map(|p| p.duration_sec),
         job: save_job_to_view(&failed, rescue_after_secs),
         bundle_id: None,
@@ -3956,6 +4231,9 @@ impl ReplayCollector {
             provenance: Provenance::Original,
             device: params.device.clone(),
             requested_window: RequestedWindow::RealElapsedSec {
+                post_roll_ms: params.post_roll_ms,
+                actual_post_roll_ms: actual_post_roll_ms(params),
+                post_roll_truncated: params.post_roll_truncated,
                 duration_sec: params.duration_sec.max(1),
                 trigger_pc_wall_utc: params.trigger_utc.clone(),
             },
@@ -4722,26 +5000,6 @@ fn decode_log_tag_and_message_raw(payload: &LogRecordPayload) -> (String, String
     )
 }
 
-fn detect_crash_from_event(event: &CaptureEvent) -> Option<(i64, String, i64, ParsedAmCrash)> {
-    let CaptureEvent::LogRecord {
-        pc_cont_ns,
-        payload,
-        boot_id,
-        ..
-    } = event
-    else {
-        return None;
-    };
-    detect_live_fatal_am_crash(payload).map(|parsed| {
-        (
-            *pc_cont_ns,
-            boot_id.clone(),
-            payload.device_read_boottime_ns,
-            parsed,
-        )
-    })
-}
-
 fn detect_live_fatal_am_crash(payload: &LogRecordPayload) -> Option<ParsedAmCrash> {
     // Real `am_crash` events are binary records of the events buffer written by system_server
     // (uid 1000). An app's text `Log.e("am_crash", ...)` line must never trigger a save.
@@ -5402,7 +5660,8 @@ mod tests {
             };
             let (v, l) = super::stream_shortfalls(
                 mode,
-                row["requested_duration_secs"].as_u64().unwrap(),
+                row["requested_duration_secs"].as_u64().unwrap() * 1000
+                    + row["post_roll_ms"].as_u64().unwrap_or(0),
                 row["actual_video_duration_ms"].as_u64(),
                 row["actual_log_duration_ms"].as_u64().unwrap(),
                 row["log_coverage_ms"].as_u64(),
@@ -6098,36 +6357,43 @@ mod tests {
         let mut cap = open_test_pipeline(&tmp);
         cap.begin_session("A");
         cap.ingest_event(heartbeat_at(100)).unwrap();
+        cap.capture_mode = super::CaptureMode::LogsOnly;
+        let notice = super::CrashAutoSaveNotice {
+            job_id: "crash-startup".into(),
+            generation: cap.session_generation(),
+            boot_id: "boot-t".into(),
+            boottime_ns: 100,
+            pc_cont_ns: 100,
+            process_name: "example".into(),
+            exception_class: "Error".into(),
+            storage_pressure_stopped: false,
+        };
         let mut pending = cap
-            .phase1_pin_with_options(
-                10,
-                &tmp.path().join("bundles"),
-                SelectionPolicy::default(),
-                SaveMode::LogsOnly,
-                super::SaveTriggerKind::CrashAutoSave,
-            )
+            .pin_crash(&notice, 10, 3000, &tmp.path().join("bundles"))
             .unwrap();
+        let params = super::read_job_params(tmp.path(), pending.job_id()).unwrap();
+        assert_eq!(params.post_roll_deadline_boottime_ns, Some(3_000_000_100));
+        assert!(params.tail_may_be_incomplete && params.post_roll_truncated);
         let id = pending.job_id().to_owned();
         pending.guard.armed = false;
         drop(pending);
         drop(cap);
         let config = crate::DaemonConfig::new(paths);
         let server = crate::DaemonServer::start(config.clone()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let status = server.state.crash_autosave_status.lock().unwrap();
-            if status.last_job_id.as_ref() == Some(&id) {
-                assert!(status.last_bundle_id.is_some());
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "crash job failed: {:?}",
-                status.last_error
-            );
-            drop(status);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let status = server.state.crash_autosave_status.lock().unwrap();
+        let (status, _) = server
+            .state
+            .crash_outcome_changed
+            .wait_timeout_while(status, std::time::Duration::from_secs(90), |s| s.in_flight)
+            .unwrap();
+        assert_eq!(
+            status.last_job_id.as_ref(),
+            Some(&id),
+            "{:?}",
+            status.last_error
+        );
+        assert!(status.last_bundle_id.is_some());
+        drop(status);
         server.shutdown();
         let server = crate::DaemonServer::start(config).unwrap();
         assert!(!server.state.recovery.recovered_job_ids.contains(&id));
@@ -6650,6 +6916,10 @@ mod tests {
         display_height: Option<u32>,
     ) -> SaveJobMaterializeParams {
         SaveJobMaterializeParams {
+            post_roll_ms: 0,
+            post_roll_deadline_boottime_ns: None,
+            post_roll_trigger_cont_ns: None,
+            post_roll_truncated: false,
             input_channel: None,
             note: None,
             bundle_id: "01JT6HGESTURE00000000000001".to_owned(),
