@@ -2014,6 +2014,37 @@ pub struct MediaInspectFramesParams {
     pub max_tile_height: Option<u32>,
     /// Optional contact sheet column count (`1..=16`).
     pub columns: Option<u32>,
+    /// Also return a lightweight JPEG copy of the rendered PNG (`jpeg`). The cached PNG is
+    /// unchanged; the default `png` returns only the PNG, as before.
+    #[serde(default)]
+    pub image_format: InspectImageFormat,
+}
+
+/// Inline image encoding requested from `media.inspect_frames`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectImageFormat {
+    /// Only the lossless PNG.
+    #[default]
+    Png,
+    /// The PNG plus a JPEG tile (quality 80, longer edge at most 1024 px).
+    Jpeg,
+}
+
+/// JPEG copy of a rendered inspection PNG, returned when `image_format` is `jpeg`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectJpegTile {
+    /// Tile width in pixels (aspect ratio of the PNG, longer edge at most 1024).
+    pub width: u32,
+    /// Tile height in pixels.
+    pub height: u32,
+    /// JPEG quality (1..=100).
+    pub quality: u8,
+    /// Byte length of the JPEG.
+    pub bytes_len: usize,
+    /// Base64-encoded JPEG bytes.
+    pub base64: String,
 }
 
 /// Tap-crop rectangle geometry returned by `media.inspect_frames` in `tap_crop` mode.
@@ -2066,4 +2097,7 @@ pub struct MediaInspectFramesResponse {
     /// Tap-crop geometry, populated when `mode == InspectFramesMode::TapCrop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tap_crop: Option<TapCropMeta>,
+    /// JPEG tile of the same render, present only when `image_format` was `jpeg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jpeg: Option<InspectJpegTile>,
 }

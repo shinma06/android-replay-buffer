@@ -211,7 +211,9 @@
         "additionalProperties": false,
         "properties": {
           "state": {"description": "カタログの状態フィルター。", "enum": ["active", "trashed", "purging"], "type": "string"},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "1 ページの件数（新しい順）。"},
+          "cursor": {"type": "string", "pattern": "\\S", "description": "前回の next_cursor。"}
         },
         "type": "object"
       },
@@ -223,24 +225,24 @@
       "description": "不要な記録をごみ箱へ移し、arb_gc_bundles で回収候補を確認。",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
+        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}, "verbose": {"type": "boolean", "default": false, "description": "true で一覧と同じ全項目。"}},
         "required": ["bundle_id"],
         "type": "object"
       },
       "name": "arb_trash_bundle",
-      "outputType": "ListedBundle",
+      "outputType": "BundleStateChange",
       "annotations": {"title": "ごみ箱へ移動", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
       "description": "ごみ箱の記録を戻し、arb_list_bundles で確認。",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
+        "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}, "verbose": {"type": "boolean", "default": false, "description": "true で一覧と同じ全項目。"}},
         "required": ["bundle_id"],
         "type": "object"
       },
       "name": "arb_restore_bundle",
-      "outputType": "ListedBundle",
+      "outputType": "BundleStateChange",
       "annotations": {"title": "バンドルの復元", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
@@ -366,7 +368,8 @@
           "tap_index": {"description": "概要のタップ番号（0 起点）。", "minimum": 0, "type": "integer"},
           "tap_x": {"minimum": 0, "type": "integer", "description": "タップ横座標（映像 px）。", "maximum": 4294967295},
           "tap_y": {"minimum": 0, "type": "integer", "description": "タップ縦座標（映像 px）。", "maximum": 4294967295},
-          "include_images": {"type": "boolean", "description": "PNG も content に含めます。本文の形は同じです。", "default": false}
+          "include_images": {"type": "boolean", "description": "画像も content に含めます。本文の形は同じです。", "default": false},
+          "image_format": {"enum": ["jpeg", "png"], "default": "jpeg", "description": "画像の形式。jpeg は長辺 1024 px・品質 80、png は無劣化。"}
         },
         "required": ["mode"],
         "type": "object",
@@ -701,9 +704,31 @@
     "BundleLifecycleState": {"enum": ["active", "trashed", "purging"]},
     "BundleListResponse": {
       "type": "object",
-      "properties": {"bundles": {"type": "array", "items": {"$ref": "#/$defs/ListedBundle"}}},
-      "required": ["bundles"],
+      "properties": {
+        "bundles": {"type": "array", "items": {"$ref": "#/$defs/ListedBundle"}},
+        "total_count": {"$ref": "#/$defs/UInt"},
+        "has_more": {"type": "boolean"},
+        "next_cursor": {"description": "次ページの cursor。has_more が false なら null。", "type": ["string", "null"]}
+      },
+      "required": ["bundles", "total_count", "has_more", "next_cursor"],
       "additionalProperties": false
+    },
+    "BundleStateChange": {
+      "description": "既定は bundle_id・state・trashed_at_utc・disk_state だけ。verbose: true で ListedBundle。",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "bundle_id": {"type": "string"},
+            "state": {"$ref": "#/$defs/BundleLifecycleState"},
+            "trashed_at_utc": {"type": ["string", "null"]},
+            "disk_state": {"$ref": "#/$defs/BundleDiskState"}
+          },
+          "required": ["bundle_id", "state", "trashed_at_utc", "disk_state"],
+          "additionalProperties": false
+        },
+        {"$ref": "#/$defs/ListedBundle"}
+      ]
     },
     "CaptureMode": {"enum": ["video_and_logs", "logs_only"]},
     "CaptureConfigChanges": {
@@ -1148,9 +1173,13 @@
         },
         "png_path": {"type": ["string","null"]},
         "png_bytes_len": {"$ref":"#/$defs/UIntOrNull"},
+        "image_format": {"description": "content の image ブロックの形式。include_images: false なら null。", "enum": ["jpeg", "png", null]},
+        "image_bytes_len": {"$ref":"#/$defs/UIntOrNull"},
+        "image_width": {"$ref":"#/$defs/UIntOrNull"},
+        "image_height": {"$ref":"#/$defs/UIntOrNull"},
         "tap_crop": {"description": "mode が tap_crop なら include_images に関わらず描画と同じ矩形（映像ピクセル）。他のモードは null。", "anyOf":[{"$ref":"#/$defs/TapCropMeta"},{"type":"null"}]}
       },
-      "required": ["resource_links", "mode", "bundle_id", "frame_indices_rendered", "width", "height", "screens", "frames", "png_path", "png_bytes_len", "tap_crop"],
+      "required": ["resource_links", "mode", "bundle_id", "frame_indices_rendered", "width", "height", "screens", "frames", "png_path", "png_bytes_len", "image_format", "image_bytes_len", "image_width", "image_height", "tap_crop"],
       "additionalProperties": false
     },
     "InspectFramesMode": {"enum": ["contact_sheet", "single", "tap_crop"]},
@@ -1185,7 +1214,6 @@
         "log_count": {"$ref":"#/$defs/UIntOrNull"},
         "crash_marker_count": {"$ref":"#/$defs/UIntOrNull"},
         "memo": {"type": ["string", "null"]},
-        "created_utc": {"description": "created_at_utc の別名。", "deprecated": true, "type": ["string","null"]},
         "bundle_id": {"type": "string"},
         "path": {"type": "string"},
         "format_version": {"$ref": "#/$defs/CatalogFormatVersion"},

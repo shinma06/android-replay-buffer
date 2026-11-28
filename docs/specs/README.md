@@ -18,7 +18,7 @@
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
 | 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。応答は端末ピクセル（`x_display`）と映像ピクセル（`x_video`）を名前で分け、概要と調査の映像ピクセルは一致する。クロップ矩形はメタデータと描画で同じ純関数。確定済み入力は書き換えない | K6・K7・K21、軸・読取の回帰、G3、TCB-08、注入要求の K17・TCB-22 |
-| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない。`package` はエラー集約・ノイズ候補だけを絞り、クラッシュ・プロセス終了・画面・タップ・アプリログは全行に注釈を付け、どこにも現れなければ `package_not_seen` を返す | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割・package 注釈の proptest、TCB-19・TCB-21 |
+| RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない。`package` はエラー集約・ノイズ候補だけを絞り、クラッシュ・プロセス終了・画面・タップ・アプリログは全行に注釈を付け、どこにも現れなければ `package_not_seen` を返す。ログのリソースは同じ変数の `arb_query_logs` と同じ行を返す。一覧は `(created_at_utc, bundle_id)` 降順のカーソルで全行を 1 回ずつ返し、デーモンの全件一覧は変えない。退避・復元は既定 4 項目、表示 `path` だけ拡張長プレフィックスを外し、インライン画像は既定 JPEG（長辺 1,024 px） | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割・package 注釈の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
 
@@ -39,7 +39,7 @@
 | Android API 下限・音声方式 | 03・05・07 | 方針表 → arb-core → arb-adb／scrcpy 引数 → arbd の実状態 → Studio／CLI／MCP。API 32・33、取得失敗、明示互換時の消音を比較 | K11、G8、S3、KON-6、端末スモーク |
 | 軸校正・ジェスチャー・焼き込み | 02・03・05・07 | device-agent → touch_calibration → bundle_io → 概要／クロップ・Studio・共有動画。旧記録の読取、軸端、静止フレーム内の操作を照合 | K6・K7・K13、G3、ストレージ読取・メディア統合試験 |
 | RPC・MCP の引数・エラー・表示名 | 01・03・04・05・06 | ディスパッチ → CLI／MCP 契約表・4 版 → Kotlin IPC・表示。新旧版と未知引数、未検出の対象別分類、タップ範囲外の件数・上限・案内、失敗後の接続を照合 | RS-5・RS-6、KON-5〜7、共有表、実 stdio、ArbBrandingGuardTest |
-| MCP の応答形・既定値・時刻表記 | 03・06 | `mcp-tools-table.json` → `catalog.rs`・`version.rs` → `mcp/project` → 4 版の `tools/list` と実応答。デーモンの追加項目は IDE・CLI の既存 DTO を壊さないか、概要と保存して調査のエラー集約・推薦が一致するか、`tools/list` の大きさを照合 | 実 stdio（4 版）、スキーマ検査、投影の単体・proptest、`tools_list_frame_fits_the_budget_on_every_version` |
+| MCP の応答形・既定値・時刻表記 | 03・06 | `mcp-tools-table.json` → `catalog.rs`・`version.rs` → `mcp/project` → 4 版の `tools/list` と実応答。デーモンの追加項目は IDE・CLI の既存 DTO を壊さないか、概要と保存して調査のエラー集約・推薦が一致するか、`tools/list` の大きさを照合 | 実 stdio（4 版）、スキーマ検査、投影の単体・proptest、`tools_list_frame_fits_the_budget_on_every_version`、一覧カーソル・`display_path` の proptest、JPEG タイル寸法 K23 と独立デコーダでの往復試験 |
 
 <a id="evidence"></a>
 
@@ -109,6 +109,9 @@
 | 焼き込みを OFF にしたら次の書き出しでも OFF | 仕様 | 初期 ON、変更後は IDE の前回設定を使う。 | [SPEC-05](SPEC-05-ide-studio-ux.md) |
 | ログ検索が既定で 100 件で終わった | 仕様 | MCP／CLI は続きのカーソルを返す。内部 RPC の既定は 10,000。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 画像調査の既定応答に PNG 本体が入らない | 仕様 | 必要な画像を resource_link から読み取れる。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `include_images: true` の画像が JPEG で縮小されている | 仕様（#586-G） | 既定は長辺 1,024 px・品質 80 の JPEG。無劣化は `image_format: "png"`。キャッシュ PNG・PNG 書き出し・スクリーンショットは PNG のまま。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `arb_list_bundles` が 20 件で終わった | 仕様（#586-E） | `has_more` と `next_cursor` で続きを読む。カーソルを辿って行が欠落・重複すればバグ。IDE の全件一覧は変わらない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 退避・復元の応答に集計がない | 仕様（#586-F） | 既定は 4 項目。全項目は `verbose: true`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | GC プレビューで消去または期限切れリースの変更が生じた | バグ | dry_run は読み取り専用。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 非同期タスクをキャンセルしたのに受理済みの保存物が残った | 仕様 | 既に発行済みの副作用を巻き戻す契約はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 2 台同時接続で録画先を自動選択しない | 仕様 | 未選択なら選択待ち。選択済みの端末がなければその端末を待つ。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |

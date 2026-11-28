@@ -509,10 +509,14 @@ fn write_message(msg: &Value) -> io::Result<()> {
 }
 
 fn image_block(base64_png: &str) -> Value {
+    typed_image_block(base64_png, "image/png")
+}
+
+fn typed_image_block(base64: &str, mime_type: &str) -> Value {
     json!({
         "type": "image",
-        "data": base64_png,
-        "mimeType": "image/png",
+        "data": base64,
+        "mimeType": mime_type,
     })
 }
 

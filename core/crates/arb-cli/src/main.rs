@@ -7,6 +7,7 @@
 
 //! Scriptable CLI client (`arb-cli`) communicating with `arbd` strictly over local IPC + SHM.
 
+mod bundle_page;
 mod mcp;
 #[cfg(test)]
 mod pdd_contract_tables;
@@ -287,6 +288,8 @@ enum CommandSpec {
     },
     BundlesList {
         state: Option<String>,
+        limit: Option<usize>,
+        cursor: Option<String>,
     },
     BundlesOpen {
         target: String,
@@ -1049,26 +1052,54 @@ fn parse_gc(args: &[String]) -> Result<CommandSpec, CliError> {
     })
 }
 
+/// `bundles list [--state S] [--limit N] [--cursor C]` (#586-E: a page only on request).
+fn parse_bundles_list(args: &[String]) -> Result<CommandSpec, CliError> {
+    let mut state = None;
+    let mut limit = None;
+    let mut cursor = None;
+    let mut i = 0_usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--state" => {
+                state = Some(require_val(args, i, "--state")?.to_owned());
+                i += 2;
+            }
+            "--limit" => {
+                let raw = require_val(args, i, "--limit")?;
+                let n = raw
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=bundle_page::MAX_LIMIT).contains(n))
+                    .ok_or_else(|| {
+                        CliError::usage(format!(
+                            "--limit expects 1..={}, got `{raw}`",
+                            bundle_page::MAX_LIMIT
+                        ))
+                    })?;
+                limit = Some(n);
+                i += 2;
+            }
+            "--cursor" => {
+                cursor = Some(require_val(args, i, "--cursor")?.to_owned());
+                i += 2;
+            }
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown bundles list option `{other}`"
+                )));
+            }
+        }
+    }
+    Ok(CommandSpec::BundlesList {
+        state,
+        limit,
+        cursor,
+    })
+}
+
 fn parse_bundles_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     match args.first().map(String::as_str) {
-        Some("list") => {
-            let mut state = None;
-            let mut i = 1_usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--state" => {
-                        state = Some(require_val(args, i, "--state")?.to_owned());
-                        i += 2;
-                    }
-                    other => {
-                        return Err(CliError::usage(format!(
-                            "unknown bundles list option `{other}`"
-                        )));
-                    }
-                }
-            }
-            Ok(CommandSpec::BundlesList { state })
-        }
+        Some("list") => parse_bundles_list(&args[1..]),
         Some("open") => {
             let raw = args
                 .get(1)
@@ -1461,6 +1492,11 @@ fn dispatch_connected(
             Ok(())
         }
         CommandSpec::Status => dispatch_status(client, output),
+        CommandSpec::BundlesList {
+            state,
+            limit,
+            cursor,
+        } => execute_bundles_list(client, output, state.as_deref(), limit, cursor.as_deref()),
         CommandSpec::Inspect { target } => execute_inspect(client, output, &target),
         CommandSpec::ScrubBench { target, frame } => {
             execute_scrub_bench(client, output, &target, frame)
@@ -1557,7 +1593,9 @@ fn command_to_rpc(cmd: CommandSpec) -> (&'static str, Value, &'static str) {
         CommandSpec::JobsDiscard { job_id } => {
             ("save.discard", json!({ "job_id": job_id }), "job discarded")
         }
-        CommandSpec::BundlesList { state } => ("bundle.list", json!({ "state": state }), "bundles"),
+        CommandSpec::BundlesList { state, .. } => {
+            ("bundle.list", json!({ "state": state }), "bundles")
+        }
         CommandSpec::BundlesOpen { target, holder_pid } => (
             "bundle.open",
             json!({
@@ -1741,11 +1779,49 @@ fn call_and_emit(
     label: &str,
     check: OutcomeCheck,
 ) -> Result<(), CliError> {
-    let resp = client.call(method, params).map_err(CliError::from_rpc)?;
+    let mut resp = client.call(method, params).map_err(CliError::from_rpc)?;
+    if matches!(method, "bundle.trash" | "bundle.restore") {
+        bundle_page::display_row_path(&mut resp);
+    }
     emit_value(output, &resp, label);
     if check == OutcomeCheck::SaveJob && save_outcome_failed(&resp) {
         return Err(CliError::save_failed_already_emitted());
     }
+    Ok(())
+}
+
+/// The complete catalog, or one page of it with `--limit`/`--cursor` (the same order and cursor
+/// as `arb_list_bundles`). Paths use their display form (#586-E).
+fn execute_bundles_list(
+    client: &mut RpcClient,
+    output: OutputFormat,
+    state: Option<&str>,
+    limit: Option<usize>,
+    cursor: Option<&str>,
+) -> Result<(), CliError> {
+    let mut resp = client
+        .call("bundle.list", json!({ "state": state }))
+        .map_err(CliError::from_rpc)?;
+    if limit.is_some() || cursor.is_some() {
+        let rows = match resp["bundles"].take() {
+            Value::Array(rows) => rows,
+            _ => Vec::new(),
+        };
+        let page = bundle_page::paginate(
+            rows,
+            limit.unwrap_or(bundle_page::DEFAULT_MCP_LIMIT),
+            cursor,
+        )
+        .map_err(|_| CliError::usage("--cursor expects a next_cursor from bundles list"))?;
+        resp["bundles"] = Value::Array(page.rows);
+        resp["total_count"] = json!(page.total_count);
+        resp["has_more"] = json!(page.has_more);
+        resp["next_cursor"] = json!(page.next_cursor);
+    }
+    for row in resp["bundles"].as_array_mut().into_iter().flatten() {
+        bundle_page::display_row_path(row);
+    }
+    emit_value(output, &resp, "bundles");
     Ok(())
 }
 
@@ -2000,7 +2076,7 @@ COMMANDS:\n  \
   screenshot [--source auto|capture|screencap] [--serial <S>] [--out <FILE.png> | --out-dir <DIR>] [--overwrite]\n  \
   config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--audio-capture-mode playback_dup|output_compat (録音中は端末消音)] [--capture-mode <video_and_logs|logs_only>] [--device-serial <SERIAL|none>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--crash-autosave-post-roll-ms <0..10000>] [--output-dir-override <DIR|none>] [--screenshot-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
   jobs list | retry <JOB_ID> | retarget <JOB_ID> [--dest <DIR>] | discard <JOB_ID>\n  \
-  bundles list [--state active|trashed]\n  \
+  bundles list [--state active|trashed] [--limit 1..200] [--cursor <next_cursor>]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
   gc [--now] [--dry-run | --yes]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--start-offset-ms MS] [--end-offset-ms MS] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run | --yes] | forget (<ID> | --all-missing)\n  \
@@ -2448,6 +2524,37 @@ mod tests {
             },
             "bundles close must parse lease_id"
         );
+
+        // #586-E: one page only on request; the plain list stays complete.
+        let (_, listed) = parse_args(&vec_str(&["bundles", "list"])).expect("bundles list");
+        assert_eq!(
+            listed,
+            CommandSpec::BundlesList {
+                state: None,
+                limit: None,
+                cursor: None,
+            },
+            "bundles list without paging flags lists everything"
+        );
+        let (_, paged) = parse_args(&vec_str(&[
+            "bundles", "list", "--state", "active", "--limit", "200", "--cursor", "1~b1",
+        ]))
+        .expect("bundles list page");
+        assert_eq!(
+            paged,
+            CommandSpec::BundlesList {
+                state: Some("active".to_owned()),
+                limit: Some(200),
+                cursor: Some("1~b1".to_owned()),
+            },
+            "bundles list must parse --limit and --cursor"
+        );
+        for limit in ["0", "201", "x"] {
+            assert!(
+                parse_args(&vec_str(&["bundles", "list", "--limit", limit])).is_err(),
+                "--limit {limit} must be rejected"
+            );
+        }
 
         let (_, gc_default) = parse_args(&vec_str(&["bundles", "gc"])).expect("bundles gc");
         assert_eq!(

@@ -43,6 +43,7 @@ Proptest の試行回数は `PROPTEST_CASES` で上書きできる。重い SQLi
 | K19 | `k19_contact_sheet_partitions_range_and_keeps_anchors` は両端、予算内の重要フレーム、厳密昇順、採用数の上限、除外集合との排反・完全被覆を検査する | 開始位置とアンカー 3 個は `usize` 全域、範囲長 1〜17、予算は 2 以上。実装と同じ選択処理が各出力へ渡す番号を検査する。重要フレームを残して間引く場合と、重要フレームが予算を超える場合に cover を置く。公開関数の 2 つの戻り値も `k19_public_selection_returns_both_buckets` で照合する。範囲と描画の対応は直接 RPC・全交渉版の stdio 試験で検査する | `arb-media/src/contact_sheet.rs`、`arb-media/src/kani_proofs.rs` |
 | K21 | `k21_tap_crop_rect_bounds_and_contains_tap`（公開既定値 `TapCropOptions::default()` の `tap_crop_rect` は、幅・高さが正の `u32` 全域の映像と画像内の任意のタップで必ず矩形を返し、幅・高さは正、矩形は画像内、タップを含み、`tap_rel` は矩形内）、`k21_place_crop_stays_in_frame_and_contains_tap`（配置関数 `place_crop` は `u32` 全域の画像長と 1〜画像長の任意の切り出し長で同じ性質を持ち、両側に余地があれば中央に置く）、`k21_tap_crop_rect_rejects_taps_outside_the_frame`（画像外のタップと 0 寸法は `None`） | 切り出し長は本番の `crop_extent`（`f32` の比率と `f64` の丸め）をそのまま通す。描画（`render_tap_crop_png`）はこの関数の矩形を切り出し、メタデータ経路（`metadata_only`）は同じ関数を呼ぶので、両経路の一致は構造上成り立つ。PNG の符号化と画素の複写は G3 と `contact_sheet.rs` の試験で確認する | `arb-media/src/contact_sheet.rs`、`arb-media/src/kani_proofs.rs` |
 | K22 | `k22_device_clock_offset_no_overflow_and_nonneg_uncertainty` は同期プローブ・triple・ホスト時計の 7 個の `i64` 全域で、端末壁時計とホスト壁時計の差、往復時間からの誤差と `i128` 中間計算を検証。`k22_trigger_parts_no_overflow` は旧バンドルのトリガー近似を検証。`k22_finish_estimate_preserves_sign_and_nonnegative_uncertainty` は両経路共通の本番の丸め、誤差の加算、範囲外の処理を全入力で実行し、ずれの符号と不確かさの非負性を検証 | 算術スタブなし。ドリフト 200 ppm・読み取りずれ 1 ms・旧バンドルの 1 秒は物理的な前提（TCB-24）。プローブ選択と公開値は単体・保存・実 stdio の試験で確認する | `arb-core/src/time.rs`、`arb-core/src/kani_proofs/k22_clock_offset.rs` |
+| K23 | `k23_fit_within_bounds_without_overflow`（`arb_inspect_frames` の JPEG タイル寸法 `fit_within` は、正の `u32` 全域の幅・高さと正の `u32` 全域の箱の辺で、幅・高さとも 1 以上・箱の辺以下、収まる画像は寸法不変、収まらない画像は長辺がちょうど箱の辺。溢れ・0 除算なし。cover 4 件） | `k23_fit_within_rounds_to_the_nearest_ratio`（公開既定の 1,024 px で、短辺が厳密な比の最も近い整数〔0 に丸まる場合だけ 1〕で、隣の整数のほうが近くならない。記号的な積が非線形になり手元で 5 分以内に終わらない。同じ性質は proptest `fit_within_keeps_the_aspect_ratio` が `u32` 全域・箱 1〜4096 で標本検査する） | `arb-media/src/jpeg.rs`、`arb-media/src/kani_proofs.rs` |
 
 K3〜K9 の一部は、完了しなかった元の形を次のように組み替えて必須集合に入れている。組み替えで定義域を狭めた分は、各項目に明記した範囲だけが機械検証済みである。
 
@@ -141,6 +142,8 @@ K15 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani
 
 K18 の macOS arm64 実測（2026-11-28、Kani 0.68 / CBMC 6.11）。`cargo kani -p arb-core -Z stubbing --harness k18_` は 1/1 成功（検証 2.0 秒）。3 個の cover（深いアプリ行の追加、先頭 10 行内のアプリ行、長いスタックでアプリ行なし）はすべて SATISFIED。最初の形（`Vec` に位置を集めて `contains` で照合）は 15 分たっても SAT 段が終わらなかったため、選択を割り当てのない `StackTopPlan`（先頭数・最初のアプリ位置・追加位置）に分け、本番の `enrich_crash_marker` はこの計画どおりに `0..head` と追加位置の行を並べる。
 
+K23 の macOS arm64 実測（2026-11-29、Kani 0.68 / CBMC 6.11）。`core/scripts/pdd-kani.sh arb-media --harness k23_fit_within_bounds_without_overflow` は 1/1 成功（検証 0.93 秒、実時間 2.6 秒）。4 個の cover（収まる画像、横長の縮小、縦長の縮小、短辺の 1 px への切り上げ）はすべて SATISFIED。最初の形（記号的な箱の辺と、最も近い整数への丸めを同じハーネスで表明）は `u128` 積で 9 分、`u64` 積・箱の辺 1,024 固定でも 5 分を超えて終わらなかったため、丸めの性質を拡張集合へ分けた。拡張集合の `k23_fit_within_rounds_to_the_nearest_ratio` は `--features kani-extended` で 15 分の打ち切りに達した（未証明。proptest で標本検査）。
+
 K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒・フレームとトリム 0.57 秒・比率 0.40 秒。K10 のハーネス本体の性質表明はすべて到達した。以下は K10・K11 追加前の比較記録。
 
 必須集合は 28 本から 108 本になった（`arb-core` 16 → 79、`arb-media` 5 → 12、`arbd` 0 → 10、`arb-os` 5・`arb-adb` 2 は不変）。`arb-core` と `arb-media`・`arbd` は並行して実行したため、各値は単独実行より長めに出ている可能性がある。CI の Linux ランナー（`ubuntu-latest`）では手元のおよそ 1.5〜4 倍かかり、実行ごとのばらつきも大きい。統合前のブランチでの実行 45527036398 では `kani (arb-core)` ジョブが約 19 分（ハーネス最長は K4 `extreme_u64_n1` 68.1 秒、次いで K3 `jump_between_read_before_jump_wall_rollback` 53.9 秒、K4 `realistic_sizes_n1` 53.5 秒）。統合後の `develop`（`85bac571`）での実行 45536400328 では 108 本すべて成功し、`kani (arb-core)` ジョブは 21.7 分、`arb-media` 6.3 分、`arbd` 2.1 分で、タイムアウト 180 分に対して十分な余裕がある。ただしこの実行では K3 `jump_between_read_inside_jump_wall_forward` が 98.5 秒（手元 5.7〜26.6 秒）、K4 `realistic_sizes_n1` が 63.4 秒、K3 `jump_between_read_after_jump_wall_forward` が 60.5 秒と 60 秒を超え、以前から必須の K2 `n1` も 54.7 秒だった。昇格の基準は手元の 60 秒とし、CI の値は記録にとどめる。K4 `extreme_u64_n1` は、手元 24 秒で基準内だが、CI で 68 秒かかり 1 本 17 秒（手元）を切る分割も見つからなかったため、保守的に拡張集合へ戻した。
@@ -188,13 +191,13 @@ K10 追加時の macOS 実測は `arb-media` 15/15 成功、正規化 0.42 秒�
 
 ### 3.2 Layer 1: Kani 拡張集合（未証明）
 
-次の 30 本は必須集合に入れていない（`--features kani-extended --only-codegen` で 3 crate ともコンパイルできることは確認済み）。元の 25 本のうち K5・K7 `decimate`・K9 表パーサ 3 本の計 5 本は性質ごと必須集合へ移し、K3・K4・K6 は定義域を絞った版を必須集合に入れたうえで元の形（または分割後の大きい側）を残した。原因は二つに分かれる。
+次の 31 本は必須集合に入れていない（`--features kani-extended --only-codegen` で 3 crate ともコンパイルできることは確認済み）。元の 25 本のうち K5・K7 `decimate`・K9 表パーサ 3 本の計 5 本は性質ごと必須集合へ移し、K3・K4・K6 は定義域を絞った版を必須集合に入れたうえで元の形（または分割後の大きい側）を残した。原因は二つに分かれる。
 
 - **SAT 段の時間**: 記号的な 64/128 ビットの乗除算。`ticks_to_ns`（定数 90000 / `u32::MAX` の 128 ビット除算器、単調性は 128 ビット積 2 つの突き合わせ）、`Axis::project`（記号的な除数 `max - min`）、K4 の `u64` 全域の 1 チャンク（CI の Linux で 68 秒）と 2 チャンク以上（`u64`/`u128` の和と記号的な時刻比較。n = 2 は 195 秒で成功、安全性だけでも 150 秒で打ち切り）、K6 の非 2 冪の定数・記号寸法による `f64` 除算（10 分超・5 分超）。
 - **メモリ不足（OOM）**: 記号長のスライス・`Vec`・`BTreeMap` の展開。K2 の 2 件以上（SAT 段で約 31 GB）、K3 の `ClockTimeline` 全体（triple 1 本でも 30 GB 超）と 3 triple・飛びあり、`avcc_sample_to_annexb`（NAL スライスの読み戻しで 4 バイト入力でも 7 GB 超）。
 
 - `arb-core`（22）: K2 `n2`・`n3`・`prior_sidecar` 3 本、K3 `map_device` 3 本・`map_logcat_wall`・`slice_map_logcat_wall_three_triples_with_jumps`、K4 `realistic_sizes_n2`〜`_n4`・`extreme_u64_n1`〜`_n4`・`slice_plan_extreme_u64_n2`、K6 `map_touch_to_frame_bounds_and_monotonic`・`monotonic_x_integer_pixels_symbolic_dims_le_4096`・`monotonic_x_any_f64_1080_to_460`・`monotonic_y_any_f64_2400_to_1024`
-- `arb-media`（6）: K9 `avcc_sample_to_annexb`・`ticks_exact_ts_90000`・`ticks_exact_ts_u32_max`・`ticks_monotone` 3 本
+- `arb-media`（7）: K9 `avcc_sample_to_annexb`・`ticks_exact_ts_90000`・`ticks_exact_ts_u32_max`・`ticks_monotone` 3 本、K23 `fit_within_rounds_to_the_nearest_ratio`
 - `arbd`（2）: K6 `axis_project_range_and_endpoints`・`axis_project_monotonic`（記号的な `(min, max)`）
 
 `kani-extended (arb-media)` ジョブは、最初に走る `k9_avcc_sample_to_annexb_bounded` が CBMC のメモリを使い切った時点でランナーごと停止する（2026-11-25 の `workflow_dispatch` 実行で exit 143）。このジョブは記録用（`continue-on-error`）であり、同じジョブ内の `ticks_*` 5 本はその実行では結果が出ていない。

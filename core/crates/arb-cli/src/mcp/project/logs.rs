@@ -366,6 +366,41 @@ mod tests {
         assert_eq!(drain(&giant, 100, MAX_BODY_BYTES, Fields::Compact).len(), 3);
     }
 
+    /// #586-D: around the 48 KB split, the logs resource returns exactly the rows, count and
+    /// cursor of `arb_query_logs`; only `next_uri` is added (outside the budget).
+    #[test]
+    fn logs_resource_pages_exactly_like_the_tool_at_the_byte_budget() {
+        let mut split = 0;
+        let sizes: Vec<usize> = (0..=420).step_by(4).collect();
+        let total = sizes.len();
+        for message in sizes {
+            let rows = rows_with_messages(&[message; 100]);
+            let tool = project(daemon_page(&rows, None, 100), Fields::Compact, Zone::UTC);
+            let mut resource = crate::mcp::resources::logs_resource_body(
+                daemon_page(&rows, None, 100),
+                "arb://bundles/b1/logs",
+                &serde_json::Map::new(),
+            );
+            let next_uri = resource
+                .as_object_mut()
+                .and_then(|o| o.remove("next_uri"))
+                .unwrap();
+            assert_eq!(resource, tool, "{message}");
+            match tool["next_cursor"]
+                .as_str()
+                .filter(|_| tool["has_more"] == true)
+            {
+                Some(cursor) => {
+                    assert_eq!(next_uri, format!("arb://bundles/b1/logs?cursor={cursor}"));
+                }
+                None => assert_eq!(next_uri, Value::Null),
+            }
+            split += usize::from(tool["truncated_by_byte_budget"] == true);
+        }
+        // The sweep crosses the budget, so both sides of the boundary are covered.
+        assert!(split > 0 && split < total, "{split} of {total}");
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
         /// Byte-budget paging never drops, repeats or reorders a matching row.

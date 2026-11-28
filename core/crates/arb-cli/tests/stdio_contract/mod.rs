@@ -1050,6 +1050,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         arguments::verify(&mut c);
         log_fields(&mut c, id, version);
         inspect_shape(&mut c, id);
+        payload_slimming(&mut c, id, version);
         let dest = root.path().join(format!("external-{version}"));
         fs::create_dir(&dest).unwrap();
         for (tool, args) in [
@@ -1156,7 +1157,9 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         );
     }
     resources_and_prompts(&mut c, id);
-    let trashed = c.tool("arb_trash_bundle", target.clone());
+    let mut verbose_target = target.clone();
+    verbose_target["verbose"] = json!(true);
+    let trashed = c.tool("arb_trash_bundle", verbose_target.clone());
     assert_eq!(trashed["frame_count"], 18);
     assert!(trashed.get("created_utc").is_none());
     let duplicate = c.result(
@@ -1185,7 +1188,7 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
     }
     c.init(ProtocolVersion::V2025_11_25.as_str());
     c.load_schemas();
-    let restored = c.tool("arb_restore_bundle", target.clone());
+    let restored = c.tool("arb_restore_bundle", verbose_target);
     assert_eq!(restored["frame_count"], trashed["frame_count"]);
     let duplicate = c.result(
         "tools/call",
@@ -1805,6 +1808,268 @@ fn inspect_shape(c: &mut Client, id: &str) {
     }
     assert_eq!(meta["frames"][0]["offset_ns"], 0);
     tap_axes(c, id);
+}
+
+/// The JSON body of a `tools/call` result on any version (text block; errors included).
+fn text_body(r: &Value) -> Value {
+    let text = r["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["type"] == "text")
+        .unwrap()["text"]
+        .as_str()
+        .unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+/// Reads a JSON resource and returns the document with its serialized size.
+fn read_json(c: &mut Client, uri: &str) -> (Value, usize) {
+    let r = c.result("resources/read", json!({ "uri": uri }));
+    assert_eq!(r["contents"][0]["uri"], uri);
+    let text = r["contents"][0]["text"].as_str().unwrap();
+    (serde_json::from_str(text).unwrap(), text.len())
+}
+
+fn seqs(page: &Value) -> Vec<u64> {
+    page["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_u64().unwrap())
+        .collect()
+}
+
+/// #586-D〜G on every version: the logs resource is the `arb_query_logs` page for its query
+/// variables, the bundle list pages by a stable cursor without `created_utc`, trash/restore are
+/// four fields unless verbose, and inline frames are JPEG tiles unless `image_format: "png"`.
+fn payload_slimming(c: &mut Client, id: &str, version: &str) {
+    // D: the plain URI is the default compact page; query variables page and filter it.
+    let base = format!("arb://bundles/{id}/logs");
+    let (resource, size) = read_json(c, &base);
+    let tool = c.tool("arb_query_logs", json!({"bundle_id":id}));
+    assert_eq!(resource["fields"], "compact", "{version}");
+    assert_eq!(resource["logs"], tool["logs"], "{version}");
+    assert_eq!(resource["total_matched"], tool["total_matched"]);
+    assert!(resource["logs"][0].get("alignment").is_none());
+    assert!(size <= 49_152, "{size}");
+    let all = c.tool("arb_query_logs", json!({"bundle_id":id,"limit":500}));
+    let mut walked = Vec::new();
+    let mut uri = format!("{base}?limit=1");
+    loop {
+        let (page, _) = read_json(c, &uri);
+        assert!(page["logs"].as_array().unwrap().len() <= 1);
+        walked.extend(seqs(&page));
+        let Some(next) = page["next_uri"].as_str() else {
+            assert_eq!(page["has_more"], false);
+            break;
+        };
+        assert_eq!(page["has_more"], true);
+        assert!(
+            next.starts_with(&format!("{base}?limit=1&cursor=")),
+            "{next}"
+        );
+        uri = next.to_owned();
+    }
+    assert!(walked.len() >= 2);
+    assert_eq!(walked, seqs(&all), "{version}");
+    let (errors, _) = read_json(c, &format!("{base}?min_level=E&limit=500"));
+    let tool_errors = c.tool(
+        "arb_query_logs",
+        json!({"bundle_id":id,"min_level":"E","limit":500}),
+    );
+    assert_eq!(seqs(&errors), seqs(&tool_errors));
+    let (package, _) = read_json(c, &format!("{base}?package=com.example.none"));
+    let tool_package = c.tool(
+        "arb_query_logs",
+        json!({"bundle_id":id,"package":"com.example.none"}),
+    );
+    assert_eq!(seqs(&package), seqs(&tool_package));
+    for query in [
+        "limit=0",
+        "limit=501",
+        "min_level=X",
+        "unknown=1",
+        "limit=1&limit=2",
+        "cursor=abc",
+        "package=%FF",
+        "package=com.example%ZZ",
+    ] {
+        let r = c.request("resources/read", json!({"uri":format!("{base}?{query}")}));
+        assert_eq!(r["error"]["code"], -32602, "{query}: {r}");
+    }
+    let r = c.request(
+        "resources/read",
+        json!({"uri":format!("arb://bundles/{id}/screens?limit=1")}),
+    );
+    assert_eq!(r["error"]["code"], -32602);
+    let templates = c.result("resources/templates/list", json!({}))["resourceTemplates"].take();
+    assert!(
+        templates
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["uriTemplate"]
+                == "arb://bundles/{bundle_id}/logs{?min_level,package,cursor,limit}")
+    );
+
+    // E: newest-first pages with a stable cursor; `created_utc` is gone on every version.
+    let everything = c.tool("arb_list_bundles", json!({"limit":200}));
+    let total = everything["total_count"].as_u64().unwrap();
+    let ids: Vec<Value> = everything["bundles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["bundle_id"].clone())
+        .collect();
+    assert_eq!(u64::try_from(ids.len()).unwrap(), total);
+    assert!(total >= 2, "{everything}");
+    assert_eq!(everything["has_more"], false);
+    assert_eq!(everything["next_cursor"], Value::Null);
+    for row in everything["bundles"].as_array().unwrap() {
+        assert!(row.get("created_utc").is_none(), "{version}: {row}");
+        assert!(!row["path"].as_str().unwrap().starts_with(r"\\?\"));
+    }
+    let default_page = c.tool("arb_list_bundles", json!({}));
+    assert_eq!(
+        u64::try_from(default_page["bundles"].as_array().unwrap().len()).unwrap(),
+        total.min(20)
+    );
+    let mut walked = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let mut args = json!({"limit":1});
+        if !cursor.is_null() {
+            args["cursor"] = cursor.clone();
+        }
+        let page = c.tool("arb_list_bundles", args);
+        assert_eq!(page["total_count"], total);
+        walked.extend(
+            page["bundles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["bundle_id"].clone()),
+        );
+        if page["has_more"] == false {
+            assert_eq!(page["next_cursor"], Value::Null);
+            break;
+        }
+        cursor = page["next_cursor"].clone();
+    }
+    assert_eq!(walked, ids, "{version}");
+    let bad = c.result(
+        "tools/call",
+        json!({"name":"arb_list_bundles","arguments":{"cursor":"not-issued"}}),
+    );
+    assert_eq!(bad["isError"], true);
+    let bad = text_body(&bad);
+    assert_eq!(bad["rpc_code"], -32602, "{bad}");
+    assert_eq!(bad["details"]["field"], "cursor");
+    for limit in [0, 201] {
+        let r = c.request(
+            "tools/call",
+            json!({"name":"arb_list_bundles","arguments":{"limit":limit}}),
+        );
+        assert!(
+            r["error"]["code"] == -32602 || text_body(&r["result"])["rpc_code"] == -32602,
+            "{limit}: {r}"
+        );
+    }
+
+    // F: four fields by default, the whole catalog row with `verbose: true`.
+    let light = c.tool("arb_trash_bundle", json!({"bundle_id":id}));
+    let keys: BTreeSet<_> = light.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        ["bundle_id", "disk_state", "state", "trashed_at_utc"]
+            .map(String::from)
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(light["state"], "trashed");
+    assert!(light["trashed_at_utc"].is_string());
+    let full = c.tool("arb_restore_bundle", json!({"bundle_id":id,"verbose":true}));
+    assert_eq!(full["state"], "active");
+    assert_eq!(full["frame_count"], 18);
+    assert!(full.get("created_utc").is_none());
+    let full_trash = c.tool("arb_trash_bundle", json!({"bundle_id":id,"verbose":true}));
+    let light_restore = c.tool("arb_restore_bundle", json!({"bundle_id":id}));
+    assert_eq!(light_restore["state"], "active");
+    assert_eq!(light_restore["trashed_at_utc"], Value::Null);
+    let (light_len, full_len) = (light.to_string().len(), full_trash.to_string().len());
+    assert!(light_len * 2 < full_len, "{light_len} vs {full_len}");
+
+    // G: JPEG tiles by default, the lossless PNG on request; the body shape is the same.
+    for mode in [
+        json!({"mode":"single","frame_index":0}),
+        json!({"mode":"contact_sheet","start_frame":0,"end_frame":5}),
+    ] {
+        let mut by_format = BTreeMap::new();
+        for format in [None, Some("jpeg"), Some("png")] {
+            let mut args = mode.clone();
+            args["bundle_id"] = json!(id);
+            args["include_images"] = json!(true);
+            if let Some(format) = format {
+                args["image_format"] = json!(format);
+            }
+            let r = c.result(
+                "tools/call",
+                json!({"name":"arb_inspect_frames","arguments":args}),
+            );
+            let image = r["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["type"] == "image")
+                .cloned()
+                .unwrap();
+            let body = c.check_tool("arb_inspect_frames", r);
+            let data = image["data"].as_str().unwrap();
+            let expected = format.unwrap_or("jpeg");
+            assert_eq!(body["image_format"], expected, "{version}");
+            assert_eq!(image["mimeType"], format!("image/{expected}"));
+            assert!(data.starts_with(if expected == "jpeg" {
+                "/9j/"
+            } else {
+                "iVBORw0KGgo"
+            }));
+            assert_eq!(
+                body["image_bytes_len"].as_u64().unwrap(),
+                u64::try_from(
+                    data.len() / 4 * 3 - data.bytes().rev().take_while(|&b| b == b'=').count()
+                )
+                .unwrap()
+            );
+            assert!(body["image_width"].as_u64().unwrap() <= 1024);
+            assert!(body["image_height"].as_u64().unwrap() <= 1024);
+            assert!(body["png_path"].is_string() && body["png_bytes_len"].as_u64() > Some(0));
+            if expected == "png" {
+                assert_eq!(body["image_bytes_len"], body["png_bytes_len"]);
+            }
+            by_format.insert(format.unwrap_or("default"), body);
+        }
+        assert_eq!(
+            by_format["default"]["image_bytes_len"],
+            by_format["jpeg"]["image_bytes_len"]
+        );
+        // Both formats are measured for the same render; the fixture frames are tiny and flat,
+        // so the realistic size reduction is asserted on screen-sized images in `arb-media`.
+        assert!(by_format["jpeg"]["image_bytes_len"].as_u64() > Some(0));
+        assert!(by_format["png"]["image_bytes_len"].as_u64() > Some(0));
+    }
+    let meta = c.tool(
+        "arb_inspect_frames",
+        json!({"bundle_id":id,"mode":"single","frame_index":0,"image_format":"png"}),
+    );
+    for key in [
+        "image_format",
+        "image_bytes_len",
+        "image_width",
+        "image_height",
+    ] {
+        assert_eq!(meta[key], Value::Null, "{key}");
+    }
 }
 
 /// #591: overview taps and inspected frame taps name their coordinate systems, and the same tap

@@ -1222,3 +1222,54 @@ fn k21_tap_crop_rect_rejects_taps_outside_the_frame() {
     );
     kani::cover!(video_w == 0, "empty frame");
 }
+
+/// K23 (#586-G): for every positive `u32` frame size and every positive `u32` box edge, the
+/// JPEG tile size is positive, inside the box, unchanged when the frame already fits, and the
+/// longer edge reaches the box otherwise. Kani's default checks also show the arithmetic never
+/// overflows and never divides by zero.
+#[kani::proof]
+fn k23_fit_within_bounds_without_overflow() {
+    let w: u32 = kani::any();
+    let h: u32 = kani::any();
+    let max: u32 = kani::any();
+    kani::assume(w >= 1 && h >= 1 && max >= 1);
+    let (ow, oh) = crate::jpeg::fit_within(w, h, max);
+    assert!(ow >= 1 && oh >= 1 && ow <= max && oh <= max);
+    if w <= max && h <= max {
+        assert!(ow == w && oh == h);
+    } else if w >= h {
+        assert!(ow == max && oh <= ow);
+    } else {
+        assert!(oh == max && ow <= oh);
+    }
+    kani::cover!(w <= max && h <= max, "already fits");
+    kani::cover!(w > max && w >= h && oh > 1, "landscape scaled");
+    kani::cover!(h > max && h > w && ow > 1, "portrait scaled");
+    kani::cover!(w > max && oh == 1, "short edge clamped to one pixel");
+}
+
+/// K23 (extended): with the published edge (1024 px) and any frame a baseline JPEG can carry
+/// (edges up to 65,535), the shorter edge is the nearest integer to the exact ratio (1 when that
+/// rounds to 0) and neither neighbouring size is closer. The products make this nonlinear; it did
+/// not finish within five minutes locally, so it runs only in the `kani-extended` job. The
+/// proptest `fit_within_keeps_the_aspect_ratio` samples the same property over all of `u32`.
+#[cfg_attr(feature = "kani-extended", kani::proof)]
+fn k23_fit_within_rounds_to_the_nearest_ratio() {
+    let w: u32 = kani::any();
+    let h: u32 = kani::any();
+    kani::assume(w >= 1 && h >= 1 && w <= 65_535 && h <= 65_535);
+    let max = crate::jpeg::DEFAULT_JPEG_MAX_EDGE;
+    let (ow, oh) = crate::jpeg::fit_within(w, h, max);
+    if w > max || h > max {
+        let (long, short, out_short) = if w >= h { (w, h, oh) } else { (h, w, ow) };
+        let (long, short, out_short) = (u64::from(long), u64::from(short), u64::from(out_short));
+        let exact = short * u64::from(max);
+        let err = (out_short * long).abs_diff(exact);
+        assert!(2 * err <= long || (out_short == 1 && 2 * exact < long));
+        assert!(((out_short + 1) * long).abs_diff(exact) >= err);
+        if out_short > 1 {
+            assert!(((out_short - 1) * long).abs_diff(exact) >= err);
+        }
+    }
+    kani::cover!(w > max && oh > 1, "scaled");
+}
