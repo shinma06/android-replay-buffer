@@ -4320,16 +4320,7 @@ impl ReplayCollector {
             )?
         };
 
-        let unanchored_summary = UnanchoredSummary {
-            included_count: u64::try_from(unanchored_logs.saturating_add(media.unanchored_taps))
-                .unwrap_or(u64::MAX),
-            truncated_count: u64::try_from(
-                trunc_logs
-                    .saturating_add(media.trunc_taps)
-                    .saturating_add(media.media_unanchored_excluded),
-            )
-            .unwrap_or(u64::MAX),
-        };
+        let unanchored_summary = media.unanchored_summary(unanchored_logs, trunc_logs);
 
         let frame_count = u64::try_from(media.frames.len()).unwrap_or(0);
         let (display_width, display_height) = if params.mode == SaveMode::LogsOnly {
@@ -4418,6 +4409,19 @@ struct SelectedMediaTracks {
 }
 
 impl SelectedMediaTracks {
+    fn unanchored_summary(&self, unanchored_logs: usize, trunc_logs: usize) -> UnanchoredSummary {
+        UnanchoredSummary {
+            included_count: u64::try_from(unanchored_logs.saturating_add(self.unanchored_taps))
+                .unwrap_or(u64::MAX),
+            truncated_count: u64::try_from(
+                trunc_logs
+                    .saturating_add(self.trunc_taps)
+                    .saturating_add(self.media_unanchored_excluded),
+            )
+            .unwrap_or(u64::MAX),
+        }
+    }
+
     const fn logs_only() -> Self {
         Self {
             bundle_kind: BundleKind::LogsOnly,
