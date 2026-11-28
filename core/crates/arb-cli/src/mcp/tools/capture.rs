@@ -160,6 +160,12 @@ fn compact_status(hello: &Value, status: &Value, input_capture: &Value) -> Value
             }
         }
     }
+    if cap["storage_pressure_stopped"] == true {
+        attention.push(json!({"kind":"storage_pressure_stopped"}));
+    }
+    if cap["ring_write_errors"].as_u64().is_some_and(|n| n > 0) {
+        attention.push(json!({"kind":"ring_write_errors","count":cap["ring_write_errors"]}));
+    }
     if let Some(warning) = status["config_warning"].as_str().filter(|s| !s.is_empty()) {
         attention.push(json!({"kind":"config_warning","message":warning}));
     }
@@ -219,6 +225,21 @@ mod tests {
         assert_eq!(
             body["crash_autosave"]["post_roll_until_utc"],
             status["crash_autosave"]["post_roll_until_utc"]
+        );
+    }
+
+    #[test]
+    fn attention_reports_halted_capture_writes() {
+        let status = json!({"capture":{"active":true,"storage_pressure_stopped":true,"ring_write_errors":3}});
+        let body = compact_status(&Value::Null, &status, &Value::Null);
+        assert_eq!(
+            body["attention"],
+            json!([{"kind":"storage_pressure_stopped"},{"kind":"ring_write_errors","count":3}])
+        );
+        let quiet = json!({"capture":{"storage_pressure_stopped":false,"ring_write_errors":0}});
+        assert_eq!(
+            compact_status(&Value::Null, &quiet, &Value::Null)["attention"],
+            json!([])
         );
     }
 }
