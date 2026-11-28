@@ -15,7 +15,7 @@ satisfies:
 
 ## バージョン交渉と結果 [実装済み]
 
-`arb-cli mcp` は stdin／stdout の改行区切り JSON-RPC 2.0 サーバー。`initialize` で指定された `2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25` を返す。省略・未知版には `2025-11-25` を提示する。`2025-06-18` 以降のバッチ要求は `-32600`。応答と通知は stdout 上で行を混ぜてはならない。`initialize` の `instructions` は、`arb_query_logs` が既定 `compact`（全項目は `fields: "full"`）で `limit` 最大 500、`arb_screenshot` が既定で画像を含まず `file_uri`／`resource_links` を返すこと（インライン画像は `include_image: true`）、`outputSchema` を `arb://schemas/{tool}` で読めることを短く案内する。
+`arb-cli mcp` は stdin／stdout の改行区切り JSON-RPC 2.0 サーバー。`initialize` で指定された `2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25` を返す。省略・未知版には `2025-11-25` を提示する。`2025-06-18` 以降のバッチ要求は `-32600`。応答と通知は stdout 上で行を混ぜてはならない。`initialize` の `instructions` は調査手順、物理入力と注入要求の観測限界、画像・出力スキーマの取得、整理の確認手順を案内する。
 
 `tools/list` は `initialize` で交渉した版に従い、全 21 ツールを 1 応答で返す（`nextCursor` なし）。一覧は `name`・`description`・`inputSchema`・`annotations`（2025-11-25 は `execution` も）だけを載せ、任意項目の `outputSchema` は 4 版とも載せない。1 応答は 4 版とも 30,000 バイト以下（実測約 22.9 KB）を維持する。各ツールの完全な `outputSchema` は `resources/read` の `arb://schemas/{tool}`（`mimeType: application/schema+json`）で交渉版のものを取得でき、`completion/complete` は `tool` 名を前方一致で補完する。tools/list のツール名以外（未知名、`..`、区切り文字、呼び出し別名）は `-32602`。実行時の検証と契約試験はこの完全なスキーマ（`additionalProperties: false`）を使い、2025-06-18 以降の `structuredContent` は変わらない。入力・出力スキーマは自己完結した JSON Schema Draft 2020-12 で、参照先はそのスキーマ内にある。[4 版の実 stdio 検査](../../core/scripts/check-mcp-trim-schema.py)
 
@@ -88,7 +88,7 @@ satisfies:
 
 根拠は Trail #101・#133／PR #538、#151／PR #554、#153／PR #556、TCB-19／21。[実 stdio 契約試験](../../core/crates/arb-cli/tests/stdio_contract)・[エラー・保存結果表](ui-feedback-contract-table.json)
 
-保存ジョブを arb_jobs の list で確認し、retry、retarget（保存先省略で管理域）、discard で操作できる。MCP は pin 件数を返し、daemon RPC は IDE 用の ID 配列も返す。arb_status の failed_save_jobs と oldest_failed_job_id で滞留を確認できる。
+保存ジョブを arb_jobs の list で確認し、retry、retarget（保存先省略で管理域）、discard で操作できる。MCP は pin 件数を返し、daemon RPC は IDE 用の ID 配列も返す。arb_status の save.failed_jobs と save.oldest_failed_job_id で滞留を確認できる。
 
 ## 入力の観測範囲
 
@@ -97,3 +97,11 @@ satisfies:
 ## 調査・書き出しの明示指定と警告
 
 `single` は `frame_index` または `frame_indices`、座標を直接渡す `tap_crop` は `frame_index` が必須。ログ検索の開始・終了はそれぞれ ns とフレームの片方を選ぶ。トリムの範囲を省略するには `full_range: true` を指定する（フレーム・時刻範囲との併用は `details.conflicts`）。既定の保存先は `output_path`、file URI の `resource_links`、`info_codes` の `default_export_dir` で確認できる。バンドル形式では `output_path` の入力は共有 MP4 のコピー先で、本体の保存先を選ぶのは `dest_dir`。そのため本体の既定保存先を使った場合は、コピー先を指定しても同じ情報を返す。スクリーンショットとフレーム PNG の明示パスは拡張子 `.png` が必須（大小無視）。引数違反は `INVALID_PARAMS`。間引き・焼き込み 0 件などの追加情報は `warnings` の各 `WarningDetail` に格納する。
+
+## 調査・保存・整理の入口
+
+直近の不具合は `arb_status` で録画と入力を確認し、`arb_save_and_inspect` のクラッシュ・プロセス終了・画面・物理入力・注入要求から対象を選ぶ。保存済みなら `arb_timeline_overview` から開始する。対応するフレームを single で開き、前後の範囲を指定してログを確認する。ログだけ保存する `arb_save(logs_only: true)` と互換名 `arb_save_logs` は同じ保存 RPC を呼ぶ。
+
+`arb_status` は録画・バッファ・入力・保存ジョブ・自動保存を要約する。attention には非ゼロの復旧件数、設定の警告、失敗ジョブだけを載せる。4 版とも `verbose: true` で従来の hello・status・input_capture を取得できる。端末時計の観測値・待機期限がないときは null とする。
+
+`arb_gc_bundles({})` と `bundles gc` は能力を確認した上で候補と回収見込みを返す。対象を確認してから MCP は `dry_run: false`、CLI は `--yes` で実行する。デーモンの `bundle.gc` は省略時に本実行し、IDE の既存操作と互換である。

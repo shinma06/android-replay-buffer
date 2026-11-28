@@ -12,6 +12,9 @@
       "/carried_in": "/carried_in",
       "/screens": "/screens",
       "/crashes": "/crashes",
+      "/taps": "/taps",
+      "/injected_inputs": "/injected_inputs",
+      "/injected_inputs_truncated": "/injected_inputs_truncated",
       "/process_events": "/process_events",
       "/package_filter": "/package_filter",
       "/warnings": "/warnings"
@@ -35,28 +38,28 @@
   "tools": [
     {
       "name": "arb_jobs",
-      "description": "list は一覧を読む。retry は同じ保存先で再試行。retarget は保存先を変えて再試行（省略時は管理域）。discard はジョブを破棄して pin を解放する。",
+      "description": "失敗ジョブは list で確認し、retry・retarget で再保存、不要なら discard で pin を解放。",
       "inputSchema": {"type":"object","properties":{"action":{"type":"string","enum":["list","retry","retarget","discard"]},"job_id":{"type":"string","minLength":1},"dest_dir":{"type":"string","minLength":1}},"required":["action"],"additionalProperties":false,"if":{"properties":{"action":{"enum":["retry","retarget","discard"]}}},"then":{"required":["job_id"]}},
       "outputType":"Jobs",
       "errorTypes":["ToolError","SaveError"],
       "annotations":{"title":"保存ジョブ管理","readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}
     },
     {
-      "description": "デーモンと録画の状態。",
-      "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
+      "description": "録画と入力の状態を確かめ、直近の不具合は arb_save_and_inspect で保存。",
+      "inputSchema": {"additionalProperties": false, "properties": {"verbose":{"type":"boolean","default":false}}, "type": "object"},
       "name": "arb_status",
       "outputType": "Status",
       "annotations": {"title": "状態の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "接続中の Android 端末の一覧。",
+      "description": "接続端末を選び、その serial で arb_capture_start。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_devices",
       "outputType": "DeviceListResponse",
       "annotations": {"title": "端末一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "録画を開始。明示 serial は接続・取得開始後にだけ device_serial と capture_enabled=true を保存し、未接続なら DEVICE_NOT_FOUND で設定は不変（オフライン端末の予約は arb_config_update）。録画中は同じ端末なら already_active、別端末は CONFLICT。",
+      "description": "選んだ端末で録画を開始して arb_status で確認（未接続なら DEVICE_NOT_FOUND、録画中の別端末は CONFLICT、オフライン予約は arb_config_update）。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -82,21 +85,21 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "録画を停止して capture_enabled=false を保存。device_serial と記録は保持。",
+      "description": "録画を停止して記録を保持し、arb_status で残量を確認。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_capture_stop",
       "outputType": "CaptureStopResponse",
       "annotations": {"title": "録画停止", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "現在の録画・保存設定。",
+      "description": "録画・保存設定を確認し、変更する項目を arb_config_update に渡す。",
       "inputSchema": {"additionalProperties": false, "properties": {}, "type": "object"},
       "name": "arb_config_get",
       "outputType": "ConfigResponse",
       "annotations": {"title": "設定の確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "指定した設定項目を更新。",
+      "description": "指定した設定を更新し、arb_config_get で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -130,10 +133,11 @@
       "annotations": {"title": "設定の更新", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "直前の記録を保存し、完全性の測定値とリンクを返します。",
+      "description": "直近の記録を保存し、arb_timeline_overview で調査（ログのみは logs_only: true）。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "logs_only": {"type":"boolean","default":false},
           "dest_dir": {"description": "保存先の親（管理域外は GC 対象外）。", "type": "string"},
           "drain_timeout_ms": {
             "description": "保存境界の待機 ms。",
@@ -154,10 +158,11 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "端末画面を PNG に保存します。",
+      "description": "現在の端末画面を PNG に保存し、file_uri で閲覧。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "source": {"type":"string","enum":["auto","capture","screencap"],"default":"auto"},
           "include_image": {"description": "応答に PNG を添付。既定は file_uri と resource_links のみ。", "type": "boolean", "default": false},
           "output_dir": {"description": "自動命名する保存先。", "type": "string"},
           "output_path": {"description": "出力パス。", "type": "string", "pattern": "[^/\\\\]+\\.[pP][nN][gG]$"},
@@ -177,7 +182,7 @@
       }
     },
     {
-      "description": "直前のログを保存。",
+      "description": "ログ専用保存の互換ショートカット（= arb_save(logs_only: true)）、続いて arb_query_logs で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -200,7 +205,7 @@
       "annotations": {"title": "ログの保存", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "状態・期間・件数・保存先の一覧。",
+      "description": "保存済み記録を探し、対象の ID を arb_timeline_overview に渡す。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -214,7 +219,7 @@
       "annotations": {"title": "バンドル一覧", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "バンドルをごみ箱に移します。",
+      "description": "不要な記録をごみ箱へ移し、arb_gc_bundles で回収候補を確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
@@ -226,7 +231,7 @@
       "annotations": {"title": "ごみ箱へ移動", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "ごみ箱からバンドルを復元します。",
+      "description": "ごみ箱の記録を戻し、arb_list_bundles で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {"bundle_id": {"description": "バンドル ID。", "type": "string", "pattern": "\\S"}},
@@ -238,12 +243,12 @@
       "annotations": {"title": "バンドルの復元", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "ごみ箱の回収候補と保護理由を確認し、指定時に削除。管理域外（dest_dir・output_dir_override）は対象外。手動削除後は arb_forget_bundle で登録解除。",
+      "description": "ごみ箱整理の既定はプレビュー（dry_run: true）、候補を確認後 dry_run: false で実行。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "ignore_grace": {"default": false, "type": "boolean", "description": "猶予期間を無視します。"},
-          "dry_run": {"type": "boolean", "description": "回収見込みと保護理由を表示。削除なし。", "default": false}
+          "dry_run": {"type": "boolean", "description": "回収見込みと保護理由を表示。削除なし。", "default": true}
         },
         "type": "object"
       },
@@ -252,7 +257,7 @@
       "annotations": {"title": "ごみ箱の整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "実体が見つからないバンドルをカタログから解除します。",
+      "description": "手動で削除した記録の登録を解除し、arb_list_bundles で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -270,7 +275,7 @@
       "annotations": {"title": "カタログの整理", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
     },
     {
-      "description": "画面遷移・クラッシュ・タップ・集約エラー・ノイズ候補。タップは getevent のみ。adb shell input tap 等の注入は記録されない場合があります。",
+      "description": "保存済み記録のクラッシュ・画面・入力を調べ、注目フレームを arb_inspect_frames で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -288,7 +293,7 @@
       "annotations": {"title": "タイムラインの概要", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "一致するログとフレーム番号をページ取得。",
+      "description": "注目区間のログを検索し、続きは cursor で取得。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -332,7 +337,7 @@
       "annotations": {"title": "ログ検索", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "フレームの時刻・画面・タップ（getevent のみ）と参照先。",
+      "description": "保存済みの画面を閲覧し、前後の記録を arb_query_logs で確認。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -371,7 +376,7 @@
       "annotations": {"title": "フレームの確認", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
     },
     {
-      "description": "指定範囲を共有 MP4 またはバンドルに書き出します。",
+      "description": "選んだ区間を共有 MP4 またはバンドルに書き出し、output_path を開く。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -406,7 +411,7 @@
       "execution": {"taskSupport": "optional"}
     },
     {
-      "description": "指定フレームを出典付き PNG に保存。既存ファイルは保護。",
+      "description": "PNG ファイル書き出し専用（画面閲覧には arb_inspect_frames または arb://bundles/{id}/frame/{n} を使用）。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -442,7 +447,7 @@
         },
         "additionalProperties": false
       },
-      "description": "直近の記録を保存し、記録長・画面遷移・クラッシュ・エラーを概要と同じ集約で返します。",
+      "description": "直近の不具合を保存して概要を取得し、arb_inspect_frames と arb_query_logs で裏取り。",
       "outputType": "Investigation",
       "errorTypes": ["InvestigationError","SaveError"],
       "annotations": {"title": "保存して調査", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
@@ -666,6 +671,7 @@
       "type": "object",
       "properties": {
         "dry_run": {"type": "boolean"},
+        "hint": {"type":"string"},
         "preview": {"$ref": "#/$defs/GcPreview"},
         "counts": {"type": "object", "additionalProperties": {"$ref":"#/$defs/UInt"}},
         "purged_bundle_ids": {"$ref":"#/$defs/Strings"},
@@ -725,7 +731,8 @@
     },
     "CaptureStatusView": {
       "type": "object",
-      "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},"input_events":{"$ref":"#/$defs/UInt"},"gesture_count":{"$ref":"#/$defs/UInt"},
+      "properties": {
+        "buffer_state":{"$ref":"#/$defs/BufferState"}, "newest_age_secs":{"type":["number","null"]},"input_capture":{"$ref":"#/$defs/InputCapture"},"input_events":{"$ref":"#/$defs/UInt"},"gesture_count":{"$ref":"#/$defs/UInt"},
         "active": {"type": "boolean"},
         "connected": {"type": "boolean"},
         "capture_mode": {"$ref": "#/$defs/CaptureMode"},
@@ -1119,7 +1126,8 @@
     "InspectFramesMode": {"enum": ["contact_sheet", "single", "tap_crop"]},
     "Investigation": {
       "type": "object",
-      "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},
+      "properties": {"taps":{"type":"array","items":{"$ref":"#/$defs/OverviewTapItem"}},
+        "injected_inputs":{"type":"array","items":{"$ref":"#/$defs/InjectedInput"}}, "injected_inputs_truncated":{"type":"boolean"},"input_capture":{"$ref":"#/$defs/InputCapture"},
         "carried_in": {"$ref":"#/$defs/CarriedIn"},
         "resource_links": {"$ref":"#/$defs/ResourceLinks"},
         "save": {"$ref": "#/$defs/SaveOutcomeResponse"},
@@ -1208,10 +1216,7 @@
         "additionalProperties": false
       }
     },
-    "InputCapture": {
-      "type": "object",
-      "properties": {
-        "physical": {
+    "PhysicalCapture": {
           "type": "object",
           "properties": {
             "status": {"enum": ["recorded", "absent", "disabled", "unavailable"]},
@@ -1222,7 +1227,7 @@
           "required": ["status", "source", "input_events", "gestures"],
           "additionalProperties": false
         },
-        "injected": {
+    "InjectedCapture": {
           "type": "object",
           "properties": {
             "status": {"enum": ["commands_only", "recorded", "not_observable"]},
@@ -1235,10 +1240,13 @@
           "required": ["status", "sources", "commands", "gestures", "unparsed_commands", "time_certainty"],
           "additionalProperties": false
         },
-        "caveats": {"$ref": "#/$defs/Strings"}
-      },
-      "required": ["physical", "injected", "caveats"],
-      "additionalProperties": false
+    "InputChannels": {
+      "type":"object", "properties":{"physical":{"$ref":"#/$defs/PhysicalCapture"},"injected":{"$ref":"#/$defs/InjectedCapture"}},
+      "required":["physical","injected"],"additionalProperties":false
+    },
+    "InputCapture": {
+      "type":"object", "properties":{"physical":{"$ref":"#/$defs/PhysicalCapture"},"injected":{"$ref":"#/$defs/InjectedCapture"},"caveats":{"$ref":"#/$defs/Strings"}},
+      "required":["physical","injected","caveats"],"additionalProperties":false
     },
     "InjectedInput": {
       "type": "object",
@@ -1427,6 +1435,8 @@
     "SaveScreenshotResponse": {
       "type": "object",
       "properties": {
+        "source":{"enum":["capture","screencap"]}, "staleness_ms":{"$ref":"#/$defs/UInt"},
+        "frame_captured_at_utc":{"type":"string"}, "fallback_reason":{"type":"string"},
         "resource_links": {"$ref":"#/$defs/ResourceLinks"},
         "file_uri": {"type":"string","format":"uri"},
         "path": {"type": "string"},
@@ -1437,7 +1447,7 @@
         "captured_at_local": {"type": ["string", "null"]},
         "serial": {"type": "string"}
       },
-      "required": ["resource_links", "file_uri", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
+      "required": ["source","staleness_ms","resource_links", "file_uri", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
       "additionalProperties": false
     },
     "SaveTriggerKind": {"enum": ["manual", "crash_auto_save"]},
@@ -1501,7 +1511,22 @@
       "required": ["start_ns", "end_ns", "start_frame_index", "end_frame_index", "package_name", "activity_name", "short_name", "start_offset_ms", "end_offset_ms"],
       "additionalProperties": false
     },
-    "Status": {
+    "Status": {"oneOf":[{"$ref":"#/$defs/StatusSummary"},{"$ref":"#/$defs/StatusVerbose"}]},
+    "BufferState": {"enum":["live","retained_after_stop","empty"]},
+    "StatusSummary": {
+      "type":"object",
+      "properties":{
+        "daemon":{"type":"object","required":["version","build_id"]},
+        "capture":{"type":"object","required":["enabled","active","connected","serial","configured_device_serial","serial_mismatch","mode","audio_state","buffer"],"properties":{"buffer":{"type":"object","properties":{"state":{"$ref":"#/$defs/BufferState"},"buffered_secs":{"type":"number"},"newest_age_secs":{"type":["number","null"]}},"required":["state","buffered_secs","newest_age_secs"]}}},
+        "input_capture":{"$ref":"#/$defs/InputChannels"},
+        "device_clock_offset":{"type":["object","null"]},
+        "save":{"type":"object","required":["active_jobs","failed_jobs","oldest_failed_job_id","ring_pinned_chunk_count"]},
+        "crash_autosave":{"type":"object","required":["enabled","in_flight","post_roll_until_utc","last_bundle_id","last_error"]},
+        "attention":{"type":"array","items":{"type":"object","required":["kind"]}}
+      },
+      "required":["daemon","capture","input_capture","device_clock_offset","save","crash_autosave","attention"],"additionalProperties":false
+    },
+    "StatusVerbose": {
       "type": "object",
       "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},"hello": {"$ref": "#/$defs/SystemHelloResponse"}, "status": {"$ref": "#/$defs/SystemStatusResponse"}},
       "required": ["input_capture","hello", "status"],
@@ -1516,6 +1541,7 @@
         "log_min_level": {"type": "boolean"},
         "log_exclude_tags": {"type": "boolean"},
         "standalone_share_trim": {"type": "boolean"},
+        "screenshot_source":{"type":"boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"$ref":"#/$defs/UInt"},
         "schema_version": {"$ref":"#/$defs/UInt"},
