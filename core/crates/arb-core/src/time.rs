@@ -1292,6 +1292,73 @@ pub fn format_unix_ms_iso8601(unix_ms: i64) -> String {
     format!("{stamp}.{:03}Z", unix_ms.rem_euclid(1000))
 }
 
+/// Parses `YYYY-MM-DDTHH:MM:SS[.fraction]Z` (the UTC text this crate writes) into Unix
+/// milliseconds and the text's resolution in milliseconds (1,000 without a fraction, 100 for one
+/// digit, 10 for two, 1 otherwise). Other forms return `None`.
+#[must_use]
+pub fn parse_utc_iso8601_ms(text: &str) -> Option<(i64, u64)> {
+    let b = text.as_bytes();
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = b.get(range)?;
+        digits
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| digits.iter().fold(0, |n, d| n * 10 + i64::from(d - b'0')))
+    };
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b.last() != Some(&b'Z')
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let fraction = &b[19..b.len() - 1];
+    let (millis, precision_ms) = match fraction {
+        [] => (0, 1_000),
+        [b'.', digits @ ..] if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) => {
+            let take = digits.len().min(3);
+            let mut ms = digits[..take]
+                .iter()
+                .fold(0, |n, d| n * 10 + i64::from(d - b'0'));
+            for _ in take..3 {
+                ms *= 10;
+            }
+            (ms, [100, 10, 1][take - 1])
+        }
+        _ => return None,
+    };
+    let days = days_from_civil(year, month, day);
+    if civil_from_days(days) != (year, month, day) {
+        return None;
+    }
+    let secs = days * SECS_PER_DAY + hour * SECS_PER_HOUR + minute * SECS_PER_MINUTE + second;
+    Some((secs * 1000 + millis, precision_ms))
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's `days_from_civil`).
+const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Converts days since `1970-01-01` into proleptic Gregorian `(year, month, day)`.
 ///
 /// Algorithm due to Howard Hinnant (`civil_from_days`).
@@ -1307,6 +1374,596 @@ const fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let year = if m <= 2 { y + 1 } else { y };
     (year, m, d)
+}
+
+/// Relative drift allowed between the device `CLOCK_BOOTTIME` and the host continuous clock when a
+/// clock-offset estimate extrapolates between samples: 200 ppm, i.e. 1 ns per 5,000 ns.
+pub const CLOCK_OFFSET_DRIFT_DIVISOR: u64 = 5_000;
+
+/// Allowance for each clock pair (device triple, host sample) not being read at one instant.
+pub const CLOCK_OFFSET_SAMPLE_SKEW_NS: u64 = 1_000_000;
+
+/// Longest extrapolation (1 hour) between a probe, a triple and a host sample that still
+/// yields an estimate. Beyond it the drift allowance dominates and no offset is reported.
+pub const MAX_CLOCK_OFFSET_EXTRAPOLATION_NS: u64 = 3_600_000_000_000;
+
+/// Extra uncertainty of a trigger estimate: the host trigger wall clock was stamped around the
+/// pin, not with the device boottime at the window end.
+pub const TRIGGER_ESTIMATE_BASE_UNCERTAINTY_NS: u64 = 1_000_000_000;
+
+/// One coincident reading of the host continuous clock and the host wall clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HostClockSample {
+    /// Host `PcContinuousMono` nanoseconds.
+    pub continuous_mono_ns: i64,
+    /// Host wall clock, Unix epoch nanoseconds.
+    pub wall_epoch_ns: i64,
+}
+
+/// How a device clock offset was estimated.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockOffsetSource {
+    /// A host↔device round-trip probe, a device clock triple and a host clock sample.
+    SyncProbe,
+    /// An existing bundle: the window end boottime, a device triple and the trigger wall time.
+    TriggerEstimate,
+}
+
+/// Why no device clock offset is reported.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockOffsetUnavailable {
+    /// No device is connected to the live capture.
+    NotConnected,
+    /// The live clock domain is replayed, not the host clock.
+    ReplayedClock,
+    /// No round-trip probe within the error budget was received.
+    NoSyncProbe,
+    /// No device clock triple was received.
+    NoClockTriple,
+    /// The probe and the triple belong to different device boots.
+    BootMismatch,
+    /// The device wall clock jumped and no later triple has confirmed the new offset.
+    WallClockJump,
+    /// The samples are too far apart, or a value is outside the representable range.
+    OutOfRange,
+    /// A crash at the window end can precede the old host save stamp by an unknown delay.
+    TriggerDelayUnknown,
+    /// No paired host clock sample was available for this save.
+    NoHostClock,
+    /// The bundle records no host trigger wall time (trimmed or legacy bundle).
+    NoTriggerWallClock,
+}
+
+/// A device clock offset: `offset_ms = device CLOCK_REALTIME − host wall clock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeviceClockOffsetEstimate {
+    /// Device wall clock minus host wall clock, rounded half away from zero to milliseconds.
+    pub offset_ms: i64,
+    /// Half-width in milliseconds; the true offset lies in `offset_ms ± uncertainty_ms`
+    /// whenever the drift and skew allowances hold.
+    pub uncertainty_ms: u64,
+    /// How the estimate was formed.
+    pub source: ClockOffsetSource,
+    /// Host wall clock (Unix milliseconds) of the instant the offset describes.
+    pub sampled_at_unix_ms: i64,
+}
+
+/// Published device clock offset. Either `offset_ms` and its companions are set, or `reason`.
+///
+/// Times are never corrected with it: callers subtract `offset_ms` themselves to compare device
+/// timestamps with host-side logs (SPEC-02).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeviceClockOffset {
+    /// Device wall clock minus host wall clock in milliseconds.
+    pub offset_ms: Option<i64>,
+    /// Non-negative half-width of `offset_ms` in milliseconds.
+    pub uncertainty_ms: Option<u64>,
+    /// How the estimate was formed.
+    pub source: Option<ClockOffsetSource>,
+    /// Host wall clock (RFC 3339, millisecond UTC) of the instant the offset describes.
+    pub sampled_at_utc: Option<String>,
+    /// For legacy estimates this delay is additional to the numeric clock uncertainty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trigger_delay_unbounded: bool,
+    /// Why no offset is reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ClockOffsetUnavailable>,
+}
+
+impl DeviceClockOffset {
+    /// An unavailable offset with its reason.
+    pub const fn unavailable(reason: ClockOffsetUnavailable) -> Self {
+        Self {
+            offset_ms: None,
+            uncertainty_ms: None,
+            source: None,
+            sampled_at_utc: None,
+            trigger_delay_unbounded: false,
+            reason: Some(reason),
+        }
+    }
+
+    /// The published form of an estimate, or `reason` when there is none.
+    pub fn from_estimate(
+        estimate: Option<DeviceClockOffsetEstimate>,
+        reason: ClockOffsetUnavailable,
+    ) -> Self {
+        estimate.map_or_else(
+            || Self::unavailable(reason),
+            |e| Self {
+                offset_ms: Some(e.offset_ms),
+                uncertainty_ms: Some(e.uncertainty_ms),
+                trigger_delay_unbounded: e.source == ClockOffsetSource::TriggerEstimate,
+                source: Some(e.source),
+                sampled_at_utc: Some(format_unix_ms_iso8601(e.sampled_at_unix_ms)),
+                reason: None,
+            },
+        )
+    }
+}
+
+/// Estimates `device CLOCK_REALTIME − host wall clock` at the instant of the device triple.
+///
+/// The probe ties device boottime to the host continuous clock (± its RTT half-width), the
+/// triple ties device boottime to the device wall clock, and the host sample ties the host
+/// continuous clock to the host wall clock. Every intermediate uses `i128`; the uncertainty adds
+/// the probe half-width, both sampling skews and 200 ppm of the extrapolated spans. Returns
+/// `None` for a different boot, a negative RTT, spans over
+/// [`MAX_CLOCK_OFFSET_EXTRAPOLATION_NS`], or values outside `i64` milliseconds.
+pub fn compute_device_clock_offset(
+    triple: &DeviceClockTriple,
+    probe: &PcSyncProbe,
+    host: &HostClockSample,
+) -> Option<DeviceClockOffsetEstimate> {
+    if triple.boot_id != probe.boot_id {
+        return None;
+    }
+    sync_probe_offset(
+        SyncProbeClocks {
+            pc_send_cont_ns: probe.pc_send_cont_ns,
+            pc_recv_cont_ns: probe.pc_recv_cont_ns,
+            dev_boottime_ns: probe.dev_boottime_ns,
+        },
+        triple.boottime_ns,
+        triple.realtime_ns,
+        *host,
+    )
+}
+
+/// The numeric part of a probe used by [`sync_probe_offset`] (K22).
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the `_ns` unit suffix matches `PcSyncProbe`"
+)]
+pub(crate) struct SyncProbeClocks {
+    pub(crate) pc_send_cont_ns: i64,
+    pub(crate) pc_recv_cont_ns: i64,
+    pub(crate) dev_boottime_ns: i64,
+}
+
+/// The `i128` stage of an estimate, before rounding (K22 verifies both stages separately).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_field_names, reason = "every field is in nanoseconds")]
+pub(crate) struct OffsetParts {
+    /// Device wall clock minus host wall clock, nanoseconds.
+    pub(crate) offset_ns: i128,
+    /// Total extrapolated span the drift allowance applies to, nanoseconds.
+    pub(crate) span_ns: i128,
+    /// Uncertainty before drift and rounding, nanoseconds.
+    pub(crate) base_uncertainty_ns: u64,
+    /// Host wall clock of the described instant, nanoseconds.
+    pub(crate) host_wall_ns: i128,
+}
+
+/// [`compute_device_clock_offset`] after the boot check.
+pub(crate) fn sync_probe_offset(
+    probe: SyncProbeClocks,
+    triple_boottime_ns: i64,
+    triple_realtime_ns: i64,
+    host: HostClockSample,
+) -> Option<DeviceClockOffsetEstimate> {
+    finish_estimate(
+        sync_probe_parts(probe, triple_boottime_ns, triple_realtime_ns, host)?,
+        ClockOffsetSource::SyncProbe,
+    )
+}
+
+/// The `i128` stage of [`sync_probe_offset`]; `None` only for a negative round trip.
+pub(crate) fn sync_probe_parts(
+    probe: SyncProbeClocks,
+    triple_boottime_ns: i64,
+    triple_realtime_ns: i64,
+    host: HostClockSample,
+) -> Option<OffsetParts> {
+    let send = i128::from(probe.pc_send_cont_ns);
+    let rtt = i128::from(probe.pc_recv_cont_ns) - send;
+    if rtt < 0 {
+        return None;
+    }
+    // `rtt` is non-negative, so the shifts are the half and the rounded-up half.
+    let midpoint = send + (rtt >> 1);
+    let half_width = u64::try_from((rtt + 1) >> 1).ok()?;
+    // Only the continuous clocks are extrapolated. A device wall jump before the triple
+    // cannot move its reported sample time back to the pre-jump probe.
+    let triple_cont = midpoint + i128::from(triple_boottime_ns) - i128::from(probe.dev_boottime_ns);
+    let host_wall_ns =
+        triple_cont + i128::from(host.wall_epoch_ns) - i128::from(host.continuous_mono_ns);
+    let device_wall = i128::from(triple_realtime_ns);
+    Some(OffsetParts {
+        offset_ns: device_wall - host_wall_ns,
+        span_ns: (i128::from(probe.dev_boottime_ns) - i128::from(triple_boottime_ns)).abs()
+            + (midpoint - i128::from(host.continuous_mono_ns)).abs(),
+        base_uncertainty_ns: half_width.checked_add(2 * CLOCK_OFFSET_SAMPLE_SKEW_NS)?,
+        host_wall_ns,
+    })
+}
+
+/// Approximates the offset of an existing bundle at its trigger: the device wall clock at the
+/// window end boottime (from `triple`) minus the host trigger wall time.
+///
+/// `wall_precision_ms` is the resolution of the stored trigger text (1,000 for whole seconds).
+/// The uncertainty adds [`TRIGGER_ESTIMATE_BASE_UNCERTAINTY_NS`] and the triple's drift span.
+pub fn estimate_device_clock_offset_at_trigger(
+    triple: &DeviceClockTriple,
+    trigger_boottime_ns: i64,
+    trigger_wall_unix_ms: i64,
+    wall_precision_ms: u64,
+) -> Option<DeviceClockOffsetEstimate> {
+    finish_estimate(
+        trigger_parts(
+            triple.boottime_ns,
+            triple.realtime_ns,
+            trigger_boottime_ns,
+            trigger_wall_unix_ms,
+            wall_precision_ms,
+        )?,
+        ClockOffsetSource::TriggerEstimate,
+    )
+}
+
+/// The `i128` stage of [`estimate_device_clock_offset_at_trigger`].
+pub(crate) fn trigger_parts(
+    triple_boottime_ns: i64,
+    triple_realtime_ns: i64,
+    trigger_boottime_ns: i64,
+    trigger_wall_unix_ms: i64,
+    wall_precision_ms: u64,
+) -> Option<OffsetParts> {
+    let device_wall = i128::from(trigger_boottime_ns) + i128::from(triple_realtime_ns)
+        - i128::from(triple_boottime_ns);
+    let host_wall_ns = i128::from(trigger_wall_unix_ms) * 1_000_000;
+    Some(OffsetParts {
+        offset_ns: device_wall - host_wall_ns,
+        span_ns: (i128::from(trigger_boottime_ns) - i128::from(triple_boottime_ns)).abs(),
+        base_uncertainty_ns: TRIGGER_ESTIMATE_BASE_UNCERTAINTY_NS
+            .checked_add(wall_precision_ms.checked_mul(1_000_000)?)?
+            .checked_add(CLOCK_OFFSET_SAMPLE_SKEW_NS)?,
+        host_wall_ns,
+    })
+}
+
+/// Rounds the nanosecond offset half away from zero to milliseconds and widens the uncertainty
+/// so the millisecond interval contains the nanosecond one. `None` for spans over
+/// [`MAX_CLOCK_OFFSET_EXTRAPOLATION_NS`] or values outside `i64`.
+pub(crate) fn finish_estimate(
+    parts: OffsetParts,
+    source: ClockOffsetSource,
+) -> Option<DeviceClockOffsetEstimate> {
+    let span = u64::try_from(parts.span_ns).ok()?;
+    if span > MAX_CLOCK_OFFSET_EXTRAPOLATION_NS {
+        return None;
+    }
+    let (millis, rounding) = round_ns_to_ms(i64::try_from(parts.offset_ns).ok()?);
+    let uncertainty_ns = parts
+        .base_uncertainty_ns
+        .checked_add(drift_allowance_ns(span))?
+        .checked_add(rounding)?;
+    Some(DeviceClockOffsetEstimate {
+        offset_ms: millis,
+        uncertainty_ms: ceil_ns_to_ms(uncertainty_ns),
+        source,
+        sampled_at_unix_ms: floor_ns_to_ms(i64::try_from(parts.host_wall_ns).ok()?),
+    })
+}
+
+/// Nanoseconds rounded half away from zero to milliseconds, with the rounding error
+/// `|millis × 10^6 − nanos|` (at most 500,000).
+pub(crate) const fn round_ns_to_ms(nanos: i64) -> (i64, u64) {
+    let (quotient, remainder) = (nanos / 1_000_000, nanos % 1_000_000);
+    if remainder >= 500_000 {
+        (quotient + 1, (1_000_000 - remainder).unsigned_abs())
+    } else if remainder <= -500_000 {
+        (quotient - 1, (1_000_000 + remainder).unsigned_abs())
+    } else {
+        (quotient, remainder.unsigned_abs())
+    }
+}
+
+/// The 200 ppm drift allowance of an extrapolated span, rounded up.
+pub(crate) const fn drift_allowance_ns(span_ns: u64) -> u64 {
+    span_ns.div_ceil(CLOCK_OFFSET_DRIFT_DIVISOR)
+}
+
+/// The smallest whole number of milliseconds covering `nanos`.
+pub(crate) const fn ceil_ns_to_ms(nanos: u64) -> u64 {
+    nanos.div_ceil(1_000_000)
+}
+
+/// The Unix millisecond containing `nanos` (floor, also before 1970).
+pub(crate) const fn floor_ns_to_ms(nanos: i64) -> i64 {
+    nanos.div_euclid(1_000_000)
+}
+
+/// The tightest sync-probe estimate from saved or live anchors: each probe within
+/// `max_half_width_ns` is paired with the same boot's triple nearest in boottime, and the
+/// estimate with the smallest uncertainty wins (ties: the latest probe).
+///
+/// # Errors
+///
+/// Returns why no estimate exists: no triple, no probe within the budget, only probes of
+/// another boot, or samples out of range.
+pub fn best_sync_probe_offset(
+    triples: &[DeviceClockTriple],
+    probes: &[PcSyncProbe],
+    host: &HostClockSample,
+    max_half_width_ns: u64,
+) -> Result<DeviceClockOffsetEstimate, ClockOffsetUnavailable> {
+    let mut reason = if triples.is_empty() {
+        ClockOffsetUnavailable::NoClockTriple
+    } else {
+        ClockOffsetUnavailable::NoSyncProbe
+    };
+    let mut by_boot = BTreeMap::<&str, Vec<&DeviceClockTriple>>::new();
+    for triple in triples {
+        by_boot.entry(&triple.boot_id).or_default().push(triple);
+    }
+    // Keep the current wall-clock segment. A probe between the triples bracketing a jump
+    // cannot establish which wall-clock reading applied when it was taken.
+    let mut segments = BTreeMap::new();
+    for (boot, times) in &mut by_boot {
+        times.sort_unstable_by_key(|t| t.boottime_ns);
+        let start = times
+            .windows(2)
+            .rposition(|pair| {
+                pair[0].wall_offset_ns().abs_diff(pair[1].wall_offset_ns())
+                    > u128::from(DEFAULT_DISCONTINUITY_THRESHOLD_NS)
+            })
+            .map_or(0, |i| i + 1);
+        segments.insert(*boot, (&times[start..], start != 0));
+    }
+    let mut best: Option<DeviceClockOffsetEstimate> = None;
+    for probe in probes
+        .iter()
+        .filter(|p| p.half_width_ns().is_some_and(|hw| hw <= max_half_width_ns))
+    {
+        let Some(&(times, after_jump)) = segments.get(probe.boot_id.as_str()) else {
+            if !triples.is_empty() {
+                reason = ClockOffsetUnavailable::BootMismatch;
+            }
+            continue;
+        };
+        if after_jump && probe.dev_boottime_ns < times[0].boottime_ns {
+            reason = ClockOffsetUnavailable::WallClockJump;
+            continue;
+        }
+        let after = times.partition_point(|t| t.boottime_ns < probe.dev_boottime_ns);
+        let before = times[after.saturating_sub(1)];
+        let next = times.get(after).copied().unwrap_or(before);
+        let triple = if before.boottime_ns.abs_diff(probe.dev_boottime_ns)
+            <= next.boottime_ns.abs_diff(probe.dev_boottime_ns)
+        {
+            before
+        } else {
+            next
+        };
+        match compute_device_clock_offset(triple, probe, host) {
+            Some(e) if best.is_none_or(|b| e.uncertainty_ms <= b.uncertainty_ms) => {
+                best = Some(e);
+            }
+            Some(_) => {}
+            None => reason = ClockOffsetUnavailable::OutOfRange,
+        }
+    }
+    best.ok_or(reason)
+}
+
+#[cfg(test)]
+mod clock_offset_tests {
+    use super::{
+        ClockOffsetSource, ClockOffsetUnavailable, DeviceClockOffset, DeviceClockTriple,
+        HostClockSample, PcSyncProbe, best_sync_probe_offset, compute_device_clock_offset,
+        estimate_device_clock_offset_at_trigger, format_unix_ms_iso8601, parse_utc_iso8601_ms,
+    };
+
+    const HOST_WALL_AT_CONT_0: i64 = 1_795_829_000_000_000_000;
+
+    fn probe(boot: &str, send: i64, recv: i64, dev_bt: i64) -> PcSyncProbe {
+        PcSyncProbe {
+            boot_id: boot.into(),
+            pc_send_cont_ns: send,
+            pc_send_active_ns: send,
+            dev_boottime_ns: dev_bt,
+            dev_monotonic_ns: dev_bt,
+            pc_recv_cont_ns: recv,
+            pc_recv_active_ns: recv,
+        }
+    }
+
+    /// A device whose boottime equals host continuous + 7 s, and whose wall clock runs
+    /// `ahead_ns` ahead of the host wall clock.
+    fn scene(ahead_ns: i64) -> (DeviceClockTriple, PcSyncProbe, HostClockSample) {
+        let host = HostClockSample {
+            continuous_mono_ns: 20_000_000_000,
+            wall_epoch_ns: HOST_WALL_AT_CONT_0 + 20_000_000_000,
+        };
+        let probe = probe("b", 10_000_000_000, 10_004_000_000, 17_002_000_000);
+        let triple = DeviceClockTriple {
+            boot_id: "b".into(),
+            boottime_ns: 17_300_000_000,
+            monotonic_ns: 17_300_000_000,
+            // Host wall at device boottime B is HOST_WALL_AT_CONT_0 + (B − 7 s).
+            realtime_ns: HOST_WALL_AT_CONT_0 + 10_300_000_000 + ahead_ns,
+        };
+        (triple, probe, host)
+    }
+
+    #[test]
+    fn issue_591_device_ahead_by_1_7_seconds() {
+        let (triple, probe, host) = scene(1_700_000_000);
+        let e = compute_device_clock_offset(&triple, &probe, &host).expect("estimate");
+        assert_eq!(e.offset_ms, 1_700);
+        assert_eq!(e.source, ClockOffsetSource::SyncProbe);
+        // Half-width 2 ms + 2 ms skew + 200 ppm of (0.3 s + 10 s) spans ≈ 6.06 ms.
+        assert_eq!(e.uncertainty_ms, 7);
+        assert_eq!(
+            format_unix_ms_iso8601(e.sampled_at_unix_ms),
+            format_unix_ms_iso8601((HOST_WALL_AT_CONT_0 + 10_300_000_000) / 1_000_000)
+        );
+        let (triple, probe, host) = scene(-250_400_000);
+        let behind = compute_device_clock_offset(&triple, &probe, &host).expect("estimate");
+        assert_eq!(behind.offset_ms, -250);
+    }
+
+    #[test]
+    fn boot_mismatch_negative_rtt_and_far_samples_yield_nothing() {
+        let (mut triple, probe, host) = scene(0);
+        triple.boot_id = "other".into();
+        assert_eq!(compute_device_clock_offset(&triple, &probe, &host), None);
+        let (triple, mut probe, host) = scene(0);
+        probe.pc_recv_cont_ns = probe.pc_send_cont_ns - 1;
+        assert_eq!(compute_device_clock_offset(&triple, &probe, &host), None);
+        let (triple, probe, mut host) = scene(0);
+        host.continuous_mono_ns += 4_000_000_000_000;
+        host.wall_epoch_ns += 4_000_000_000_000;
+        assert_eq!(compute_device_clock_offset(&triple, &probe, &host), None);
+        let extremes = HostClockSample {
+            continuous_mono_ns: i64::MIN,
+            wall_epoch_ns: i64::MAX,
+        };
+        assert_eq!(
+            compute_device_clock_offset(&triple, &probe, &extremes),
+            None
+        );
+    }
+
+    #[test]
+    fn the_best_probe_wins_and_reasons_are_specific() {
+        let (triple, good, host) = scene(1_000_000_000);
+        let wide = probe("b", 10_000_000_000, 10_120_000_000, 17_060_000_000);
+        let best = best_sync_probe_offset(
+            std::slice::from_ref(&triple),
+            &[wide.clone(), good],
+            &host,
+            50_000_000,
+        )
+        .expect("estimate");
+        assert_eq!(best.offset_ms, 1_000);
+        assert_eq!(
+            best_sync_probe_offset(std::slice::from_ref(&triple), &[wide], &host, 50_000_000),
+            Err(ClockOffsetUnavailable::NoSyncProbe)
+        );
+        assert_eq!(
+            best_sync_probe_offset(&[], &[probe("b", 0, 1, 2)], &host, 50_000_000),
+            Err(ClockOffsetUnavailable::NoClockTriple)
+        );
+        assert_eq!(
+            best_sync_probe_offset(&[triple], &[probe("c", 0, 1, 2)], &host, 50_000_000),
+            Err(ClockOffsetUnavailable::BootMismatch)
+        );
+    }
+
+    #[test]
+    fn probes_in_the_interval_of_a_wall_jump_do_not_establish_a_saved_offset() {
+        let (first, mut middle, host) = scene(0);
+        let mut second = first.clone();
+        second.boottime_ns += 10_000_000_000;
+        second.realtime_ns += 40_000_000_000;
+        middle.dev_boottime_ns = first.boottime_ns + 4_000_000_000;
+        let triples = [first, second];
+        assert_eq!(
+            best_sync_probe_offset(&triples, &[middle], &host, 50_000_000),
+            Err(ClockOffsetUnavailable::WallClockJump)
+        );
+    }
+
+    #[test]
+    fn trigger_estimate_is_wide_and_honest() {
+        let triple = DeviceClockTriple {
+            boot_id: "b".into(),
+            boottime_ns: 100_000_000_000,
+            monotonic_ns: 100_000_000_000,
+            realtime_ns: 1_795_829_025_000_000_000,
+        };
+        let (wall_ms, precision) = parse_utc_iso8601_ms("2026-11-28T01:23:56.300Z").expect("parse");
+        assert_eq!(precision, 1);
+        // Device wall at boottime 110 s is …:55.000 + 10 s = …:35+…; host trigger …:56.300.
+        let e =
+            estimate_device_clock_offset_at_trigger(&triple, 110_000_000_000, wall_ms, precision)
+                .expect("estimate");
+        assert_eq!(e.source, ClockOffsetSource::TriggerEstimate);
+        assert_eq!(e.offset_ms, 1_795_829_035_000 - 1_795_829_036_300);
+        assert!(e.uncertainty_ms >= 1_000);
+        let published =
+            DeviceClockOffset::from_estimate(Some(e), ClockOffsetUnavailable::OutOfRange);
+        assert_eq!(
+            published.sampled_at_utc.as_deref(),
+            Some("2026-11-28T01:23:56.300Z")
+        );
+        assert_eq!(published.reason, None);
+        let none =
+            DeviceClockOffset::from_estimate(None, ClockOffsetUnavailable::NoTriggerWallClock);
+        assert_eq!(
+            serde_json::to_value(none).expect("json"),
+            serde_json::json!({"offset_ms":null,"uncertainty_ms":null,"source":null,"sampled_at_utc":null,"reason":"no_trigger_wall_clock"})
+        );
+    }
+
+    #[test]
+    fn utc_text_parses_with_its_resolution() {
+        assert_eq!(
+            parse_utc_iso8601_ms("1970-01-01T00:00:00Z"),
+            Some((0, 1_000))
+        );
+        assert_eq!(
+            parse_utc_iso8601_ms("2026-11-22T12:00:00Z"),
+            Some((1_795_348_800_000, 1_000))
+        );
+        assert_eq!(
+            parse_utc_iso8601_ms("1970-01-01T00:00:00.5Z"),
+            Some((500, 100))
+        );
+        assert_eq!(
+            parse_utc_iso8601_ms("1969-12-31T23:59:59.999Z"),
+            Some((-1, 1))
+        );
+        for bad in [
+            "",
+            "2026-11-22 12:00:00Z",
+            "2026-11-22T12:00:00",
+            "2026-13-01T00:00:00Z",
+            "2026-02-31T00:00:00Z",
+            "2026-11-22T12:00:00.Z",
+            "2026-11-22T12:00:00+09:00",
+        ] {
+            assert_eq!(parse_utc_iso8601_ms(bad), None, "{bad}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(if cfg!(miri) {
+            proptest::test_runner::Config { failure_persistence: None, cases: 8, ..Default::default() }
+        } else { proptest::test_runner::Config::default() })]
+
+        #[test]
+        fn utc_text_roundtrips(ms in -2_208_988_800_000_i64..32_503_680_000_000) {
+            proptest::prop_assert_eq!(parse_utc_iso8601_ms(&format_unix_ms_iso8601(ms)), Some((ms, 1)));
+        }
+    }
 }
 
 #[cfg(test)]

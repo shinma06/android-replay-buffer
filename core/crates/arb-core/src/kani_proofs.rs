@@ -1,6 +1,7 @@
 //! Layer-1 PDD: Kani bounded model-checking harnesses for `arb-core` (K1–K7, K11 in
-//! `kani_proofs/k11_audio_policy.rs`, K14 in `kani_proofs/k14_coverage.rs` and K15 in
-//! `kani_proofs/k15_video_commit.rs`).
+//! `kani_proofs/k11_audio_policy.rs`, K14 in `kani_proofs/k14_coverage.rs`, K15 in
+//! `kani_proofs/k15_video_commit.rs`, K18 in `kani_proofs/k18_crash_stack.rs` and K22 in
+//! `kani_proofs/k22_clock_offset.rs`).
 //!
 //! Compiled only under `cargo kani` (`cfg(kani)`); unwinding assertions stay enabled.
 //!
@@ -18,6 +19,8 @@ mod k14_coverage;
 mod k15_video_commit;
 // K18 (#589): crash stack_top keeps the first app frame within its cap.
 mod k18_crash_stack;
+// K22 (#591): device clock offset never overflows and its uncertainty covers the rounding.
+mod k22_clock_offset;
 
 use crate::gesture::{TouchPoint, classify_stroke, decimate, map_touch_to_frame, touch_slop};
 use crate::selection::{

@@ -113,6 +113,81 @@ impl Default for TapCropOptions {
     }
 }
 
+/// Geometry of a tap crop inside a `video_w × video_h` frame, shared by the metadata-only path
+/// and [`render_tap_crop_png`] (K21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TapCropRect {
+    /// Left edge of the crop inside the source frame.
+    pub crop_x: u32,
+    /// Top edge of the crop inside the source frame.
+    pub crop_y: u32,
+    /// Crop width in pixels (`1..=video_w`).
+    pub crop_width: u32,
+    /// Crop height in pixels (`1..=video_h`).
+    pub crop_height: u32,
+    /// Tap x relative to the crop (`tap_x - crop_x`).
+    pub tap_rel_x: u32,
+    /// Tap y relative to the crop (`tap_y - crop_y`).
+    pub tap_rel_y: u32,
+}
+
+/// Pure crop geometry around `(tap_x, tap_y)` in a `video_w × video_h` frame, without decoding.
+///
+/// The crop is `width_fraction × height_fraction` of the frame (at least `min_width ×
+/// min_height`, never larger than the frame), centred on the tap and shifted to stay inside
+/// `[0, video_w) × [0, video_h)`. Returns `None` for an empty frame, a tap outside the frame, or
+/// a fraction that is not finite and in `(0, 1]`. [`render_tap_crop_png`] crops exactly this
+/// rectangle, so metadata and rendering never disagree.
+#[must_use]
+pub fn tap_crop_rect(
+    video_w: u32,
+    video_h: u32,
+    tap_x: u32,
+    tap_y: u32,
+    opts: &TapCropOptions,
+) -> Option<TapCropRect> {
+    if tap_x >= video_w || tap_y >= video_h {
+        return None;
+    }
+    let crop_width = crop_extent(
+        video_w,
+        opts.width_fraction,
+        opts.min_width,
+        "width_fraction",
+    )
+    .ok()?;
+    let crop_height = crop_extent(
+        video_h,
+        opts.height_fraction,
+        opts.min_height,
+        "height_fraction",
+    )
+    .ok()?;
+    let (crop_x, tap_rel_x) = place_crop(video_w, crop_width, tap_x);
+    let (crop_y, tap_rel_y) = place_crop(video_h, crop_height, tap_y);
+    Some(TapCropRect {
+        crop_x,
+        crop_y,
+        crop_width,
+        crop_height,
+        tap_rel_x,
+        tap_rel_y,
+    })
+}
+
+/// Centres an `extent`-pixel crop on `tap` and shifts it inside `[0, total)`. Requires
+/// `1 <= extent <= total` and `tap < total`; returns `(origin, tap - origin)`.
+pub(crate) const fn place_crop(total: u32, extent: u32, tap: u32) -> (u32, u32) {
+    let centred = tap.saturating_sub(extent / 2);
+    let max_origin = total - extent;
+    let origin = if centred < max_origin {
+        centred
+    } else {
+        max_origin
+    };
+    (origin, tap - origin)
+}
+
 /// Result of [`render_tap_crop_png`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TapCropResult {
@@ -370,19 +445,26 @@ pub fn render_tap_crop_png(
             "tap point ({tap_x}, {tap_y}) is outside the {width}x{height} frame"
         )));
     }
-    let crop_width = crop_extent(width, opts.width_fraction, opts.min_width, "width_fraction")?;
-    let crop_height = crop_extent(
+    // Surface the fraction error text; the geometry itself is `tap_crop_rect`'s.
+    crop_extent(width, opts.width_fraction, opts.min_width, "width_fraction")?;
+    crop_extent(
         height,
         opts.height_fraction,
         opts.min_height,
         "height_fraction",
     )?;
-    let crop_x = tap_x.saturating_sub(crop_width / 2).min(width - crop_width);
-    let crop_y = tap_y
-        .saturating_sub(crop_height / 2)
-        .min(height - crop_height);
-    let tap_rel_x = tap_x - crop_x;
-    let tap_rel_y = tap_y - crop_y;
+    let TapCropRect {
+        crop_x,
+        crop_y,
+        crop_width,
+        crop_height,
+        tap_rel_x,
+        tap_rel_y,
+    } = tap_crop_rect(width, height, tap_x, tap_y, opts).ok_or_else(|| {
+        MediaError::InvalidArgument(format!(
+            "tap crop geometry is undefined for ({tap_x}, {tap_y}) in {width}x{height}"
+        ))
+    })?;
 
     let (cw, ch) = (usize_from(crop_width), usize_from(crop_height));
     let (fw, cx, cy) = (usize_from(width), usize_from(crop_x), usize_from(crop_y));
@@ -533,7 +615,12 @@ fn scale_center(p: usize, src: usize, dst: usize) -> usize {
     ((2 * p + 1) * dst / (2 * src)).min(dst.saturating_sub(1))
 }
 
-fn crop_extent(total: u32, fraction: f32, min_px: u32, name: &str) -> Result<u32, MediaError> {
+pub(crate) fn crop_extent(
+    total: u32,
+    fraction: f32,
+    min_px: u32,
+    name: &str,
+) -> Result<u32, MediaError> {
     if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 {
         return Err(MediaError::InvalidArgument(format!(
             "{name} must be finite and within (0, 1], got {fraction}"

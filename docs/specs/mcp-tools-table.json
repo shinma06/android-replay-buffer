@@ -22,8 +22,8 @@
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["duration_secs","window_secs","duration_sec"],"aliases":true,"allowEqual":true},
     {"tools":["arb_save","arb_save_logs","arb_save_and_inspect"],"names":["note","memo"],"aliases":true,"allowEqual":true},
     {"tools":["arb_query_logs"],"names":["cursor","after_seq"]},
-    {"tools":["arb_query_logs"],"names":["start_ns","start_frame"],"allowEqual":false},
-    {"tools":["arb_query_logs"],"names":["end_ns","end_frame"],"allowEqual":false},
+    {"tools":["arb_query_logs"],"names":["start_ns","start_frame","start_offset_ms"],"allowEqual":false},
+    {"tools":["arb_query_logs"],"names":["end_ns","end_frame","end_offset_ms"],"allowEqual":false},
     {"tools":["arb_query_logs"],"names":["level","min_level"]},
     {"tools":["arb_screenshot"],"names":["output_path","output_dir"]}
   ],
@@ -318,12 +318,14 @@
           "package": {"description": "Android パッケージ名（完全一致）。", "type": "string"},
           "start_frame": {"minimum": 0, "type": "integer", "description": "先頭フレーム（0 始まり）。"},
           "start_ns": {"type": "integer", "description": "範囲の開始。端末 boottime（ns、epochs 基準）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "start_offset_ms": {"type": "integer", "description": "範囲の開始。行の offset_ms（バンドル先頭基準 ms、両端含む）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+          "end_offset_ms": {"type": "integer", "description": "範囲の終了。行の offset_ms（両端含む）。", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
           "tag": {"description": "ログタグの部分一致条件。", "type": "string"},
           "exclude_tags": {"description": "除外タグ（完全一致、大小無視）。", "type": "array", "items": {"type":"string"}},
           "cursor": {"type": "string", "description": "前ページの next_cursor。", "pattern": "^[0-9]+$"},
           "whole_word": {"type": "boolean", "description": "キーワード・タグを単語境界で照合。", "default": false},
           "fields": {"enum": ["compact", "full"], "default": "compact", "description": "compact は時刻・位置・レベル・タグ・本文。full は全項目。"},
-          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は現地時刻付き。"}
+          "time_zone": {"enum": ["utc", "host"], "default": "utc", "description": "host は各行の timestamp_utc を数値オフセット付き timestamp_local に置換。"}
         },
         "type": "object"
       },
@@ -839,6 +841,20 @@
       ],
       "additionalProperties": false
     },
+    "DeviceClockOffset": {
+      "type": "object",
+      "description": "端末時計 − ホスト壁時計（ms）。時刻は補正しない。端末の timestamp_local をホスト側ログと照合するときは offset_ms を引く。取得できなければ offset_ms は null で reason を返す。",
+      "properties": {
+        "offset_ms": {"type": ["integer", "null"]},
+        "uncertainty_ms": {"$ref": "#/$defs/UIntOrNull"},
+        "source": {"enum": ["sync_probe", "trigger_estimate", null]},
+        "sampled_at_utc": {"type": ["string", "null"]},
+        "trigger_delay_unbounded": {"const": true, "description": "旧形式では窓終端からトリガー記録までの遅延が不明。uncertainty_ms はその遅延を含まない。"},
+        "reason": {"enum": ["trigger_delay_unknown", "no_host_clock", "not_connected", "replayed_clock", "no_sync_probe", "no_clock_triple", "boot_mismatch", "wall_clock_jump", "out_of_range", "no_trigger_wall_clock"]}
+      },
+      "required": ["offset_ms", "uncertainty_ms", "source", "sampled_at_utc"],
+      "additionalProperties": false
+    },
     "DeviceListResponse": {
       "type": "object",
       "properties": {"devices": {"type": "array", "items": {"$ref": "#/$defs/AdbDeviceInfo"}}},
@@ -1097,8 +1113,19 @@
                 "anyOf": [
                   {
                     "type": "object",
-                    "properties": {"x": {"$ref":"#/$defs/UInt"}, "y": {"$ref":"#/$defs/UInt"}},
-                    "required": ["x", "y"],
+                    "properties": {
+                      "x": {"description": "x_video と同値（互換）。", "$ref":"#/$defs/UInt"},
+                      "y": {"description": "y_video と同値（互換）。", "$ref":"#/$defs/UInt"},
+                      "x_video": {"description": "映像ピクセル。概要の taps[].x_video と同じ写像。", "$ref":"#/$defs/UInt"},
+                      "y_video": {"$ref":"#/$defs/UInt"},
+                      "x_display": {"description": "端末ディスプレイピクセル。表示寸法が不明、または tap_x・tap_y を直接指定したときは null。", "type": ["integer", "null"]},
+                      "y_display": {"type": ["integer", "null"]},
+                      "end_x_display": {"type": ["integer", "null"]},
+                      "end_y_display": {"type": ["integer", "null"]},
+                      "end_x_video": {"$ref":"#/$defs/UIntOrNull"},
+                      "end_y_video": {"$ref":"#/$defs/UIntOrNull"}
+                    },
+                    "required": ["x", "y", "x_video", "y_video", "x_display", "y_display"],
                     "additionalProperties": false
                   },
                   {"type": "null"}
@@ -1111,7 +1138,7 @@
         },
         "png_path": {"type": ["string","null"]},
         "png_bytes_len": {"$ref":"#/$defs/UIntOrNull"},
-        "tap_crop": {"anyOf":[{"$ref":"#/$defs/TapCropMeta"},{"type":"null"}]}
+        "tap_crop": {"description": "mode が tap_crop なら include_images に関わらず描画と同じ矩形（映像ピクセル）。他のモードは null。", "anyOf":[{"$ref":"#/$defs/TapCropMeta"},{"type":"null"}]}
       },
       "required": ["resource_links", "mode", "bundle_id", "frame_indices_rendered", "width", "height", "screens", "frames", "png_path", "png_bytes_len", "tap_crop"],
       "additionalProperties": false
@@ -1253,9 +1280,12 @@
         "boot_id": {"type": ["string", "null"]},
         "boottime_ns": {"type": ["integer", "null"]},
         "offset_ms": {"type": ["integer", "null"]},
+        "end_offset_ms": {"type": ["integer", "null"], "description": "要求受信位置に明示されたジェスチャー時間を足した終点。"},
         "frame_index_hint": {"$ref": "#/$defs/UIntOrNull"},
         "x_video": {"type": ["number", "null"]},
         "y_video": {"type": ["number", "null"]},
+        "end_x_video": {"type": ["number", "null"]},
+        "end_y_video": {"type": ["number", "null"]},
         "x_display": {"type": "number"},
         "y_display": {"type": "number"},
         "end_x_display": {"type": "number"},
@@ -1277,17 +1307,27 @@
         "tap_index": {"$ref":"#/$defs/UInt"},
         "seq": {"$ref":"#/$defs/UInt"},
         "frame_index": {"$ref":"#/$defs/UIntOrNull"},
-        "t_ms": {"type": ["integer", "null"]},
-        "x": {"type": ["number", "null"]},
-        "y": {"type": ["number", "null"]},
+        "t_ms": {"type": ["integer", "null"], "deprecated": true, "description": "非推奨。offset_ms を使う。"},
+        "offset_ms": {"type": ["integer", "null"], "description": "そのタップの boot の原点からの ms。ログ行の offset_ms と同じ軸。"},
+        "x": {"type": ["number", "null"], "deprecated": true, "description": "非推奨。保存座標（端末ピクセル、旧記録は正規化値）。x_display・x_video を使う。"},
+        "y": {"type": ["number", "null"], "deprecated": true},
+        "x_display": {"type": ["integer", "null"], "description": "端末ディスプレイピクセル（校正済み）。表示寸法が不明なら null。"},
+        "y_display": {"type": ["integer", "null"]},
+        "x_video": {"$ref": "#/$defs/UIntOrNull", "description": "映像ピクセル。arb_inspect_frames の tap.x_video と同じ写像。映像寸法が不明なら null。"},
+        "y_video": {"$ref": "#/$defs/UIntOrNull"},
         "kind": {"type": "string"},
         "gesture_kind": {"$ref": "#/$defs/GestureKind"},
-        "end_x": {"type": "number"},
-        "end_y": {"type": "number"},
-        "end_t_ms": {"type": "integer"},
+        "end_x": {"type": "number", "deprecated": true},
+        "end_y": {"type": "number", "deprecated": true},
+        "end_t_ms": {"type": "integer", "deprecated": true},
+        "end_offset_ms": {"type": ["integer", "null"]},
+        "end_x_display": {"type": ["integer", "null"]},
+        "end_y_display": {"type": ["integer", "null"]},
+        "end_x_video": {"$ref": "#/$defs/UIntOrNull"},
+        "end_y_video": {"$ref": "#/$defs/UIntOrNull"},
         "foreground_package": {"type": ["string", "null"], "description": "package 指定時だけ。タップ時の前面画面のパッケージ。"}
       },
-      "required": ["tap_index", "seq", "frame_index", "t_ms", "x", "y", "kind", "gesture_kind"],
+      "required": ["tap_index", "seq", "frame_index", "t_ms", "offset_ms", "x", "y", "x_display", "y_display", "x_video", "y_video", "kind", "gesture_kind"],
       "additionalProperties": false
     },
     "PngExportReport": {
@@ -1319,12 +1359,12 @@
         "uid": {"$ref":"#/$defs/UInt"},
         "package_name": {"type": "string"},
         "message": {"type": "string"},
-        "timestamp_utc": {"type": ["string", "null"]},
-        "timestamp_local": {"type": ["string", "null"]},
+        "timestamp_utc": {"type": ["string", "null"], "description": "既定（time_zone: utc）。host では timestamp_local に置き換わる。"},
+        "timestamp_local": {"type": ["string", "null"], "description": "time_zone: host のとき。端末時計をホストの TZ で整形した数値オフセット付き RFC 3339（UTC へ可逆）。"},
         "offset_ms": {"type": ["integer", "null"]},
         "frame_index": {"$ref":"#/$defs/UIntOrNull"}
       },
-      "required": ["seq", "timestamp_utc", "offset_ms", "frame_index", "level", "tag", "message"],
+      "required": ["seq", "offset_ms", "frame_index", "level", "tag", "message"],
       "additionalProperties": false
     },
     "RecordBucket": {"enum": ["main", "unanchored"]},
@@ -1434,10 +1474,11 @@
         "height": {"$ref":"#/$defs/UInt"},
         "sha256": {"type": "string"},
         "captured_at_unix_ms": {"$ref":"#/$defs/UInt"},
+        "captured_at_utc": {"type": "string", "description": "ミリ秒の RFC 3339 UTC。time_zone に関わらず常に返す。"},
         "captured_at_local": {"type": ["string", "null"]},
         "serial": {"type": "string"}
       },
-      "required": ["resource_links", "file_uri", "path", "width", "height", "sha256", "captured_at_unix_ms", "serial"],
+      "required": ["resource_links", "file_uri", "path", "width", "height", "sha256", "captured_at_unix_ms", "captured_at_utc", "serial"],
       "additionalProperties": false
     },
     "SaveTriggerKind": {"enum": ["manual", "crash_auto_save"]},
@@ -1515,6 +1556,7 @@
         "realtime_trim": {"type": "boolean"},
         "log_min_level": {"type": "boolean"},
         "log_exclude_tags": {"type": "boolean"},
+        "log_offset_range": {"type": "boolean"},
         "standalone_share_trim": {"type": "boolean"},
         "gc_dry_run": {"type": "boolean"},
         "protocol_version": {"$ref":"#/$defs/UInt"},
@@ -1560,7 +1602,8 @@
         "active_save_jobs": {"$ref":"#/$defs/UInt"},
         "recovery": {"$ref": "#/$defs/RecoverySummaryView"},
         "crash_autosave": {"$ref": "#/$defs/CrashAutoSaveStatusView"},
-        "config_warning": {"type": "string"}
+        "config_warning": {"type": "string"},
+        "device_clock_offset": {"$ref": "#/$defs/DeviceClockOffset"}
       },
       "required": [
         "capture_enabled",
@@ -1652,6 +1695,7 @@
       "type": "object",
       "properties": {"input_capture":{"$ref":"#/$defs/InputCapture"},"injected_inputs_truncated":{"type":"boolean"},"injected_inputs":{"type":"array","items":{"$ref":"#/$defs/InjectedInput"}},
         "carried_in": {"$ref":"#/$defs/CarriedIn"},
+        "device_clock_offset": {"$ref": "#/$defs/DeviceClockOffset"},
         "bundle_id": {"type": "string"},
         "kind": {"$ref": "#/$defs/BundleKind"},
         "legacy_read_only": {"type": "boolean"},

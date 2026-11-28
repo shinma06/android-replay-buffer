@@ -120,6 +120,9 @@ pub struct SystemHelloResponse {
     /// Log queries support `exclude_tags`.
     #[serde(default)]
     pub log_exclude_tags: bool,
+    /// Log queries support `start_offset_ms` / `end_offset_ms`.
+    #[serde(default)]
+    pub log_offset_range: bool,
     /// Exact half-open time ranges are supported by session writes and both exports.
     #[serde(default)]
     pub realtime_trim: bool,
@@ -326,6 +329,9 @@ pub struct SystemStatusResponse {
     /// Set when startup found an invalid `config.json`, set it aside and fell back to defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_warning: Option<String>,
+    /// Live `device CLOCK_REALTIME − host wall clock` (#591). Absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_clock_offset: Option<arb_core::time::DeviceClockOffset>,
 }
 
 // ---------------- Persisted Config ----------------
@@ -536,6 +542,10 @@ pub struct SaveScreenshotResponse {
     pub sha256: String,
     /// Host Unix epoch milliseconds when the screenshot was captured.
     pub captured_at_unix_ms: u64,
+    /// The same instant as millisecond RFC 3339 UTC (`YYYY-MM-DDTHH:MM:SS.sssZ`). Empty from
+    /// daemons that predate it.
+    #[serde(default)]
+    pub captured_at_utc: String,
     /// Android device ADB serial from which the screenshot was captured.
     pub serial: String,
 }
@@ -968,6 +978,13 @@ pub struct TimelineQueryParams {
     /// Optional inclusive ending video frame index (translated to `DeviceBoottime` bounds).
     #[serde(default)]
     pub end_frame: Option<u64>,
+    /// Optional inclusive start as the rows' `offset_ms`: milliseconds from the bundle origin
+    /// (first displayed frame, else the epoch start). Each boot has its own origin.
+    #[serde(default)]
+    pub start_offset_ms: Option<i64>,
+    /// Optional inclusive end as the rows' `offset_ms` (see `start_offset_ms`).
+    #[serde(default)]
+    pub end_offset_ms: Option<i64>,
     /// Optional case-insensitive substring filter on `LogRecord::tag` (`timeline.query_logs`).
     #[serde(default)]
     pub tag: Option<String>,
@@ -1568,12 +1585,30 @@ pub struct OverviewTapItem {
     pub seq: u64,
     /// Nearest video frame index, when video frames are present.
     pub frame_index: Option<u64>,
-    /// Timestamp in milliseconds relative to the start of the bundle timeline.
+    /// Deprecated: milliseconds from the first boot's origin. Use `offset_ms`.
     pub t_ms: Option<i64>,
-    /// Touch X coordinate in display pixels, if available.
+    /// Milliseconds from the tap's boot origin (first displayed frame, else epoch start), the
+    /// same axis as log rows' `offset_ms`.
+    #[serde(default)]
+    pub offset_ms: Option<i64>,
+    /// Deprecated: stored touch X (display pixels; normalized for legacy recordings). Use
+    /// `x_display` / `x_video`.
     pub x: Option<f64>,
-    /// Touch Y coordinate in display pixels, if available.
+    /// Deprecated: stored touch Y. Use `y_display` / `y_video`.
     pub y: Option<f64>,
+    /// Touch X in device display pixels, rounded (`None` without a known display size).
+    #[serde(default)]
+    pub x_display: Option<i32>,
+    /// Touch Y in device display pixels, rounded (`None` without a known display size).
+    #[serde(default)]
+    pub y_display: Option<i32>,
+    /// Touch X in video pixels, the `media.inspect_frames` coordinate (`None` without video
+    /// geometry or outside the frame).
+    #[serde(default)]
+    pub x_video: Option<u32>,
+    /// Touch Y in video pixels.
+    #[serde(default)]
+    pub y_video: Option<u32>,
     /// Input action label (e.g., `"TAP"`, `"SWIPE"`; `"DOWN"`/`"UP"`/`"MOVE"` for legacy bundles
     /// saved before T-6H item 2's per-stroke gesture classification).
     pub kind: String,
@@ -1586,9 +1621,24 @@ pub struct OverviewTapItem {
     /// End Y coordinate for a `Swipe` (`None` for `Tap` or legacy data).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_y: Option<f64>,
-    /// End timestamp in milliseconds relative to the start of the bundle timeline (mirrors `t_ms`).
+    /// Deprecated end of a `Swipe` on the `t_ms` axis. Use `end_offset_ms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_t_ms: Option<i64>,
+    /// End of a `Swipe` on the `offset_ms` axis.
+    #[serde(default)]
+    pub end_offset_ms: Option<i64>,
+    /// `Swipe` end X in device display pixels.
+    #[serde(default)]
+    pub end_x_display: Option<i32>,
+    /// `Swipe` end Y in device display pixels.
+    #[serde(default)]
+    pub end_y_display: Option<i32>,
+    /// `Swipe` end X in video pixels.
+    #[serde(default)]
+    pub end_x_video: Option<u32>,
+    /// `Swipe` end Y in video pixels.
+    #[serde(default)]
+    pub end_y_video: Option<u32>,
     /// With a `package` filter only: package of the screen span on screen at the tap (`null`
     /// when no span covers it). Absent without a filter.
     #[serde(
@@ -1738,12 +1788,21 @@ pub struct OverviewInjectedInput {
     pub input: arb_core::injected_input::InjectedInput,
     /// Milliseconds relative to the start of the same boot segment.
     pub offset_ms: Option<i64>,
+    /// Projected command end from the receipt and explicit requested duration.
+    #[serde(default)]
+    pub end_offset_ms: Option<i64>,
     /// First displayed frame at or after receipt in this boot.
     pub frame_index_hint: Option<u64>,
     /// Starting X in video pixels.
     pub x_video: Option<f64>,
     /// Starting Y in video pixels.
     pub y_video: Option<f64>,
+    /// End X of a swipe or drag in video pixels.
+    #[serde(default)]
+    pub end_x_video: Option<f64>,
+    /// End Y of a swipe or drag in video pixels.
+    #[serde(default)]
+    pub end_y_video: Option<f64>,
 }
 
 /// One-shot structured bundle overview returned by `timeline.overview` for AI triage.
@@ -1757,6 +1816,11 @@ pub struct TimelineOverviewResponse {
     pub injected_inputs_truncated: bool,
     /// Manifest evidence for a frame carried across the start of the saved window.
     pub carried_in: Option<arb_core::bundle::CarriedInFrame>,
+    /// `device CLOCK_REALTIME − host wall clock` of this bundle (#591): the manifest's value,
+    /// else a `trigger_estimate`. `timestamp_local` renders the device clock; subtract
+    /// `offset_ms` to compare with host-side logs. Absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_clock_offset: Option<arb_core::time::DeviceClockOffset>,
     /// Resolved bundle identifier.
     pub bundle_id: String,
     /// High-level bundle payload category (`full` or `logs_only`).

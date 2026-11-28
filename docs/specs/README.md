@@ -10,14 +10,14 @@
 | --- | --- | --- | --- | --- |
 | 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3・S3b、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
 | 被覆台帳 | `arbd` の `CapturePipeline` が `arb-core::coverage` の台帳を所有し、保存ジョブのパラメータに区間を永続化 | フレーム・ログ行の出現幅／ストリームが動いていた被覆、静止／切断 | 映像はフレームで開始し、ビーコンが途絶前に続く間だけ静止として延長。ギャップ・切断・停止・boot 変化・映像セッション再生成・世代交代で閉じ、古い世代は延長しない。引き継ぎは 1 本の被覆区間が窓前の最終フレームから `W0` までを含むときだけ。撮影時刻は書き換えず `video.carried_in` に記録 | K14、G3、保存の端から端までの試験（`capture_coverage_tests.rs`）、共有表 `capture_evidence_rows` |
-| 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない | K1〜K3、G4、Miri M2 |
+| 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない。端末時計とホスト時計のずれ（`device_clock_offset`）は開示だけで、時刻を補正しない。ホスト時計の組は `manifest.json` に置き `clock_anchors` 表の種類を増やさない | K1〜K3・K22、G4、Miri M2、TCB-24 |
 | 映像のコミット | `arbd` の `mux_selected_video` が書き出すフレーム列、`arb-core::video_commit` の判定、`arb-storage` の確定前検査 | 窓内で選んだフレーム／`video.mp4` に書いたフレーム、先頭が欠けた `partial`／映像なしの `absent` | IDR がリングから失われた先頭の P フレームは最初の IDR まで破棄し、残りを `partial` で書く。復号できる IDR がなければ `absent`・0 枚・`frames` 0 行・`video.mp4` なし。`video.mp4` のない映像宣言、`frames` 行数と `frame_count` の不一致は確定させない | K15、保存の端から端までの試験（`capture_coverage_tests.rs` の W3B 再現 A・B）、`video_commit_properties.rs`、ストレージの確定前検査 |
 | 保存物・GC | `arb-storage` の確定 manifest と外部カタログ、公開は `arbd` | WORM 本体／編集・リース・退避、媒体切断／恒久欠損 | 実体削除には管理内・現行形式・退避済み・猶予条件・リース 0・対象ジョブ 0・同一性が必要。登録解除は実体に触れない | K5、S2、G1・G2、RS-4、KON-7、TCB-03・TCB-04 |
 | IDE アイコン | 操作の意味ごとの `ArbIcons` | Swing の Icon／Jewel の IconKey／XML の静的フィールド | 同じ操作は全画面で同じアイコンを使い、デザイン変更は正本 1 箇所に集約する | アイコン構造テスト・XML の解決試験 |
 | Studio・再生 | `PlaybackController` の時計、選択リデューサの Selection、`ArbStudioController` の TrimPreview | 再生位置／範囲／一時的な境界画像 | 範囲編集は再生位置を動かさず、tick は選択を動かさない。リリースした ns を保持し、中断でプレビューを解放。再生中の編集は次の開始に適用 | K8・K10・K12、S6・S7 と Kotlin リプレイ、Miri M1（SHM） |
 | 書き出し | `arbd::media_engine` と `inspect_export` が RPC 別に生成・公開 | Studio の完全バンドル／CLI・MCP の単独 MP4 | 同じ `[IN, OUT)` を映像・音声・ログ・入力に適用。Studio の共有動画は新規バンドル内、単独共有の既定ではカタログ増分 0 | K9・K13、G3、S4、四ストリーム統合試験、Miri M2（MP4 パーサ） |
 | 音声・端末 API | `arb-core::audio_policy` と音声方針表、端末の AAC ハンドシェイク | 起動時の希望／観測結果、非対応 API／実行時失敗 | API 28〜32 は既定で音声なし。33〜37 を含む 33 以上は端末出力を維持して試行。互換方式は 30 以上で明示選択。方式の自動切替なし | K11、G8、S3、KON-6、TCB-17 |
-| 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。確定済み入力は書き換えない | K6・K7、軸・読取の回帰、G3、TCB-08、注入要求の K17・TCB-22 |
+| 入力・描画 | 端末 getevent、`arbd` の軸校正、保存座標の読取投影 | 注入操作／観測、端末軸／画面ピクセル、オーバーレイ／焼き込み | 校正済み軸と既知寸法では範囲外を端に制限。概要・クロップ・Studio・焼き込みは同じ位置。応答は端末ピクセル（`x_display`）と映像ピクセル（`x_video`）を名前で分け、概要と調査の映像ピクセルは一致する。クロップ矩形はメタデータと描画で同じ純関数。確定済み入力は書き換えない | K6・K7・K21、軸・読取の回帰、G3、TCB-08、注入要求の K17・TCB-22 |
 | RPC・CLI・MCP | `arbd` のディスパッチと構造化結果、MCP ツール表と交渉版（`version.rs` の能力述語）、MCP の応答投影（`mcp/project`） | デーモン業務エラー／伝送断、RPC 名／公開ツール名、デーモン RPC の形／MCP の投影 | 同一要求は同じ結果。4 版とも 21 ツールを 1 応答（30,000 バイト以下、`outputSchema` は `arb://schemas/{tool}` で個別取得）で列挙し、軽量既定（`fields: compact`・`include_image: false`）、別名の同値併用許容・異値の全キー details、本文の resource_links を共有。`arb_query_logs` は MCP だけ `limit` 1〜500 と本文 48 KB の分割で、cursor で辿ると全行がちょうど 1 回ずつ返る。GC・forget は全非空区分と件数、保存成功は共有判定から投影。保存して調査と概要は同じ条件で同じエラー集約。ノイズ候補・軽量行・ローカル時刻は行を減らさない。`package` はエラー集約・ノイズ候補だけを絞り、クラッシュ・プロセス終了・画面・タップ・アプリログは全行に注釈を付け、どこにも現れなければ `package_not_seen` を返す | RS-1〜6、KON-1〜7、実 stdio・スキーマ検査、ノイズ候補・別名組・48 KB 分割・package 注釈の proptest、TCB-19・TCB-21 |
 
 <a id="impact"></a>
@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | 録画開始・停止、リング上限、親終了 | 01・02・05・06・07 | device-agent → `live_adb.rs`・`capture.rs` → ring／catalog → CLI・MCP・IDE 状態。再接続・保存中に端末や pin を失わないか。明示 serial の開始は失敗時に設定・取得要求・世代を変えず、接続予約を黙って上書きしないか | K4・K5、S1〜S3・S3b・S5、G2・G5、共有表 `capture_intent_rows` |
 | 保存先・失敗ジョブの救出 | 02・06 | 出力先の事前検査 → 捕捉ロック下の pin 予算 → catalog の失敗分類・救出済みフラグ → RPC・MCP・IDE の復旧操作 | K5・K16、S2、SV-08、実 IPC・4 版の stdio 試験 |
-| アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較 | K1〜K3・K10、S3、G4・G6、操作結果表、ログ検索試験 |
+| アンカー、ドレイン、ログ検索・概要 | 02・03・06・07 | 端末統計 → wire → 選別・保存 → RPC → CLI／MCP・Studio。スリープ、チャンク破損、静止中の同じログで所属・欠落数・表示フレームを比較。端末時計のずれは状態・manifest・概要で同じ規則（ライブ・`host_clock_anchor`・`trigger_estimate`）を使い、タップとログの `offset_ms` は複数 boot でも同じ原点 | K1〜K3・K10・K22、S3、G4・G6、操作結果表、ログ検索試験 |
 | 被覆台帳・引き継ぎ・保存の警告 | 02・03・06・07 | ビーコン・フレーム・ログ・ギャップ → `capture.rs` の台帳 → ジョブパラメータ → 選別・MP4 の末尾長 → `display_frames` → RPC・CLI／MCP・IDE。静止・切断・録画開始直後・両端に行がない保存で、`carried_in`・各被覆時間・警告の 1 対 1 を比較 | K14、G3、`capture_evidence_rows`、MCP 実 stdio、`PddContractTablesTest` |
 | クラッシュ詳細・プロセス終了・`package` 注釈 | 02・06・07 | 保存ログ（`AndroidRuntime`・`ActivityManager`・lmkd・events の UID）→ `arb-core::analytics` の読取時導出 → `timeline.overview` の注釈・警告 → `arb_timeline_overview`・`arb_save_and_inspect`。既存 WORM バンドル、偽装 UID、am_crash だけのクラッシュ、存在しないパッケージで、行数・順序・`package_not_seen` を比較 | K18、G9、`crash-detail-table.json`、実 stdio・スキーマ検査、TCB-23 |
 | 映像の選別・MP4 化・バンドル確定 | 02・03・06 | リング回収 → `select_video`（preroll・引き継ぎ）→ `mux_selected_video` → `arb-storage` の確定前検査 → `frames`・manifest → 映像ツール・保存結果。先頭の IDR が失われた保存で、`video.mp4`・`frame_count`・`frames` 行数・MP4 サンプル数・`video_coverage_ms` が一致するか | K15、W3B 再現 A・B、`video_commit_properties.rs` |
@@ -69,7 +69,7 @@
 | [トリムトレース](studio-trim-s7-traces.json) | S7 の三状態・確定境界・中断・遅延応答。Kotlin 本番と 22 ケース・122 ステップを共有 |
 | [スキーマ検査](../../core/scripts/check-mcp-trim-schema.py)・[表示名ガード](../../ide-plugin/src/test/kotlin/io/github/shinma06/arb/ide/ArbBrandingGuardTest.kt) | 交渉版別の 21 ツールと実書き出し、IDE と仕様書の表示名 |
 | [クラッシュ詳細・プロセス終了](crash-detail-table.json) | 固定ログ列から `stack_top`・`first_app_frame`・`caused_by` と `process_events`（偽装 UID 10xxx の拒否、複数プロセスを含む force-stop の統合、クラッシュ・kill 直後の has died の抑止、ANR 後の死亡の保持）を引く。K18・G9・TCB-23 |
-| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K19、S1〜S7、G1〜G9、M1〜M2、構造ガードと実機・外部実装への依存 |
+| [TCB 公理台帳](../proofs/tcb-axioms.md) | K1〜K22、S1〜S7、G1〜G9、M1〜M2、構造ガードと実機・外部実装への依存 |
 
 ## 症状から判定する
 
@@ -128,6 +128,10 @@
 | `noise_candidates` に出たタグのエラーが代表行や件数から消えた | バグ | 推薦は除外を適用しない。除外は `exclude_tags` の明示指定だけ。F 行・クラッシュのタグは推薦しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 既定のログ検索に `alignment` や行ごとの `boot_id` がない | 仕様 | 全 4 版の既定は `fields: compact`。全項目は `fields: full`。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 既定の応答に `timestamp_local` がない | 仕様 | ローカル時刻は `time_zone: host` の指定時だけ。既定は UTC のみでホストに依存しない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `time_zone: host` のログ行に `timestamp_utc` がない | 仕様（#591） | 数値オフセット付きの `timestamp_local` だけで UTC へ戻せる。行ごとに両方を重複させない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| 概要のタップと調査のタップで座標が違う | 仕様（#591） | `x_display`（端末ピクセル）と `x_video`（映像ピクセル）を名前で区別する。同じタップの `x_video` が両ツールで違えばバグ。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| `include_images: false` の `tap_crop` が null | バグ（#591） | 描画しなくても `tap_crop_rect` で同じ矩形を返す。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
+| ARB の `timestamp_local` がホスト側ログより約 1.7 秒進んでいる | 仕様（#591） | 端末時計をホストの TZ で整形している。`device_clock_offset.offset_ms` を引いて照合する。時刻を自動補正すればバグ。 | [SPEC-02](SPEC-02-time-selection-bundle.md) |
 | `arb_export_frame_png` が既存の PNG を置き換えた | バグ | 明示パスの衝突は `-32002`。`output_dir` は一意名。`overwrite` 引数はない。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | 概要に存在しない `package` を渡すと画面・クラッシュ・タップが全件返る | 仕様（#584） | 行は落とさず `matches_package`（タップは `foreground_package`）を付け、`package_filter` に適用範囲と一致件数を返す。どこにも現れなければ `warnings` に `package_not_seen` と `known_packages_sample`。無警告で素通りすればバグ。 | [SPEC-06](SPEC-06-mcp-cli-contracts.md) |
 | クラッシュにアプリのスタックがない、または force-stop・LMK・ANR が概要に出ない | バグ（#589） | 同じ PID の `AndroidRuntime` ブロックから `stack_top`・`first_app_frame`・`caused_by` を読取時に導く。ブロックがなければ null。system_server・lmkd の記録は `process_events`。アプリ UID の同名ログは採らない。 | [SPEC-07](SPEC-07-device-capture-audio-input.md) |

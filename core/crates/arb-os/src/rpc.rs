@@ -648,6 +648,18 @@ impl RpcClient {
                 message: "ログのタグ除外には arbd の更新が必要です".into(),
             });
         }
+        // Older daemons ignore unknown range fields and would return every row.
+        if matches!(method, "bundle.query_logs" | "timeline.query_logs")
+            && (!params["start_offset_ms"].is_null() || !params["end_offset_ms"].is_null())
+            && self.verify_hello()?["log_offset_range"] != true
+        {
+            return Err(RpcClientError::Rpc {
+                details: None,
+                error_code: None,
+                code: -32601,
+                message: "バンドル先頭からの ms で範囲を指定するには arbd の更新が必要です".into(),
+            });
+        }
         // Older daemons ignore unknown GC parameters. Verify this socket before any preview.
         if method == "bundle.gc"
             && params["dry_run"] == true

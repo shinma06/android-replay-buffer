@@ -236,6 +236,8 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
             end_t_offset_ns: None,
             path: Vec::new(),
         }],
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: vec![
             ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
                 boot_id: "boot-alpha".to_owned(),
@@ -2817,4 +2819,76 @@ fn w3b_commit_guard_refuses_video_declaration_without_matching_file_and_rows() {
         v.frame_count = 0;
     }
     V2BundleWriter::write(tmp.path().join("bundle"), "job", &draft).unwrap();
+}
+
+/// #591: the host clock anchor and the save-time offset live only in `manifest.json` as
+/// optional fields; the `clock_anchors` table keeps exactly its two kinds, so older readers
+/// (which reject unknown kinds) still open the bundle. Saved anchors read back unchanged.
+#[test]
+fn host_clock_anchor_is_written_to_the_manifest_only() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let dir = tmp.path().join("bundle-host-clock");
+    let mut draft = build_draft("01JHOSTCLOCK0000000000001", vec![0, 0, 0, 1, 9]);
+    let anchor = arb_core::bundle::HostClockAnchor {
+        trigger_pc_cont_ns: 10_001_000,
+        trigger_wall_epoch_ns: 1_700_000_000_000_000,
+    };
+    draft.host_clock_anchor = Some(anchor);
+    draft.device_clock_offset = Some(arb_core::time::DeviceClockOffset::from_estimate(
+        arb_core::time::best_sync_probe_offset(
+            &[DeviceClockTriple {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_000_000,
+                monotonic_ns: 1_000_000,
+                realtime_ns: 1_700_000_000_000_000,
+            }],
+            &[PcSyncProbe {
+                boot_id: "boot-alpha".to_owned(),
+                pc_send_cont_ns: 10_000_000,
+                pc_send_active_ns: 9_000_000,
+                dev_boottime_ns: 2_000_000,
+                dev_monotonic_ns: 1_000_000,
+                pc_recv_cont_ns: 10_002_000,
+                pc_recv_active_ns: 9_002_000,
+            }],
+            &anchor.sample(),
+            50_000_000,
+        )
+        .ok(),
+        arb_core::time::ClockOffsetUnavailable::OutOfRange,
+    ));
+    let manifest = V2BundleWriter::write(&dir, "job-host-clock", &draft).expect("write");
+    assert_eq!(manifest.host_clock_anchor, Some(anchor));
+    // Device wall at the probe midpoint (cont 10.001 ms ↔ boottime 2 ms) equals the host wall.
+    let offset = manifest.device_clock_offset.expect("offset");
+    assert_eq!(offset.offset_ms, Some(0));
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("manifest.json")).expect("read manifest"))
+            .expect("manifest json");
+    assert_eq!(json["host_clock_anchor"]["trigger_pc_cont_ns"], 10_001_000);
+    assert_eq!(json["device_clock_offset"]["source"], "sync_probe");
+
+    let db = rusqlite::Connection::open(dir.join("timeline.sqlite")).expect("open timeline");
+    let mut kinds: Vec<String> = db
+        .prepare("SELECT DISTINCT kind FROM clock_anchors ORDER BY kind")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect();
+    kinds.sort();
+    assert_eq!(kinds, ["device_triple", "pc_sync_probe"]);
+    let reader = V2BundleReader::open(&dir).expect("open");
+    assert_eq!(
+        reader.clock_anchors().expect("anchors"),
+        draft.clock_anchors
+    );
+    assert_eq!(
+        reader
+            .manifest_summary()
+            .manifest_v2
+            .as_ref()
+            .map(|m| m.host_clock_anchor),
+        Some(Some(anchor))
+    );
 }

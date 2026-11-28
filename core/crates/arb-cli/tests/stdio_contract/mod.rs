@@ -802,6 +802,15 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         Some(&Value::Null)
     );
     assert_eq!(status["status"]["serial_mismatch"], false);
+    // #591: no device, so the offset is null with its reason, never a guess.
+    assert_eq!(
+        status["status"]["device_clock_offset"]["offset_ms"],
+        Value::Null
+    );
+    assert_eq!(
+        status["status"]["device_clock_offset"]["reason"],
+        "not_connected"
+    );
     for name in ["arb_devices", "arb_config_get", "arb_list_bundles"] {
         c.tool(name, json!({}));
     }
@@ -970,6 +979,9 @@ fn every_tool_and_session_feature_matches_the_wire_contract() {
         json!({"serial":"contract-device","output_dir":root.path().join("shots"),"time_zone":"host"}),
     );
     assert_local_time(&shot["captured_at_local"]);
+    // #591: the UTC capture time is always present, whatever `time_zone` is.
+    let utc = shot["captured_at_utc"].as_str().unwrap();
+    assert!(utc.len() == 24 && utc.ends_with('Z'), "{utc}");
     fs::remove_file(adb_dir.join("devices")).unwrap();
     let offline = c.result(
         "tools/call",
@@ -1343,6 +1355,7 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
     );
     for h in highlights.iter().filter(|h| h["tag"] == "VendorHal") {
         assert_local_time(&h["timestamp_local"]);
+        assert!(h.get("timestamp_utc").is_none(), "#591: local replaces UTC");
     }
     // Excluding is the caller's explicit choice and removes exactly that tag's rows.
     let mut args = target;
@@ -1364,7 +1377,17 @@ fn noise_and_local_time(c: &mut Client, work: &Path, paths: &ArbPaths) {
     for log in rows["logs"].as_array().unwrap() {
         assert_local_time(&log["timestamp_local"]);
         assert!(log.get("boot_id").is_none() && log.get("alignment").is_none());
+        assert!(
+            log.get("timestamp_utc").is_none(),
+            "#591: local replaces UTC"
+        );
     }
+    let full_host = c.tool(
+        "arb_query_logs",
+        json!({"bundle_id":bundle,"tag":"VendorHal","time_zone":"host","fields":"full"}),
+    );
+    assert!(full_host["logs"][0].get("timestamp_utc").is_none());
+    assert_local_time(&full_host["logs"][0]["timestamp_local"]);
     let utc = c.tool(
         "arb_query_logs",
         json!({"bundle_id":bundle,"tag":"VendorHal"}),
@@ -1725,6 +1748,36 @@ fn inspect_shape(c: &mut Client, id: &str) {
         previous = Some(ns);
     }
     assert_eq!(meta["frames"][0]["offset_ns"], 0);
+    tap_axes(c, id);
+}
+
+/// #591: overview taps and inspected frame taps name their coordinate systems, and the same tap
+/// has the same video pixels in both tools. `tap_crop` is exact without images too.
+fn tap_axes(c: &mut Client, id: &str) {
+    let overview = c.tool("arb_timeline_overview", json!({"bundle_id":id}));
+    let tap = &overview["taps"][0];
+    assert_eq!(
+        (&tap["x_display"], &tap["y_display"]),
+        (&json!(32), &json!(32))
+    );
+    assert!(
+        tap["x_video"].is_u64() && tap["offset_ms"].is_i64(),
+        "{tap}"
+    );
+    let args = json!({"bundle_id":id,"mode":"tap_crop","tap_index":0});
+    let meta = c.tool("arb_inspect_frames", args.clone());
+    let frame_tap = &meta["frames"][0]["tap"];
+    for key in ["x_video", "y_video", "x_display", "y_display"] {
+        assert_eq!(frame_tap[key], tap[key], "{key}");
+    }
+    assert!(
+        meta["tap_crop"].is_object(),
+        "metadata-only tap_crop: {meta}"
+    );
+    let mut inline = args;
+    inline["include_images"] = json!(true);
+    let with = c.tool("arb_inspect_frames", inline);
+    assert_eq!(with["tap_crop"], meta["tap_crop"]);
 }
 
 /// #563: the saved bundle's error view equals `arb_timeline_overview` with the same filters.

@@ -979,6 +979,13 @@ fn parse_logs(args: &[String]) -> Result<CommandSpec, CliError> {
                 params["limit"] = json!(limit);
                 i += 2;
             }
+            "--start-offset-ms" | "--end-offset-ms" => {
+                let value = require_val(args, i, flag)?.parse::<i64>().map_err(|_| {
+                    CliError::usage(format!("{flag} は整数のミリ秒で指定してください"))
+                })?;
+                params[flag[2..].replace('-', "_")] = json!(value);
+                i += 2;
+            }
             "--exclude-tag" => {
                 let tag = require_val(args, i, flag)?;
                 match params["exclude_tags"].as_array_mut() {
@@ -1971,7 +1978,7 @@ COMMANDS:\n  \
   bundles list [--state active|trashed]\n  \
   bundles open <TARGET> [--holder-pid <PID>]   (acquires lease; release via `bundles close` or reaped on PID exit)\n  \
   bundles close <LEASE_ID>\n  \
-  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
+  gc [--now] [--dry-run]\n  logs <ID> [--bucket main|unanchored|all] [--limit N] [--cursor CURSOR] [--start-offset-ms MS] [--end-offset-ms MS] [--level LEVEL | --min-level V/D/I/W/E/F] [--keyword TEXT] [--whole-word] [--exclude-tag TAG]...\n  capture start [--wait-connected] [--wait-timeout-ms MS]\n  bundles trash <ID> | restore <ID> | gc [--now] [--dry-run] | forget (<ID> | --all-missing)\n  \
   inspect <BUNDLE_ID_OR_PATH>\n  \
   trim <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--dest <DIR>] [--include-share-mp4] [--burn-taps] [--trash-original]\n  \
   share-mp4 <BUNDLE_ID_OR_PATH> [--in-time-ns <NS> --out-time-ns <NS> | --in-frame <N> --out-frame <M>] [--out <FILE.mp4>] [--dest <DIR>] [--keep-bundle] [--burn-taps] [--trash-original]\n  \
@@ -2055,6 +2062,23 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn logs_relative_range_accepts_signed_milliseconds() {
+        let (_, command) = parse_args(&vec_str(&[
+            "logs",
+            "b",
+            "--start-offset-ms",
+            "-1",
+            "--end-offset-ms",
+            "0",
+        ]))
+        .unwrap();
+        let (_, params, _) = super::command_to_rpc(command);
+        assert_eq!(params["start_offset_ms"], -1);
+        assert_eq!(params["end_offset_ms"], 0);
+        assert!(parse_args(&vec_str(&["logs", "b", "--end-offset-ms", "2.5"])).is_err());
     }
 
     /// W3B: `--exclude-tag` repeats and maps to the same `exclude_tags` as MCP.

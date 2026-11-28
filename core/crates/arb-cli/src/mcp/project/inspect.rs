@@ -23,6 +23,17 @@ pub(in crate::mcp) fn frames(mut meta: Value) -> Value {
         });
         frame["screen_index"] = json!(index);
         fill_null(frame, &["offset_ms", "offset_ns", "tap"]);
+        // An older daemon's `tap` has only the video-pixel `x`/`y`.
+        if let Some(tap) = frame["tap"].as_object_mut() {
+            for (named, legacy) in [("x_video", "x"), ("y_video", "y")] {
+                if !tap.contains_key(named) {
+                    let value = tap.get(legacy).cloned().unwrap_or(Value::Null);
+                    tap.insert(named.into(), value);
+                }
+            }
+            tap.entry("x_display").or_insert(Value::Null);
+            tap.entry("y_display").or_insert(Value::Null);
+        }
     }
     fill_null(&mut meta, &["png_path", "png_bytes_len", "tap_crop"]);
     meta["screens"] = Value::Array(screens);
@@ -61,6 +72,11 @@ mod tests {
             .map(|f| f["screen_index"].clone())
             .collect();
         assert_eq!(indices, [json!(0), json!(0), json!(null)]);
+        // An older daemon's video-pixel tap is published with both named axes.
+        assert_eq!(
+            body["frames"][1]["tap"],
+            json!({"x":1,"y":2,"x_video":1,"y_video":2,"x_display":null,"y_display":null})
+        );
         assert!(body["frames"][0].get("screen").is_none());
         // An older daemon without media offsets still yields the published fields.
         assert_eq!(body["frames"][2]["offset_ns"], json!(null));

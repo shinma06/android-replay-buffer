@@ -356,6 +356,8 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
         discontinuities: Vec::new(),
         logs,
         taps: Vec::new(),
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: Vec::new(),
     };
     V2BundleWriter::write(bundle_dir, "job-a06-100k", &draft).expect("write 100k log bundle");
@@ -384,6 +386,8 @@ fn query_params(bundle_dir: &Path, after_seq: Option<u64>, package: &str) -> Tim
         limit: Some(500),
         start_frame: None,
         end_frame: None,
+        start_offset_ms: None,
+        end_offset_ms: None,
         package: Some(package.to_owned()),
         tag: None,
         level: None,
@@ -601,6 +605,8 @@ fn write_small_log_bundle(dir: &Path, pkg: &str, extra_msg: &str) {
         discontinuities: Vec::new(),
         logs,
         taps: Vec::new(),
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: Vec::new(),
     };
     V2BundleWriter::write(dir, "job-slot", &draft).expect("write small bundle");

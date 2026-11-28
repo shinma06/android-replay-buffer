@@ -514,6 +514,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         discontinuities: Vec::new(),
         logs: demo_logs(),
         taps: tap_records(),
+        host_clock_anchor: None,
+        device_clock_offset: None,
         clock_anchors: Vec::new(),
     };
     let bundle_dir = out_dir.join(&bundle_id);

@@ -21,6 +21,18 @@ satisfies:
 
 端末の boottime・monotonic・realtime の組で epoch を決める。boot の変化は再起動、boottime と monotonic の差の増加が既定 50 ms **超**なら端末スリープ、realtime と boottime の差の変化の絶対値が 50 ms **超**なら壁時計ジャンプ。時計の跳躍をまたいで一直線に補間してはならない。A/V とログの約 0.1 秒は実用目標。未校正・不確かなずれは表示する。[時刻変換](../../core/crates/arb-core/src/time.rs)・[REQ-12](../requirements/REQ-12.md)
 
+### 端末時計とホスト時計のずれ [実装済み]
+
+`device_clock_offset` は「端末の `CLOCK_REALTIME` − ホストの壁時計」をミリ秒で開示する（#591）。保存済み・返却する時刻を補正してはならない（MUST NOT）。`timestamp_local` は端末時計をホストのタイムゾーンで整形したものなので、ホスト側のログと照合するときは呼び出し側が `offset_ms` を引く。値は `offset_ms`・`uncertainty_ms`（0 以上の半幅）・`source`・`sampled_at_utc`（端末壁時計を読んだ triple の瞬間に対応するホスト壁時計。旧形式の近似は保存トリガーの壁時計）。求められないときは `offset_ms` などを null にし、`reason`（`not_connected`・`replayed_clock`・`no_sync_probe`・`no_clock_triple`・`boot_mismatch`・`wall_clock_jump`・`out_of_range`・`no_trigger_wall_clock`・`no_host_clock`・`trigger_delay_unknown`）を返す。
+
+| 返す場所 | 求め方 | `source` |
+| --- | --- | --- |
+| `arb_status`（`system.status`） | 誤差半幅 50 ms 以内の最新の同期プローブ、同じ boot の最新の triple、その時点のホスト時計の組。壁時計ジャンプを検出した triple の後は、同じ区間の次の triple と新しいプローブが揃うまで null（`wall_clock_jump`）。再生ドメインでは `replayed_clock` | `sync_probe` |
+| 新規バンドルの `manifest.json` | 保存トリガーで同時に読んだホストの連続時計と壁時計 `host_clock_anchor`（`trigger_pc_cont_ns`・`trigger_wall_epoch_ns`）と、保存した clock anchor のうち不確かさが最小のプローブ・triple の組。トリムは親の値を引き継ぐ | `sync_probe` |
+| 既存バンドル（manifest にアンカーも判定結果もない） | `requested_window.trigger_pc_wall_utc` を窓終端の boottime とみなし、同じ boot の最寄りの triple の壁時計と比べる。`uncertainty_ms` は時計の読み取り・丸めと 1 秒の余裕を含む。旧形式では窓終端から保存処理までの待ち時間を測れず、窓終端がクラッシュの時刻に一致すれば自動保存の可能性があるため `trigger_delay_unknown` で推定を見送る。それ以外も遅延したクラッシュ保存などはこの幅を超えうるため、`trigger_delay_unbounded: true` も必ず返す | `trigger_estimate` |
+
+ずれの中間計算は `i128` で溢れず、不確かさにはプローブの往復時間の半分（切り上げ）、各時計の組の読み取りずれ 1 ms ずつ、外挿した区間の 200 ppm、ミリ秒への丸め誤差を足す。外挿が 1 時間を超える組は使わない（K22）。`host_clock_anchor` と `device_clock_offset` は `manifest.json` の省略可能な項目で、旧形式のマニフェストはそのまま読める。`timeline.sqlite` の `clock_anchors` 表に新しい `kind` を足してはならない（旧 `arbd` は未知の `kind` で読取に失敗する）。[ずれの計算](../../core/crates/arb-core/src/time.rs)・[開示](../../core/crates/arbd/src/clock_offset.rs)
+
 ## 保存窓と三値選別 [実装済み]
 
 「直近 D 秒」はトリガー T で終わる閉区間 `[T−D, T]`。停止・スリープ中にも窓は進む。同じ serial **かつ**同じ boot_id で再開した場合に限り、保持予算と保存窓に残る過去の記録を引き継ぐ。停止期間は `stream_gap` として残す。別端末・再起動前の映像とログを現セッションの確定データとして接続してはならない。
@@ -128,7 +140,9 @@ satisfies:
 | 最後のフレームの後に切断・ギャップ | 引き継がず、または被覆の終端で打ち切り、`video_shortfall=true` | 切断中も同じ画が表示され続ける映像を作る |
 | 健全な 30 秒保存で両端 0.5 秒に行がない | `log_coverage_ms≈30000` で `log_shortfall=false`。`actual_log_duration_ms` は 28,999 のまま | 行の幅だけで `log_shortfall=true` にする |
 | 警告の配列 | `warning_codes`・`warnings`・`warning_details` が同じ長さ・順序 | `window_shortfall` だけ表示文がない |
+| 端末時計がホストより 1.7 秒進んでいる | `device_clock_offset.offset_ms` が約 1700。ログの `timestamp_local` は端末時計のまま | ずれを隠す、または時刻を自動で書き換える |
+| 同期プローブがまだない | `offset_ms: null` と `reason: no_sync_probe` | 推測した 0 を返す |
 
-根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570、Round 3B の 600 秒保存（W3B）。K1〜K5・K14・K15、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
+根拠は Trail #96・#112・#119・#132／PR #537・#136／PR #540・#151／PR #554、Issue #564・#570・#591、Round 3B の 600 秒保存（W3B）。K1〜K5・K14・K15・K22、S2・S3、G1〜G5、TCB-03／04／07／13／15。[TCB 台帳](../proofs/tcb-axioms.md)
 
 入力ストリームの任意項目 input_events は対象 boot の保存窓内に端末が読み取った生イベント行数を表す。旧保存物とトリムで再計算できない場合は省略する。注入要求は保存済みのログから読取時に導出する。

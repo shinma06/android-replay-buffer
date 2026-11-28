@@ -63,7 +63,7 @@ fn shape(mut page: Value, fields: Fields, zone: Zone) -> Value {
     let rows = page["logs"].as_array_mut().map(std::mem::take);
     let mut rows = rows.unwrap_or_default();
     for row in &mut rows {
-        zone.localize(row, "timestamp_utc", "timestamp_local");
+        zone.localize_row(row, "timestamp_utc", "timestamp_local");
     }
     page["fields"] = json!(fields.as_str());
     if fields == Fields::Compact {
@@ -137,7 +137,14 @@ fn compact_row(row: Value, shared_boot: Option<&str>) -> Value {
         return row;
     };
     let mut out = Map::new();
+    // `time_zone: "host"` replaced the UTC time with `timestamp_local`.
+    let local_only = full.contains_key("timestamp_local") && !full.contains_key("timestamp_utc");
     for key in COMPACT_REQUIRED {
+        let key = if local_only && key == "timestamp_utc" {
+            "timestamp_local"
+        } else {
+            key
+        };
         out.insert(key.into(), full.remove(key).unwrap_or(Value::Null));
     }
     for key in ["timestamp_local", "package_name"] {
@@ -226,24 +233,27 @@ mod tests {
                 "package_name",
                 "seq",
                 "tag",
-                "timestamp_local",
-                "timestamp_utc"
+                "timestamp_local"
             ]
         );
+        // `time_zone: "host"` replaces the UTC time with the offset-bearing local time, and it
+        // names exactly the same instant.
         assert_eq!(rows[1]["timestamp_local"], "2026-11-28T10:23:01.123+09:00");
         for (c, f) in rows.iter().zip(full["logs"].as_array().unwrap()) {
-            for key in [
-                "seq",
-                "timestamp_utc",
-                "offset_ms",
-                "frame_index",
-                "level",
-                "tag",
-                "message",
-            ] {
+            assert_eq!(
+                crate::mcp::project::time::parse_ms(c["timestamp_local"].as_str().unwrap()),
+                crate::mcp::project::time::parse_ms(f["timestamp_utc"].as_str().unwrap())
+            );
+            for key in ["seq", "offset_ms", "frame_index", "level", "tag", "message"] {
                 assert_eq!(c[key], f[key], "{key}");
             }
         }
+        let full_host = project(page(2, &["boot-a"]), Fields::Full, Zone::fixed(9 * 3600));
+        assert!(full_host["logs"][0].get("timestamp_utc").is_none());
+        assert_eq!(
+            full_host["logs"][0]["timestamp_local"],
+            "2026-11-28T10:23:00.123+09:00"
+        );
         // Mixed boots: nothing is lost, each row names its own boot.
         let mixed = project(page(4, &["boot-a", "boot-b"]), Fields::Compact, Zone::UTC);
         assert_eq!(mixed["boot_id"], Value::Null);

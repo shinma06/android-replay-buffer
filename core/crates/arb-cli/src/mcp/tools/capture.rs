@@ -110,6 +110,12 @@ impl McpServer {
         let link = crate::mcp::resources::ResourceLink::screenshot(path, uri.clone());
         self.remember_screenshot(&uri, digest);
         resp["file_uri"] = json!(uri.as_str());
+        // Always present, whatever `time_zone` is; derived for daemons that predate it.
+        if resp["captured_at_utc"].as_str().is_none_or(str::is_empty)
+            && let Some(ms) = resp["captured_at_unix_ms"].as_i64()
+        {
+            resp["captured_at_utc"] = json!(arb_core::time::format_unix_ms_iso8601(ms));
+        }
         Zone::from_args(args).localize_unix_ms(
             &mut resp,
             "captured_at_unix_ms",

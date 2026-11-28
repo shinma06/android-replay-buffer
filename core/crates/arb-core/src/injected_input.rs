@@ -119,6 +119,16 @@ impl InputCommand {
         };
         x.as_f64().zip(y.as_f64())
     }
+
+    /// End position of a swipe or drag in display pixels.
+    pub fn end_position(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::Swipe(s) | Self::Draganddrop(s) => {
+                s.end_x_display.as_f64().zip(s.end_y_display.as_f64())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Input evidence tied to its source log and epoch.

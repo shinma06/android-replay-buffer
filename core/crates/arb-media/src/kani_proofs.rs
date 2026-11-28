@@ -1142,3 +1142,83 @@ fn k19_public_selection_returns_both_buckets() {
     assert!(kept[0] == 420 && kept[1] == anchor && kept[2] == 423);
     assert!(dropped.len() == 1 && dropped[0] == omitted);
 }
+
+/// K21: the crop placement used by `tap_crop_rect` for any extent `1..=total` and any tap in
+/// the frame stays inside the frame and contains the tap.
+#[kani::proof]
+fn k21_place_crop_stays_in_frame_and_contains_tap() {
+    let total: u32 = kani::any();
+    let extent: u32 = kani::any();
+    let tap: u32 = kani::any();
+    kani::assume(extent >= 1 && extent <= total && tap < total);
+    let (origin, rel) = crate::contact_sheet::place_crop(total, extent, tap);
+    assert!(u64::from(origin) + u64::from(extent) <= u64::from(total));
+    assert!(origin <= tap && tap - origin < extent);
+    assert!(rel == tap - origin && rel < extent);
+    // Centred whenever the frame leaves room on both sides.
+    if tap >= extent / 2 && tap - extent / 2 <= total - extent {
+        assert!(rel == extent / 2);
+    }
+    kani::cover!(
+        origin == 0 && tap < extent / 2,
+        "clamped at the leading edge"
+    );
+    kani::cover!(
+        origin == total - extent && origin > 0,
+        "clamped at the trailing edge"
+    );
+    kani::cover!(rel == extent / 2 && origin > 0, "centred");
+}
+
+/// K21: `tap_crop_rect` with the published default options, for any positive frame and any tap
+/// inside it, returns a non-empty rectangle inside the frame that contains the tap, with
+/// `tap_rel` inside the rectangle. All positive u32 dimensions are covered.
+#[kani::proof]
+#[kani::stub(std::fmt::format, format_stub)]
+fn k21_tap_crop_rect_bounds_and_contains_tap() {
+    let video_w: u32 = kani::any();
+    let video_h: u32 = kani::any();
+    let tx: u32 = kani::any();
+    let ty: u32 = kani::any();
+    kani::assume(tx < video_w && ty < video_h);
+    let rect = crate::contact_sheet::tap_crop_rect(
+        video_w,
+        video_h,
+        tx,
+        ty,
+        &crate::contact_sheet::TapCropOptions::default(),
+    );
+    let Some(r) = rect else {
+        panic!("a tap inside a non-empty frame always has a crop");
+    };
+    assert!(r.crop_width > 0 && r.crop_height > 0);
+    assert!(u64::from(r.crop_x) + u64::from(r.crop_width) <= u64::from(video_w));
+    assert!(u64::from(r.crop_y) + u64::from(r.crop_height) <= u64::from(video_h));
+    assert!(r.crop_x <= tx && tx < r.crop_x + r.crop_width);
+    assert!(r.crop_y <= ty && ty < r.crop_y + r.crop_height);
+    assert!(r.tap_rel_x == tx - r.crop_x && r.tap_rel_x < r.crop_width);
+    assert!(r.tap_rel_y == ty - r.crop_y && r.tap_rel_y < r.crop_height);
+    kani::cover!(r.crop_width == video_w, "crop spans the whole width");
+    kani::cover!(r.crop_width < video_w && r.crop_x > 0, "interior crop");
+}
+
+/// K21: a tap outside the frame never yields a crop.
+#[kani::proof]
+fn k21_tap_crop_rect_rejects_taps_outside_the_frame() {
+    let video_w: u32 = kani::any();
+    let video_h: u32 = kani::any();
+    let tx: u32 = kani::any();
+    let ty: u32 = kani::any();
+    kani::assume(tx >= video_w || ty >= video_h);
+    assert!(
+        crate::contact_sheet::tap_crop_rect(
+            video_w,
+            video_h,
+            tx,
+            ty,
+            &crate::contact_sheet::TapCropOptions::default()
+        )
+        .is_none()
+    );
+    kani::cover!(video_w == 0, "empty frame");
+}
