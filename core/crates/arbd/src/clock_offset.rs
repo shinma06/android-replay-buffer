@@ -58,6 +58,7 @@ pub(crate) fn estimate_bundle_clock_offset(
     }
     let RequestedWindow::RealElapsedSec {
         trigger_pc_wall_utc,
+        post_roll_ms,
         ..
     } = &manifest.requested_window
     else {
@@ -70,9 +71,10 @@ pub(crate) fn estimate_bundle_clock_offset(
         return DeviceClockOffset::unavailable(ClockOffsetUnavailable::NoTriggerWallClock);
     };
     let trigger_bt = epoch.end_boottime_ns;
-    if crashes
-        .iter()
-        .any(|c| c.marker.boottime_ns == Some(trigger_bt))
+    if *post_roll_ms != 0
+        || crashes
+            .iter()
+            .any(|c| c.marker.boottime_ns == Some(trigger_bt))
     {
         return DeviceClockOffset::unavailable(ClockOffsetUnavailable::TriggerDelayUnknown);
     }

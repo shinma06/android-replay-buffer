@@ -8,7 +8,7 @@
 
 | 領域 | 正本（書き手・判定元） | 混同を防ぐ境界 | 守る条件 | 現行の検査・証明の境界 |
 | --- | --- | --- | --- | --- |
-| 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3・S3b、クラッシュ時の S5 と永続 ID の仮定 TCB-16 |
+| 録画・リング | `arbd` が取得世代を所有し、`arb-storage` がチャンクと pin を管理 | 設定の録画意図／接続中の取得、プロジェクト窓／共有の子 | 旧世代の遅延通知は新世代を変えない。停止・再開の引継ぎは同じ serial・boot・保持窓内。pin 中は追い出さない | K4・K5、S1〜S3・S3b、クラッシュ時の S5 と永続 ID の仮定 TCB-16、クラッシュ前後の窓 K20 と待機中の pin 回復 G5 |
 | 被覆台帳 | `arbd` の `CapturePipeline` が `arb-core::coverage` の台帳を所有し、保存ジョブのパラメータに区間を永続化 | フレーム・ログ行の出現幅／ストリームが動いていた被覆、静止／切断 | 映像はフレームで開始し、ビーコンが途絶前に続く間だけ静止として延長。ギャップ・切断・停止・boot 変化・映像セッション再生成・世代交代で閉じ、古い世代は延長しない。引き継ぎは 1 本の被覆区間が窓前の最終フレームから `W0` までを含むときだけ。撮影時刻は書き換えず `video.carried_in` に記録 | K14、G3、保存の端から端までの試験（`capture_coverage_tests.rs`）、共有表 `capture_evidence_rows` |
 | 時計・窓 | `arb-core::time` と `selection`、端末ビーコン／ホスト時計 | 壁時計／経過時間、確定／不確実、保存の閉区間／実時間トリムの半開区間 | 同一 boot の Anchored は誤差区間の交差、Bounded は窓への完全包含で採用。部分交差する Bounded は不確実。未同期を確定列へ混ぜない。端末時計とホスト時計のずれ（`device_clock_offset`）は開示だけで、時刻を補正しない。ホスト時計の組は `manifest.json` に置き `clock_anchors` 表の種類を増やさない | K1〜K3・K22、G4、Miri M2、TCB-24 |
 | 映像のコミット | `arbd` の `mux_selected_video` が書き出すフレーム列、`arb-core::video_commit` の判定、`arb-storage` の確定前検査 | 窓内で選んだフレーム／`video.mp4` に書いたフレーム、先頭が欠けた `partial`／映像なしの `absent` | IDR がリングから失われた先頭の P フレームは最初の IDR まで破棄し、残りを `partial` で書く。復号できる IDR がなければ `absent`・0 枚・`frames` 0 行・`video.mp4` なし。`video.mp4` のない映像宣言、`frames` 行数と `frame_count` の不一致は確定させない | K15、保存の端から端までの試験（`capture_coverage_tests.rs` の W3B 再現 A・B）、`video_commit_properties.rs`、ストレージの確定前検査 |
@@ -98,7 +98,7 @@
 | 静止時間が長いほどシークバーとログ位置がずれる | バグ | 実 PTS が揃う範囲では共通のメディア時間を使う。 | [SPEC-03](SPEC-03-protocol-media.md) |
 | 同じファイルサイズの別動画なのに古いサムネイルが出る | バグ | フィルムストリップは元動画の SHA-256 も照合する。 | [SPEC-03](SPEC-03-protocol-media.md) |
 | CLI／MCP の単独 MP4 でトリム済み行も増えた | 条件付きバグ | `keep_bundle=true` の明示時のみ登録。時刻・フレーム範囲を指定しただけでは登録しない。 | [SPEC-03](SPEC-03-protocol-media.md) |
-| S5 の検査成功を理由に実機再起動後の重複排除も合格と報告 | 判定誤り | モデルは永続クラッシュ ID を仮定。TCB-16 は未解決。 | [SPEC-04](SPEC-04-testing-and-harness.md) |
+| S5 の検査成功を理由に実機再起動後の重複排除も合格と報告 | 判定誤り | S5 と合成ログの再配信試験は、実機 logd の同一性と物理電源断を検証しない（TCB-16）。 | [SPEC-04](SPEC-04-testing-and-harness.md) |
 | PR の 4 チェックだけで全 OS の IDE 配布受け入れを完了扱い | 判定誤り | 実 GUI・配布物・オーナー承認等は別ゲート。 | [SPEC-04](SPEC-04-testing-and-harness.md) |
 | 切断した端末を待っていて ON・待機中になる | 仕様 | 取得意図が有効。録画中の表示は接続・取得を確認したとき。 | [SPEC-05](SPEC-05-ide-studio-ux.md) |
 | 音声の長い詳細を開くと同じ内容なのにポーリングごとに閉じる | バグ | 同じバナーなら展開を維持する。 | [SPEC-05](SPEC-05-ide-studio-ux.md) |

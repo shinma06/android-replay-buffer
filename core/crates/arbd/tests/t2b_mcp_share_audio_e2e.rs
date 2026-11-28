@@ -374,6 +374,9 @@ fn rich_draft(work_tmp: &Path, bundle_id: &str, with_audio: bool) -> V2BundleDra
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 10,
             trigger_pc_wall_utc: "2026-11-23T09:00:00Z".to_owned(),
         },
@@ -992,6 +995,27 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
     );
     assert_eq!(old["device_clock_offset"]["offset_ms"], Value::Null);
 
+    // A pre-anchor post-roll bundle ends after the trigger, even without a visible crash log.
+    let mut post_roll = rich_draft(&external, "post-roll", false);
+    let RequestedWindow::RealElapsedSec {
+        post_roll_ms,
+        actual_post_roll_ms,
+        ..
+    } = &mut post_roll.requested_window
+    else {
+        panic!("fixture needs a time window");
+    };
+    *post_roll_ms = 4000;
+    *actual_post_roll_ms = 4000;
+    let dir = external.join("post-roll");
+    V2BundleWriter::write(&dir, "job-post-roll", &post_roll).unwrap();
+    let post_roll = rpc.call("timeline.overview", &json!({"bundle_id":dir}));
+    assert_eq!(
+        post_roll["device_clock_offset"]["reason"],
+        "trigger_delay_unknown"
+    );
+    assert_eq!(post_roll["device_clock_offset"]["offset_ms"], Value::Null);
+
     // A trigger strictly between the triples of a wall-clock jump has no known wall time.
     delayed.epochs[0].end_boottime_ns = BASE_BT_NS + FRAME_STEP_NS;
     let ClockAnchorRecord::DeviceTriple(mut after) = delayed.clock_anchors[0].clone() else {
@@ -1183,6 +1207,9 @@ fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 10,
             trigger_pc_wall_utc: "2026-11-23T12:00:00Z".to_owned(),
         },

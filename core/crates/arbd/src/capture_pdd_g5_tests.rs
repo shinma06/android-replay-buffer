@@ -28,6 +28,10 @@ use super::{SaveJobMaterializeParams, SaveMode, decode_ring_chunk, encode_ring_c
 
 fn full_params() -> SaveJobMaterializeParams {
     SaveJobMaterializeParams {
+        post_roll_ms: 0,
+        post_roll_deadline_boottime_ns: None,
+        post_roll_trigger_cont_ns: None,
+        post_roll_truncated: false,
         input_channel: None,
         note: None,
         bundle_id: "01JPDDG5000000000000000001".to_owned(),
@@ -104,6 +108,14 @@ fn g5_every_post_historical_field_is_serde_default() {
 fn g5_golden_historical_json_deserializes() {
     let golden = include_str!("../tests/fixtures/pdd_g5_params_v2_minimal.json");
     let p: SaveJobMaterializeParams = serde_json::from_str(golden).expect("golden fixture");
+    assert_eq!(
+        (
+            p.post_roll_ms,
+            p.post_roll_deadline_boottime_ns,
+            p.post_roll_truncated
+        ),
+        (0, None, false)
+    );
     assert_eq!(p.bundle_id, "01JPDDG5000000000000000001");
     assert_eq!((p.video_width, p.video_height), (1080, 2400));
     let again = serde_json::to_value(&p).expect("reserialize");

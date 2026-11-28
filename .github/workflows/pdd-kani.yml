@@ -14,6 +14,7 @@ on:
     branches: [develop]
     paths:
       - '.github/workflows/pdd-kani.yml'
+      - 'core/scripts/pdd-kani.sh'
       - 'core/crates/*/src/kani_proofs.rs'
       - 'core/crates/arb-os/src/shm.rs'
       - 'core/crates/arb-media/src/mp4.rs'
@@ -40,7 +41,7 @@ jobs:
       matrix:
         include:
           - crate: arb-core
-            group: K1-K7
+            group: arb-core-proofs
           - crate: arb-os
             group: K8
           - crate: arb-adb
@@ -62,7 +63,7 @@ jobs:
         working-directory: core
         # `-Z stubbing`: parser harnesses replace `format!` rendering and `f64::hypot` (see
         # the `kani_proofs` module docs). Harnesses gated behind `kani-extended` are skipped.
-        run: cargo kani -p ${{ matrix.crate }} -Z stubbing
+        run: ./scripts/pdd-kani.sh ${{ matrix.crate }}
 
   # Harnesses that did not verify within five minutes locally (docs/proofs/tcb-axioms.md §3).
   # Informational only: a timeout here is recorded, never a failed workflow.

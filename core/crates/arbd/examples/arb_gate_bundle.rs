@@ -494,6 +494,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: frames / u64::try_from(FPS)?,
             trigger_pc_wall_utc: "2026-11-24T09:00:00Z".to_owned(),
         },

@@ -272,7 +272,11 @@ pub struct CrashAutoSaveStatusView {
     /// Crashes suppressed because `STORAGE_PRESSURE_STOP` was active.
     pub suppressed_storage_pressure: u64,
     /// `true` while a background crash auto-save is actively running.
+    #[serde(default)]
     pub in_flight: bool,
+    /// Latest UTC deadline among crash windows still draining.
+    #[serde(default)]
+    pub post_roll_until_utc: Option<String>,
     /// Process name of the most recently detected fatal crash, if any.
     pub last_crash_process: Option<String>,
     /// Exception class of the most recently detected fatal crash, if any.
@@ -590,6 +594,15 @@ pub struct SaveOutcomeResponse {
     /// Evidence present in a committed recording, including a pending catalog retry.
     #[serde(flatten)]
     pub evidence: SaveEvidence,
+    /// Requested post-crash interval in milliseconds.
+    #[serde(default)]
+    pub post_roll_ms: u64,
+    /// Post-crash time covered by video or logcat evidence.
+    #[serde(default)]
+    pub actual_post_roll_ms: u64,
+    /// The requested post-crash boundary could not be confirmed.
+    #[serde(default)]
+    pub post_roll_truncated: bool,
     /// Requested lookback, also available when the write failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_duration_secs: Option<u64>,

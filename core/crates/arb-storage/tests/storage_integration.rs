@@ -162,6 +162,9 @@ fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 30,
             trigger_pc_wall_utc: "2026-11-22T12:00:00Z".to_owned(),
         },

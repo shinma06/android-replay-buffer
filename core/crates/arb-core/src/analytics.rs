@@ -398,8 +398,9 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
             if parsed.is_fatal() {
                 let boottime_ns = log_boottime_hint(log);
                 let boot_id = log_boot_id_hint(log);
-                let frame_index_hint =
-                    boottime_ns.and_then(|bt| nearest_frame_index_for_boot(frames, boot_id, bt));
+                let frame_index_hint = boottime_ns.and_then(|bt| {
+                    nearest_frame_index_for_boot(frames, boot_id, bt, log.device_read_boottime_ns)
+                });
                 am_crashes.push(CrashMarker {
                     boottime_ns,
                     frame_index_hint,
@@ -430,7 +431,7 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
             let boottime_ns = log_boottime_hint(log);
             let boot_id = log_boot_id_hint(log);
             let frame_index_hint =
-                boottime_ns.and_then(|bt| nearest_frame_index_for_boot(frames, boot_id, bt));
+                boottime_ns.and_then(|bt| nearest_frame_index_for_boot(frames, boot_id, bt, None));
             fatal_fallbacks.push(CrashMarker {
                 boottime_ns,
                 frame_index_hint,
@@ -1642,12 +1643,16 @@ fn nearest_frame_index_for_boot(
     frames: &[FrameRecord],
     boot_id: Option<&str>,
     target_boottime_ns: i64,
+    last_allowed_ns: Option<i64>,
 ) -> Option<u64> {
     frames
         .iter()
         .filter(|f| boot_id.is_none_or(|want| f.boot_id == want))
         .filter_map(|f| {
             let bt = frame_boottime_hint(f)?;
+            if last_allowed_ns.is_some_and(|t| bt > t) {
+                return None;
+            }
             let dist = (i128::from(bt) - i128::from(target_boottime_ns)).unsigned_abs();
             Some((dist, f.frame_index))
         })

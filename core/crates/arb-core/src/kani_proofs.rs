@@ -2352,3 +2352,27 @@ fn k17_untrusted_sender_emits_no_commands() {
     );
     kani::cover!(uid == Some(10126), "application sender reaches rejection");
 }
+
+#[kani::proof]
+fn k20_crash_post_roll_window_bounds() {
+    use crate::config::*;
+    let d: u32 = kani::any();
+    let p: u64 = kani::any();
+    kani::assume((MIN_SAVE_WINDOW_SECS..=MAX_SAVE_WINDOW_SECS).contains(&d));
+    kani::assume(p <= MAX_CRASH_AUTOSAVE_POST_ROLL_MS);
+    let pre = crash_pre_roll_secs(d, p);
+    assert!(pre >= u64::from(MIN_SAVE_WINDOW_SECS));
+    assert!(pre * 1000 + p <= 600_000);
+    assert_eq!(pre, u64::from(d).min(600 - p.div_ceil(1000)));
+    kani::cover!(p == 1 && d == 600 && pre == 599);
+    kani::cover!(p == 10_000 && d == 600 && pre == 590);
+}
+
+#[kani::proof]
+fn k20_crash_post_roll_zero_matches_legacy() {
+    use crate::config::*;
+    let d: u32 = kani::any();
+    kani::assume((MIN_SAVE_WINDOW_SECS..=MAX_SAVE_WINDOW_SECS).contains(&d));
+    assert_eq!(crash_pre_roll_secs(d, 0), u64::from(d));
+    kani::cover!(d == MAX_SAVE_WINDOW_SECS);
+}

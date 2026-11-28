@@ -176,6 +176,7 @@ data class CrashAutoSaveStatusView(
     val lastJobId: String? = null,
     val lastBundleId: String? = null,
     val lastError: String? = null,
+    val postRollUntilUtc: String? = null,
 )
 
 data class SystemStatusResponse(
@@ -239,6 +240,7 @@ data class ArbConfig(
     val captureEnabled: Boolean = false,
     val failedJobRescueAfterSecs: Long = 900,
     val maxPinnedRingFraction: Double = 0.5,
+    val crashAutosavePostRollMs: Long = DEFAULT_CRASH_AUTOSAVE_POST_ROLL_MS,
 ) {
     companion object {
         const val CONFIG_SCHEMA_VERSION: Int = 1
@@ -257,6 +259,8 @@ data class ArbConfig(
         const val DEFAULT_VIDEO_MAX_FPS: Int = 30
         const val MIN_VIDEO_MAX_FPS: Int = 1
         const val MAX_VIDEO_MAX_FPS: Int = 120
+        const val DEFAULT_CRASH_AUTOSAVE_POST_ROLL_MS: Long = 4_000
+        const val MAX_CRASH_AUTOSAVE_POST_ROLL_MS: Long = 10_000
         const val DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 15
         const val MIN_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 1
         const val MAX_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 3_600
@@ -299,6 +303,7 @@ data class ArbConfigPatch(
     val captureEnabled: Boolean? = null,
     val failedJobRescueAfterSecs: Long? = null,
     val maxPinnedRingFraction: Double? = null,
+    val crashAutosavePostRollMs: Long? = null,
 )
 
 // ---------------- Device & Capture ----------------
@@ -527,6 +532,9 @@ data class SaveOutcomeResponse(
     val staticHoldMs: Long? = null,
     /** Informational codes that are not warnings, e.g. `video_static_hold`. */
     val infoCodes: List<String>? = null,
+    val postRollMs: Long = 0,
+    val actualPostRollMs: Long = 0,
+    val postRollTruncated: Boolean = false,
 ) {
     /**
      * The saved bundle, or `null` when the save did not complete. Same rule as `arb-cli`

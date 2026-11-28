@@ -325,6 +325,9 @@ fn build_100k_log_bundle(bundle_dir: &Path, bundle_id: &str) -> LogFixtureOracle
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 300,
             trigger_pc_wall_utc: "2026-11-25T00:00:00Z".to_owned(),
         },
@@ -574,6 +577,9 @@ fn write_small_log_bundle(dir: &Path, pkg: &str, extra_msg: &str) {
             is_emulator: true,
         },
         requested_window: RequestedWindow::RealElapsedSec {
+            post_roll_ms: 0,
+            actual_post_roll_ms: 0,
+            post_roll_truncated: false,
             duration_sec: 30,
             trigger_pc_wall_utc: "2026-11-25T00:00:00Z".to_owned(),
         },
