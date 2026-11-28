@@ -572,7 +572,10 @@ fn overview_inputs(
     };
     let meta = summary.streams.input.as_ref();
     let raw = meta.and_then(|s| s.input_events);
-    let physical = if !taps.is_empty() || raw.is_some_and(|n| n > 0) {
+    let physical = if !taps.is_empty()
+        || raw.is_some_and(|n| n > 0)
+        || meta.is_some_and(|s| s.status == StreamStatus::Present)
+    {
         PhysicalStatus::Recorded
     } else if summary.bundle_kind == arb_core::bundle::BundleKind::LogsOnly
         || meta.is_some_and(|s| s.status == StreamStatus::Excluded)

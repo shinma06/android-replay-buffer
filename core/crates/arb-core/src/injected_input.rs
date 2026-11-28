@@ -223,10 +223,8 @@ pub fn visit_commands(
     lex(command, |words, valid| {
         let mut args = words.iter().map(String::as_str);
         match args.next().map(|w| w.strip_prefix("./").unwrap_or(w)) {
-            Some("input" | "/system/bin/input" | "system/bin/input") => (),
-            Some("cmd" | "/system/bin/cmd" | "system/bin/cmd") if args.next() == Some("input") => {
-                ()
-            }
+            Some("input" | "/system/bin/input" | "system/bin/input") => {}
+            Some("cmd" | "/system/bin/cmd" | "system/bin/cmd") if args.next() == Some("input") => {}
             _ => return,
         }
         if valid && let Some((display, command)) = parse(&args.collect::<Vec<_>>()) {

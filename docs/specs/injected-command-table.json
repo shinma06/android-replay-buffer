@@ -114,5 +114,25 @@
     "message": "adbd service requested 'shell,v2,raw:echo ignore # comment; input tap 1 2'",
     "expected": [],
     "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 2000,
+    "message": "adbd service requested 'shell:/data/local/tmp/input tap 1 2'",
+    "expected": [],
+    "unparsed_count": 0
+  },
+  {
+    "tag": "adbd",
+    "uid": 0,
+    "message": "adbd service requested 'shell:./system/bin/input tap 1 2'",
+    "expected": [
+      {
+        "kind": "tap",
+        "x_display": 1,
+        "y_display": 2
+      }
+    ],
+    "unparsed_count": 0
   }
 ]
