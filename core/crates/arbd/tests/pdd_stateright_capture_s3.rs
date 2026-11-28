@@ -194,6 +194,10 @@ struct StartState {
     selected_seen: [bool; 3],
     /// Ghost: the explicit pin was confirmed, then unplugged, replugged and re-attached.
     reattach: u8,
+    /// A second start queued behind a held reservation; `true` once a stop overtook it.
+    queued: Option<(Option<u8>, bool)>,
+    /// Ghost: a queued start was admitted although a stop arrived while it waited.
+    resumed_after_stop: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -206,6 +210,39 @@ enum StartAction {
     Stop,
     Restart,
     Ack,
+    /// The queued start polls the reservation again (`StartAdmission::Busy` loop).
+    Retry,
+}
+
+/// `admit_capture_start`: `false` means `Busy` (a reservation is held and nothing changed).
+fn admit(s: &StartState, n: &mut StartState, arg: Option<u8>) -> bool {
+    if let Some(active) = s.live {
+        // Recording: the same serial (or none) is idempotent, another is CONFLICT.
+        if arg.is_none_or(|serial| serial == active) {
+            n.persisted = Persisted {
+                enabled: true,
+                serial: arg.or(s.persisted.serial),
+            };
+            if let Some(serial) = arg {
+                // The running session is the observation that this serial is Selected.
+                n.selected_seen[usize::from(serial)] = true;
+            }
+            n.reply = Some(Reply::AlreadyActive);
+        } else {
+            n.reply = Some(Reply::Conflict);
+            n.failure_mutated |= n.persisted != s.persisted || n.live != s.live;
+        }
+        return true;
+    }
+    if s.reservation.is_some() {
+        return false;
+    }
+    if arg.is_none() {
+        n.persisted.enabled = true;
+    }
+    n.reservation = Some(Reservation::Start(arg));
+    n.admitted = Some((n.persisted, n.live));
+    true
 }
 
 fn is_online(s: &StartState, serial: u8) -> bool {
@@ -243,6 +280,8 @@ impl Model for StartModel {
             auto_lost: false,
             selected_seen: [false; 3],
             reattach: 0,
+            queued: None,
+            resumed_after_stop: false,
         };
         vec![
             base,
@@ -268,6 +307,7 @@ impl Model for StartModel {
             Stop,
             Restart,
             Ack,
+            Retry,
         ]);
     }
     #[expect(
@@ -294,32 +334,10 @@ impl Model for StartModel {
                     n.reattach = 2;
                 }
             }
-            Start(arg) if s.reply.is_none() && s.admitted.is_none() => {
-                if let Some(active) = s.live {
-                    // Recording: the same serial (or none) is idempotent, another is CONFLICT.
-                    if arg.is_none_or(|serial| serial == active) {
-                        n.persisted = Persisted {
-                            enabled: true,
-                            serial: arg.or(s.persisted.serial),
-                        };
-                        if let Some(serial) = arg {
-                            // The running session is the observation that this serial is Selected.
-                            n.selected_seen[usize::from(serial)] = true;
-                        }
-                        n.reply = Some(Reply::AlreadyActive);
-                    } else {
-                        n.reply = Some(Reply::Conflict);
-                        n.failure_mutated = n.persisted != s.persisted || n.live != s.live;
-                    }
-                } else if s.reservation.is_some() {
-                    // Queue behind the holder (`StartAdmission::Busy`): no transition.
-                    return None;
-                } else {
-                    if arg.is_none() {
-                        n.persisted.enabled = true;
-                    }
-                    n.reservation = Some(Reservation::Start(arg));
-                    n.admitted = Some((n.persisted, n.live));
+            Start(arg) if s.reply.is_none() && s.admitted.is_none() && s.queued.is_none() => {
+                if !admit(s, &mut n, arg) {
+                    // Queue behind the holder (`StartAdmission::Busy`), never take it over.
+                    n.queued = Some((arg, false));
                 }
             }
             AttachDone => match s.reservation? {
@@ -350,8 +368,10 @@ impl Model for StartModel {
                         }
                         (Some(_), None) => {
                             n.reply = Some(Reply::NotFound);
-                            let (persisted, live) = s.admitted?;
-                            n.failure_mutated = n.persisted != persisted || n.live != live;
+                            let (persisted, _) = s.admitted?;
+                            n.failure_mutated |= n.persisted != persisted
+                                || n.persisted != s.persisted
+                                || n.live != s.live;
                         }
                         (None, Some(selected)) => {
                             n.live = Some(selected);
@@ -369,12 +389,28 @@ impl Model for StartModel {
                 n.live = None;
                 n.reservation = None;
                 n.admitted = None;
+                // `stop_epoch` moves on: a start that entered earlier is cancelled.
+                n.queued = s.queued.map(|(arg, _)| (arg, true));
+            }
+            Retry if s.admitted.is_none() && s.reply.is_none() => {
+                let (arg, stale) = s.queued?;
+                if stale {
+                    // `stop_epoch` changed while queued: cancelled, nothing admitted.
+                    n.queued = None;
+                    n.reply = Some(Reply::Conflict);
+                } else if admit(s, &mut n, arg) {
+                    n.queued = None;
+                    n.resumed_after_stop |= stale;
+                } else {
+                    return None;
+                }
             }
             Restart => {
                 n.live = None;
                 n.reservation = None;
                 n.admitted = None;
                 n.reply = None;
+                n.queued = None;
             }
             Ack if s.reply.is_some() => n.reply = None,
             _ => return None,
@@ -408,6 +444,13 @@ impl Model for StartModel {
                 "S3b a start never silently drops an auto-attach reservation",
                 |_, s| !s.auto_lost,
             ),
+            Property::<Self>::always(
+                "S3b a stop cancels starts queued before it (no resume after stop)",
+                |_, s| !s.resumed_after_stop,
+            ),
+            Property::<Self>::sometimes("S3b a queued start is cancelled by stop", |_, s| {
+                s.queued.is_some_and(|(_, stale)| stale)
+            }),
             Property::<Self>::always(
                 "S3b auto-attach never switches away from the pin (DS-07)",
                 |_, s| {

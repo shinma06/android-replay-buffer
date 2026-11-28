@@ -1056,6 +1056,67 @@ fn capture_start_waits_for_auto_attach_reservation_instead_of_cancelling_it() {
     rpc.call("capture.stop", &json!({}));
 }
 
+/// A stop cancels every start that entered before it: the reservation holder, a start queued
+/// behind it, and a waiting start whose discovery is still blocked (codex review on #583).
+#[test]
+fn stop_cancels_queued_and_waiting_starts_without_resuming_recording() {
+    let tmp = TempDir::new().unwrap();
+    let paths = isolated_paths(&tmp);
+    let fake = compile_fake_adb(&tmp);
+    let dir = tmp.path();
+    fs::write(dir.join("devices"), "A device\nB device\n").unwrap();
+    let _daemon = spawn_fake_daemon(&paths, &fake, dir);
+    let mut rpc = RpcClient::connect(&paths.ipc_endpoint());
+    rpc.call("config.update", &json!({"capture_mode":"logs_only"}));
+    let spawn_start = |params: Value| {
+        let endpoint = paths.ipc_endpoint();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            tx.send(RpcClient::connect(&endpoint).send_raw("capture.start", &params))
+                .unwrap();
+        });
+        rx
+    };
+    fs::write(dir.join("block"), []).unwrap();
+    let holder = spawn_start(json!({"serial":"A"}));
+    await_condition(|| dir.join("discovery-entered").exists());
+    let queued = spawn_start(json!({"serial":"B"}));
+    thread::sleep(Duration::from_millis(200));
+    rpc.call("capture.stop", &json!({}));
+    let queued = queued
+        .recv_timeout(Duration::from_secs(2))
+        .expect("queued start must fail promptly after stop");
+    assert_eq!(
+        queued["error"]["data"]["error_code"], "CONFLICT",
+        "{queued}"
+    );
+    fs::remove_file(dir.join("block")).unwrap();
+    let holder = holder.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(holder["error"].is_object(), "{holder}");
+    let status = rpc.call("system.status", &json!({}));
+    assert_eq!(status["capture"]["active"], false, "{status}");
+    assert_eq!(status["capture_enabled"], false);
+    assert_eq!(status["configured_device_serial"], Value::Null);
+
+    // A waiting start cancelled by stop reports at its deadline, not when discovery unblocks.
+    fs::remove_file(dir.join("discovery-entered")).unwrap();
+    fs::write(dir.join("block"), []).unwrap();
+    let waiting = spawn_start(json!({"serial":"A","wait_connected":true,"wait_timeout_ms":300}));
+    await_condition(|| dir.join("discovery-entered").exists());
+    rpc.call("capture.stop", &json!({}));
+    let waiting = waiting
+        .recv_timeout(Duration::from_secs(3))
+        .expect("cancelled start must not wait for the blocked discovery");
+    assert_eq!(
+        waiting["error"]["data"]["error_code"], "CONFLICT",
+        "{waiting}"
+    );
+    fs::remove_file(dir.join("block")).unwrap();
+    let cfg = rpc.call("config.get", &json!({}))["config"].clone();
+    assert_eq!(cfg["capture_enabled"], false);
+    assert_eq!(cfg["device_serial"], Value::Null);
+}
+
 #[test]
 fn live_supervisor_waits_selects_reconnects_and_cancels_slow_discovery() {
     let tmp = TempDir::new().unwrap();

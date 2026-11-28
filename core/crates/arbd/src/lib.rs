@@ -199,6 +199,9 @@ struct LiveCapture {
     handle: Option<LiveCaptureHandle>,
     reservation: Option<Arc<()>>,
     request: CaptureStartParams,
+    /// Bumped by every stop (`capture.stop`, a device reselection, a pressure disarm). A start
+    /// remembers it on entry, so a stop also cancels starts still queued or waiting.
+    stop_epoch: u64,
 }
 
 struct DaemonState {
@@ -351,6 +354,7 @@ impl DaemonState {
             let generation = self.lock_capture()?.session_generation();
             live_guard.reservation = None;
             live_guard.request = CaptureStartParams::default();
+            live_guard.stop_epoch = live_guard.stop_epoch.wrapping_add(1);
             (live_guard.handle.take(), generation)
         };
         let was_running = handle.is_some();
@@ -783,8 +787,9 @@ impl DaemonState {
         // queue behind it instead of cancelling it, and report a conflict if it never ends.
         let reservation_deadline =
             Instant::now() + START_RESERVATION_WAIT.max(deadline.map_or(Duration::ZERO, |_| wait));
+        let epoch = self.lock(&self.live_capture, "live capture")?.stop_epoch;
         let (reservation, parsed, mut response) = loop {
-            match self.admit_capture_start(&request, explicit.as_deref())? {
+            match self.admit_capture_start(&request, explicit.as_deref(), epoch)? {
                 StartAdmission::Reserved(ticket, parsed, response) => {
                     break (ticket, parsed, *response);
                 }
@@ -810,7 +815,7 @@ impl DaemonState {
         let observed = Mutex::new(None);
         let outcome = match deadline {
             Some(end) if end > Instant::now() => {
-                self.attach_with_deadline(&reservation, parsed, end, &observed)?
+                self.attach_with_deadline(&reservation, parsed, end, &observed, epoch)?
             }
             // No wait, or the queue above used it up: still make exactly one discovery.
             _ => Some(self.attach_reserved(&reservation, &parsed, deadline, Some(&observed))?),
@@ -834,7 +839,7 @@ impl DaemonState {
         if let DeviceSelectionOutcome::Selected { serial } = selection {
             if let Some(explicit) = explicit.as_deref() {
                 response.config_changed =
-                    self.commit_explicit_start(&request, explicit, generation)?;
+                    self.commit_explicit_start(&request, explicit, generation, epoch)?;
             }
             response.started = true;
             response.serial = serial;
@@ -867,12 +872,17 @@ impl DaemonState {
         &self,
         request: &CaptureStartParams,
         explicit: Option<&str>,
+        epoch: u64,
     ) -> Result<StartAdmission, DaemonError> {
         let _guard = self.lock(&self.config_update_lock, "config update")?;
         if self.is_shutting_down() {
             return Err(DaemonError::Conflict("arbd is shutting down".to_owned()));
         }
         let mut live = self.lock(&self.live_capture, "live capture")?;
+        if live.stop_epoch != epoch {
+            // A stop arrived while this start was queued: it must not resume recording.
+            return Err(start_cancelled());
+        }
         let parsed = self.capture_options(request.clone())?;
         let serial_source = if explicit.is_some() {
             SerialSource::Argument
@@ -949,25 +959,33 @@ impl DaemonState {
         request: &CaptureStartParams,
         serial: &str,
         generation: Option<u64>,
+        epoch: u64,
     ) -> Result<CaptureConfigChanges, DaemonError> {
-        let committed = {
+        let (committed, orphan) = {
             let _guard = self.lock(&self.config_update_lock, "config update")?;
             let mut live = self.lock(&self.live_capture, "live capture")?;
-            let current = live.handle.as_ref().is_some_and(|h| !h.is_finished())
+            let current = live.stop_epoch == epoch
+                && live.handle.as_ref().is_some_and(|h| !h.is_finished())
                 && generation == Some(self.lock_capture()?.session_generation());
             if !current {
-                return Err(DaemonError::Conflict("capture start was cancelled".into()));
+                return Err(start_cancelled());
             }
             let committed = self.persist_capture_intent(CaptureIntent::Armed, Some(serial));
-            if committed.is_ok() {
+            let orphan = if committed.is_ok() {
                 live.request = request.clone();
                 live.request.serial = Some(serial.to_owned());
-            }
-            committed
+                None
+            } else {
+                // Detach exactly this tentative session while it is still provably ours.
+                live.handle.take()
+            };
+            (committed, orphan)
         };
-        if committed.is_err() {
-            // Without the commit the tentative session must not outlive this call.
-            self.stop_active_capture()?;
+        if let Some(mut handle) = orphan {
+            handle.stop();
+            if let Some(generation) = generation {
+                self.lock_capture()?.mark_stopped_if_current(generation);
+            }
         }
         committed
     }
@@ -978,6 +996,7 @@ impl DaemonState {
         parsed: CaptureStartParams,
         deadline: Instant,
         observed: &Mutex<Option<DeviceSelectionOutcome>>,
+        epoch: u64,
     ) -> Result<Option<AttachResult>, DaemonError> {
         let (tx, rx) = mpsc::channel();
         let state = Arc::clone(self);
@@ -995,7 +1014,7 @@ impl DaemonState {
                 ));
             });
         if let Err(err) = spawned {
-            self.release_reservation(reservation)?;
+            self.release_reservation(reservation, epoch)?;
             return Err(err.into());
         }
         let result = self.await_attach(&rx, deadline);
@@ -1007,10 +1026,13 @@ impl DaemonState {
             return result;
         }
         // Deadline passed. A reservation still ours is cancelled, so a late attach cannot start
-        // a session after this caller was told it timed out; otherwise the worker already
-        // decided under the live lock and its result is the answer.
-        if self.release_reservation(reservation)? {
-            return Ok(None);
+        // a session after this caller was told it timed out. A stop that took it reports the
+        // cancellation now, without waiting for a discovery that may still be blocked. Only when
+        // the worker itself consumed it (under the live lock) is its result the answer.
+        match self.release_reservation(reservation, epoch)? {
+            ReservationFate::Released => return Ok(None),
+            ReservationFate::Cancelled => return Err(start_cancelled()),
+            ReservationFate::Consumed => {}
         }
         loop {
             if self.is_shutting_down() {
@@ -1024,17 +1046,27 @@ impl DaemonState {
         }
     }
 
-    /// Drops `reservation` if it is still the active one; `true` when it was.
-    fn release_reservation(&self, reservation: &Arc<()>) -> Result<bool, DaemonError> {
+    /// Drops `reservation` if it is still the active one, and otherwise tells whether a stop
+    /// (epoch changed) or the attach worker took it.
+    fn release_reservation(
+        &self,
+        reservation: &Arc<()>,
+        epoch: u64,
+    ) -> Result<ReservationFate, DaemonError> {
         let mut live = self.lock(&self.live_capture, "live capture")?;
-        let ours = live
+        if live
             .reservation
             .as_ref()
-            .is_some_and(|ticket| Arc::ptr_eq(ticket, reservation));
-        if ours {
+            .is_some_and(|ticket| Arc::ptr_eq(ticket, reservation))
+        {
             live.reservation = None;
+            return Ok(ReservationFate::Released);
         }
-        Ok(ours)
+        Ok(if live.stop_epoch == epoch {
+            ReservationFate::Consumed
+        } else {
+            ReservationFate::Cancelled
+        })
     }
 
     /// Waits for the attach worker; `None` means the deadline passed first.
@@ -1201,7 +1233,7 @@ impl DaemonState {
                     .as_ref()
                     .is_some_and(|active| Arc::ptr_eq(active, ticket))
             {
-                return Err(DaemonError::Conflict("capture start was cancelled".into()));
+                return Err(start_cancelled());
             }
             // Keep this request's reservation across discovery attempts. A stop or replacement
             // invalidates the ticket, and the background supervisor cannot claim this generation.
@@ -2871,6 +2903,20 @@ enum StartAdmission {
     AlreadyActive(Box<CaptureStartResponse>, u64),
     /// Auto-attach or another start holds the reservation.
     Busy,
+}
+
+/// What happened to a start's reservation when its deadline passed.
+enum ReservationFate {
+    /// Still ours; this call released it.
+    Released,
+    /// A stop cleared it.
+    Cancelled,
+    /// The attach worker consumed it and decided under the live lock.
+    Consumed,
+}
+
+fn start_cancelled() -> DaemonError {
+    DaemonError::Conflict("capture start was cancelled".into())
 }
 
 /// `waiting_for_device`: an armed start without `serial` is waiting for its target (DS-02/03).
